@@ -23,9 +23,86 @@ from tuner_cli.domain import (
     ReplayState,
     ShadowCandidateDecision,
     ShadowRaceDecision,
+    SuccessiveHalvingEvidence,
+    SuccessiveHalvingRankMargin,
 )
 from tuner_cli.elimination import active_elimination_allocation, audited_boundary_reversals
 from tuner_cli.observations import observation
+
+
+def _halving_manifest() -> object:
+    base = read_manifest(Path(__file__).parent / "fixtures" / "version4" / "manifest.json")
+    halving = _shadow_policy(0.0, 0.05, "successive_halving", base.finalists, 0.1)
+    return replace(
+        base,
+        shadow_policy=halving,
+        active_elimination=_active_elimination(0.25, halving),
+    )
+
+
+def _halving_race(
+    manifest: object, rows: tuple[tuple[str, str, int | None, bool], ...]
+) -> ShadowRaceDecision:
+    return ShadowRaceDecision(
+        0,
+        manifest.tuning_blocks[0].prefix_id,  # type: ignore[attr-defined]
+        (),
+        "boundary",
+        tuple(
+            ShadowCandidateDecision(
+                candidate_id,
+                disposition,
+                SuccessiveHalvingEvidence(rank, 6, 3, disposition == "eliminate" and newly),
+            )
+            for candidate_id, disposition, rank, newly in rows
+        ),
+        "successive_halving",
+        "successive-halving-spare-near-tie-v1",
+    )
+
+
+def _empty_state() -> ReplayState:
+    return ReplayState((), (), (), (), (), (), None, "open", 0, None)
+
+
+def test_active_halving_allocation_tags_a_rank_margin_with_the_spared_count() -> None:
+    manifest = _halving_manifest()
+    race = _halving_race(
+        manifest,
+        (
+            ("keep", "continue", 1, False),
+            ("spared", "continue", 4, False),
+            ("cut", "eliminate", 5, True),
+        ),
+    )
+    allocation = active_elimination_allocation(manifest, _empty_state(), race)
+    assert [item.candidate_id for item in allocation.actions] == ["cut"]
+    margin = allocation.actions[0].margin
+    assert margin == SuccessiveHalvingRankMargin(5, 3, 2, 1)
+
+
+def test_active_halving_allocation_skips_candidates_eliminated_on_an_earlier_look() -> None:
+    manifest = _halving_manifest()
+    race = _halving_race(
+        manifest,
+        (
+            ("kept", "continue", 1, False),
+            ("earlier", "eliminate", None, False),
+            ("fresh", "eliminate", 4, True),
+        ),
+    )
+    allocation = active_elimination_allocation(manifest, _empty_state(), race)
+    assert [item.candidate_id for item in allocation.actions] == ["fresh"]
+
+
+def test_active_halving_allocation_rejects_a_race_from_a_different_policy_version() -> None:
+    manifest = _halving_manifest()
+    race = replace(
+        _halving_race(manifest, (("cut", "eliminate", 4, True),)),
+        policy_version="successive-halving-common-prefix-eta2-v1",
+    )
+    with pytest.raises(ValueError, match="policy version"):
+        active_elimination_allocation(manifest, _empty_state(), race)
 
 
 def test_active_elimination_sampling_is_deterministic_and_ignores_non_eliminations() -> None:

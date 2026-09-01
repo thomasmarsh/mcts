@@ -4,19 +4,66 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from .artifacts import Manifest, PairedBootstrapPolicySpecification
+from .artifacts import (
+    Manifest,
+    PairedBootstrapPolicySpecification,
+    SuccessiveHalvingPolicySpecification,
+)
 from .domain import (
     ApplyElimination,
     AuditedBoundaryReversal,
     CandidateEliminationAction,
     CohortRecord,
-    PairedBootstrapEvidence,
+    EliminationDecisionMargin,
     PairedProbabilityMargin,
     ReplayState,
+    ShadowCandidateDecision,
     ShadowRaceDecision,
+    SuccessiveHalvingEvidence,
+    SuccessiveHalvingRankMargin,
 )
 from .identity import canonical_json
 from .observations import comparable_prefix_observations, paired_difference
+
+
+def _spared_count(race: ShadowRaceDecision) -> int:
+    """Near-tie candidates the spare-margin rule carried past the cut on this look."""
+    return sum(
+        1
+        for item in race.decisions
+        if isinstance(item.evidence, SuccessiveHalvingEvidence)
+        and item.evidence.rank is not None
+        and item.evidence.rank > item.evidence.target_survivor_count
+        and item.disposition == "continue"
+    )
+
+
+def _decision_margin(
+    manifest: Manifest, race: ShadowRaceDecision, decision: ShadowCandidateDecision
+) -> EliminationDecisionMargin:
+    evidence = decision.evidence
+    if isinstance(evidence, SuccessiveHalvingEvidence):
+        if evidence.rank is None:
+            raise ValueError("a newly eliminated rank decision must carry a rank")
+        return SuccessiveHalvingRankMargin(
+            evidence.rank,
+            evidence.target_survivor_count,
+            evidence.rank - evidence.target_survivor_count,
+            _spared_count(race),
+        )
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("a paired probability margin requires the paired bootstrap policy")
+    favorable_probability = evidence.favorable_resamples / evidence.total_resamples
+    threshold = manifest.shadow_policy.elimination_probability_threshold
+    return PairedProbabilityMargin(
+        threshold, favorable_probability, threshold - favorable_probability
+    )
+
+
+def _newly_eliminated(decision: ShadowCandidateDecision) -> bool:
+    if isinstance(decision.evidence, SuccessiveHalvingEvidence):
+        return decision.evidence.newly_eliminated
+    return True
 
 
 def active_elimination_allocation(
@@ -24,10 +71,16 @@ def active_elimination_allocation(
 ) -> ApplyElimination:
     if manifest.active_elimination is None:
         raise ValueError("active elimination is disabled")
-    if race.policy_kind != "paired_bootstrap":
-        raise ValueError("active elimination requires paired bootstrap evidence")
-    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
-        raise ValueError("active elimination requires paired bootstrap policy")
+    if race.policy_kind == "paired_bootstrap":
+        if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+            raise ValueError("active elimination requires paired bootstrap policy")
+    elif race.policy_kind == "successive_halving":
+        if not isinstance(manifest.shadow_policy, SuccessiveHalvingPolicySpecification):
+            raise ValueError("active elimination requires the successive halving policy")
+    else:
+        raise ValueError("active elimination does not support this shadow policy")
+    if race.policy_version != manifest.active_elimination.shadow_method_version:
+        raise ValueError("active elimination race policy version does not match the manifest")
     protected = {item.candidate_id for item in state.active_elites}
     protected.add(race.boundary_candidate_id)
     for prior in state.shadow_races:
@@ -42,8 +95,8 @@ def active_elimination_allocation(
     for decision in race.decisions:
         if decision.disposition != "eliminate" or decision.candidate_id in protected:
             continue
-        if not isinstance(decision.evidence, PairedBootstrapEvidence):
-            raise ValueError("active elimination requires paired bootstrap evidence")
+        if not _newly_eliminated(decision):
+            continue
         payload = canonical_json(
             [
                 manifest.active_elimination.sampler_version,
@@ -58,17 +111,11 @@ def active_elimination_allocation(
         action = (
             "audit_continue" if draw < manifest.active_elimination.audit_probability else "prune"
         )
-        favorable_probability = (
-            decision.evidence.favorable_resamples / decision.evidence.total_resamples
-        )
-        threshold = manifest.shadow_policy.elimination_probability_threshold
         actions.append(
             CandidateEliminationAction(
                 decision.candidate_id,
                 action,
-                PairedProbabilityMargin(
-                    threshold, favorable_probability, threshold - favorable_probability
-                ),
+                _decision_margin(manifest, race, decision),
             )
         )
     return ApplyElimination(race.cohort_index, race.prefix_id, tuple(actions))

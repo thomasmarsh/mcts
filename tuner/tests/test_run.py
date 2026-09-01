@@ -20,6 +20,7 @@ from tuner_cli.domain import (
     ShadowCandidateDecision,
     ShadowRaceDecision,
     StrategyMetrics,
+    SuccessiveHalvingEvidence,
     ValidationResult,
 )
 from tuner_cli.event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
@@ -536,7 +537,14 @@ def _completed_cohorts(events: list) -> list:
 
 
 def _active_options(
-    tmp_path: Path, run_name: str, tuning_pairs: int, tuning_pair_budget: int, audit: float
+    tmp_path: Path,
+    run_name: str,
+    tuning_pairs: int,
+    tuning_pair_budget: int,
+    audit: float,
+    *,
+    shadow_policy: str = "paired_bootstrap",
+    shadow_halving_spare_margin: float = 0.0,
 ) -> RunOptions:
     return RunOptions(
         _fake_binary(tmp_path),
@@ -556,6 +564,8 @@ def _active_options(
         validation_effort=SearchEffort("iterations", 5),
         production_effort=SearchEffort("iterations", 9),
         active_elimination_audit_probability=audit,
+        shadow_policy=shadow_policy,  # type: ignore[arg-type]
+        shadow_halving_spare_margin=shadow_halving_spare_margin,
     )
 
 
@@ -682,6 +692,85 @@ def test_audited_reversal_suspends_later_foreground_cohorts(
     report_bytes = (options.run_dir / "report.json").read_bytes()
     (options.run_dir / "report.json").unlink()
     recording = ActiveProfileTarget(recovery=True)
+    run_foreground(replace(options, resume=True), recording, model_proposer=ActiveProfileModel())
+    assert not recording.calls
+    assert (options.run_dir / "report.json").read_bytes() == report_bytes
+
+
+def _mock_halving_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
+    def decide(manifest, state, cohort_index, prefix):  # type: ignore[no-untyped-def]
+        candidates = current_active_candidates(state)
+        prior_eliminated = {
+            item.candidate_id
+            for race in state.shadow_races
+            if race.cohort_index == cohort_index and race.policy_kind == "successive_halving"
+            for item in race.decisions
+            if item.disposition == "eliminate"
+        }
+        ranked = sorted(candidates, key=lambda c: json.loads(c.canonical_config)["family"])
+        target = (len(ranked) + 1) // 2
+        rank_of = {c.candidate_id: index + 1 for index, c in enumerate(ranked)}
+        kept = {c.candidate_id for c in ranked[:target]}
+        decisions = tuple(
+            ShadowCandidateDecision(
+                c.candidate_id,
+                "continue" if c.candidate_id in kept else "eliminate",
+                SuccessiveHalvingEvidence(
+                    rank_of[c.candidate_id] if c.candidate_id not in prior_eliminated else None,
+                    len(ranked),
+                    target,
+                    c.candidate_id not in kept and c.candidate_id not in prior_eliminated,
+                ),
+            )
+            for c in candidates
+        )
+        return ShadowRaceDecision(
+            cohort_index,
+            prefix.prefix_id,
+            tuple(
+                item.observation_id
+                for item in comparable_prefix_observations(state.observations, candidates, prefix)
+            ),
+            ranked[target - 1].candidate_id,
+            decisions,
+            "successive_halving",
+            "successive-halving-spare-near-tie-v1",
+        )
+
+    monkeypatch.setattr("tuner_cli.continuation.decide_shadow_race", decide)
+    monkeypatch.setattr("tuner_cli.replay.decide_shadow_race", decide)
+
+
+def test_active_halving_run_completes_and_resumes_with_rank_tagged_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_halving_shadow(monkeypatch)
+    options = _active_options(
+        tmp_path,
+        "active-halving",
+        14,
+        56,
+        0.5,
+        shadow_policy="successive_halving",
+        shadow_halving_spare_margin=0.1,
+    )
+    run_foreground(options, ActiveProfileTarget(), model_proposer=ActiveProfileModel())
+    events = [
+        json.loads(line) for line in (options.run_dir / "evidence.jsonl").read_text().splitlines()
+    ]
+    actions = [
+        action
+        for event in events
+        if event["type"] == "allocation_decided"
+        and event["payload"]["allocation"]["kind"] == "apply_elimination"
+        for action in event["payload"]["allocation"]["actions"]
+    ]
+    assert actions
+    assert all(action["margin"]["kind"] == "successive_halving_rank" for action in actions)
+    assert events[-1]["type"] == "run_completed"
+    report_bytes = (options.run_dir / "report.json").read_bytes()
+    (options.run_dir / "report.json").unlink()
+    recording = ActiveProfileTarget()
     run_foreground(replace(options, resume=True), recording, model_proposer=ActiveProfileModel())
     assert not recording.calls
     assert (options.run_dir / "report.json").read_bytes() == report_bytes
