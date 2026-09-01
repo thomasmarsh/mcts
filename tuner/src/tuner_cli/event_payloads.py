@@ -38,6 +38,7 @@ from .domain import (
     SearchEffort,
     ShadowCandidateDecision,
     ShadowRaceDecision,
+    SuspendActiveElimination,
 )
 from .effort import decode_effort, encode_effort
 
@@ -149,6 +150,24 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
                 )
             ),
         )
+    if kind == "suspend_active_elimination":
+        item = object_fields(
+            raw,
+            {
+                "kind",
+                "after_cohort_index",
+                "triggering_candidate_ids",
+                "triggering_prefix_ids",
+                "safety_rule_version",
+            },
+            "active elimination suspension",
+        )
+        return SuspendActiveElimination(
+            integer(item["after_cohort_index"], "suspension cohort index"),
+            strings(item["triggering_candidate_ids"], "suspension candidate ids"),
+            strings(item["triggering_prefix_ids"], "suspension prefix ids"),
+            string(item["safety_rule_version"], "safety rule version"),
+        )
     raise ValueError("unknown resource allocation kind")
 
 
@@ -187,6 +206,16 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
                     }
                     for action in actions
                 ],
+            }
+        case SuspendActiveElimination(
+            after_cohort_index, triggering_candidate_ids, triggering_prefix_ids, safety_rule_version
+        ):
+            return {
+                "kind": "suspend_active_elimination",
+                "after_cohort_index": after_cohort_index,
+                "triggering_candidate_ids": list(triggering_candidate_ids),
+                "triggering_prefix_ids": list(triggering_prefix_ids),
+                "safety_rule_version": safety_rule_version,
             }
 
 

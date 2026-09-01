@@ -288,7 +288,8 @@ def build_report(run_dir: Path) -> JsonObject:
             "active shadow pruning remains disabled"
             if manifest.active_elimination is None
             else (
-                "active elimination is activation-validation only; automatic suspension is disabled"
+                "pruned outcomes remain unobserved; randomized audit continuations "
+                "estimate boundary reversals"
             ),
         ],
     }

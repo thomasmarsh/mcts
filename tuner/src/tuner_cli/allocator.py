@@ -39,9 +39,11 @@ from .domain import (
     RetainElites,
     SelectFinalists,
     StartNextCohort,
+    SuspendActiveElimination,
+    SuspendElimination,
     TaskPrefix,
 )
-from .elimination import active_elimination_allocation
+from .elimination import active_elimination_allocation, audited_boundary_reversals
 from .identity import pair_task
 from .observations import comparable_prefix_observations
 from .selection import select_top_candidates
@@ -52,7 +54,7 @@ ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 
 def allocation_policy_version(manifest: Manifest) -> str:
     return (
-        "audited-active-elimination-v1"
+        "audited-active-elimination-suspend-v1"
         if manifest.active_elimination
         else ALLOCATION_POLICY_VERSION
     )
@@ -99,6 +101,7 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
                 return EmitShadowRace(len(state.completed_cohorts), prefix.prefix_id)
             if (
                 manifest.active_elimination
+                and state.active_elimination_suspension is None
                 and shadow_prefix_eligible(manifest, prefix)
                 and not any(
                     item.cohort_index == len(state.completed_cohorts)
@@ -113,6 +116,14 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
     # At a completed-cohort boundary with no committed finalists, decide between
     # another challenger cohort or validation.
     if state.finalists is None and latest_completed_cohort(state) is not None:
+        cohort = latest_completed_cohort(state)
+        if (
+            manifest.active_elimination
+            and state.active_elimination_suspension is None
+            and cohort is not None
+            and audited_boundary_reversals(manifest, state, cohort)
+        ):
+            return SuspendElimination(cohort.cohort_index)
         return _cohort_boundary_decision(manifest, state)
     if state.finalists is not None and _validation_complete(manifest, state):
         return CompleteRun()
@@ -153,6 +164,17 @@ def resource_allocation(
                 if item.cohort_index == cohort_index and item.prefix_id == prefix_id
             )
             return active_elimination_allocation(manifest, state, race)
+        case SuspendElimination(after_cohort_index):
+            cohort = latest_completed_cohort(state)
+            if cohort is None or manifest.active_elimination is None:
+                return None
+            reversals = audited_boundary_reversals(manifest, state, cohort)
+            return SuspendActiveElimination(
+                after_cohort_index,
+                tuple(item.candidate_id for item in reversals),
+                tuple(item.prefix_id for item in reversals),
+                manifest.active_elimination.safety_rule_version,
+            )
         case SelectFinalists():
             return BeginValidation(manifest.tuning_prefix.prefix_id)
         case StartNextCohort():

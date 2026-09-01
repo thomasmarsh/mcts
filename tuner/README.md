@@ -74,7 +74,9 @@ shadow decision the tuner records an `allocation_decided` batch that either
 prunes an eliminated candidate or deterministically continues it as an audit.
 Audits and recorded boundaries remain through the maximum prefix; pruned
 candidates are not replaced within that cohort. The option is frozen for resume
-and does not enable automatic suspension.
+At the completed-cohort boundary, an audited candidate that reaches its exact
+recorded boundary candidate at maximum tuning fidelity suspends later active
+pruning while shadow decisions and full-cohort tuning continue.
 
 `report.json` includes a `candidate_lifecycle` projection of this policy,
 terminal failures, and replacement lineage, plus a `shadow_elimination` audit

@@ -43,6 +43,7 @@ from .domain import (
     ResourceAllocation,
     RetainElites,
     ShadowRaceDecision,
+    SuspendActiveElimination,
 )
 from .event_payloads import (
     AllocationDecidedPayload,
@@ -126,6 +127,7 @@ class _Replay:
     pair_attempts: dict[str, PairAttemptFacts] = field(default_factory=lambda: {})
     refill_attempts: dict[int, str] = field(default_factory=lambda: {})
     elimination_allocations: list[ApplyElimination] = field(default_factory=lambda: [])
+    active_elimination_suspension: SuspendActiveElimination | None = None
 
     def state(self) -> ReplayState:
         attempts = tuple(
@@ -159,6 +161,7 @@ class _Replay:
             attempts,
             tuple(sorted(self.refill_attempts.items())),
             tuple(self.elimination_allocations),
+            self.active_elimination_suspension,
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -405,6 +408,11 @@ def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None
         state.pending = None
     if isinstance(payload.allocation, ApplyElimination):
         state.elimination_allocations.append(payload.allocation)
+        state.pending = None
+    if isinstance(payload.allocation, SuspendActiveElimination):
+        if state.active_elimination_suspension is not None:
+            raise ValueError("active elimination is already suspended")
+        state.active_elimination_suspension = payload.allocation
         state.pending = None
     state.allocations += 1
 

@@ -160,11 +160,15 @@ class CandidateFailurePolicySpecification:
 class ActiveEliminationSpecification:
     audit_probability: float
     sampler_version: Literal["stage-stratified-sha256-v1"] = "stage-stratified-sha256-v1"
+    safety_rule_version: Literal["suspend-after-first-audited-boundary-reversal-v1"] = (
+        "suspend-after-first-audited-boundary-reversal-v1"
+    )
 
     def encoded(self) -> JsonObject:
         return {
             "audit_probability": self.audit_probability,
             "sampler_version": self.sampler_version,
+            "safety_rule_version": self.safety_rule_version,
         }
 
 
@@ -993,6 +997,20 @@ def _decode_candidate_failure_policy(value: object) -> CandidateFailurePolicySpe
     return policy
 
 
+def _decode_active_elimination(value: object) -> ActiveEliminationSpecification | None:
+    if value is None:
+        return None
+    raw = object_fields(
+        value,
+        {"audit_probability", "sampler_version", "safety_rule_version"},
+        "active elimination",
+    )
+    policy = _active_elimination(raw["audit_probability"])
+    if policy is None or raw != policy.encoded():
+        raise ValueError("unsupported active elimination policy")
+    return policy
+
+
 def decode_manifest_object(value: object) -> Manifest:
     raw = object_fields(value, _FIELDS, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
@@ -1046,16 +1064,7 @@ def decode_manifest_object(value: object) -> Manifest:
         ),
     )
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
-    active_elimination = None
-    if raw["active_elimination"] is not None:
-        active_raw = object_fields(
-            raw["active_elimination"],
-            {"audit_probability", "sampler_version"},
-            "active elimination",
-        )
-        active_elimination = _active_elimination(active_raw["audit_probability"])
-        if active_elimination is None or active_raw != active_elimination.encoded():
-            raise ValueError("unsupported active elimination policy")
+    active_elimination = _decode_active_elimination(raw["active_elimination"])
     if (
         shadow_policy.resamples != 4096
         or shadow_policy.method_version != method_version

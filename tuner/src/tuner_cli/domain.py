@@ -330,6 +330,28 @@ class ApplyElimination:
 
 
 @dataclass(frozen=True, slots=True)
+class SuspendElimination:
+    after_cohort_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class SuspendActiveElimination:
+    after_cohort_index: int
+    triggering_candidate_ids: tuple[str, ...]
+    triggering_prefix_ids: tuple[str, ...]
+    safety_rule_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class AuditedBoundaryReversal:
+    cohort_index: int
+    candidate_id: str
+    prefix_id: str
+    boundary_candidate_id: str
+    maximum_prefix_paired_mean_difference: float
+
+
+@dataclass(frozen=True, slots=True)
 class PairAttemptFacts:
     started_attempts: int = 0
     failed_attempts: int = 0
@@ -366,6 +388,7 @@ class ReplayState:
     pair_attempts: tuple[tuple[str, PairAttemptFacts], ...] = ()
     refill_attempts: tuple[tuple[int, str], ...] = ()
     elimination_allocations: tuple[ApplyElimination, ...] = ()
+    active_elimination_suspension: SuspendActiveElimination | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -486,6 +509,7 @@ ResourceAllocation = (
     | BeginValidation
     | RetainElites
     | ApplyElimination
+    | SuspendActiveElimination
 )
 
 
@@ -495,6 +519,7 @@ AllocationDecision = (
     | EmitObservation
     | EmitShadowRace
     | EnforceElimination
+    | SuspendElimination
     | CompleteCohort
     | StartNextCohort
     | DeepenCohort

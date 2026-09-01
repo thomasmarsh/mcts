@@ -30,6 +30,7 @@ from .domain import (
     DeepenCohortAllocation,
     EmitObservation,
     EmitShadowRace,
+    EnforceElimination,
     ExecutePair,
     FailCandidate,
     IntroduceCandidate,
@@ -44,6 +45,8 @@ from .domain import (
     RetainElites,
     SelectFinalists,
     StartNextCohort,
+    SuspendActiveElimination,
+    SuspendElimination,
 )
 from .event_payloads import (
     AllocationDecidedPayload,
@@ -125,6 +128,8 @@ def advance_one(
             raise RuntimeError("elite retention allocation must be folded immediately")
         case ApplyElimination():
             raise RuntimeError("elimination allocation must be folded immediately")
+        case SuspendActiveElimination():
+            raise RuntimeError("suspension allocation must be folded immediately")
         case None:
             _advance_selected(
                 manifest, writer, target, default, spec, model, timeout, state, executor
@@ -186,7 +191,13 @@ def _advance_selected(
             raise RuntimeError("deepening must be recorded as a resource allocation")
         case CompleteRun():
             complete_run(manifest, writer, state)
-        case IntroduceProposal() | SelectFinalists() | StartNextCohort():
+        case (
+            IntroduceProposal()
+            | SelectFinalists()
+            | StartNextCohort()
+            | EnforceElimination()
+            | SuspendElimination()
+        ):
             raise RuntimeError("resource choice must be recorded before its effect")
         case NoDecision():
             raise RuntimeError("no fixed-cohort continuation operation is available")
