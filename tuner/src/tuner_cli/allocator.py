@@ -6,6 +6,7 @@ from .artifacts import Manifest
 from .cohort import (
     accepted_proposal_candidates_for_cohort,
     current_active_candidates,
+    current_admitted_candidates,
     latest_completed_cohort,
     pending_proposal,
     proposal_source,
@@ -21,6 +22,7 @@ from .domain import (
     DeepenCohortAllocation,
     EmitObservation,
     EmitShadowRace,
+    EnforceElimination,
     ExecutePair,
     FailCandidate,
     IntroduceCandidate,
@@ -39,6 +41,7 @@ from .domain import (
     StartNextCohort,
     TaskPrefix,
 )
+from .elimination import active_elimination_allocation
 from .identity import pair_task
 from .observations import comparable_prefix_observations
 from .selection import select_top_candidates
@@ -47,12 +50,21 @@ from .shadow import shadow_prefix_eligible
 ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 
 
+def allocation_policy_version(manifest: Manifest) -> str:
+    return (
+        "audited-active-elimination-v1"
+        if manifest.active_elimination
+        else ALLOCATION_POLICY_VERSION
+    )
+
+
 def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecision:
     if proposal := pending_proposal(state):
         return ResolveProposal(proposal.proposal_index)
     cohort_index = len(state.completed_cohorts)
     accepted = accepted_proposal_candidates_for_cohort(state, cohort_index)
     active = current_active_candidates(state)
+    admitted = current_admitted_candidates(state)
     # Bootstrap phase: fill the initial slots before guided proposals.
     if cohort_index == 0 and len(accepted) < manifest.bootstrap_candidates:
         return IntroduceProposal()
@@ -63,13 +75,13 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
     if candidate := observation_due(manifest, state):
         return EmitObservation(candidate.candidate_id, pair_phase(state))
     # Fill the active cohort to target size once the block-0 frontier is available.
-    if len(active) < manifest.cohort_size and _frontier(
+    if len(admitted) < manifest.cohort_size and _frontier(
         state, active, manifest.tuning_blocks[0].prefix_id
     ):
         return IntroduceProposal()
     # Deepen or complete the current cohort when every active candidate has the
     # latest prefix observation.
-    if len(active) == manifest.cohort_size and _frontier(
+    if len(admitted) == manifest.cohort_size and _frontier(
         state, active, active_prefix(manifest, state).prefix_id
     ):
         if state.tuning_block_index + 1 < len(manifest.tuning_blocks):
@@ -85,6 +97,16 @@ def decide_allocation(manifest: Manifest, state: ReplayState) -> AllocationDecis
                 for item in state.shadow_races
             ):
                 return EmitShadowRace(len(state.completed_cohorts), prefix.prefix_id)
+            if (
+                manifest.active_elimination
+                and shadow_prefix_eligible(manifest, prefix)
+                and not any(
+                    item.cohort_index == len(state.completed_cohorts)
+                    and item.prefix_id == prefix.prefix_id
+                    for item in state.elimination_allocations
+                )
+            ):
+                return EnforceElimination(len(state.completed_cohorts), prefix.prefix_id)
             prefix = manifest.tuning_blocks[state.tuning_block_index + 1]
             return DeepenCohort(state.tuning_block_index + 1, prefix.prefix_id)
         return CompleteCohort()
@@ -124,6 +146,13 @@ def resource_allocation(
             return IntroduceCandidate(slot, source)
         case DeepenCohort(block_index, prefix_id):
             return DeepenCohortAllocation(block_index, prefix_id)
+        case EnforceElimination(cohort_index, prefix_id):
+            race = next(
+                item
+                for item in state.shadow_races
+                if item.cohort_index == cohort_index and item.prefix_id == prefix_id
+            )
+            return active_elimination_allocation(manifest, state, race)
         case SelectFinalists():
             return BeginValidation(manifest.tuning_prefix.prefix_id)
         case StartNextCohort():

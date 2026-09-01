@@ -10,6 +10,7 @@ EffortKind = Literal["iterations", "time_ms"]
 OpponentRole = Literal["default", "historical_reference"]
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
 ShadowDisposition = Literal["continue", "eliminate", "protected"]
+EliminationAction = Literal["prune", "audit_continue"]
 ShadowMethodVersion = Literal[
     "stratified-paired-bootstrap-v1", "stratified-paired-bootstrap-all-strata-v2"
 ]
@@ -309,6 +310,26 @@ class ShadowRaceDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class CandidateEliminationAction:
+    candidate_id: str
+    action: EliminationAction
+    decision_margin: float
+
+
+@dataclass(frozen=True, slots=True)
+class EnforceElimination:
+    cohort_index: int
+    prefix_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApplyElimination:
+    cohort_index: int
+    prefix_id: str
+    actions: tuple[CandidateEliminationAction, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PairAttemptFacts:
     started_attempts: int = 0
     failed_attempts: int = 0
@@ -344,6 +365,7 @@ class ReplayState:
     candidate_failures: tuple[CandidateFailure, ...] = ()
     pair_attempts: tuple[tuple[str, PairAttemptFacts], ...] = ()
     refill_attempts: tuple[tuple[int, str], ...] = ()
+    elimination_allocations: tuple[ApplyElimination, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,7 +480,12 @@ class CohortRecord:
 
 
 ResourceAllocation = (
-    IntroduceCandidate | RefillCandidate | DeepenCohortAllocation | BeginValidation | RetainElites
+    IntroduceCandidate
+    | RefillCandidate
+    | DeepenCohortAllocation
+    | BeginValidation
+    | RetainElites
+    | ApplyElimination
 )
 
 
@@ -467,6 +494,7 @@ AllocationDecision = (
     | ExecutePair
     | EmitObservation
     | EmitShadowRace
+    | EnforceElimination
     | CompleteCohort
     | StartNextCohort
     | DeepenCohort

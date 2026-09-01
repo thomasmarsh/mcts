@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
+from .active_audit import build_active_audit
 from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
 from .cohort import latest_completed_cohort
@@ -252,7 +253,9 @@ def build_report(run_dir: Path) -> JsonObject:
         manifest.efforts["validation"],
         manifest.efforts["production"],
     )
-    shadow = build_shadow_audit(manifest, state, events)
+    shadow = (
+        build_shadow_audit(manifest, state, events) if manifest.active_elimination is None else None
+    )
     return {
         "schema_version": 4,
         "status": "complete",
@@ -266,7 +269,10 @@ def build_report(run_dir: Path) -> JsonObject:
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
         "compute": _compute_section(manifest, state),
-        "shadow_elimination": _shadow_elimination(manifest, shadow),
+        "shadow_elimination": _shadow_elimination(manifest, shadow) if shadow is not None else None,
+        "active_elimination": (
+            None if manifest.active_elimination is None else build_active_audit(manifest, state)
+        ),
         "limitations": [
             "default-only starting state",
             "conservative small-sample intervals",
@@ -279,7 +285,11 @@ def build_report(run_dir: Path) -> JsonObject:
                 "the bootstrap score is empirically assessed and not an "
                 "anytime-valid false-elimination guarantee"
             ),
-            "active shadow pruning remains disabled",
+            "active shadow pruning remains disabled"
+            if manifest.active_elimination is None
+            else (
+                "active elimination is activation-validation only; automatic suspension is disabled"
+            ),
         ],
     }
 

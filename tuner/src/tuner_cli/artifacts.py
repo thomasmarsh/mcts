@@ -156,6 +156,18 @@ class CandidateFailurePolicySpecification:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveEliminationSpecification:
+    audit_probability: float
+    sampler_version: Literal["stage-stratified-sha256-v1"] = "stage-stratified-sha256-v1"
+
+    def encoded(self) -> JsonObject:
+        return {
+            "audit_probability": self.audit_probability,
+            "sampler_version": self.sampler_version,
+        }
+
+
 def proposer_specification(
     proposal_seed: int,
     task_seed: int,
@@ -206,6 +218,7 @@ class Manifest:
     compute_budget: ComputeBudget
     shadow_policy: ShadowPolicySpecification
     candidate_failure_policy: CandidateFailurePolicySpecification
+    active_elimination: ActiveEliminationSpecification | None
 
     @property
     def seed(self) -> int:
@@ -398,6 +411,7 @@ def build_manifest(
     shadow_practical_margin: float = 0.0,
     shadow_elimination_threshold: float = 0.05,
     excluded_families: tuple[str, ...] = (),
+    active_elimination_audit_probability: float | None = None,
 ) -> Manifest:
     validate_family_exclusions(spec.tuning, excluded_families)
     proposer = proposer_specification(
@@ -431,6 +445,7 @@ def build_manifest(
     )
     shadow_policy = _shadow_policy(shadow_practical_margin, shadow_elimination_threshold)
     candidate_failure_policy = CandidateFailurePolicySpecification()
+    active_elimination = _active_elimination(active_elimination_audit_probability)
     game_config_fingerprint = fingerprint(
         strict_json(spec.default_game_config, "game configuration")
     )
@@ -478,6 +493,7 @@ def build_manifest(
         ComputeBudget(tuning_pair_budget, validation_pair_budget),
         shadow_policy,
         candidate_failure_policy,
+        active_elimination,
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -513,6 +529,15 @@ def _shadow_policy(margin: object, threshold: object) -> ShadowPolicySpecificati
         4096,
         "stratified-paired-bootstrap-all-strata-v2",
     )
+
+
+def _active_elimination(value: object | None) -> ActiveEliminationSpecification | None:
+    if value is None:
+        return None
+    probability = number(value, "active elimination audit probability")
+    if not 0.0 < probability < 1.0:
+        raise ValueError("active elimination audit probability must be in (0.0, 1.0)")
+    return ActiveEliminationSpecification(probability)
 
 
 _STATISTICAL_POLICY: JsonObject = {
@@ -583,6 +608,7 @@ def _encode_manifest_object(
     compute_budget: ComputeBudget,
     shadow_policy: ShadowPolicySpecification,
     candidate_failure_policy: CandidateFailurePolicySpecification,
+    active_elimination: ActiveEliminationSpecification | None,
 ) -> JsonObject:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -595,6 +621,7 @@ def _encode_manifest_object(
         },
         "shadow_policy": shadow_policy.encoded(),
         "candidate_failure_policy": candidate_failure_policy.encoded(),
+        "active_elimination": None if active_elimination is None else active_elimination.encoded(),
         **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
@@ -633,6 +660,7 @@ _FIELDS = {
     "compute_budget",
     "shadow_policy",
     "candidate_failure_policy",
+    "active_elimination",
     "binary",
     "engine_fingerprint",
     "description",
@@ -1018,6 +1046,16 @@ def decode_manifest_object(value: object) -> Manifest:
         ),
     )
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
+    active_elimination = None
+    if raw["active_elimination"] is not None:
+        active_raw = object_fields(
+            raw["active_elimination"],
+            {"audit_probability", "sampler_version"},
+            "active elimination",
+        )
+        active_elimination = _active_elimination(active_raw["audit_probability"])
+        if active_elimination is None or active_raw != active_elimination.encoded():
+            raise ValueError("unsupported active elimination policy")
     if (
         shadow_policy.resamples != 4096
         or shadow_policy.method_version != method_version
@@ -1076,6 +1114,7 @@ def decode_manifest_object(value: object) -> Manifest:
         compute_budget,
         shadow_policy,
         candidate_failure_policy,
+        active_elimination,
     )
 
 
@@ -1106,5 +1145,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.compute_budget,
         manifest.shadow_policy,
         manifest.candidate_failure_policy,
+        manifest.active_elimination,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

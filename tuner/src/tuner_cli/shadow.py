@@ -138,7 +138,10 @@ def decide_shadow_race(
     if not shadow_prefix_eligible(manifest, prefix):
         raise ValueError("shadow race uses an ineligible tuning prefix")
     cohort = current_active_candidates(state)
-    if cohort_index != len(state.completed_cohorts) or len(cohort) != manifest.cohort_size:
+    if (
+        cohort_index != len(state.completed_cohorts)
+        or not manifest.finalists <= len(cohort) <= manifest.cohort_size
+    ):
         raise ValueError("shadow race does not reference the active complete cohort")
     observations = comparable_prefix_observations(state.observations, cohort, prefix)
     observation_ids = tuple(item.observation_id for item in observations)

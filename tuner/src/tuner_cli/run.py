@@ -48,6 +48,7 @@ class RunOptions:
     evaluator_workers: int = 1
     shadow_practical_margin: float = 0.0
     shadow_elimination_threshold: float = 0.05
+    active_elimination_audit_probability: float | None = None
     excluded_families: tuple[str, ...] = ()
     resume: bool = False
 
@@ -125,6 +126,17 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
             raise ValueError(f"{label} must be a finite number")
         if not (0.0 <= value <= 1.0 if inclusive else 0.0 < value < 0.5):
             raise ValueError(f"{label} must be in {'[0.0, 1.0]' if inclusive else '(0.0, 0.5)'}")
+    if options.active_elimination_audit_probability is not None:
+        value = options.active_elimination_audit_probability
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, float)
+            or not math.isfinite(value)
+            or not 0.0 < value < 1.0
+        ):
+            raise ValueError(
+                "active elimination audit probability must be a finite number in (0.0, 1.0)"
+            )
     validate_evaluator_workers(options.evaluator_workers, os.cpu_count())
     post_bootstrap = options.cohort_size - options.bootstrap_candidates
     if options.bootstrap_candidates < 2 or post_bootstrap < 2:
@@ -256,6 +268,7 @@ def manifest_for(
         options.shadow_practical_margin,
         options.shadow_elimination_threshold,
         options.excluded_families,
+        options.active_elimination_audit_probability,
     )
 
 

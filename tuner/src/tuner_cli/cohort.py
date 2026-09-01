@@ -87,6 +87,10 @@ def accepted_proposal_candidates_for_cohort(
 
 
 def current_active_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    return current_surviving_candidates(state)
+
+
+def current_admitted_candidates(state: ReplayState) -> tuple[Candidate, ...]:
     failed = {item.candidate_id for item in state.candidate_failures}
     return (
         *(item for item in state.active_elites if item.candidate_id not in failed),
@@ -96,6 +100,17 @@ def current_active_candidates(state: ReplayState) -> tuple[Candidate, ...]:
             if item.candidate_id not in failed
         ),
     )
+
+
+def current_surviving_candidates(state: ReplayState) -> tuple[Candidate, ...]:
+    admitted = current_admitted_candidates(state)
+    pruned = {
+        action.candidate_id
+        for allocation in state.elimination_allocations
+        for action in allocation.actions
+        if action.action == "prune"
+    }
+    return tuple(item for item in admitted if item.candidate_id not in pruned)
 
 
 def proposal_source(manifest: Manifest, cohort_index: int, accepted_slot: int) -> ProposalSource:

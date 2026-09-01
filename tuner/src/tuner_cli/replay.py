@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .allocator import (
-    ALLOCATION_POLICY_VERSION,
+    allocation_policy_version,
     decide_allocation,
     pending_pair,
     ready_pairs,
@@ -22,6 +22,7 @@ from .cohort import (
 )
 from .compute import LedgerBuilder
 from .domain import (
+    ApplyElimination,
     Candidate,
     CandidateFailure,
     CohortRecord,
@@ -124,6 +125,7 @@ class _Replay:
     candidate_failures: list[CandidateFailure] = field(default_factory=lambda: [])
     pair_attempts: dict[str, PairAttemptFacts] = field(default_factory=lambda: {})
     refill_attempts: dict[int, str] = field(default_factory=lambda: {})
+    elimination_allocations: list[ApplyElimination] = field(default_factory=lambda: [])
 
     def state(self) -> ReplayState:
         attempts = tuple(
@@ -156,6 +158,7 @@ class _Replay:
             tuple(self.candidate_failures),
             attempts,
             tuple(sorted(self.refill_attempts.items())),
+            tuple(self.elimination_allocations),
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -381,7 +384,10 @@ def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None
     expected = resource_allocation(
         decide_allocation(state.manifest, state.state()), state.manifest, state.state()
     )
-    if payload.policy_version != ALLOCATION_POLICY_VERSION or payload.allocation != expected:
+    if (
+        payload.policy_version != allocation_policy_version(state.manifest)
+        or payload.allocation != expected
+    ):
         raise ValueError("allocation decision does not match policy")
     state.pending = payload.allocation
     if isinstance(payload.allocation, DeepenCohortAllocation):
@@ -396,6 +402,9 @@ def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None
             by_id[candidate_id] for candidate_id in payload.allocation.candidate_ids
         )
         state.tuning_block_index = 0
+        state.pending = None
+    if isinstance(payload.allocation, ApplyElimination):
+        state.elimination_allocations.append(payload.allocation)
         state.pending = None
     state.allocations += 1
 
@@ -419,7 +428,7 @@ def _apply_cohort(state: _Replay, payload: CohortCompletedPayload) -> None:
         POLICY_VERSION,
         tuning_frontier(tuning).frontier_id,
     )
-    if len(candidates) != state.manifest.cohort_size or payload != expected:
+    if len(candidates) < state.manifest.finalists or payload != expected:
         raise ValueError("cohort completion does not bind final tuning observations")
     state.completed_cohorts.append(
         CohortRecord(

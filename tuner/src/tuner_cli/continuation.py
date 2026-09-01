@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .allocator import (
+    allocation_policy_version,
     decide_allocation,
     pair_candidates,
     proposal_at,
@@ -20,6 +21,7 @@ from .cohort import (
     proposal_payload,
 )
 from .domain import (
+    ApplyElimination,
     BeginValidation,
     Candidate,
     CompleteCohort,
@@ -121,6 +123,8 @@ def advance_one(
             raise RuntimeError("deepening allocation must be folded immediately")
         case RetainElites():
             raise RuntimeError("elite retention allocation must be folded immediately")
+        case ApplyElimination():
+            raise RuntimeError("elimination allocation must be folded immediately")
         case None:
             _advance_selected(
                 manifest, writer, target, default, spec, model, timeout, state, executor
@@ -140,7 +144,7 @@ def _advance_selected(
 ) -> None:
     decision = decide_allocation(manifest, state)
     if allocation := resource_allocation(decision, manifest, state):
-        writer.append(AllocationDecidedPayload(allocation, "budgeted-multi-cohort-v1"))
+        writer.append(AllocationDecidedPayload(allocation, allocation_policy_version(manifest)))
         return
     match decision:
         case ResolveProposal(proposal_index):

@@ -68,6 +68,14 @@ still reaches the maximum tuning prefix, and the nominal threshold has not earne
 an active-pruning safety claim. Runs with no eligible non-final prefix are valid
 and record no shadow decisions.
 
+Passing `--active-elimination-audit-probability` with a finite value strictly
+between zero and one opts into activation-validation mode. After each eligible
+shadow decision the tuner records an `allocation_decided` batch that either
+prunes an eliminated candidate or deterministically continues it as an audit.
+Audits and recorded boundaries remain through the maximum prefix; pruned
+candidates are not replaced within that cohort. The option is frozen for resume
+and does not enable automatic suspension.
+
 `report.json` includes a `candidate_lifecycle` projection of this policy,
 terminal failures, and replacement lineage, plus a `shadow_elimination` audit
 of those frozen decisions.
@@ -80,7 +88,8 @@ tuning top set “trash.” Avoided work is factual suffix work after the first
 unprotected elimination, including retries and partial failed attempts. The
 section also reports fixed probability-bin calibration and Brier score only for
 looks an active path would reach. It never uses held-out validation, is not an
-anytime-valid safety guarantee, and does not enable active pruning.
+anytime-valid safety guarantee. Shadow runs retain this audit; active runs
+instead expose their observed allocation batches in `active_elimination`.
 
 `--tuning-pair-budget` and `--validation-pair-budget` are required total
 budgets over pair attempts, frozen in the manifest under the

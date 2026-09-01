@@ -27,7 +27,9 @@ from .codec import (
     strings,
 )
 from .domain import (
+    ApplyElimination,
     BeginValidation,
+    CandidateEliminationAction,
     DeepenCohortAllocation,
     IntroduceCandidate,
     RefillCandidate,
@@ -126,6 +128,27 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
             strings(item["candidate_ids"], "retained candidate ids"),
             string(item["prefix_id"], "retained prefix id"),
         )
+    if kind == "apply_elimination":
+        item = object_fields(
+            raw, {"kind", "cohort_index", "prefix_id", "actions"}, "elimination allocation"
+        )
+        return ApplyElimination(
+            integer(item["cohort_index"], "elimination cohort index"),
+            string(item["prefix_id"], "elimination prefix id"),
+            tuple(
+                CandidateEliminationAction(
+                    string(action["candidate_id"], "elimination candidate id"),
+                    literal(action["action"], ("prune", "audit_continue"), "elimination action"),
+                    raw_number(action["decision_margin"], "elimination decision margin"),
+                )
+                for action in (
+                    object_fields(
+                        value, {"candidate_id", "action", "decision_margin"}, "elimination action"
+                    )
+                    for value in elements(item["actions"], "elimination actions")
+                )
+            ),
+        )
     raise ValueError("unknown resource allocation kind")
 
 
@@ -150,6 +173,20 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
                 "cohort_index": cohort_index,
                 "candidate_ids": list(candidate_ids),
                 "prefix_id": prefix_id,
+            }
+        case ApplyElimination(cohort_index, prefix_id, actions):
+            return {
+                "kind": "apply_elimination",
+                "cohort_index": cohort_index,
+                "prefix_id": prefix_id,
+                "actions": [
+                    {
+                        "candidate_id": action.candidate_id,
+                        "action": action.action,
+                        "decision_margin": action.decision_margin,
+                    }
+                    for action in actions
+                ],
             }
 
 
