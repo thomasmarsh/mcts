@@ -10,6 +10,7 @@ from .domain import (
     Candidate,
     CohortRecord,
     ModelAttempt,
+    Observation,
     ObservationFrontier,
     Proposal,
     ProposalProvenance,
@@ -263,25 +264,13 @@ def _model_candidate(
         parents,
         guided,
     )
-    try:
-        proposed = model.ask(request)
-    except TypeError as error:
-        # The injected test seam predates ProposalRequest; production adapters
-        # are always called through the immutable request above.
-        try:
-            proposed = model.ask(
-                request.observations,
-                request.frontier,
-                request.excluded_fingerprints,
-                request.attempt,
-            )  # type: ignore[call-arg]
-        except TypeError as legacy_error:
-            raise error from legacy_error
-    return proposed
+    return model.ask(request)
 
 
 def _ranked_parents(
-    state: ReplayState, block0_candidates: tuple[Candidate, ...], observations: tuple[object, ...]
+    state: ReplayState,
+    block0_candidates: tuple[Candidate, ...],
+    observations: tuple[Observation, ...],
 ) -> tuple[Candidate, ...]:
     if state.completed_cohorts:
         return tuple(

@@ -10,10 +10,10 @@ from tuner_cli.domain import (
     CandidateEliminationAction,
     CohortRecord,
     ObservationContext,
+    PairedBootstrapEvidence,
     ReplayState,
     ShadowCandidateDecision,
     ShadowRaceDecision,
-    PairedBootstrapEvidence,
 )
 from tuner_cli.elimination import active_elimination_allocation, audited_boundary_reversals
 from tuner_cli.observations import observation

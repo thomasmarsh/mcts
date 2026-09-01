@@ -11,11 +11,10 @@ from tuner_cli.artifacts import read_manifest
 from tuner_cli.cohort import current_active_candidates
 from tuner_cli.domain import (
     GameResult,
-    ModelAttempt,
-    ModelObservation,
-    ObservationFrontier,
+    PairedBootstrapEvidence,
     PairResult,
     PairTask,
+    ProposalRequest,
     ProposedConfiguration,
     SearchEffort,
     ShadowCandidateDecision,
@@ -147,31 +146,16 @@ class FakeTarget:
 
 
 class FakeModel:
-    def ask(
-        self,
-        observations: tuple[ModelObservation, ...],
-        frontier: ObservationFrontier,
-        excluded_fingerprints: frozenset[str],
-        attempt: ModelAttempt,
-    ) -> ProposedConfiguration:
-        del observations, frontier, excluded_fingerprints
+    def ask(self, request: ProposalRequest) -> ProposedConfiguration:
         return ProposedConfiguration(
-            candidate_from_config({"family": f"model-{attempt.source_attempt}"}), None
+            candidate_from_config({"family": f"model-{request.attempt.source_attempt}"}), None
         )
 
 
 class ActiveProfileModel:
-    def ask(
-        self,
-        observations: tuple[ModelObservation, ...],
-        frontier: ObservationFrontier,
-        excluded_fingerprints: frozenset[str],
-        attempt: ModelAttempt,
-    ) -> ProposedConfiguration:
-        del observations, frontier, excluded_fingerprints
-        family = (
-            "c" if attempt.source_attempt == 1 else ("e", "f", "g", "h")[attempt.source_attempt - 2]
-        )
+    def ask(self, request: ProposalRequest) -> ProposedConfiguration:
+        source_attempt = request.attempt.source_attempt
+        family = "c" if source_attempt == 1 else ("e", "f", "g", "h")[source_attempt - 2]
         return ProposedConfiguration(candidate_from_config({"family": family}), None)
 
 
@@ -591,12 +575,12 @@ def _mock_eliminating_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
             tuple(
                 ShadowCandidateDecision(
                     item.candidate_id,
-                    4096 if item == boundary else 0,
-                    4096,
                     "continue" if item == boundary else "eliminate",
+                    PairedBootstrapEvidence(4096 if item == boundary else 0, 4096),
                 )
                 for item in candidates
             ),
+            "paired_bootstrap",
             manifest.shadow_policy.method_version,
         )
 

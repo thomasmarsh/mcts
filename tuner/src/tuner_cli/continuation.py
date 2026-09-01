@@ -80,10 +80,10 @@ from .executor import (
 from .identity import canonical_json
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
+from .race_policy import decide_shadow_race
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
 from .selection import select_top_candidates, select_validation_shortlist
-from .race_policy import decide_shadow_race
 from .target import PairExecutionError, Target
 
 

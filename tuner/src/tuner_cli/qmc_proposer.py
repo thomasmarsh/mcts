@@ -7,7 +7,7 @@ from scipy.stats import qmc
 from .domain import ProposalRequest, ProposedConfiguration
 from .identity import candidate_from_config
 from .schema import TuningSchema
-from .space import ParamValue, conditional_values, nonconstant_parameters
+from .space import ParamValue, conditional_values, nonconstant_parameters, param_value
 
 ADAPTER_VERSION = "scipy-sobol-scrambled-v1"
 
@@ -20,7 +20,7 @@ class QmcProposer:
     ) -> None:
         self._schema, self._excluded = schema, excluded_families
         self._parameters = nonconstant_parameters(schema)
-        self._engine = qmc.Sobol(d=len(self._parameters), scramble=True, rng=stream_seed)  # type: ignore[call-arg]
+        self._engine = qmc.Sobol(d=len(self._parameters), scramble=True, rng=stream_seed)
         self._points: list[list[float]] = []
 
     def ask(self, request: ProposalRequest) -> ProposedConfiguration:
@@ -45,9 +45,10 @@ class QmcProposer:
                     for item in parameter.choices
                     if parameter.name != "family" or item not in self._excluded
                 )
-                values[parameter.name] = choices[
-                    min(len(choices) - 1, int(coordinate * len(choices)))
-                ]  # type: ignore[assignment]
+                values[parameter.name] = param_value(
+                    choices[min(len(choices) - 1, int(coordinate * len(choices)))],
+                    parameter.name,
+                )
         return ProposedConfiguration(
             candidate_from_config(conditional_values(self._schema, values)), "qmc_sobol"
         )

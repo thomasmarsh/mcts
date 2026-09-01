@@ -8,7 +8,16 @@ from dataclasses import dataclass
 
 from .artifacts import Manifest
 from .compute import fold_ledger
-from .domain import Candidate, Observation, PairedBootstrapEvidence, PhaseCompute, ReplayState, SuccessiveHalvingEvidence, TaskPrefix
+from .domain import (
+    Candidate,
+    CohortRecord,
+    Observation,
+    PairedBootstrapEvidence,
+    PhaseCompute,
+    ReplayState,
+    SuccessiveHalvingEvidence,
+    TaskPrefix,
+)
 from .event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from .evidence import EvidenceEvent
 from .identity import pair_task
@@ -163,7 +172,9 @@ def _strata_for_look(
         manifest.shadow_policy.kind == "paired_bootstrap"
         and manifest.shadow_policy.method_version == "stratified-paired-bootstrap-all-strata-v2"
     )
-    resamples = manifest.shadow_policy.resamples if manifest.shadow_policy.kind == "paired_bootstrap" else 0
+    resamples = (
+        manifest.shadow_policy.resamples if manifest.shadow_policy.kind == "paired_bootstrap" else 0
+    )
     return tuple(
         StratumAudit(
             item.stratum_id,
@@ -175,11 +186,7 @@ def _strata_for_look(
                 >= -manifest.shadow_policy.practical_effect_margin
             ),
             favorable_by_stratum[item.stratum_id] if show_probabilities else None,
-            (
-                favorable_by_stratum[item.stratum_id] / resamples
-                if show_probabilities
-                else None
-            ),
+            (favorable_by_stratum[item.stratum_id] / resamples if show_probabilities else None),
         )
         for item in early_strata
     )
@@ -283,41 +290,17 @@ def build_shadow_audit(
                     )
                 )
         for candidate in cohort.candidates:
-            looks = tuple(per_candidate[candidate.candidate_id])
-            protected = any(item.disposition == "protected" for item in looks)
-            first = (
-                None
-                if protected
-                else next((item for item in looks if item.disposition == "eliminate"), None)
-            )
-            if not protected and manifest.shadow_policy.kind == "paired_bootstrap":
-                for item in looks[: (looks.index(first) + 1 if first else len(looks))]:
-                    if item.favorable_resamples is None or item.total_resamples is None:
-                        raise ValueError("paired shadow look lacks bootstrap evidence")
-                    calibration.append(
-                        (
-                            item.favorable_resamples / item.total_resamples,
-                            float(item.final_reaches_recorded_boundary),
-                        )
-                    )
-            unique, compute = (
-                (0, PhaseCompute())
-                if first is None
-                else _suffix_compute(manifest, events, candidate, first.prefix_id)
+            path, compute = _candidate_path_audit(
+                manifest,
+                events,
+                cohort,
+                candidate,
+                tuple(per_candidate[candidate.candidate_id]),
+                candidate.candidate_id in top_ids,
+                calibration,
             )
             total_compute = _phase_add(total_compute, compute)
-            paths.append(
-                CandidatePathAudit(
-                    cohort.cohort_index,
-                    candidate.candidate_id,
-                    protected,
-                    candidate.candidate_id in top_ids,
-                    looks,
-                    None if first is None else first.prefix_id,
-                    unique,
-                    compute,
-                )
-            )
+            paths.append(path)
     superseded = sum(
         1
         for race in state.shadow_races
@@ -329,6 +312,49 @@ def build_shadow_audit(
         )
     )
     return _finish_audit(paths, stratum_rows, calibration, total_compute, superseded)
+
+
+def _candidate_path_audit(
+    manifest: Manifest,
+    events: Sequence[EvidenceEvent],
+    cohort: CohortRecord,
+    candidate: Candidate,
+    looks: tuple[ShadowLookAudit, ...],
+    in_final_top_set: bool,
+    calibration: list[tuple[float, float]],
+) -> tuple[CandidatePathAudit, PhaseCompute]:
+    protected = any(item.disposition == "protected" for item in looks)
+    first = (
+        None
+        if protected
+        else next((item for item in looks if item.disposition == "eliminate"), None)
+    )
+    if not protected and manifest.shadow_policy.kind == "paired_bootstrap":
+        for item in looks[: (looks.index(first) + 1 if first else len(looks))]:
+            if item.favorable_resamples is None or item.total_resamples is None:
+                raise ValueError("paired shadow look lacks bootstrap evidence")
+            calibration.append(
+                (
+                    item.favorable_resamples / item.total_resamples,
+                    float(item.final_reaches_recorded_boundary),
+                )
+            )
+    unique, compute = (
+        (0, PhaseCompute())
+        if first is None
+        else _suffix_compute(manifest, events, candidate, first.prefix_id)
+    )
+    path = CandidatePathAudit(
+        cohort.cohort_index,
+        candidate.candidate_id,
+        protected,
+        in_final_top_set,
+        looks,
+        None if first is None else first.prefix_id,
+        unique,
+        compute,
+    )
+    return path, compute
 
 
 def _completed_candidates(state: ReplayState) -> set[str]:

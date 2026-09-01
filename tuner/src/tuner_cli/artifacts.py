@@ -7,7 +7,16 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import Literal, TypeAlias
 
-from .codec import JsonObject, integer, json_object, number, object_fields, strict_json, string
+from .codec import (
+    JsonObject,
+    integer,
+    json_object,
+    literal,
+    number,
+    object_fields,
+    strict_json,
+    string,
+)
 from .domain import (
     ComputeBudget,
     ObjectiveEpoch,
@@ -34,6 +43,7 @@ from .identity import (
 from .objective import ResolvedObjective
 from .proposer import (
     COST_POLICY_VERSION,
+    POLICIES,
     POLICY_VERSION,
     SAMPLER_VERSION,
     ProposerPolicy,
@@ -607,15 +617,21 @@ def _shadow_policy(
         raise ValueError("shadow elimination threshold must be in (0.0, 0.5)")
     if kind == "paired_bootstrap":
         return PairedBootstrapPolicySpecification(
-            "paired_bootstrap", practical_margin, elimination_threshold, 4096,
+            "paired_bootstrap",
+            practical_margin,
+            elimination_threshold,
+            4096,
             "stratified-paired-bootstrap-all-strata-v2",
         )
     if kind == "successive_halving":
         if elimination_threshold != 0.05:
             raise ValueError("successive halving does not accept a non-default shadow threshold")
         return SuccessiveHalvingPolicySpecification(
-            "successive_halving", "successive-halving-common-prefix-eta2-v1", 2,
-            practical_margin, MINIMUM_ELIGIBLE_PREFIX_PAIRS,
+            "successive_halving",
+            "successive-halving-common-prefix-eta2-v1",
+            2,
+            practical_margin,
+            MINIMUM_ELIGIBLE_PREFIX_PAIRS,
             integer(finalists, "finalists", positive=True),
             "tuning-point-estimate-fingerprint-v1",
         )
@@ -909,9 +925,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     excluded_families = tuple(string(item, "excluded family", nonempty=True) for item in excluded)
     if tuple(sorted(set(excluded_families))) != excluded_families:
         raise ValueError("excluded families must be sorted and duplicate-free")
-    policy = string(raw["policy"], "proposer policy", nonempty=True)
-    if policy not in {"smac_mixed", "random", "qmc", "irace_generational"}:
-        raise ValueError("unsupported proposer policy")
+    policy: ProposerPolicy = literal(raw["policy"], POLICIES, "proposer policy")
     specification = proposer_specification(
         integer(raw["proposal_seed"], "proposal seed", positive=True),
         integer(raw["task_seed"], "task seed", positive=True),
@@ -924,7 +938,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
             key: string(item, f"runtime version {key}", nonempty=True)
             for key, item in versions.items()
         },
-        policy,  # type: ignore[arg-type]
+        policy,
     )
     if raw != specification.encoded():
         raise ValueError("proposer specification is inconsistent")
@@ -1126,6 +1140,95 @@ def _decode_diagnostic_policy(value: object) -> DiagnosticPolicySpecification:
     return policy
 
 
+def _decode_paired_shadow_policy(shadow_raw: JsonObject) -> PairedBootstrapPolicySpecification:
+    policy_raw = object_fields(
+        shadow_raw,
+        {
+            "kind",
+            "practical_effect_margin",
+            "elimination_probability_threshold",
+            "resamples",
+            "method_version",
+            "minimum_eligible_prefix_pairs",
+        },
+        "paired bootstrap shadow policy",
+    )
+    validated = _shadow_policy(
+        policy_raw["practical_effect_margin"], policy_raw["elimination_probability_threshold"]
+    )
+    if not isinstance(validated, PairedBootstrapPolicySpecification):
+        raise ValueError("unsupported shadow policy")
+    if policy_raw["method_version"] != "stratified-paired-bootstrap-all-strata-v2":
+        raise ValueError("unsupported shadow policy")
+    return PairedBootstrapPolicySpecification(
+        "paired_bootstrap",
+        validated.practical_effect_margin,
+        validated.elimination_probability_threshold,
+        integer(policy_raw["resamples"], "shadow resamples", positive=True),
+        "stratified-paired-bootstrap-all-strata-v2",
+        integer(
+            policy_raw["minimum_eligible_prefix_pairs"],
+            "minimum eligible prefix pairs",
+            positive=True,
+        ),
+    )
+
+
+def _decode_successive_halving_policy(
+    shadow_raw: JsonObject,
+) -> SuccessiveHalvingPolicySpecification:
+    policy_raw = object_fields(
+        shadow_raw,
+        {
+            "kind",
+            "method_version",
+            "reduction_factor",
+            "practical_effect_margin",
+            "minimum_eligible_prefix_pairs",
+            "survivor_floor",
+            "ranking_rule",
+        },
+        "successive halving shadow policy",
+    )
+    policy = _shadow_policy(
+        policy_raw["practical_effect_margin"],
+        0.05,
+        "successive_halving",
+        policy_raw["survivor_floor"],
+    )
+    if not isinstance(policy, SuccessiveHalvingPolicySpecification) or (
+        policy_raw["method_version"] != policy.method_version
+        or policy_raw["reduction_factor"] != 2
+        or policy_raw["minimum_eligible_prefix_pairs"] != MINIMUM_ELIGIBLE_PREFIX_PAIRS
+        or policy_raw["ranking_rule"] != policy.ranking_rule
+    ):
+        raise ValueError("unsupported shadow policy")
+    return policy
+
+
+def _decode_shadow_policy(value: object) -> ShadowPolicySpecification:
+    shadow_raw = json_object(value, "shadow policy")
+    if "kind" not in shadow_raw:
+        raise ValueError("shadow policy is missing kind")
+    kind = string(shadow_raw["kind"], "shadow policy kind")
+    if kind == "paired_bootstrap":
+        shadow_policy: ShadowPolicySpecification = _decode_paired_shadow_policy(shadow_raw)
+    elif kind == "successive_halving":
+        shadow_policy = _decode_successive_halving_policy(shadow_raw)
+    else:
+        raise ValueError("unsupported shadow policy")
+    paired = isinstance(shadow_policy, PairedBootstrapPolicySpecification)
+    if shadow_policy.minimum_eligible_prefix_pairs != MINIMUM_ELIGIBLE_PREFIX_PAIRS or (
+        paired
+        and (
+            shadow_policy.resamples != 4096
+            or shadow_policy.method_version != "stratified-paired-bootstrap-all-strata-v2"
+        )
+    ):
+        raise ValueError("unsupported shadow policy")
+    return shadow_policy
+
+
 def decode_manifest_object(value: object) -> Manifest:
     raw = object_fields(value, _FIELDS, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
@@ -1153,52 +1256,7 @@ def decode_manifest_object(value: object) -> Manifest:
         integer(budget_raw["validation_pair_attempts"], "validation pair attempts", positive=True),
         integer(budget_raw["diagnostic_pair_attempts"], "diagnostic pair attempts"),
     )
-    shadow_raw = json_object(raw["shadow_policy"], "shadow policy")
-    if "kind" not in shadow_raw:
-        raise ValueError("shadow policy is missing kind")
-    kind_raw = shadow_raw["kind"]
-    kind = string(kind_raw, "shadow policy kind")
-    if kind == "paired_bootstrap":
-        policy_raw = object_fields(
-            shadow_raw,
-            {"kind", "practical_effect_margin", "elimination_probability_threshold", "resamples",
-             "method_version", "minimum_eligible_prefix_pairs"}, "paired bootstrap shadow policy",
-        )
-        validated = _shadow_policy(
-            policy_raw["practical_effect_margin"], policy_raw["elimination_probability_threshold"]
-        )
-        if not isinstance(validated, PairedBootstrapPolicySpecification):
-            raise ValueError("unsupported shadow policy")
-        method = string(policy_raw["method_version"], "shadow method version")
-        if method != "stratified-paired-bootstrap-all-strata-v2":
-            raise ValueError("unsupported shadow policy")
-        shadow_policy = PairedBootstrapPolicySpecification(
-            "paired_bootstrap", validated.practical_effect_margin,
-            validated.elimination_probability_threshold,
-            integer(policy_raw["resamples"], "shadow resamples", positive=True),
-            "stratified-paired-bootstrap-all-strata-v2",
-            integer(policy_raw["minimum_eligible_prefix_pairs"], "minimum eligible prefix pairs", positive=True),
-        )
-    elif kind == "successive_halving":
-        policy_raw = object_fields(
-            shadow_raw,
-            {"kind", "method_version", "reduction_factor", "practical_effect_margin",
-             "minimum_eligible_prefix_pairs", "survivor_floor", "ranking_rule"},
-            "successive halving shadow policy",
-        )
-        shadow_policy = _shadow_policy(
-            policy_raw["practical_effect_margin"], 0.05, "successive_halving",
-            policy_raw["survivor_floor"],
-        )
-        if not isinstance(shadow_policy, SuccessiveHalvingPolicySpecification) or (
-            policy_raw["method_version"] != shadow_policy.method_version
-            or policy_raw["reduction_factor"] != 2
-            or policy_raw["minimum_eligible_prefix_pairs"] != MINIMUM_ELIGIBLE_PREFIX_PAIRS
-            or policy_raw["ranking_rule"] != shadow_policy.ranking_rule
-        ):
-            raise ValueError("unsupported shadow policy")
-    else:
-        raise ValueError("unsupported shadow policy")
+    shadow_policy = _decode_shadow_policy(raw["shadow_policy"])
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
     active_elimination = _decode_active_elimination(raw["active_elimination"])
     if active_elimination is not None and not isinstance(
@@ -1206,13 +1264,6 @@ def decode_manifest_object(value: object) -> Manifest:
     ):
         raise ValueError("active elimination requires paired_bootstrap shadow policy")
     diagnostic_policy = _decode_diagnostic_policy(raw["diagnostic_policy"])
-    if (
-        shadow_policy.minimum_eligible_prefix_pairs != MINIMUM_ELIGIBLE_PREFIX_PAIRS
-        or (isinstance(shadow_policy, PairedBootstrapPolicySpecification)
-            and (shadow_policy.resamples != 4096 or shadow_policy.method_version
-                 != "stratified-paired-bootstrap-all-strata-v2"))
-    ):
-        raise ValueError("unsupported shadow policy")
     panel = _decode_panel(raw["opponent_panel"])
     source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)
     start_fingerprint = _decode_start_distribution(raw)

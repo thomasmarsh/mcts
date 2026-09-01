@@ -64,12 +64,13 @@ def challenger_source_schedule(
 
 
 def _guided_source(policy: ProposerPolicy) -> ProposalSource:
-    result: ProposalSource | None = {
+    sources: dict[str, ProposalSource] = {
         "smac_mixed": "smac_model",
         "random": "random_search",
         "qmc": "qmc_search",
         "irace_generational": "irace_model",
-    }.get(policy)
+    }
+    result = sources.get(policy)
     return result if result is not None else _invalid_policy(policy)
 
 

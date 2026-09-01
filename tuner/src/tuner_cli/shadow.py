@@ -181,8 +181,11 @@ def decide_paired_bootstrap_shadow_race(
         else:
             disposition = "continue"
         decisions.append(
-            ShadowCandidateDecision(candidate.candidate_id, disposition,
-                PairedBootstrapEvidence(favorable, manifest.shadow_policy.resamples))
+            ShadowCandidateDecision(
+                candidate.candidate_id,
+                disposition,
+                PairedBootstrapEvidence(favorable, manifest.shadow_policy.resamples),
+            )
         )
     return ShadowRaceDecision(
         cohort_index,

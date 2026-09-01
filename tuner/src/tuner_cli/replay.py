@@ -75,8 +75,8 @@ from .family_exclusions import require_candidate_family_allowed
 from .identity import candidate_from_canonical_config
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
-from .selection import select_top_candidates, select_validation_shortlist
 from .race_policy import decide_shadow_race
+from .selection import select_top_candidates, select_validation_shortlist
 
 Disposition = Literal["accepted", "rejected"]
 Terminal = Literal["open", "configuration_failed", "complete"]

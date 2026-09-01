@@ -14,7 +14,7 @@
       "id": "historical-ucb1",
       "label": "Historical UCB1",
       "role": "historical_reference",
-      "weight": 2,
+      "weight": 5,
       "config": {
         "source": "inline",
         "value": {

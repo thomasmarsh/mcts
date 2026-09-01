@@ -441,12 +441,19 @@ def _shadow_look(value: object) -> JsonObject:
     }
     if value.policy_kind == "paired_bootstrap":
         assert value.favorable_resamples is not None and value.total_resamples is not None
-        return {**common, "favorable_resamples": value.favorable_resamples,
-                "total_resamples": value.total_resamples,
-                "promotion_probability": value.favorable_resamples / value.total_resamples}
-    return {**common, "rank": value.rank, "prior_survivor_count": value.prior_survivor_count,
-            "target_survivor_count": value.target_survivor_count,
-            "newly_eliminated": value.newly_eliminated}
+        return {
+            **common,
+            "favorable_resamples": value.favorable_resamples,
+            "total_resamples": value.total_resamples,
+            "promotion_probability": value.favorable_resamples / value.total_resamples,
+        }
+    return {
+        **common,
+        "rank": value.rank,
+        "prior_survivor_count": value.prior_survivor_count,
+        "target_survivor_count": value.target_survivor_count,
+        "newly_eliminated": value.newly_eliminated,
+    }
 
 
 def _shadow_path(value: CandidatePathAudit) -> JsonObject:
@@ -472,6 +479,7 @@ def _shadow_path(value: CandidatePathAudit) -> JsonObject:
 
 
 def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
+    policy = manifest.shadow_policy
     compute = audit.recorded_compute_after_first_elimination
     active_looks = sum(
         len(path.looks)
@@ -498,22 +506,22 @@ def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
         "policy": (
             {
                 "kind": "paired_bootstrap",
-                "method_version": manifest.shadow_policy.method_version,
-                "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
-                "elimination_probability_threshold": manifest.shadow_policy.elimination_probability_threshold,
-                "resamples": manifest.shadow_policy.resamples,
-                "minimum_eligible_prefix_pairs": manifest.shadow_policy.minimum_eligible_prefix_pairs,
+                "method_version": policy.method_version,
+                "practical_effect_margin": policy.practical_effect_margin,
+                "elimination_probability_threshold": policy.elimination_probability_threshold,
+                "resamples": policy.resamples,
+                "minimum_eligible_prefix_pairs": policy.minimum_eligible_prefix_pairs,
                 "enforced": False,
             }
-            if manifest.shadow_policy.kind == "paired_bootstrap"
+            if policy.kind == "paired_bootstrap"
             else {
                 "kind": "successive_halving",
-                "method_version": manifest.shadow_policy.method_version,
-                "reduction_factor": manifest.shadow_policy.reduction_factor,
-                "survivor_floor": manifest.shadow_policy.survivor_floor,
-                "ranking_rule": manifest.shadow_policy.ranking_rule,
-                "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
-                "minimum_eligible_prefix_pairs": manifest.shadow_policy.minimum_eligible_prefix_pairs,
+                "method_version": policy.method_version,
+                "reduction_factor": policy.reduction_factor,
+                "survivor_floor": policy.survivor_floor,
+                "ranking_rule": policy.ranking_rule,
+                "practical_effect_margin": policy.practical_effect_margin,
+                "minimum_eligible_prefix_pairs": policy.minimum_eligible_prefix_pairs,
                 "enforced": False,
             }
         ),

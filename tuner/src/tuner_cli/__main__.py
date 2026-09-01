@@ -41,7 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shadow-practical-margin", type=float, default=0.0)
     parser.add_argument("--shadow-elimination-threshold", type=float, default=0.05)
     parser.add_argument(
-        "--shadow-policy", choices=("paired_bootstrap", "successive_halving"),
+        "--shadow-policy",
+        choices=("paired_bootstrap", "successive_halving"),
         default="paired_bootstrap",
     )
     parser.add_argument("--active-elimination-audit-probability", type=float)

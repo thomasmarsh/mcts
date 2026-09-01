@@ -27,16 +27,7 @@ class SmacProposer(ModelProposer):
     def __init__(self, space: ConfigurationSpace) -> None:
         self._space = space
 
-    def ask(self, request: ProposalRequest, *legacy: object) -> ProposedConfiguration:
-        if legacy:
-            observations, frontier, excluded, attempt = request, *legacy
-            assert isinstance(observations, tuple)
-            assert (
-                isinstance(frontier, object)
-                and isinstance(excluded, frozenset)
-                and isinstance(attempt, object)
-            )
-            request = ProposalRequest(observations, frontier, excluded, attempt, 0, (), 1)  # type: ignore[arg-type]
+    def ask(self, request: ProposalRequest) -> ProposedConfiguration:
         with tempfile.TemporaryDirectory(prefix="mcts-tuner-smac-") as output:
             facade = _facade(self._space, request.attempt.seed, Path(output))
             for observation in request.observations:

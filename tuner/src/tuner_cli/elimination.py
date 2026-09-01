@@ -10,8 +10,8 @@ from .domain import (
     AuditedBoundaryReversal,
     CandidateEliminationAction,
     CohortRecord,
-    ReplayState,
     PairedBootstrapEvidence,
+    ReplayState,
     ShadowRaceDecision,
 )
 from .identity import canonical_json

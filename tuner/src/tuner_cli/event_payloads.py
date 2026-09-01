@@ -34,13 +34,13 @@ from .domain import (
     DiagnosticPairTask,
     EvaluateDiagnosticPair,
     IntroduceCandidate,
+    PairedBootstrapEvidence,
     RefillCandidate,
     ResourceAllocation,
     RetainElites,
     SearchEffort,
     ShadowCandidateDecision,
     ShadowRaceDecision,
-    PairedBootstrapEvidence,
     SuccessiveHalvingEvidence,
     SuspendActiveElimination,
 )
@@ -304,21 +304,54 @@ class ShadowRaceDecidedPayload:
         )
         decisions: list[ShadowCandidateDecision] = []
         for raw in elements(item["decisions"], "shadow decisions"):
-            candidate = object_fields(raw, {"candidate_id", "disposition", "evidence"}, "shadow candidate decision")
+            candidate = object_fields(
+                raw, {"candidate_id", "disposition", "evidence"}, "shadow candidate decision"
+            )
             evidence_raw = candidate["evidence"]
             from .codec import json_object
+
             evidence_object = json_object(evidence_raw, "shadow evidence")
             evidence_kind = string(evidence_object.get("kind"), "shadow evidence kind")
             if evidence_kind == "paired_bootstrap":
-                encoded_evidence = object_fields(evidence_object, {"kind", "favorable_resamples", "total_resamples"}, "paired shadow evidence")
-                evidence = PairedBootstrapEvidence(integer(encoded_evidence["favorable_resamples"], "favorable resamples"), integer(encoded_evidence["total_resamples"], "total resamples", positive=True))
+                encoded_evidence = object_fields(
+                    evidence_object,
+                    {"kind", "favorable_resamples", "total_resamples"},
+                    "paired shadow evidence",
+                )
+                evidence = PairedBootstrapEvidence(
+                    integer(encoded_evidence["favorable_resamples"], "favorable resamples"),
+                    integer(encoded_evidence["total_resamples"], "total resamples", positive=True),
+                )
             elif evidence_kind == "successive_halving":
-                encoded_evidence = object_fields(evidence_object, {"kind", "rank", "prior_survivor_count", "target_survivor_count", "newly_eliminated"}, "successive halving evidence")
+                encoded_evidence = object_fields(
+                    evidence_object,
+                    {
+                        "kind",
+                        "rank",
+                        "prior_survivor_count",
+                        "target_survivor_count",
+                        "newly_eliminated",
+                    },
+                    "successive halving evidence",
+                )
                 rank = encoded_evidence["rank"]
                 newly_eliminated = encoded_evidence["newly_eliminated"]
                 if type(newly_eliminated) is not bool:
                     raise ValueError("newly eliminated must be Boolean")
-                evidence = SuccessiveHalvingEvidence(None if rank is None else integer(rank, "shadow rank", positive=True), integer(encoded_evidence["prior_survivor_count"], "prior survivor count", positive=True), integer(encoded_evidence["target_survivor_count"], "target survivor count", positive=True), newly_eliminated)
+                evidence = SuccessiveHalvingEvidence(
+                    None if rank is None else integer(rank, "shadow rank", positive=True),
+                    integer(
+                        encoded_evidence["prior_survivor_count"],
+                        "prior survivor count",
+                        positive=True,
+                    ),
+                    integer(
+                        encoded_evidence["target_survivor_count"],
+                        "target survivor count",
+                        positive=True,
+                    ),
+                    newly_eliminated,
+                )
             else:
                 raise ValueError("unsupported shadow evidence")
             decisions.append(
@@ -339,7 +372,11 @@ class ShadowRaceDecidedPayload:
                 strings(item["observation_ids"], "shadow observation ids"),
                 string(item["boundary_candidate_id"], "shadow boundary candidate id"),
                 tuple(decisions),
-                literal(item["policy_kind"], ("paired_bootstrap", "successive_halving"), "shadow policy kind"),
+                literal(
+                    item["policy_kind"],
+                    ("paired_bootstrap", "successive_halving"),
+                    "shadow policy kind",
+                ),
                 literal(
                     item["policy_version"],
                     (
@@ -363,9 +400,19 @@ class ShadowRaceDecidedPayload:
                 {
                     "candidate_id": item.candidate_id,
                     "evidence": (
-                        {"kind": "paired_bootstrap", "favorable_resamples": item.evidence.favorable_resamples, "total_resamples": item.evidence.total_resamples}
-                        if isinstance(item.evidence, PairedBootstrapEvidence) else
-                        {"kind": "successive_halving", "rank": item.evidence.rank, "prior_survivor_count": item.evidence.prior_survivor_count, "target_survivor_count": item.evidence.target_survivor_count, "newly_eliminated": item.evidence.newly_eliminated}
+                        {
+                            "kind": "paired_bootstrap",
+                            "favorable_resamples": item.evidence.favorable_resamples,
+                            "total_resamples": item.evidence.total_resamples,
+                        }
+                        if isinstance(item.evidence, PairedBootstrapEvidence)
+                        else {
+                            "kind": "successive_halving",
+                            "rank": item.evidence.rank,
+                            "prior_survivor_count": item.evidence.prior_survivor_count,
+                            "target_survivor_count": item.evidence.target_survivor_count,
+                            "newly_eliminated": item.evidence.newly_eliminated,
+                        }
                     ),
                     "disposition": item.disposition,
                 }

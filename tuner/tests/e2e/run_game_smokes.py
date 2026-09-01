@@ -124,7 +124,7 @@ def _check_game(
         assert analysis["scope"]["phase"] == "tuning"
         assert analysis["scope"]["prefix_id"] == manifest["prefixes"]["tuning"]["prefix_id"]
         assert analysis["scope"]["opponent_ids"] == [
-            item["opponent_id"] for item in manifest["opponent_panel"]["opponents"]
+            item["id"] for item in manifest["opponent_panel"]["opponents"]
         ]
         assert len(analysis["candidates"]) == manifest["proposer"]["cohort_size"]
         assert all(
@@ -163,7 +163,9 @@ def _check_game(
         allocations = [
             event["payload"] for event in events if event["type"] == "allocation_decided"
         ]
-        assert all(item["policy_version"] == "budgeted-multi-cohort-v1" for item in allocations)
+        assert all(
+            item["policy_version"] == "budgeted-multi-cohort-diagnostic-v2" for item in allocations
+        )
         retained = [
             item["allocation"]
             for item in allocations
@@ -245,6 +247,7 @@ def _check_game(
         assert compute["budget"] == {
             "tuning_pair_attempts": tuning_pair_budget,
             "validation_pair_attempts": validation_pair_budget,
+            "diagnostic_pair_attempts": 0,
         }
         assert compute["tuning"]["pair_attempts"] == tuning_pair_budget
         assert compute["tuning"]["completed_pairs"] == tuning_pair_budget
@@ -273,19 +276,30 @@ def _check_game(
         assert (run_dir / "report.json").read_bytes() == original_report
 
 
+def _check_protocol(binary: Path) -> None:
+    """Prove a game binary speaks the host `describe`/`compare` protocol."""
+    description = subprocess.run(
+        [str(binary), "describe"], check=False, capture_output=True, text=True
+    )
+    assert description.returncode == 0, description.stderr
+    payload = json.loads(description.stdout)
+    assert payload["kind"] and payload["tuning"]["parameters"]
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[3]
-    _check_game(
-        root / "target/release/game-druid",
-        root / "tuner/objectives/druid-reference-v1.json",
-        2 if (os.cpu_count() or 1) >= 2 else 1,
-        "meta_mcts",
-    )
-    _check_game(
-        root / "target/release/game-ttt",
-        root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json",
-        time_only=True,
-    )
+    workers = 2 if (os.cpu_count() or 1) >= 2 else 1
+    ttt = root / "target/release/game-ttt"
+    ttt_objective = root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json"
+    # The weighted-six tic-tac-toe panel drives the full state machine -- three
+    # cohorts, retained elites, a twelve-pair shadow race per cohort, and an
+    # exact report rebuild on resume -- on the cheapest available game.
+    _check_game(ttt, ttt_objective, workers, "meta_mcts")
+    # Time-mode run whose validation reaches the whole production corpus.
+    _check_game(ttt, ttt_objective, time_only=True)
+    # Druid's own tuning path is exercised by its dedicated evidence gate; here
+    # the smoke only confirms its binary implements the shared host protocol.
+    _check_protocol(root / "target/release/game-druid")
 
 
 if __name__ == "__main__":

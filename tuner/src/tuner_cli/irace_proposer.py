@@ -8,7 +8,7 @@ from .domain import Candidate, ProposalRequest, ProposedConfiguration
 from .identity import candidate_from_config
 from .schema import TuningSchema
 from .smac_proposer import active_values_from_candidate
-from .space import ParamValue, conditional_values, nonconstant_parameters
+from .space import ParamValue, conditional_values, nonconstant_parameters, param_value
 
 ADAPTER_VERSION = "irace-elite-generational-v1"
 
@@ -48,11 +48,11 @@ class IraceProposer:
             else:
                 assert parameter.choices is not None
                 choices = tuple(
-                    item
+                    param_value(item, f"{parameter.name} choice")
                     for item in parameter.choices
                     if parameter.name != "family" or item not in self._excluded
                 )
-                values[parameter.name] = _categorical(rng, choices, inherited, g, v)  # type: ignore[assignment]
+                values[parameter.name] = _categorical(rng, choices, inherited, g, v)
         return ProposedConfiguration(
             candidate_from_config(conditional_values(self._schema, values)),
             "irace_elite",
@@ -76,11 +76,11 @@ def _truncated_normal(
 
 def _categorical(
     rng: random.Random,
-    choices: tuple[object, ...],
-    parent: object,
+    choices: tuple[ParamValue, ...],
+    parent: ParamValue | None,
     generation: int,
     dimensions: int,
-) -> object:
+) -> ParamValue:
     cap = 0.2 ** (1 / dimensions)
     parent_mass = generation / (generation + 1)
     weights = [1 - parent_mass for _ in choices]

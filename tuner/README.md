@@ -68,6 +68,21 @@ still reaches the maximum tuning prefix, and the nominal threshold has not earne
 an active-pruning safety claim. Runs with no eligible non-final prefix are valid
 and record no shadow decisions.
 
+`--shadow-policy {paired_bootstrap,successive_halving}` selects which frozen
+policy records those dispositions; it is manifest-frozen and resume-sensitive.
+The default `paired_bootstrap` is the stratum-aware bootstrap above and the only
+policy `--active-elimination-audit-probability` accepts. `successive_halving` is
+a shadow-only control: at each eligible common prefix it starts from the full
+cohort roster, applies its own prior batches, ranks the surviving candidates by
+their common-prefix point estimate (fingerprint breaking ties), keeps the first
+`max(finalists, ceil(survivors / 2), retained elites)` of them, and marks the
+rest eliminated. Retained elites are always protected. It makes no confidence
+claim; its `--shadow-practical-margin` only defines the audit's recovered
+boundary, and an explicitly non-default paired threshold is rejected with it.
+The `report.json` `shadow_elimination` section is tagged by policy: paired looks
+keep their calibration and Brier score, successive-halving looks expose rank and
+prior/target survivor counts with calibration fields reported as not applicable.
+
 Passing `--active-elimination-audit-probability` with a finite value strictly
 between zero and one opts into activation-validation mode. After each eligible
 shadow decision the tuner records an `allocation_decided` batch that either

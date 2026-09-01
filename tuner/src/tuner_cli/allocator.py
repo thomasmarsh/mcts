@@ -47,8 +47,8 @@ from .domain import (
 from .elimination import active_elimination_allocation, audited_boundary_reversals
 from .identity import pair_task
 from .observations import comparable_prefix_observations
-from .selection import select_top_candidates
 from .race_policy import shadow_prefix_eligible
+from .selection import select_top_candidates
 
 ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 

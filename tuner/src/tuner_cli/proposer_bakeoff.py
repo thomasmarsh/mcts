@@ -2,16 +2,33 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from .artifacts import read_manifest
-from .bakeoff_artifacts import BakeoffSpec, encode_experiment
-from .bakeoff_metrics import aggregate
+from .bakeoff_artifacts import (
+    BakeoffSpec,
+    SharedRun,
+    encode_experiment,
+    experiment_fingerprint,
+)
+from .bakeoff_metrics import ChildFact, aggregate
+from .codec import JsonObject
+from .domain import Observation
 from .evidence import read_events
-from .identity import fingerprint
+from .proposer import POLICIES, ProposerPolicy
 from .replay import replay
 from .run import RunOptions, run_foreground
 from .target import Target
+
+
+@dataclass(frozen=True, slots=True)
+class BakeoffCell:
+    cell_id: str
+    budget: int
+    seed: int
+    policy: ProposerPolicy
+    run_dir: Path
 
 
 def run_bakeoff(
@@ -19,9 +36,7 @@ def run_bakeoff(
 ) -> Path:
     cells = _cells(spec, experiment_dir)
     manifest_path = experiment_dir / "experiment.json"
-    encoded = encode_experiment(
-        spec, [{k: v for k, v in cell.items() if k != "run_dir"} for cell in cells]
-    )
+    encoded = encode_experiment(spec, [_cell_summary(cell) for cell in cells])
     if manifest_path.exists():
         if manifest_path.read_text() != encoded:
             raise ValueError("existing experiment does not match strict specification")
@@ -31,121 +46,104 @@ def run_bakeoff(
         experiment_dir.mkdir(parents=True, exist_ok=False)
         manifest_path.write_text(encoded)
     for cell in cells:
-        run_dir = cell["run_dir"]
-        assert isinstance(run_dir, Path)
-        options = _options(spec, cell, resume=run_dir.exists())
-        run_foreground(options, target=target)
+        run_foreground(_options(spec, cell), target=target)
+    fingerprint_value = experiment_fingerprint(manifest_path.read_text())
     facts = [_child_fact(cell) for cell in cells]
-    raw = strict_experiment(manifest_path.read_text())
-    results = aggregate(facts, raw["fingerprint"], spec.decision)
+    results = aggregate(facts, fingerprint_value, spec.decision)
     (experiment_dir / "results.json").write_text(results)
     return experiment_dir / "results.json"
 
 
-def _cells(spec: BakeoffSpec, directory: Path) -> list[dict[str, object]]:
-    result = []
+def _cell_summary(cell: BakeoffCell) -> JsonObject:
+    return {
+        "cell_id": cell.cell_id,
+        "budget": cell.budget,
+        "seed": cell.seed,
+        "policy": cell.policy,
+    }
+
+
+def _cells(spec: BakeoffSpec, directory: Path) -> list[BakeoffCell]:
+    result: list[BakeoffCell] = []
     for budget in spec.tuning_pair_budgets:
         for seed in spec.proposal_seeds:
-            for policy in ("random", "qmc", "smac_mixed", "irace_generational"):
+            for policy in POLICIES:
                 run_dir = directory / "runs" / policy / f"budget-{budget}" / f"seed-{seed}"
                 result.append(
-                    {
-                        "cell_id": f"{budget}:{seed}:{policy}",
-                        "budget": budget,
-                        "seed": seed,
-                        "policy": policy,
-                        "run_dir": run_dir,
-                    }
+                    BakeoffCell(f"{budget}:{seed}:{policy}", budget, seed, policy, run_dir)
                 )
     return result
 
 
-def _options(spec: BakeoffSpec, cell: dict[str, object], resume: bool) -> RunOptions:
-    shared = spec.shared_run
-
-    def effort(name: str):
-        raw = shared[f"{name}_effort"]
-        if not isinstance(raw, dict) or set(raw) != {"kind", "value"}:
-            raise ValueError(f"invalid {name} effort")
-        from .domain import SearchEffort
-
-        return SearchEffort(raw["kind"], raw["value"])  # type: ignore[arg-type]
-
+def _options(spec: BakeoffSpec, cell: BakeoffCell) -> RunOptions:
+    shared: SharedRun = spec.shared_run
     return RunOptions(
         spec.game_binary,
-        cell["run_dir"],
+        cell.run_dir,
         objective_file=spec.objective_file,
-        seed=cell["seed"],
+        seed=cell.seed,
         task_seed=spec.task_seed,
-        cohort_size=shared["cohort_size"],
-        finalists=shared["finalists"],
-        bootstrap_candidates=shared["bootstrap_candidates"],
-        random_reserve_candidates=shared["random_reserve_candidates"],
-        tuning_pairs=shared["tuning_pairs"],
-        tuning_pair_budget=cell["budget"],
-        validation_pair_budget=shared["validation_pair_budget"],
+        cohort_size=shared.cohort_size,
+        finalists=shared.finalists,
+        bootstrap_candidates=shared.bootstrap_candidates,
+        random_reserve_candidates=shared.random_reserve_candidates,
+        tuning_pairs=shared.tuning_pairs,
+        tuning_pair_budget=cell.budget,
+        validation_pair_budget=shared.validation_pair_budget,
         diagnostic_pair_budget=0,
-        production_validation_pairs=shared["production_validation_pairs"],
-        tuning_effort=effort("tuning"),
-        validation_effort=effort("validation"),
-        production_effort=effort("production"),
-        pair_timeout_seconds=shared["pair_timeout_seconds"],
-        evaluator_workers=shared["evaluator_workers"],
-        excluded_families=tuple(shared.get("excluded_families", [])),
+        production_validation_pairs=shared.production_validation_pairs,
+        tuning_effort=shared.tuning_effort,
+        validation_effort=shared.validation_effort,
+        production_effort=shared.production_effort,
+        pair_timeout_seconds=shared.pair_timeout_seconds,
+        evaluator_workers=shared.evaluator_workers,
+        excluded_families=shared.excluded_families,
         active_elimination_audit_probability=None,
-        proposer_policy=cell["policy"],
-        resume=resume,
-    )  # type: ignore[arg-type]
+        proposer_policy=cell.policy,
+        resume=cell.run_dir.exists(),
+    )
 
 
-def _child_fact(cell: dict[str, object]) -> dict[str, object]:
-    manifest = read_manifest(Path(cell["run_dir"]) / "manifest.json")
-    state = replay(manifest, read_events(Path(cell["run_dir"]) / "evidence.jsonl"))
+def _child_fact(cell: BakeoffCell) -> ChildFact:
+    manifest = read_manifest(cell.run_dir / "manifest.json")
+    state = replay(manifest, read_events(cell.run_dir / "evidence.jsonl"))
     if state.terminal_status != "complete" or not state.finalists:
         raise ValueError("bakeoff child is incomplete")
+    finalist_ids = {candidate.candidate_id for candidate in state.finalists}
+    finalist_fingerprints = {
+        candidate.candidate_id: candidate.fingerprint for candidate in state.finalists
+    }
     observations = [
         item
         for item in state.observations
-        if item.phase == "validation"
-        and item.candidate_id in {candidate.candidate_id for candidate in state.finalists}
+        if item.phase == "validation" and item.candidate_id in finalist_ids
     ]
-    best = max(
-        observations,
-        key=lambda item: (
-            item.estimate.mean,
-            next(
-                candidate.fingerprint
-                for candidate in state.finalists
-                if candidate.candidate_id == item.candidate_id
-            ),
+    if not observations:
+        raise ValueError("bakeoff child has no finalist held-out observations")
+    means_by_candidate: dict[str, float] = {}
+    for item in observations:
+        current = means_by_candidate.get(item.candidate_id)
+        if current is None or item.estimate.mean > current:
+            means_by_candidate[item.candidate_id] = item.estimate.mean
+    best = max(observations, key=lambda item: _score_key(item, finalist_fingerprints))
+    return ChildFact(
+        cell_id=cell.cell_id,
+        budget=cell.budget,
+        seed=cell.seed,
+        policy=cell.policy,
+        manifest_fingerprint=manifest.fingerprint,
+        best_candidate_fingerprint=finalist_fingerprints[best.candidate_id],
+        finalist_fingerprints=tuple(sorted(finalist_fingerprints.values())),
+        held_out_means=tuple(
+            sorted((finalist_fingerprints[cid], mean) for cid, mean in means_by_candidate.items())
         ),
+        held_out_best_score=best.estimate.mean,
+        tuning_pair_attempts=state.compute.tuning.pair_attempts,
+        tuning_physical_games=state.compute.tuning.physical_games,
+        tuning_search_iterations=state.compute.tuning.search_iterations,
+        tuning_wall_time_ms=state.compute.tuning.wall_time_ms,
     )
-    candidate = next(
-        candidate for candidate in state.finalists if candidate.candidate_id == best.candidate_id
-    )
-    return {
-        "cell_id": cell["cell_id"],
-        "budget": cell["budget"],
-        "seed": cell["seed"],
-        "policy": cell["policy"],
-        "manifest_fingerprint": manifest.fingerprint,
-        "candidate_fingerprint": candidate.fingerprint,
-        "held_out_best_score": best.estimate.mean,
-        "tuning_pair_attempts": state.compute.tuning.pair_attempts,
-        "tuning_physical_games": state.compute.tuning.physical_games,
-        "tuning_search_iterations": state.compute.tuning.search_iterations,
-        "tuning_wall_time_ms": state.compute.tuning.wall_time_ms,
-    }
 
 
-def strict_experiment(value: str) -> dict[str, object]:
-    from .codec import strict_json
-
-    raw = strict_json(value, "experiment")
-    if not isinstance(raw, dict) or "fingerprint" not in raw:
-        raise ValueError("invalid experiment manifest")
-    copy = dict(raw)
-    actual = copy.pop("fingerprint")
-    if actual != fingerprint(copy):
-        raise ValueError("experiment fingerprint mismatch")
-    return raw
+def _score_key(observation: Observation, fingerprints: dict[str, str]) -> tuple[float, str]:
+    return observation.estimate.mean, fingerprints[observation.candidate_id]

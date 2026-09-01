@@ -24,7 +24,8 @@ ShadowDisposition = Literal["continue", "eliminate", "protected"]
 ShadowPolicyKind = Literal["paired_bootstrap", "successive_halving"]
 EliminationAction = Literal["prune", "audit_continue"]
 ShadowMethodVersion = Literal[
-    "stratified-paired-bootstrap-v1", "stratified-paired-bootstrap-all-strata-v2",
+    "stratified-paired-bootstrap-v1",
+    "stratified-paired-bootstrap-all-strata-v2",
     "successive-halving-common-prefix-eta2-v1",
 ]
 
