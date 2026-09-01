@@ -1,45 +1,98 @@
 module Candidate where
 
-import ConfigSpace (ParamAssign, ConfigSpace)
+import ConfigSpace (CanonicalConfig)
 
--- | An immutable canonical configuration. Its identity never changes once created.
--- Re-evaluating at another seed or fidelity adds evidence to the same candidate.
+-- | An immutable canonical configuration. Re-evaluating at another seed or
+-- fidelity adds evidence to the same candidate.
 data Candidate = Candidate
   { candId             :: String
   , candFingerprint    :: String
-  , candCanonicalConfig :: ParamAssign
+  , candCanonicalConfig :: CanonicalConfig
   }
   deriving (Eq, Show)
 
--- | Create a candidate from a configuration space and raw assignment.
--- Validates and canonicalizes; returns Nothing on invalid input.
-mkCandidate :: ConfigSpace -> ParamAssign -> Maybe Candidate
-mkCandidate = undefined
+-- | All proposal sources in the fixed mixed-source schedule.
+data ProposalSource
+  = SchemaDefault
+  | BootstrapRandom
+  | SmacModel
+  | RandomReserve
+  | RandomSearch
+  | QmcSearch
+  | IraqeModel
+  deriving (Eq, Show)
 
--- | A candidate's lineage: who proposed it, when, and from what context.
-data CandidateLineage = CandidateLineage
-  { clProposerVersion :: String
-  , clAcquisitionValue :: Maybe Double
-  , clUncertainty     :: Maybe Double
-  , clParentCandidateId :: Maybe String
-  , clEvidenceEpochId :: String
+-- | Provenance of a proposed candidate.
+data ProposalProvenance = ProposalProvenance
+  { ppSource             :: ProposalSource
+  , ppProposerVersion    :: String
+  , ppSourceAttempt      :: Int
+  , ppOrigin             :: Maybe String
+  , ppAcquisition        :: Maybe Double
+  , ppPrediction         :: Maybe Double
+  , ppUncertainty        :: Maybe Double
+  , ppParentCandidateId   :: Maybe String
   }
   deriving (Eq, Show)
 
--- | Validation result from a game binary for a candidate against an opponent.
-data CandidateValidation = CandidateValidation
-  { cvValid  :: Bool
-  , cvErrors :: [String]
+-- | An observation frontier visible to the proposer.
+data ObservationFrontier = ObservationFrontier
+  { ofFrontierId         :: String
+  , ofObjectiveEpochId   :: String
+  , ofPrefixId           :: String
+  , ofTaskIds            :: [String]
+  , ofSearchEffort       :: String  -- encoded effort
+  , ofObservationIds     :: [String]
+  }
+  deriving (Eq, Show)
+
+-- | A proposal: a candidate with its provenance and the frontier visible at creation time.
+data Proposal = Proposal
+  { propIndex        :: Int
+  , propCohortIndex  :: Int
+  , propCohortSlot   :: Int
+  , propCandidate    :: Candidate
+  , propFrontier     :: ObservationFrontier
+  , propProvenance   :: ProposalProvenance
+  }
+  deriving (Eq, Show)
+
+-- | Disposition of a proposal (stored as (proposalIndex, status) pairs).
+data ProposalDisposition = Accepted | Rejected
+  deriving (Eq, Show)
+
+-- | Validation error from a game binary.
+data ValidationError = ValidationError
+  { veField          :: String
+  , veMessage        :: String
+  , veCandidateIndex :: Maybe Int
+  }
+  deriving (Eq, Show)
+
+-- | Validation result for a candidate against one opponent.
+data ValidationResult = ValidationResult
+  { vrValid  :: Bool
+  , vrErrors :: [ValidationError]
   }
   deriving (Eq, Show)
 
 -- | Terminal failure of a candidate: too many failed pair attempts.
--- The candidate is removed from the active cohort.
 data CandidateFailure = CandidateFailure
-  { cfCandidateId       :: String
-  , cfCohortIndex       :: Int
-  , cfStartedAttempts   :: Int
-  , cfFailedAttempts    :: Int
-  , cfCensoredAttempts  :: Int
+  { cfCohortIndex               :: Int
+  , cfCandidateId               :: String
+  , cfTriggeringPairId          :: String
+  , cfStartedAttempts           :: Int
+  , cfFailedAttempts            :: Int
+  , cfCensoredAttempts          :: Int
+  , cfCompletedTuningPairIds     :: [String]
+  }
+  deriving (Eq, Show)
+
+-- | Facts about attempts for one pair.
+data PairAttemptFacts = PairAttemptFacts
+  { pafStartedAttempts   :: Int
+  , pafFailedAttempts    :: Int
+  , pafCensoredAttempts  :: Int
+  , pafCompletedAttempts :: Int
   }
   deriving (Eq, Show)

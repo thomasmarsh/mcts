@@ -1,66 +1,94 @@
 module Proposal where
 
-import Candidate (Candidate)
-import Evidence (ObservationFrontier, Observation)
+import Candidate (Candidate, ObservationFrontier, ProposalSource)
+import Effort (SearchEffort)
+import Evidence (Observation)
 
--- | Source of a proposed configuration.
-data ProposalSource
-  = SchemaDefault
-  | BootstrapRandom
-  | SmacModel
-  | RandomReserve
-  | LowDiscrepancyQMC
-  deriving (Eq, Show)
-
--- | Provenance of a proposed candidate: how it was generated.
-data ProposalProvenance = ProposalProvenance
-  { ppSource          :: ProposalSource
-  , ppProposerVersion :: String
-  , ppSourceAttempt   :: Int
-  , ppOrigin          :: Maybe String     -- e.g. elite-centered, random forest, TPE
-  , ppAcquisition     :: Maybe Double     -- acquisition function value
-  , ppPrediction      :: Maybe Double     -- predicted production score
-  , ppUncertainty     :: Maybe Double     -- predictive uncertainty
-  , ppParentId        :: Maybe String     -- parent/elite that spawned this
+-- | A model observation: a candidate with its reference and cost.
+data ModelObservation = ModelObservation
+  { moCandidate   :: Candidate
+  , moReference   :: ObservationReference
+  , moCost        :: Double
   }
   deriving (Eq, Show)
 
--- | A proposed configuration with its provenance and the observation frontier
--- visible to the proposer at creation time.
-data Proposal = Proposal
-  { pIndex          :: Int
-  , pCohortIndex    :: Int
-  , pCohortSlot     :: Int
-  , pCandidate      :: Candidate
-  , pFrontier       :: ObservationFrontier
-  , pProvenance     :: ProposalProvenance
+-- | Reference to an observation for model consumption.
+data ObservationReference = ObservationReference
+  { orObservationId    :: String
+  , orCandidateId      :: String
+  , orObjectiveEpochId  :: String
+  , orPrefixId         :: String
+  , orTaskIds          :: [String]
+  , orSearchEffort      :: SearchEffort
   }
   deriving (Eq, Show)
 
--- | The interface for a model-guided proposer. Observes completed tuning
--- results at a common frontier and proposes one new configuration.
--- @m@ is the effect context (e.g. IO, perhaps with randomness).
-newtype ModelProposer m = ModelProposer
-  { mpAsk
-      :: [Observation]          -- ^ observations at the common frontier
-      -> ObservationFrontier    -- ^ the frontier they belong to
-      -> [String]               -- ^ fingerprints to exclude (already proposed)
-      -> Int                    -- ^ proposal attempt number
-      -> m (Maybe Candidate)    -- ^ a proposed configuration (or Nothing)
+-- | An attempt ordinal and seed for guided proposers.
+data ModelAttempt = ModelAttempt
+  { maSourceAttempt :: Int
+  , maSeed          :: Int
+  }
+  deriving (Eq, Show)
+
+-- | The complete, immutable proposal request visible to a guided proposer.
+data ProposalRequest = ProposalRequest
+  { prqObservations               :: [ModelObservation]
+  , prqFrontier                   :: ObservationFrontier
+  , prqExcludedFingerprints       :: [String]
+  , prqAttempt                    :: ModelAttempt
+  , prqGenerationIndex            :: Int
+  , prqRankedParents              :: [Candidate]
+  , prqGuidedCandidatesPerGeneration :: Int
+  }
+  deriving (Eq, Show)
+
+-- | A proposed configuration returned by a model proposer.
+data ProposedConfiguration = ProposedConfiguration
+  { pcCandidate          :: Candidate
+  , pcOrigin             :: Maybe String
+  , pcAcquisition        :: Maybe Double
+  , pcPrediction         :: Maybe Double
+  , pcUncertainty        :: Maybe Double
+  , pcParentCandidateId   :: Maybe String
+  }
+  deriving (Eq, Show)
+
+-- | Proposer policy: which guided source to use.
+data ProposerPolicy = SmacMixed | Random | Qmc | IRaceGenerational
+  deriving (Eq, Show)
+
+-- | The model proposer interface. Given observations at a common frontier,
+-- proposes one new configuration.
+data ModelProposer = ModelProposer
+  { mpAdapterVersion :: String
+  , mpAsk            :: ProposalRequest -> ProposedConfiguration
   }
 
--- | The allocation policy that decides what kind of proposal to request next.
--- Balances model-guided, elite-centered, random, and low-discrepancy sources.
-proposalPolicy
-  :: Int  -- ^ cohort size
-  -> Int  -- ^ bootstrap candidates
-  -> Int  -- ^ random reserve slots
-  -> Int  -- ^ cohort index (0 = initial, 1+ = challenger)
-  -> Int  -- ^ accepted slot in this cohort
-  -> ProposalSource
-proposalPolicy = undefined
+-- | Source schedule for the initial cohort: schema_default, bootstrap_random entries,
+-- then a weighted mix of guided and random_reserve slots.
+sourceSchedule :: Int -> Int -> Int -> ProposerPolicy -> [ProposalSource]
+sourceSchedule = undefined
 
--- | Compute the observation frontier visible to the model proposer
--- from completed tuning observations at a common prefix.
-visibleFrontier :: [Observation] -> Maybe ObservationFrontier
-visibleFrontier = undefined
+-- | Source schedule for challenger cohorts: elites retained, then guided + reserve.
+challengerSourceSchedule :: Int -> Int -> Int -> ProposerPolicy -> [ProposalSource]
+challengerSourceSchedule = undefined
+
+-- | Derive a deterministic seed for a proposal source namespace.
+derivedSeed :: Int -> String -> Int -> Int
+derivedSeed = undefined
+
+-- | Build an empty observation frontier.
+emptyFrontier :: String -> String -> String -> [String] -> SearchEffort -> ObservationFrontier
+emptyFrontier = undefined
+
+-- | Build a tuning frontier from completed comparable observations.
+tuningFrontier :: [Observation] -> ObservationFrontier
+tuningFrontier = undefined
+
+-- | Extract model observations from tuning observations at a frontier.
+modelObservations :: [Observation] -> [(String, Candidate)] -> ObservationFrontier -> [ModelObservation]
+modelObservations = undefined
+
+-- | Cost for a tuning observation: 1.0 - mean estimate, clamped to [0, 1].
+costFromObservation :: Observation -> Double
+costFromObservation = undefined

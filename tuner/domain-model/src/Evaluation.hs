@@ -1,31 +1,38 @@
 module Evaluation where
 
-import Deployment (DeploymentCase, SearchEffort)
+import Deployment (Opponent, OpponentPanel)
+import Effort (SearchEffort)
 
--- | A task case is one concrete game to be played: which candidate, which
--- opponent, which deployment case, at what phase and budget.
+-- | Phase of evaluation.
+data Phase = Tuning | Validation
+  deriving (Eq, Show)
+
+-- | A task case: one concrete paired comparison to be played.
 data TaskCase = TaskCase
-  { tcTaskId    :: String
-  , tcPhase     :: Phase
-  , tcOrdinal   :: Int
-  , tcSeed      :: Int
-  , tcStratumId :: String
-  , tcCase      :: DeploymentCase
+  { tcTaskId               :: String
+  , tcPhase                :: Phase
+  , tcOrdinal              :: Int
+  , tcSeed                 :: Int
+  , tcStratumId            :: String
+  , tcOpponentId           :: String
+  , tcOpponentFingerprint  :: String
+  , tcPanelFingerprint     :: String
+  , tcGameConfigFingerprint :: String
+  , tcStart                :: String  -- "default"
   }
   deriving (Eq, Show)
 
--- | A corpus of ordered task cases for one phase, stratified to be representative
--- of the target distribution.
+-- | A corpus of ordered task cases for one phase.
 data TaskCorpus = TaskCorpus
-  { corpusId          :: String
-  , corpusFingerprint :: String
-  , corpusPhase       :: Phase
-  , corpusCases       :: [TaskCase]
+  { corpusId           :: String
+  , corpusFingerprint  :: String
+  , corpusPhase        :: Phase
+  , corpusTaskPolicyVersion :: String
+  , corpusCases        :: [TaskCase]
   }
   deriving (Eq, Show)
 
--- | A prefix of a task corpus: the first N cases, forming a common task block.
--- All candidates in a race see these same cases in the same order.
+-- | A prefix of a task corpus: the first N cases forming a common task block.
 data TaskPrefix = TaskPrefix
   { prefixId      :: String
   , prefixCorpusId :: String
@@ -34,12 +41,7 @@ data TaskPrefix = TaskPrefix
   }
   deriving (Eq, Show)
 
--- | Make a prefix from a corpus.
-takePrefix :: TaskCorpus -> Int -> TaskPrefix
-takePrefix = undefined
-
 -- | A pair task: a seat-swapped pair of games for one candidate against one opponent.
--- The smallest atomic unit of evidence.
 data PairTask = PairTask
   { ptPairId      :: String
   , ptCandidateId :: String
@@ -48,36 +50,65 @@ data PairTask = PairTask
   }
   deriving (Eq, Show)
 
--- | Phase of evaluation.
-data Phase = Tuning | Validation | ProductionValidation
+-- | Strategy metrics for one side of a game.
+data StrategyMetrics = StrategyMetrics
+  { smIterationsTotal      :: Int
+  , smIterationsFirstHalf  :: Int
+  , smMoveTimeMs           :: Int
+  }
   deriving (Eq, Show)
 
 -- | Result of a single game.
 data GameResult = GameResult
-  { grGameId        :: String
-  , grCandidateSide :: Side
-  , grOutcome       :: Outcome
-  , grSeed          :: Int
-  , grPlies         :: Int
-  , grElapsedMs     :: Int
+  { grGameId           :: String
+  , grCandidateSide    :: String  -- "first" | "second"
+  , grOutcome          :: String  -- "candidate_win" | "baseline_win" | "draw"
+  , grDerivedSeed      :: Int
+  , grRound            :: Int
+  , grSeq              :: Int
+  , grTraceGameSeq     :: Maybe Int
+  , grPlies            :: Int
+  , grElapsedMs        :: Int
+  , grCandidateMetrics :: StrategyMetrics
+  , grOpponentMetrics  :: StrategyMetrics
+  , grRawRecord        :: String
   }
   deriving (Eq, Show)
 
-data Side = First | Second
-  deriving (Eq, Show)
-
-data Outcome = CandidateWin | BaselineWin | Draw
-  deriving (Eq, Show)
-
 -- | A paired result: two games, candidate plays first then second.
--- Seat-swapping controls first-player advantage.
 data PairResult = PairResult
   { prTask  :: PairTask
   , prGames :: (GameResult, GameResult)
   }
   deriving (Eq, Show)
 
--- | Seat-balanced utility for a pair: (candidate_win_count + draw_count * 0.5) / 2.
--- Range: [0, 1]. win=1, draw=0.5, loss=0 per seat, averaged.
-pairUtility :: PairResult -> Double
-pairUtility = undefined
+-- | A diagnostic pair task: direct candidate-vs-candidate matchup.
+data DiagnosticPairTask = DiagnosticPairTask
+  { dptPairId           :: String
+  , dptEdgeId           :: String
+  , dptOrdinal          :: Int
+  , dptLeftCandidateId  :: String
+  , dptRightCandidateId :: String
+  , dptSeed             :: Int
+  , dptSearchEffort     :: SearchEffort
+  }
+  deriving (Eq, Show)
+
+-- | A diagnostic pair result.
+data DiagnosticPairResult = DiagnosticPairResult
+  { dprTask  :: DiagnosticPairTask
+  , dprGames :: (GameResult, GameResult)
+  }
+  deriving (Eq, Show)
+
+-- | Build a task case.
+mkTaskCase :: Phase -> Int -> Int -> Opponent -> OpponentPanel -> String -> TaskCase
+mkTaskCase = undefined
+
+-- | Build a task corpus.
+mkTaskCorpus :: Phase -> Int -> Int -> OpponentPanel -> String -> TaskCorpus
+mkTaskCorpus = undefined
+
+-- | Select a prefix from a corpus.
+takePrefix :: TaskCorpus -> Int -> TaskPrefix
+takePrefix = undefined

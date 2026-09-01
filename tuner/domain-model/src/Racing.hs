@@ -1,84 +1,108 @@
 module Racing where
 
-import Candidate (Candidate)
+import Candidate (Candidate, CandidateFailure, PairAttemptFacts, Proposal)
+import Diagnostic (EvaluateDiagnosticPair)
+import Elimination (ApplyElimination, SuspendActiveElimination)
+import Evaluation (PairResult, DiagnosticPairResult, PairTask, Phase)
 import Evidence (Observation)
-import Evaluation (TaskPrefix)
+import Shadow (ShadowRaceDecision)
 
--- | A cohort is a group of candidates evaluated together on common task blocks.
--- All active candidates in a race see the same ordered task blocks.
-data Cohort = Cohort
-  { chIndex              :: Int
-  , chCandidates         :: [Candidate]
-  , chRetainedEliteIds   :: [String]  -- elites carried forward from prior cohort
-  }
+-- | Terminal status of a tuning run.
+data TerminalStatus = Open | ConfigurationFailed | Complete
   deriving (Eq, Show)
 
--- | A completed cohort with its records.
+-- | A cohort record: candidates that completed a tuning cycle.
 data CohortRecord = CohortRecord
-  { crCohort   :: Cohort
-  , crObservations :: [Observation]
+  { crCohortIndex          :: Int
+  , crCandidates           :: [Candidate]
+  , crRetainedCandidateIds :: [String]
   }
   deriving (Eq, Show)
 
--- | The iterated racing state: a sequence of cohorts, each evaluated on
--- progressively deeper task blocks. Elites are retained between cohorts.
-data RacingState = RacingState
-  { rsCohorts            :: [CohortRecord]
-  , rsActiveCandidates   :: [Candidate]
-  , rsActiveElites       :: [Candidate]
-  , rsCurrentBlockIndex  :: Int
-  , rsFinalists          :: Maybe [Candidate]
-  , rsTerminalStatus     :: RacingStatus
+-- | A compute budget for pair attempts.
+data ComputeBudget = ComputeBudget
+  { cbTuningPairAttempts     :: Int
+  , cbValidationPairAttempts :: Int
+  , cbDiagnosticPairAttempts :: Int
   }
   deriving (Eq, Show)
 
-data RacingStatus
-  = RacingOpen
-  | RacingConfigurationFailed
-  | RacingComplete
-  deriving (Eq, Show)
-
--- | Depth of evaluation for a cohort: which task block prefix.
-data EvaluationDepth = EvaluationDepth
-  { edBlockIndex :: Int
-  , edPrefix     :: TaskPrefix
+-- | Compute usage for one phase.
+data PhaseCompute = PhaseCompute
+  { pcPairAttempts     :: Int
+  , pcCompletedPairs   :: Int
+  , pcFailedAttempts   :: Int
+  , pcCensoredAttempts :: Int
+  , pcPhysicalGames    :: Int
+  , pcSearchIterations :: Int
+  , pcWallTimeMs       :: Int
   }
   deriving (Eq, Show)
 
--- | Deepen: advance the active cohort to the next cumulative task block.
--- All survivors complete the same block before any decision.
-deepen :: RacingState -> TaskPrefix -> RacingState
-deepen = undefined
+-- | Full compute ledger: tuning, validation, and diagnostic phases.
+data ComputeLedger = ComputeLedger
+  { clTuning     :: PhaseCompute
+  , clValidation :: PhaseCompute
+  , clDiagnostic :: PhaseCompute
+  }
+  deriving (Eq, Show)
 
--- | Eliminate candidates that have negligible probability of reaching
--- the current promotion boundary, given the evidence so far and a
--- practical-effect margin delta.
-eliminate
-  :: RacingState
-  -> Double        -- ^ practical effect margin (delta)
-  -> Double        -- ^ false-elimination risk threshold (alpha)
-  -> TaskPrefix    -- ^ the prefix at which elimination is tested
-  -> ([Candidate], [Candidate])  -- ^ (survivors, eliminated)
-eliminate = undefined
+-- | A concrete resource allocation: what to record in the evidence log.
+data ResourceAllocation
+  = IntroduceCandidate     { raCohortSlot :: Int, raSource :: String }
+  | RefillCandidate       { raCohortSlot :: Int, raSource :: String, raFailedCandidateId :: String }
+  | DeepenCohortAllocation { raBlockIndex :: Int, raPrefixId :: String }
+  | BeginValidation        { raTuningPrefixId :: String }
+  | RetainElites          { raCohortIndex :: Int, raCandidateIds :: [String], raPrefixId :: String }
+  | ApplyElimAction       { raElimination :: ApplyElimination }
+  | SuspendActiveElim     { raSuspension :: SuspendActiveElimination }
+  | EvaluateDiagnostic    { raDiagnostic :: EvaluateDiagnosticPair }
+  deriving (Eq, Show)
 
--- | Complete the current cohort: close it and record observations.
-completeCohort :: RacingState -> CohortRecord
-completeCohort = undefined
+-- | The immutable replay state: a checkpoint of every decision, observation,
+-- and compute usage accumulated since the tuner started.
+data ReplayState = ReplayState
+  { rsProposals                  :: [Proposal]
+  , rsDispositions               :: [(Int, Bool)]  -- (proposalIndex, accepted)
+  , rsCompletedCohorts           :: [CohortRecord]
+  , rsActiveElites               :: [Candidate]
+  , rsCompletedPairs             :: [PairResult]
+  , rsObservations               :: [Observation]
+  , rsFinalists                  :: Maybe [Candidate]
+  , rsTerminalStatus             :: TerminalStatus
+  , rsTuningBlockIndex           :: Int
+  , rsPendingResourceAllocation  :: Maybe ResourceAllocation
+  , rsCompute                    :: ComputeLedger
+  , rsShadowRaces                :: [ShadowRaceDecision]
+  , rsCandidateFailures          :: [CandidateFailure]
+  , rsPairAttempts               :: [(String, PairAttemptFacts)]
+  , rsRefillAttempts             :: [(Int, String)]
+  , rsEliminationAllocations     :: [ApplyElimination]
+  , rsActiveEliminationSuspension :: Maybe SuspendActiveElimination
+  , rsDiagnosticPairs            :: [DiagnosticPairResult]
+  , rsDiagnosticAttempts         :: [(String, PairAttemptFacts)]
+  }
+  deriving (Eq, Show)
 
--- | Start a new challenger cohort, retaining the top-N elites from the
--- prior cohort for continuity.
-startNextCohort :: RacingState -> Int -> RacingState
-startNextCohort = undefined
+-- | An allocation decision: what the allocator should do next.
+data AllocationDecision
+  = ResolveProposal      { adProposalIndex :: Int }
+  | ExecutePair          { adTask :: PairTask }
+  | ChooseDiagnosticPair { adCohortIndex :: Int }
+  | EmitObservation      { adCandidateId :: String, adPhase :: Phase }
+  | EmitShadowRace       { adCohortIndex :: Int, adPrefixId :: String }
+  | EnforceElimination   { adCohortIndex :: Int, adPrefixId :: String }
+  | SuspendElimination   { adAfterCohortIndex :: Int }
+  | CompleteCohort
+  | StartNextCohort
+  | DeepenCohort         { adBlockIndex :: Int, adPrefixId :: String }
+  | SelectFinalists
+  | IntroduceProposal
+  | FailCandidate        { adFailure :: CandidateFailure }
+  | CompleteRun
+  | NoDecision
+  deriving (Eq, Show)
 
--- | Select finalists from accumulated cohort evidence.
-selectFinalists :: RacingState -> Int -> [Candidate]
-selectFinalists = undefined
-
--- | Select the top-N candidates from a cohort by mean observed utility.
-selectTop :: [Observation] -> [Candidate] -> Int -> [Candidate]
-selectTop = undefined
-
--- | The promotion boundary: the current N-th-best candidate that others
--- must beat to avoid elimination. N is typically the number of finalists.
-promotionBoundary :: [Observation] -> Int -> Maybe Candidate
-promotionBoundary = undefined
+-- | Selection: pick top candidates by mean observed utility.
+selectTopCandidates :: [Candidate] -> [Observation] -> Int -> [Candidate]
+selectTopCandidates = undefined
