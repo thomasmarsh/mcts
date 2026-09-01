@@ -48,7 +48,7 @@ from .elimination import active_elimination_allocation, audited_boundary_reversa
 from .identity import pair_task
 from .observations import comparable_prefix_observations
 from .selection import select_top_candidates
-from .shadow import shadow_prefix_eligible
+from .race_policy import shadow_prefix_eligible
 
 ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 

@@ -13,6 +13,7 @@ from tuner_cli.domain import (
     ReplayState,
     ShadowCandidateDecision,
     ShadowRaceDecision,
+    PairedBootstrapEvidence,
 )
 from tuner_cli.elimination import active_elimination_allocation, audited_boundary_reversals
 from tuner_cli.observations import observation
@@ -29,10 +30,11 @@ def test_active_elimination_sampling_is_deterministic_and_ignores_non_eliminatio
         (),
         "boundary",
         (
-            ShadowCandidateDecision("candidate-a", 0, 4096, "eliminate"),
-            ShadowCandidateDecision("candidate-b", 0, 4096, "continue"),
-            ShadowCandidateDecision("boundary", 0, 4096, "eliminate"),
+            ShadowCandidateDecision("candidate-a", "eliminate", PairedBootstrapEvidence(0, 4096)),
+            ShadowCandidateDecision("candidate-b", "continue", PairedBootstrapEvidence(0, 4096)),
+            ShadowCandidateDecision("boundary", "eliminate", PairedBootstrapEvidence(0, 4096)),
         ),
+        "paired_bootstrap",
         manifest.shadow_policy.method_version,
     )
     state = ReplayState((), (), (), (), (), (), None, "open", 0, None)
@@ -62,6 +64,7 @@ def test_audited_boundary_reversal_uses_the_maximum_prefix_and_margin() -> None:
         (),
         boundary.candidate_id,
         (),
+        "paired_bootstrap",
         manifest.shadow_policy.method_version,
     )
     state = ReplayState(

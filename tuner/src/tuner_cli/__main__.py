@@ -40,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evaluator-workers", type=int, default=1, metavar="N")
     parser.add_argument("--shadow-practical-margin", type=float, default=0.0)
     parser.add_argument("--shadow-elimination-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--shadow-policy", choices=("paired_bootstrap", "successive_halving"),
+        default="paired_bootstrap",
+    )
     parser.add_argument("--active-elimination-audit-probability", type=float)
     parser.add_argument("--exclude-family", action="append", default=[], metavar="FAMILY")
     parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
@@ -79,6 +83,7 @@ def _options(args: argparse.Namespace) -> RunOptions:
         evaluator_workers=args.evaluator_workers,
         shadow_practical_margin=args.shadow_practical_margin,
         shadow_elimination_threshold=args.shadow_elimination_threshold,
+        shadow_policy=args.shadow_policy,
         active_elimination_audit_probability=args.active_elimination_audit_probability,
         excluded_families=normalize_family_exclusions(args.exclude_family),
         proposer_policy=args.proposer_policy,

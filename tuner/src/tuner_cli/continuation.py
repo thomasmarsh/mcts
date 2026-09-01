@@ -83,7 +83,7 @@ from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
 from .selection import select_top_candidates, select_validation_shortlist
-from .shadow import decide_shadow_race
+from .race_policy import decide_shadow_race
 from .target import PairExecutionError, Target
 
 

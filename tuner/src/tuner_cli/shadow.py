@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 
-from .artifacts import Manifest
+from .artifacts import Manifest, PairedBootstrapPolicySpecification
 from .cohort import current_active_candidates
 from .domain import (
     Observation,
+    PairedBootstrapEvidence,
     ReplayState,
     ShadowCandidateDecision,
     ShadowRaceDecision,
@@ -29,6 +30,8 @@ class StratumDifferences:
 def paired_stratum_differences(
     manifest: Manifest, left: Observation, right: Observation
 ) -> tuple[StratumDifferences, ...]:
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("paired bootstrap evidence requires paired policy")
     comparable(left, right)
     prefix = left.context.task_prefix
     cases = {case.task_id: case for case in manifest.prefix_cases("tuning")[: prefix.length]}
@@ -81,6 +84,8 @@ def _resample_indexes(
     strata: tuple[StratumDifferences, ...],
 ) -> dict[str, tuple[tuple[int, ...], ...]]:
     """Build the common bootstrap draws once so every candidate shares a replicate."""
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("paired bootstrap evidence requires paired policy")
     return {
         stratum.stratum_id: tuple(
             tuple(
@@ -108,6 +113,8 @@ def favorable_resamples_by_stratum(
     differences: tuple[StratumDifferences, ...],
 ) -> tuple[tuple[str, int], ...]:
     """Return deterministic within-stratum favorable bootstrap counts."""
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("paired bootstrap evidence requires paired policy")
     indexes = _resample_indexes(manifest, cohort_index, prefix, differences)
     return tuple(
         (
@@ -123,20 +130,11 @@ def favorable_resamples_by_stratum(
     )
 
 
-def shadow_prefix_eligible(manifest: Manifest, prefix: TaskPrefix) -> bool:
-    """Whether a declared non-final tuning prefix may record shadow evidence."""
-    return (
-        prefix in manifest.tuning_blocks
-        and prefix.length >= manifest.shadow_policy.minimum_eligible_prefix_pairs
-        and prefix != manifest.tuning_prefix
-    )
-
-
-def decide_shadow_race(
+def decide_paired_bootstrap_shadow_race(
     manifest: Manifest, state: ReplayState, cohort_index: int, prefix: TaskPrefix
 ) -> ShadowRaceDecision:
-    if not shadow_prefix_eligible(manifest, prefix):
-        raise ValueError("shadow race uses an ineligible tuning prefix")
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("paired bootstrap policy is not selected")
     cohort = current_active_candidates(state)
     if (
         cohort_index != len(state.completed_cohorts)
@@ -183,9 +181,8 @@ def decide_shadow_race(
         else:
             disposition = "continue"
         decisions.append(
-            ShadowCandidateDecision(
-                candidate.candidate_id, favorable, manifest.shadow_policy.resamples, disposition
-            )
+            ShadowCandidateDecision(candidate.candidate_id, disposition,
+                PairedBootstrapEvidence(favorable, manifest.shadow_policy.resamples))
         )
     return ShadowRaceDecision(
         cohort_index,
@@ -193,6 +190,7 @@ def decide_shadow_race(
         observation_ids,
         boundary.candidate_id,
         tuple(decisions),
+        "paired_bootstrap",
         manifest.shadow_policy.method_version,
     )
 
@@ -204,6 +202,8 @@ def _eliminated(
     differences: tuple[StratumDifferences, ...],
     favorable: int,
 ) -> bool:
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("paired bootstrap policy is not selected")
     threshold = manifest.shadow_policy.elimination_probability_threshold
     if manifest.shadow_policy.method_version == "stratified-paired-bootstrap-v1":
         return favorable / manifest.shadow_policy.resamples < threshold
@@ -211,3 +211,19 @@ def _eliminated(
         count / manifest.shadow_policy.resamples < threshold
         for _, count in favorable_resamples_by_stratum(manifest, cohort_index, prefix, differences)
     )
+
+
+# Compatibility imports remain for callers that only exercise the paired numerical policy.
+# Allocation and replay use race_policy's typed dispatcher.
+def shadow_prefix_eligible(manifest: Manifest, prefix: TaskPrefix) -> bool:
+    from .race_policy import shadow_prefix_eligible as eligible
+
+    return eligible(manifest, prefix)
+
+
+def decide_shadow_race(
+    manifest: Manifest, state: ReplayState, cohort_index: int, prefix: TaskPrefix
+) -> ShadowRaceDecision:
+    from .race_policy import decide_shadow_race as decide
+
+    return decide(manifest, state, cohort_index, prefix)

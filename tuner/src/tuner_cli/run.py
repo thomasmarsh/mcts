@@ -6,6 +6,7 @@ import math
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .continuation import continue_run
@@ -49,6 +50,7 @@ class RunOptions:
     evaluator_workers: int = 1
     shadow_practical_margin: float = 0.0
     shadow_elimination_threshold: float = 0.05
+    shadow_policy: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap"
     active_elimination_audit_probability: float | None = None
     excluded_families: tuple[str, ...] = ()
     proposer_policy: ProposerPolicy = "smac_mixed"
@@ -155,6 +157,8 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         if not (0.0 <= value <= 1.0 if inclusive else 0.0 < value < 0.5):
             raise ValueError(f"{label} must be in {'[0.0, 1.0]' if inclusive else '(0.0, 0.5)'}")
     if options.active_elimination_audit_probability is not None:
+        if options.shadow_policy != "paired_bootstrap":
+            raise ValueError("active elimination requires paired_bootstrap shadow policy")
         value = options.active_elimination_audit_probability
         if (
             isinstance(value, bool)
@@ -295,6 +299,7 @@ def manifest_for(
         options.production_effort,
         options.shadow_practical_margin,
         options.shadow_elimination_threshold,
+        options.shadow_policy,
         options.excluded_families,
         options.active_elimination_audit_probability,
         options.diagnostic_pair_budget,

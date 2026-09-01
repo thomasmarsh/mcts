@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from .artifacts import Manifest
+from .artifacts import Manifest, PairedBootstrapPolicySpecification
 from .domain import (
     ApplyElimination,
     AuditedBoundaryReversal,
     CandidateEliminationAction,
     CohortRecord,
     ReplayState,
+    PairedBootstrapEvidence,
     ShadowRaceDecision,
 )
 from .identity import canonical_json
@@ -22,6 +23,10 @@ def active_elimination_allocation(
 ) -> ApplyElimination:
     if manifest.active_elimination is None:
         raise ValueError("active elimination is disabled")
+    if race.policy_kind != "paired_bootstrap":
+        raise ValueError("active elimination requires paired bootstrap evidence")
+    if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
+        raise ValueError("active elimination requires paired bootstrap policy")
     protected = {item.candidate_id for item in state.active_elites}
     protected.add(race.boundary_candidate_id)
     for prior in state.shadow_races:
@@ -36,6 +41,8 @@ def active_elimination_allocation(
     for decision in race.decisions:
         if decision.disposition != "eliminate" or decision.candidate_id in protected:
             continue
+        if not isinstance(decision.evidence, PairedBootstrapEvidence):
+            raise ValueError("active elimination requires paired bootstrap evidence")
         payload = canonical_json(
             [
                 manifest.active_elimination.sampler_version,
@@ -55,7 +62,7 @@ def active_elimination_allocation(
                 decision.candidate_id,
                 action,
                 manifest.shadow_policy.elimination_probability_threshold
-                - decision.favorable_resamples / decision.total_resamples,
+                - decision.evidence.favorable_resamples / decision.evidence.total_resamples,
             )
         )
     return ApplyElimination(race.cohort_index, race.prefix_id, tuple(actions))

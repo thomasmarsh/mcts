@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from .artifacts import Manifest
 from .compute import fold_ledger
-from .domain import Candidate, Observation, PhaseCompute, ReplayState, TaskPrefix
+from .domain import Candidate, Observation, PairedBootstrapEvidence, PhaseCompute, ReplayState, SuccessiveHalvingEvidence, TaskPrefix
 from .event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from .evidence import EvidenceEvent
 from .identity import pair_task
@@ -33,8 +33,13 @@ class ShadowLookAudit:
     prefix_id: str
     candidate_id: str
     boundary_candidate_id: str
-    favorable_resamples: int
-    total_resamples: int
+    policy_kind: str
+    favorable_resamples: int | None
+    total_resamples: int | None
+    rank: int | None
+    prior_survivor_count: int | None
+    target_survivor_count: int | None
+    newly_eliminated: bool | None
     disposition: str
     early_mean_difference: float
     maximum_mean_difference: float
@@ -149,12 +154,16 @@ def _strata_for_look(
         item.stratum_id: item
         for item in paired_stratum_differences(manifest, maximum_candidate, maximum_boundary)
     }
-    favorable_by_stratum = dict(
-        favorable_resamples_by_stratum(manifest, cohort_index, prefix, early_strata)
+    favorable_by_stratum = (
+        dict(favorable_resamples_by_stratum(manifest, cohort_index, prefix, early_strata))
+        if manifest.shadow_policy.kind == "paired_bootstrap"
+        else {}
     )
     show_probabilities = (
-        manifest.shadow_policy.method_version == "stratified-paired-bootstrap-all-strata-v2"
+        manifest.shadow_policy.kind == "paired_bootstrap"
+        and manifest.shadow_policy.method_version == "stratified-paired-bootstrap-all-strata-v2"
     )
+    resamples = manifest.shadow_policy.resamples if manifest.shadow_policy.kind == "paired_bootstrap" else 0
     return tuple(
         StratumAudit(
             item.stratum_id,
@@ -167,7 +176,7 @@ def _strata_for_look(
             ),
             favorable_by_stratum[item.stratum_id] if show_probabilities else None,
             (
-                favorable_by_stratum[item.stratum_id] / manifest.shadow_policy.resamples
+                favorable_by_stratum[item.stratum_id] / resamples
                 if show_probabilities
                 else None
             ),
@@ -250,14 +259,22 @@ def build_shadow_audit(
                             >= -manifest.shadow_policy.practical_effect_margin,
                         )
                     )
+                evidence = decision.evidence
+                paired = evidence if isinstance(evidence, PairedBootstrapEvidence) else None
+                halving = evidence if isinstance(evidence, SuccessiveHalvingEvidence) else None
                 per_candidate[decision.candidate_id].append(
                     ShadowLookAudit(
                         cohort.cohort_index,
                         race.prefix_id,
                         decision.candidate_id,
                         race.boundary_candidate_id,
-                        decision.favorable_resamples,
-                        decision.total_resamples,
+                        race.policy_kind,
+                        None if paired is None else paired.favorable_resamples,
+                        None if paired is None else paired.total_resamples,
+                        None if halving is None else halving.rank,
+                        None if halving is None else halving.prior_survivor_count,
+                        None if halving is None else halving.target_survivor_count,
+                        None if halving is None else halving.newly_eliminated,
                         decision.disposition,
                         early_difference,
                         maximum_difference,
@@ -273,8 +290,10 @@ def build_shadow_audit(
                 if protected
                 else next((item for item in looks if item.disposition == "eliminate"), None)
             )
-            if not protected:
+            if not protected and manifest.shadow_policy.kind == "paired_bootstrap":
                 for item in looks[: (looks.index(first) + 1 if first else len(looks))]:
+                    if item.favorable_resamples is None or item.total_resamples is None:
+                        raise ValueError("paired shadow look lacks bootstrap evidence")
                     calibration.append(
                         (
                             item.favorable_resamples / item.total_resamples,

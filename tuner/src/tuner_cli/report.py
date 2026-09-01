@@ -413,13 +413,10 @@ def _shadow_look(value: object) -> JsonObject:
 
     if not isinstance(value, ShadowLookAudit):
         raise TypeError("shadow audit look expected")
-    return {
+    common: JsonObject = {
         "prefix_id": value.prefix_id,
         "candidate_id": value.candidate_id,
         "boundary_candidate_id": value.boundary_candidate_id,
-        "favorable_resamples": value.favorable_resamples,
-        "total_resamples": value.total_resamples,
-        "promotion_probability": value.favorable_resamples / value.total_resamples,
         "disposition": value.disposition,
         "early_mean_difference": value.early_mean_difference,
         "maximum_mean_difference": value.maximum_mean_difference,
@@ -442,6 +439,14 @@ def _shadow_look(value: object) -> JsonObject:
             for item in value.strata
         ],
     }
+    if value.policy_kind == "paired_bootstrap":
+        assert value.favorable_resamples is not None and value.total_resamples is not None
+        return {**common, "favorable_resamples": value.favorable_resamples,
+                "total_resamples": value.total_resamples,
+                "promotion_probability": value.favorable_resamples / value.total_resamples}
+    return {**common, "rank": value.rank, "prior_survivor_count": value.prior_survivor_count,
+            "target_survivor_count": value.target_survivor_count,
+            "newly_eliminated": value.newly_eliminated}
 
 
 def _shadow_path(value: CandidatePathAudit) -> JsonObject:
@@ -490,16 +495,28 @@ def _shadow_elimination(manifest: Manifest, audit: ShadowAudit) -> JsonObject:
         else audit.true_trash_eliminations / audit.counterfactual_eliminations
     )
     return {
-        "policy": {
-            "method_version": manifest.shadow_policy.method_version,
-            "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
-            "elimination_probability_threshold": (
-                manifest.shadow_policy.elimination_probability_threshold
-            ),
-            "resamples": manifest.shadow_policy.resamples,
-            "minimum_eligible_prefix_pairs": (manifest.shadow_policy.minimum_eligible_prefix_pairs),
-            "enforced": False,
-        },
+        "policy": (
+            {
+                "kind": "paired_bootstrap",
+                "method_version": manifest.shadow_policy.method_version,
+                "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
+                "elimination_probability_threshold": manifest.shadow_policy.elimination_probability_threshold,
+                "resamples": manifest.shadow_policy.resamples,
+                "minimum_eligible_prefix_pairs": manifest.shadow_policy.minimum_eligible_prefix_pairs,
+                "enforced": False,
+            }
+            if manifest.shadow_policy.kind == "paired_bootstrap"
+            else {
+                "kind": "successive_halving",
+                "method_version": manifest.shadow_policy.method_version,
+                "reduction_factor": manifest.shadow_policy.reduction_factor,
+                "survivor_floor": manifest.shadow_policy.survivor_floor,
+                "ranking_rule": manifest.shadow_policy.ranking_rule,
+                "practical_effect_margin": manifest.shadow_policy.practical_effect_margin,
+                "minimum_eligible_prefix_pairs": manifest.shadow_policy.minimum_eligible_prefix_pairs,
+                "enforced": False,
+            }
+        ),
         "scope": {
             "truth": "same-cohort-maximum-tuning-prefix-v1",
             "held_out_validation_used": False,

@@ -21,9 +21,11 @@ ProposalSource = Literal[
     "irace_model",
 ]
 ShadowDisposition = Literal["continue", "eliminate", "protected"]
+ShadowPolicyKind = Literal["paired_bootstrap", "successive_halving"]
 EliminationAction = Literal["prune", "audit_continue"]
 ShadowMethodVersion = Literal[
-    "stratified-paired-bootstrap-v1", "stratified-paired-bootstrap-all-strata-v2"
+    "stratified-paired-bootstrap-v1", "stratified-paired-bootstrap-all-strata-v2",
+    "successive-halving-common-prefix-eta2-v1",
 ]
 
 
@@ -339,11 +341,27 @@ class ComputeLedger:
 
 
 @dataclass(frozen=True, slots=True)
-class ShadowCandidateDecision:
-    candidate_id: str
+class PairedBootstrapEvidence:
     favorable_resamples: int
     total_resamples: int
+
+
+@dataclass(frozen=True, slots=True)
+class SuccessiveHalvingEvidence:
+    rank: int | None
+    prior_survivor_count: int
+    target_survivor_count: int
+    newly_eliminated: bool
+
+
+ShadowDecisionEvidence = PairedBootstrapEvidence | SuccessiveHalvingEvidence
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowCandidateDecision:
+    candidate_id: str
     disposition: ShadowDisposition
+    evidence: ShadowDecisionEvidence
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +371,7 @@ class ShadowRaceDecision:
     observation_ids: tuple[str, ...]
     boundary_candidate_id: str
     decisions: tuple[ShadowCandidateDecision, ...]
+    policy_kind: ShadowPolicyKind
     policy_version: ShadowMethodVersion
 
 

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 
-from .codec import JsonObject, integer, number, object_fields, strict_json, string
+from .codec import JsonObject, integer, json_object, number, object_fields, strict_json, string
 from .domain import (
     ComputeBudget,
     ObjectiveEpoch,
@@ -143,7 +143,8 @@ class ProposerSpecification:
 
 
 @dataclass(frozen=True, slots=True)
-class ShadowPolicySpecification:
+class PairedBootstrapPolicySpecification:
+    kind: Literal["paired_bootstrap"]
     practical_effect_margin: float
     elimination_probability_threshold: float
     resamples: int
@@ -152,12 +153,40 @@ class ShadowPolicySpecification:
 
     def encoded(self) -> JsonObject:
         return {
+            "kind": self.kind,
             "practical_effect_margin": self.practical_effect_margin,
             "elimination_probability_threshold": self.elimination_probability_threshold,
             "resamples": self.resamples,
             "method_version": self.method_version,
             "minimum_eligible_prefix_pairs": self.minimum_eligible_prefix_pairs,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class SuccessiveHalvingPolicySpecification:
+    kind: Literal["successive_halving"]
+    method_version: Literal["successive-halving-common-prefix-eta2-v1"]
+    reduction_factor: Literal[2]
+    practical_effect_margin: float
+    minimum_eligible_prefix_pairs: int
+    survivor_floor: int
+    ranking_rule: Literal["tuning-point-estimate-fingerprint-v1"]
+
+    def encoded(self) -> JsonObject:
+        return {
+            "kind": self.kind,
+            "method_version": self.method_version,
+            "reduction_factor": self.reduction_factor,
+            "practical_effect_margin": self.practical_effect_margin,
+            "minimum_eligible_prefix_pairs": self.minimum_eligible_prefix_pairs,
+            "survivor_floor": self.survivor_floor,
+            "ranking_rule": self.ranking_rule,
+        }
+
+
+ShadowPolicySpecification: TypeAlias = (
+    PairedBootstrapPolicySpecification | SuccessiveHalvingPolicySpecification
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +478,7 @@ def build_manifest(
     production_effort: SearchEffort,
     shadow_practical_margin: float = 0.0,
     shadow_elimination_threshold: float = 0.05,
+    shadow_policy_kind: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap",
     excluded_families: tuple[str, ...] = (),
     active_elimination_audit_probability: float | None = None,
     diagnostic_pair_budget: int = 0,
@@ -487,7 +517,9 @@ def build_manifest(
         (tuning_pairs, production_validation_pairs),
         (tuning_effort, validation_effort, production_effort),
     )
-    shadow_policy = _shadow_policy(shadow_practical_margin, shadow_elimination_threshold)
+    shadow_policy = _shadow_policy(
+        shadow_practical_margin, shadow_elimination_threshold, shadow_policy_kind, finalists
+    )
     candidate_failure_policy = CandidateFailurePolicySpecification()
     active_elimination = _active_elimination(active_elimination_audit_probability)
     game_config_fingerprint = fingerprint(
@@ -561,19 +593,33 @@ def _validate_manifest_inputs(
         raise ValueError("observed search effort cannot exceed production effort")
 
 
-def _shadow_policy(margin: object, threshold: object) -> ShadowPolicySpecification:
+def _shadow_policy(
+    margin: object,
+    threshold: object,
+    kind: object = "paired_bootstrap",
+    finalists: object = 2,
+) -> ShadowPolicySpecification:
     practical_margin = number(margin, "shadow practical margin")
     elimination_threshold = number(threshold, "shadow elimination threshold")
     if not 0.0 <= practical_margin <= 1.0:
         raise ValueError("shadow practical margin must be in [0.0, 1.0]")
     if not 0.0 < elimination_threshold < 0.5:
         raise ValueError("shadow elimination threshold must be in (0.0, 0.5)")
-    return ShadowPolicySpecification(
-        practical_margin,
-        elimination_threshold,
-        4096,
-        "stratified-paired-bootstrap-all-strata-v2",
-    )
+    if kind == "paired_bootstrap":
+        return PairedBootstrapPolicySpecification(
+            "paired_bootstrap", practical_margin, elimination_threshold, 4096,
+            "stratified-paired-bootstrap-all-strata-v2",
+        )
+    if kind == "successive_halving":
+        if elimination_threshold != 0.05:
+            raise ValueError("successive halving does not accept a non-default shadow threshold")
+        return SuccessiveHalvingPolicySpecification(
+            "successive_halving", "successive-halving-common-prefix-eta2-v1", 2,
+            practical_margin, MINIMUM_ELIGIBLE_PREFIX_PAIRS,
+            integer(finalists, "finalists", positive=True),
+            "tuning-point-estimate-fingerprint-v1",
+        )
+    raise ValueError("unsupported shadow policy")
 
 
 def _active_elimination(value: object | None) -> ActiveEliminationSpecification | None:
@@ -1107,49 +1153,64 @@ def decode_manifest_object(value: object) -> Manifest:
         integer(budget_raw["validation_pair_attempts"], "validation pair attempts", positive=True),
         integer(budget_raw["diagnostic_pair_attempts"], "diagnostic pair attempts"),
     )
-    shadow_raw = object_fields(
-        raw["shadow_policy"],
-        {
-            "practical_effect_margin",
-            "elimination_probability_threshold",
-            "resamples",
-            "method_version",
-            "minimum_eligible_prefix_pairs",
-        },
-        "shadow policy",
-    )
-    method_version = string(shadow_raw["method_version"], "shadow method version")
-    if method_version not in (
-        "stratified-paired-bootstrap-v1",
-        "stratified-paired-bootstrap-all-strata-v2",
-    ):
+    shadow_raw = json_object(raw["shadow_policy"], "shadow policy")
+    if "kind" not in shadow_raw:
+        raise ValueError("shadow policy is missing kind")
+    kind_raw = shadow_raw["kind"]
+    kind = string(kind_raw, "shadow policy kind")
+    if kind == "paired_bootstrap":
+        policy_raw = object_fields(
+            shadow_raw,
+            {"kind", "practical_effect_margin", "elimination_probability_threshold", "resamples",
+             "method_version", "minimum_eligible_prefix_pairs"}, "paired bootstrap shadow policy",
+        )
+        validated = _shadow_policy(
+            policy_raw["practical_effect_margin"], policy_raw["elimination_probability_threshold"]
+        )
+        if not isinstance(validated, PairedBootstrapPolicySpecification):
+            raise ValueError("unsupported shadow policy")
+        method = string(policy_raw["method_version"], "shadow method version")
+        if method != "stratified-paired-bootstrap-all-strata-v2":
+            raise ValueError("unsupported shadow policy")
+        shadow_policy = PairedBootstrapPolicySpecification(
+            "paired_bootstrap", validated.practical_effect_margin,
+            validated.elimination_probability_threshold,
+            integer(policy_raw["resamples"], "shadow resamples", positive=True),
+            "stratified-paired-bootstrap-all-strata-v2",
+            integer(policy_raw["minimum_eligible_prefix_pairs"], "minimum eligible prefix pairs", positive=True),
+        )
+    elif kind == "successive_halving":
+        policy_raw = object_fields(
+            shadow_raw,
+            {"kind", "method_version", "reduction_factor", "practical_effect_margin",
+             "minimum_eligible_prefix_pairs", "survivor_floor", "ranking_rule"},
+            "successive halving shadow policy",
+        )
+        shadow_policy = _shadow_policy(
+            policy_raw["practical_effect_margin"], 0.05, "successive_halving",
+            policy_raw["survivor_floor"],
+        )
+        if not isinstance(shadow_policy, SuccessiveHalvingPolicySpecification) or (
+            policy_raw["method_version"] != shadow_policy.method_version
+            or policy_raw["reduction_factor"] != 2
+            or policy_raw["minimum_eligible_prefix_pairs"] != MINIMUM_ELIGIBLE_PREFIX_PAIRS
+            or policy_raw["ranking_rule"] != shadow_policy.ranking_rule
+        ):
+            raise ValueError("unsupported shadow policy")
+    else:
         raise ValueError("unsupported shadow policy")
-    validated_shadow_policy = _shadow_policy(
-        shadow_raw["practical_effect_margin"], shadow_raw["elimination_probability_threshold"]
-    )
-    shadow_policy = ShadowPolicySpecification(
-        validated_shadow_policy.practical_effect_margin,
-        validated_shadow_policy.elimination_probability_threshold,
-        integer(shadow_raw["resamples"], "shadow resamples", positive=True),
-        method_version,
-        integer(
-            shadow_raw["minimum_eligible_prefix_pairs"],
-            "minimum eligible prefix pairs",
-            positive=True,
-        ),
-    )
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
     active_elimination = _decode_active_elimination(raw["active_elimination"])
+    if active_elimination is not None and not isinstance(
+        shadow_policy, PairedBootstrapPolicySpecification
+    ):
+        raise ValueError("active elimination requires paired_bootstrap shadow policy")
     diagnostic_policy = _decode_diagnostic_policy(raw["diagnostic_policy"])
     if (
-        shadow_policy.resamples != 4096
-        or shadow_policy.method_version != method_version
-        or integer(
-            shadow_raw["minimum_eligible_prefix_pairs"],
-            "minimum eligible prefix pairs",
-            positive=True,
-        )
-        != MINIMUM_ELIGIBLE_PREFIX_PAIRS
+        shadow_policy.minimum_eligible_prefix_pairs != MINIMUM_ELIGIBLE_PREFIX_PAIRS
+        or (isinstance(shadow_policy, PairedBootstrapPolicySpecification)
+            and (shadow_policy.resamples != 4096 or shadow_policy.method_version
+                 != "stratified-paired-bootstrap-all-strata-v2"))
     ):
         raise ValueError("unsupported shadow policy")
     panel = _decode_panel(raw["opponent_panel"])
