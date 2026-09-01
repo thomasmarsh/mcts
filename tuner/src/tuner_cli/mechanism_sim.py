@@ -33,6 +33,7 @@ from .domain import (
     TaskPrefix,
 )
 from .mechanism_calibration import Calibration
+from .mechanism_variants import decide_halving_variant
 from .observations import observation, paired_difference
 from .race_policy import decide_shadow_race
 from .selection import select_top_candidates
@@ -286,6 +287,17 @@ def classify_trial(
     )
 
 
+# The eta-2 cut softenings measured alongside the shipped policy. "keep6" and
+# "keep5" retain more than half; "spare05"/"spare10" carry a would-be-eliminated
+# candidate that is within the given margin of the last kept one.
+HALVING_VARIANTS: tuple[tuple[str, float, float], ...] = (
+    ("keep5", 0.625, 0.0),
+    ("keep6", 0.75, 0.0),
+    ("spare05", 0.5, 0.05),
+    ("spare10", 0.5, 0.10),
+)
+
+
 def run_trial(
     calibration: Calibration,
     manifest: Manifest,
@@ -306,10 +318,8 @@ def run_trial(
     early = observations[early_prefix.length]
     maximum = observations[maximum_prefix.length]
 
-    result: dict[str, TrialClassification] = {}
-    for name, policy_manifest in (("halving", halving_manifest), ("paired", paired_manifest)):
-        decision = decide_shadow_race(policy_manifest, state, 0, early_prefix)
-        result[name] = classify_trial(
+    def classify(policy_manifest: Manifest, decision: ShadowRaceDecision) -> TrialClassification:
+        return classify_trial(
             policy_manifest,
             decision,
             early,
@@ -318,4 +328,22 @@ def run_trial(
             early_prefix,
             maximum_prefix,
         )
+
+    result: dict[str, TrialClassification] = {
+        "halving": classify(
+            halving_manifest, decide_shadow_race(halving_manifest, state, 0, early_prefix)
+        ),
+        "paired": classify(
+            paired_manifest, decide_shadow_race(paired_manifest, state, 0, early_prefix)
+        ),
+    }
+    for name, keep_fraction, spare_margin in HALVING_VARIANTS:
+        decision = decide_halving_variant(
+            halving_manifest,
+            state,
+            early_prefix,
+            keep_fraction=keep_fraction,
+            spare_margin=spare_margin,
+        )
+        result[name] = classify(halving_manifest, decision)
     return result

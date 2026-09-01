@@ -1,7 +1,8 @@
 """Grid sweep of the shadow-race mechanism and its preregistered PASS gate.
 
 Runs `mechanism_sim.run_trial` across a `(boundary_gap, spread_scale)` grid, many
-trials per cell, and aggregates the eviction metrics with Wilson intervals. The
+trials per cell, and aggregates the eviction metrics with Wilson intervals for
+the shipped eta-2 cut, its softenings, and the paired-bootstrap baseline. The
 counting / aggregation / interval math has a fast deterministic test; the full
 sweep is a `tuner-mechanism` entry point, not part of the automated suite.
 """
@@ -19,11 +20,12 @@ from .mechanism_sim import TrialClassification, run_trial
 
 # Preregistered PASS thresholds, fixed before the full sweep is run and not moved
 # after seeing results.
-TOP_SET_FALSE_EVICTION_UPPER = 0.03  # clause 1: X in [1, 3] %
-BOUNDARY_REVERSAL_UPPER_OVERALL = 0.03  # clause 2: Y %
-BOUNDARY_REVERSAL_UPPER_WORST_CELL = 0.06  # clause 2: Z % (worst near-tie cell)
-BOUNDARY_REVERSAL_RATIO_LIMIT = 2.0  # clause 3: K, per-eviction rate vs paired
+TOP_SET_FALSE_EVICTION_UPPER = 0.03
+BOUNDARY_REVERSAL_UPPER_OVERALL = 0.03
+BOUNDARY_REVERSAL_UPPER_WORST_CELL = 0.06
+BOUNDARY_REVERSAL_RATIO_LIMIT = 2.0
 
+PAIRED_KEY = "paired"
 DEFAULT_BOUNDARY_GAPS: tuple[float, ...] = (-0.04, -0.02, 0.0, 0.02, 0.05, 0.1, 0.2)
 DEFAULT_SPREAD_SCALES: tuple[float, ...] = (0.6, 1.0, 1.5)
 DEFAULT_TRIALS = 3000
@@ -46,6 +48,8 @@ class PolicyRates:
     eliminated: int
     mean_eliminated_per_trial: float
     mean_unique_pairs_saved: float
+    mean_boundary_reversals_per_trial: float
+    mean_top_set_false_per_trial: float
     top_set_false_eviction_rate: float
     top_set_false_eviction_upper: float
     boundary_reversal_rate: float
@@ -59,6 +63,8 @@ class PolicyRates:
             "eliminated": self.eliminated,
             "mean_eliminated_per_trial": self.mean_eliminated_per_trial,
             "mean_unique_pairs_saved": self.mean_unique_pairs_saved,
+            "mean_boundary_reversals_per_trial": self.mean_boundary_reversals_per_trial,
+            "mean_top_set_false_per_trial": self.mean_top_set_false_per_trial,
             "top_set_false_eviction_rate": self.top_set_false_eviction_rate,
             "top_set_false_eviction_upper": self.top_set_false_eviction_upper,
             "boundary_reversal_rate": self.boundary_reversal_rate,
@@ -95,6 +101,8 @@ class PolicyTally:
             self.eliminated,
             self.eliminated / trials,
             self.unique_pairs_saved / trials,
+            self.boundary_reversals / trials,
+            self.top_set_false_evictions / trials,
             self.top_set_false_evictions / evicted,
             wilson_interval(self.top_set_false_evictions, self.eliminated)[1],
             self.boundary_reversals / evicted,
@@ -108,23 +116,32 @@ class PolicyTally:
 class CellResult:
     boundary_gap: float
     spread_scale: float
-    halving: PolicyRates
-    paired: PolicyRates
+    policies: dict[str, PolicyRates]
 
     def to_json(self) -> JsonObject:
+        policies: JsonObject = {name: rates.to_json() for name, rates in self.policies.items()}
         return {
             "boundary_gap": self.boundary_gap,
             "spread_scale": self.spread_scale,
-            "halving": self.halving.to_json(),
-            "paired": self.paired.to_json(),
+            "policies": policies,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class GateResult:
+    policy: str
     clauses: dict[str, bool]
     worst_cell_boundary_reversal_upper: float
     passed: bool
+
+    def to_json(self) -> JsonObject:
+        clauses: JsonObject = dict(self.clauses)
+        return {
+            "policy": self.policy,
+            "clauses": clauses,
+            "worst_cell_boundary_reversal_upper": self.worst_cell_boundary_reversal_upper,
+            "passed": self.passed,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,15 +152,15 @@ class SweepResult:
     seed: int
     paired_resamples: int
     cells: tuple[CellResult, ...]
-    overall_halving: PolicyRates
-    overall_paired: PolicyRates
-    gate: GateResult
+    overall: dict[str, PolicyRates]
+    gates: dict[str, GateResult]
 
     def to_json(self) -> JsonObject:
         cells: list[JsonValue] = [cell.to_json() for cell in self.cells]
-        clauses: JsonObject = dict(self.gate.clauses)
+        overall: JsonObject = {name: rates.to_json() for name, rates in self.overall.items()}
+        gates: JsonObject = {name: gate.to_json() for name, gate in self.gates.items()}
         return {
-            "schema": "mechanism-sweep-v1",
+            "schema": "mechanism-sweep-v2",
             "config": {
                 "boundary_gaps": list(self.boundary_gaps),
                 "spread_scales": list(self.spread_scales),
@@ -152,41 +169,33 @@ class SweepResult:
                 "paired_resamples": self.paired_resamples,
             },
             "cells": cells,
-            "overall": {
-                "halving": self.overall_halving.to_json(),
-                "paired": self.overall_paired.to_json(),
-            },
-            "gate": {
-                "clauses": clauses,
-                "worst_cell_boundary_reversal_upper": (
-                    self.gate.worst_cell_boundary_reversal_upper
-                ),
-                "passed": self.gate.passed,
-            },
+            "overall": overall,
+            "gates": gates,
         }
 
 
-def evaluate_gate(cells: tuple[CellResult, ...], overall_halving: PolicyRates) -> GateResult:
-    top_set_ok = overall_halving.top_set_false_eviction_upper <= TOP_SET_FALSE_EVICTION_UPPER
+def evaluate_gate(policy: str, cells: tuple[CellResult, ...], overall: PolicyRates) -> GateResult:
+    top_set_ok = overall.top_set_false_eviction_upper <= TOP_SET_FALSE_EVICTION_UPPER
 
-    worst_cell_upper = max(cell.halving.boundary_reversal_upper for cell in cells)
+    worst_cell_upper = max(cell.policies[policy].boundary_reversal_upper for cell in cells)
     reversal_ok = (
-        overall_halving.boundary_reversal_upper <= BOUNDARY_REVERSAL_UPPER_OVERALL
+        overall.boundary_reversal_upper <= BOUNDARY_REVERSAL_UPPER_OVERALL
         and worst_cell_upper <= BOUNDARY_REVERSAL_UPPER_WORST_CELL
     )
 
     ratio_ok = True
     for cell in cells:
-        halving_rate = cell.halving.boundary_reversal_rate
-        paired_rate = cell.paired.boundary_reversal_rate
+        rate = cell.policies[policy].boundary_reversal_rate
+        paired_rate = cell.policies[PAIRED_KEY].boundary_reversal_rate
         if paired_rate == 0.0:
-            if halving_rate > BOUNDARY_REVERSAL_UPPER_WORST_CELL:
+            if rate > BOUNDARY_REVERSAL_UPPER_WORST_CELL:
                 ratio_ok = False
-        elif halving_rate > BOUNDARY_REVERSAL_RATIO_LIMIT * paired_rate:
+        elif rate > BOUNDARY_REVERSAL_RATIO_LIMIT * paired_rate:
             ratio_ok = False
 
     saved_ok = all(
-        cell.halving.mean_unique_pairs_saved >= cell.paired.mean_unique_pairs_saved
+        cell.policies[policy].mean_unique_pairs_saved
+        >= cell.policies[PAIRED_KEY].mean_unique_pairs_saved
         for cell in cells
     )
 
@@ -194,9 +203,9 @@ def evaluate_gate(cells: tuple[CellResult, ...], overall_halving: PolicyRates) -
         "1_top_set_false_eviction_bounded": top_set_ok,
         "2_boundary_reversal_bounded": reversal_ok,
         "3_boundary_reversal_ratio_bounded": ratio_ok,
-        "4_halving_saves_at_least_as_much": saved_ok,
+        "4_saves_at_least_as_much_as_paired": saved_ok,
     }
-    return GateResult(clauses, worst_cell_upper, all(clauses.values()))
+    return GateResult(policy, clauses, worst_cell_upper, all(clauses.values()))
 
 
 def run_sweep(
@@ -210,21 +219,25 @@ def run_sweep(
     paired_resamples: int = 512,
 ) -> SweepResult:
     cells: list[CellResult] = []
-    overall_halving = PolicyTally()
-    overall_paired = PolicyTally()
+    overall: dict[str, PolicyTally] = {}
     for gap in boundary_gaps:
         for spread in spread_scales:
-            halving = PolicyTally()
-            paired = PolicyTally()
+            per_cell: dict[str, PolicyTally] = {}
             for trial in range(trials):
                 rng = random.Random(f"{seed}|{gap!r}|{spread!r}|{trial}")
                 outcome = run_trial(calibration, manifest, rng, gap, spread, paired_resamples)
-                halving.add(outcome["halving"])
-                paired.add(outcome["paired"])
-                overall_halving.add(outcome["halving"])
-                overall_paired.add(outcome["paired"])
-            cells.append(CellResult(gap, spread, halving.rates(), paired.rates()))
-    gate = evaluate_gate(tuple(cells), overall_halving.rates())
+                for name, classification in outcome.items():
+                    per_cell.setdefault(name, PolicyTally()).add(classification)
+                    overall.setdefault(name, PolicyTally()).add(classification)
+            cells.append(
+                CellResult(gap, spread, {name: tally.rates() for name, tally in per_cell.items()})
+            )
+    overall_rates = {name: tally.rates() for name, tally in overall.items()}
+    gates = {
+        name: evaluate_gate(name, tuple(cells), rates)
+        for name, rates in overall_rates.items()
+        if name != PAIRED_KEY
+    }
     return SweepResult(
         boundary_gaps,
         spread_scales,
@@ -232,9 +245,8 @@ def run_sweep(
         seed,
         paired_resamples,
         tuple(cells),
-        overall_halving.rates(),
-        overall_paired.rates(),
-        gate,
+        overall_rates,
+        gates,
     )
 
 
@@ -242,29 +254,25 @@ def format_summary(sweep: SweepResult) -> str:
     lines: list[str] = [
         f"mechanism sweep: {len(sweep.cells)} cells x {sweep.trials_per_cell} trials "
         f"(seed {sweep.seed}, paired resamples {sweep.paired_resamples})",
-        f"  {'gap':>6} {'spread':>7} | {'h_elim':>7} {'h_topF':>8} "
-        f"{'h_reversal (95% upper)':>26} {'h_saved':>8} | {'p_reversal':>11} {'p_saved':>8}",
+        "",
+        f"  {'policy':>10} | {'evict/run':>9} {'pairs saved':>11} | "
+        f"{'rev/run':>8} {'rev rate (upper)':>18} {'worst cell':>11} | "
+        f"{'topset false/run':>16} | verdict",
     ]
-    for cell in sweep.cells:
-        h = cell.halving
-        p = cell.paired
+    for name, rates in sweep.overall.items():
+        gate = sweep.gates.get(name)
+        worst = f"{gate.worst_cell_boundary_reversal_upper:.4f}" if gate else "-"
+        verdict = "PASS" if gate and gate.passed else ("FAIL" if gate else "baseline")
         lines.append(
-            f"  {cell.boundary_gap:>6.2f} {cell.spread_scale:>7.2f} | "
-            f"{h.mean_eliminated_per_trial:>7.2f} {h.top_set_false_eviction_rate:>8.4f} "
-            f"{h.boundary_reversal_rate:>13.4f} ({h.boundary_reversal_upper:>7.4f}) "
-            f"{h.mean_unique_pairs_saved:>8.2f} | "
-            f"{p.boundary_reversal_rate:>11.4f} {p.mean_unique_pairs_saved:>8.2f}"
+            f"  {name:>10} | {rates.mean_eliminated_per_trial:>9.2f} "
+            f"{rates.mean_unique_pairs_saved:>11.2f} | "
+            f"{rates.mean_boundary_reversals_per_trial:>8.3f} "
+            f"{rates.boundary_reversal_rate:>9.4f} ({rates.boundary_reversal_upper:>6.4f}) "
+            f"{worst:>11} | {rates.mean_top_set_false_per_trial:>16.4f} | {verdict}"
         )
-    over = sweep.overall_halving
     lines.append("")
-    lines.append(
-        f"  overall halving: top-set-false {over.top_set_false_eviction_rate:.4f} "
-        f"(upper {over.top_set_false_eviction_upper:.4f}), boundary-reversal "
-        f"{over.boundary_reversal_rate:.4f} (upper {over.boundary_reversal_upper:.4f}), "
-        f"rule-tie {over.rule_tie_eviction_rate:.4f}"
-    )
-    lines.append("")
-    for name, ok in sweep.gate.clauses.items():
-        lines.append(f"  [{'PASS' if ok else 'FAIL'}] {name}")
-    lines.append(f"\n  verdict: {'PASS' if sweep.gate.passed else 'FAIL'}")
+    for name, gate in sweep.gates.items():
+        failed = [clause for clause, ok in gate.clauses.items() if not ok]
+        status = "PASS" if gate.passed else "FAIL on " + ", ".join(failed)
+        lines.append(f"  {name}: {status}")
     return "\n".join(lines)

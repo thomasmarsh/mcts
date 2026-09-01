@@ -48,7 +48,7 @@ def _sweep(args: argparse.Namespace) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps(sweep.to_json(), indent=2, sort_keys=True) + "\n")
     print(format_summary(sweep))
-    return 0 if sweep.gate.passed else 2
+    return 0 if any(gate.passed for gate in sweep.gates.values()) else 2
 
 
 def build_parser() -> argparse.ArgumentParser:

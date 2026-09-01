@@ -171,6 +171,27 @@ def _halving_evidence() -> SuccessiveHalvingEvidence:
     return SuccessiveHalvingEvidence(1, 4, 2, False)
 
 
+def test_variant_defaults_match_the_shipped_cut() -> None:
+    """keep_fraction=0.5, spare_margin=0.0 must reproduce the shipped policy."""
+    from tuner_cli.mechanism_sim import build_active_state, draw_trial, sample_cohort
+    from tuner_cli.mechanism_variants import decide_halving_variant
+    from tuner_cli.race_policy import decide_shadow_race
+
+    calibration = load_calibration(CALIBRATION)
+    manifest = _manifest()
+    early = next(b for b in manifest.tuning_blocks if b.length == 12)
+    for seed in ("a", "b", "c", "d", "e"):
+        rng = random.Random(seed)
+        cohort = sample_cohort(calibration, manifest, rng, 0.02, 1.0)
+        state = build_active_state(manifest, cohort, draw_trial(cohort, calibration, manifest, rng))
+        shipped = decide_shadow_race(manifest, state, 0, early)
+        variant = decide_halving_variant(manifest, state, early)
+        assert variant.boundary_candidate_id == shipped.boundary_candidate_id
+        assert {d.candidate_id: d.disposition for d in variant.decisions} == {
+            d.candidate_id: d.disposition for d in shipped.decisions
+        }
+
+
 # --------------------------------------------------------------------------- #
 # Generator determinism + a small asserted sweep slice
 # --------------------------------------------------------------------------- #
@@ -205,10 +226,14 @@ def test_sweep_slice_bounds() -> None:
         paired_resamples=64,
     )
     (cell,) = sweep.cells
-    assert cell.halving.eliminated > 0
-    assert cell.halving.mean_unique_pairs_saved >= cell.paired.mean_unique_pairs_saved
-    assert 0.0 <= cell.halving.boundary_reversal_rate <= 0.5
-    assert sweep.overall_halving.top_set_false_eviction_rate < 0.1
+    halving = cell.policies["halving"]
+    paired = cell.policies["paired"]
+    assert halving.eliminated > 0
+    assert halving.mean_unique_pairs_saved >= paired.mean_unique_pairs_saved
+    assert 0.0 <= halving.boundary_reversal_rate <= 0.5
+    assert sweep.overall["halving"].top_set_false_eviction_rate < 0.1
+    assert "paired" not in sweep.gates
+    assert {"keep5", "keep6", "spare05", "spare10"} <= set(sweep.gates)
     # Re-running the same slice reproduces every aggregate exactly.
     again = run_sweep(
         calibration,
@@ -226,16 +251,17 @@ def test_evaluate_gate_clause_logic() -> None:
     good = CellResult(
         0.1,
         1.0,
-        _rates(reversal=0.0, top_false=0.0, saved=6.0),
-        _rates(reversal=0.0, top_false=0.0, saved=4.0),
+        {
+            "halving": _rates(reversal=0.0, top_false=0.0, saved=6.0),
+            "paired": _rates(reversal=0.0, top_false=0.0, saved=4.0),
+        },
     )
-    gate = evaluate_gate((good,), good.halving)
+    gate = evaluate_gate("halving", (good,), good.policies["halving"])
     assert gate.passed
 
-    bad_saved = CellResult(0.1, 1.0, _rates(saved=2.0), _rates(saved=6.0))
-    assert not evaluate_gate((bad_saved,), bad_saved.halving).clauses[
-        "4_halving_saves_at_least_as_much"
-    ]
+    bad_saved = CellResult(0.1, 1.0, {"halving": _rates(saved=2.0), "paired": _rates(saved=6.0)})
+    gate = evaluate_gate("halving", (bad_saved,), bad_saved.policies["halving"])
+    assert not gate.clauses["4_saves_at_least_as_much_as_paired"]
 
 
 def _rates(*, reversal: float = 0.0, top_false: float = 0.0, saved: float = 6.0):
@@ -246,6 +272,8 @@ def _rates(*, reversal: float = 0.0, top_false: float = 0.0, saved: float = 6.0)
         eliminated=200,
         mean_eliminated_per_trial=2.0,
         mean_unique_pairs_saved=saved,
+        mean_boundary_reversals_per_trial=reversal * 2.0,
+        mean_top_set_false_per_trial=top_false * 2.0,
         top_set_false_eviction_rate=top_false,
         top_set_false_eviction_upper=top_false,
         boundary_reversal_rate=reversal,
