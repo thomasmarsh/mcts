@@ -4,8 +4,38 @@ from __future__ import annotations
 
 from .artifacts import Manifest
 from .codec import JsonObject, JsonValue
-from .domain import ReplayState
+from .domain import (
+    CandidateEliminationAction,
+    EliminationDecisionMargin,
+    PairedProbabilityMargin,
+    ReplayState,
+)
 from .elimination import audited_boundary_reversals
+
+
+def _margin_json(margin: EliminationDecisionMargin) -> JsonObject:
+    if isinstance(margin, PairedProbabilityMargin):
+        return {
+            "kind": "paired_probability",
+            "elimination_probability_threshold": margin.elimination_probability_threshold,
+            "favorable_probability": margin.favorable_probability,
+            "threshold_minus_probability": margin.threshold_minus_probability,
+        }
+    return {
+        "kind": "successive_halving_rank",
+        "rank": margin.rank,
+        "target_survivor_count": margin.target_survivor_count,
+        "ranks_below_cutoff": margin.ranks_below_cutoff,
+        "spared_count": margin.spared_count,
+    }
+
+
+def _action_json(action: CandidateEliminationAction) -> JsonObject:
+    return {
+        "candidate_id": action.candidate_id,
+        "action": action.action,
+        "margin": _margin_json(action.margin),
+    }
 
 
 def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
@@ -15,14 +45,7 @@ def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
         {
             "cohort_index": batch.cohort_index,
             "prefix_id": batch.prefix_id,
-            "actions": [
-                {
-                    "candidate_id": action.candidate_id,
-                    "action": action.action,
-                    "decision_margin": action.decision_margin,
-                }
-                for action in batch.actions
-            ],
+            "actions": [_action_json(action) for action in batch.actions],
         }
         for batch in state.elimination_allocations
     ]

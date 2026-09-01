@@ -11,6 +11,7 @@ from tuner_cli.domain import (
     CohortRecord,
     ObservationContext,
     PairedBootstrapEvidence,
+    PairedProbabilityMargin,
     ReplayState,
     ShadowCandidateDecision,
     ShadowRaceDecision,
@@ -44,7 +45,9 @@ def test_active_elimination_sampling_is_deterministic_and_ignores_non_eliminatio
 
     assert first == second
     assert [item.candidate_id for item in first.actions] == ["candidate-a"]
-    assert first.actions[0].decision_margin == 0.05
+    margin = first.actions[0].margin
+    assert isinstance(margin, PairedProbabilityMargin)
+    assert margin == PairedProbabilityMargin(0.05, 0.0, 0.05)
 
 
 def test_audited_boundary_reversal_uses_the_maximum_prefix_and_margin() -> None:
@@ -86,7 +89,13 @@ def test_audited_boundary_reversal_uses_the_maximum_prefix_and_margin() -> None:
             ApplyElimination(
                 0,
                 race.prefix_id,
-                (CandidateEliminationAction(candidate.candidate_id, "audit_continue", -0.1),),
+                (
+                    CandidateEliminationAction(
+                        candidate.candidate_id,
+                        "audit_continue",
+                        PairedProbabilityMargin(0.05, 0.15, -0.1),
+                    ),
+                ),
             ),
         ),
     )

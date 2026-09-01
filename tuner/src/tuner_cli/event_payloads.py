@@ -32,9 +32,11 @@ from .domain import (
     CandidateEliminationAction,
     DeepenCohortAllocation,
     DiagnosticPairTask,
+    EliminationDecisionMargin,
     EvaluateDiagnosticPair,
     IntroduceCandidate,
     PairedBootstrapEvidence,
+    PairedProbabilityMargin,
     RefillCandidate,
     ResourceAllocation,
     RetainElites,
@@ -42,6 +44,7 @@ from .domain import (
     ShadowCandidateDecision,
     ShadowRaceDecision,
     SuccessiveHalvingEvidence,
+    SuccessiveHalvingRankMargin,
     SuspendActiveElimination,
 )
 from .effort import decode_effort, encode_effort
@@ -105,6 +108,76 @@ ProposalSource = Literal[
 ]
 Phase = Literal["tuning", "validation"]
 RejectionReason = Literal["duplicate", "semantic_validation"]
+
+
+def _decode_elimination_margin(value: object) -> EliminationDecisionMargin:
+    raw = json_object(value, "elimination decision margin")
+    kind = string(raw.get("kind"), "elimination margin kind")
+    if kind == "paired_probability":
+        item = object_fields(
+            raw,
+            {
+                "kind",
+                "elimination_probability_threshold",
+                "favorable_probability",
+                "threshold_minus_probability",
+            },
+            "paired probability margin",
+        )
+        return PairedProbabilityMargin(
+            raw_number(
+                item["elimination_probability_threshold"], "elimination probability threshold"
+            ),
+            raw_number(item["favorable_probability"], "favorable probability"),
+            raw_number(item["threshold_minus_probability"], "threshold minus probability"),
+        )
+    if kind == "successive_halving_rank":
+        item = object_fields(
+            raw,
+            {"kind", "rank", "target_survivor_count", "ranks_below_cutoff", "spared_count"},
+            "successive halving rank margin",
+        )
+        return SuccessiveHalvingRankMargin(
+            integer(item["rank"], "elimination rank", positive=True),
+            integer(item["target_survivor_count"], "target survivor count", positive=True),
+            integer(item["ranks_below_cutoff"], "ranks below cutoff", positive=True),
+            integer(item["spared_count"], "spared count"),
+        )
+    raise ValueError("unknown elimination decision margin kind")
+
+
+def _decode_elimination_action(value: object) -> CandidateEliminationAction:
+    item = object_fields(value, {"candidate_id", "action", "margin"}, "elimination action")
+    return CandidateEliminationAction(
+        string(item["candidate_id"], "elimination candidate id"),
+        literal(item["action"], ("prune", "audit_continue"), "elimination action"),
+        _decode_elimination_margin(item["margin"]),
+    )
+
+
+def _encode_elimination_margin(margin: EliminationDecisionMargin) -> JsonObject:
+    if isinstance(margin, PairedProbabilityMargin):
+        return {
+            "kind": "paired_probability",
+            "elimination_probability_threshold": margin.elimination_probability_threshold,
+            "favorable_probability": margin.favorable_probability,
+            "threshold_minus_probability": margin.threshold_minus_probability,
+        }
+    return {
+        "kind": "successive_halving_rank",
+        "rank": margin.rank,
+        "target_survivor_count": margin.target_survivor_count,
+        "ranks_below_cutoff": margin.ranks_below_cutoff,
+        "spared_count": margin.spared_count,
+    }
+
+
+def _encode_elimination_action(action: CandidateEliminationAction) -> JsonObject:
+    return {
+        "candidate_id": action.candidate_id,
+        "action": action.action,
+        "margin": _encode_elimination_margin(action.margin),
+    }
 
 
 def _decode_resource_allocation(value: object) -> ResourceAllocation:
@@ -172,17 +245,8 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
             integer(item["cohort_index"], "elimination cohort index"),
             string(item["prefix_id"], "elimination prefix id"),
             tuple(
-                CandidateEliminationAction(
-                    string(action["candidate_id"], "elimination candidate id"),
-                    literal(action["action"], ("prune", "audit_continue"), "elimination action"),
-                    raw_number(action["decision_margin"], "elimination decision margin"),
-                )
-                for action in (
-                    object_fields(
-                        value, {"candidate_id", "action", "decision_margin"}, "elimination action"
-                    )
-                    for value in elements(item["actions"], "elimination actions")
-                )
+                _decode_elimination_action(value)
+                for value in elements(item["actions"], "elimination actions")
             ),
         )
     if kind == "suspend_active_elimination":
@@ -240,14 +304,7 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
                 "kind": "apply_elimination",
                 "cohort_index": cohort_index,
                 "prefix_id": prefix_id,
-                "actions": [
-                    {
-                        "candidate_id": action.candidate_id,
-                        "action": action.action,
-                        "decision_margin": action.decision_margin,
-                    }
-                    for action in actions
-                ],
+                "actions": [_encode_elimination_action(action) for action in actions],
             }
         case SuspendActiveElimination(
             after_cohort_index, triggering_candidate_ids, triggering_prefix_ids, safety_rule_version

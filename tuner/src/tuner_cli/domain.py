@@ -378,10 +378,37 @@ class ShadowRaceDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class PairedProbabilityMargin:
+    """Paired-bootstrap elimination margin: the confidence shortfall at the cut."""
+
+    elimination_probability_threshold: float
+    favorable_probability: float
+    threshold_minus_probability: float
+
+
+@dataclass(frozen=True, slots=True)
+class SuccessiveHalvingRankMargin:
+    """Rank-cut elimination margin: how far below the survivor cutoff a candidate fell.
+
+    ``ranks_below_cutoff`` is a positive one-based distance (``rank -
+    target_survivor_count``). ``spared_count`` is the number of near-tie
+    candidates the spare-margin rule carried past the cut on the same look.
+    """
+
+    rank: int
+    target_survivor_count: int
+    ranks_below_cutoff: int
+    spared_count: int
+
+
+EliminationDecisionMargin = PairedProbabilityMargin | SuccessiveHalvingRankMargin
+
+
+@dataclass(frozen=True, slots=True)
 class CandidateEliminationAction:
     candidate_id: str
     action: EliminationAction
-    decision_margin: float
+    margin: EliminationDecisionMargin
 
 
 @dataclass(frozen=True, slots=True)

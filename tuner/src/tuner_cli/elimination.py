@@ -11,6 +11,7 @@ from .domain import (
     CandidateEliminationAction,
     CohortRecord,
     PairedBootstrapEvidence,
+    PairedProbabilityMargin,
     ReplayState,
     ShadowRaceDecision,
 )
@@ -57,12 +58,17 @@ def active_elimination_allocation(
         action = (
             "audit_continue" if draw < manifest.active_elimination.audit_probability else "prune"
         )
+        favorable_probability = (
+            decision.evidence.favorable_resamples / decision.evidence.total_resamples
+        )
+        threshold = manifest.shadow_policy.elimination_probability_threshold
         actions.append(
             CandidateEliminationAction(
                 decision.candidate_id,
                 action,
-                manifest.shadow_policy.elimination_probability_threshold
-                - decision.evidence.favorable_resamples / decision.evidence.total_resamples,
+                PairedProbabilityMargin(
+                    threshold, favorable_probability, threshold - favorable_probability
+                ),
             )
         )
     return ApplyElimination(race.cohort_index, race.prefix_id, tuple(actions))
