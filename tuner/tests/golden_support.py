@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +30,7 @@ from tuner_cli.run import RunOptions
 from tuner_cli.target import _splitmix_seed
 
 FIXTURES = Path(__file__).parent / "fixtures" / "version4"
+ACTIVE_FIXTURES = Path(__file__).parent / "fixtures" / "version4-active-halving"
 
 # The two cohorts need more valid configurations than either cohort alone, while
 # still exercising one deterministic semantic rejection.
@@ -55,6 +57,16 @@ def golden_options(binary: Path, run_dir: Path, objective_file: Path) -> RunOpti
         tuning_effort=SearchEffort("iterations", 3),
         validation_effort=SearchEffort("iterations", 5),
         production_effort=SearchEffort("iterations", 9),
+    )
+
+
+def active_halving_golden_options(binary: Path, run_dir: Path, objective_file: Path) -> RunOptions:
+    """Golden options that enforce the gate-approved spare-near-tie halving policy."""
+    return replace(
+        golden_options(binary, run_dir, objective_file),
+        shadow_policy="successive_halving",
+        shadow_halving_spare_margin=0.10,
+        active_elimination_audit_probability=0.25,
     )
 
 
@@ -173,6 +185,10 @@ class GoldenTarget:
             )
         return ValidationResult(True, ())
 
+    def _outcome(self, task: PairTask, candidate: Candidate) -> str:
+        del task
+        return "candidate_win" if _family(candidate) in _WINNING_FAMILIES else "draw"
+
     def evaluate(
         self,
         task: PairTask,
@@ -181,8 +197,9 @@ class GoldenTarget:
         game_config: str,
         timeout_seconds: int,
     ) -> PairResult:
+        del opponent, game_config, timeout_seconds
         self.calls.append(task)
-        outcome = "candidate_win" if _family(candidate) in _WINNING_FAMILIES else "draw"
+        outcome = self._outcome(task, candidate)
         seed = _splitmix_seed(task.task_case.seed)
 
         def _game(seq: int, side: Literal["first", "second"]) -> GameResult:
@@ -223,3 +240,18 @@ class GoldenTarget:
             )
 
         return PairResult(task, (_game(1, "first"), _game(2, "second")))
+
+
+class ActiveHalvingGoldenTarget(GoldenTarget):
+    """Graded per-family win rates so the eta-2 rank cut resolves a real order.
+
+    Earlier families in ``_FAMILIES`` win more tuning tasks, producing a strict
+    objective ranking the successive-halving policy can cut on -- unlike the
+    two-tier :class:`GoldenTarget`, whose ties the spare-margin rule would carry.
+    """
+
+    def _outcome(self, task: PairTask, candidate: Candidate) -> str:
+        if task.task_case.phase != "tuning":
+            return "draw"
+        rank = _FAMILIES.index(_family(candidate))
+        return "candidate_win" if task.task_case.ordinal % len(_FAMILIES) >= rank else "draw"

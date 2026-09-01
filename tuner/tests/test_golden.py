@@ -10,8 +10,11 @@ from pathlib import Path
 
 import pytest
 from golden_support import (
+    ACTIVE_FIXTURES,
     FIXTURES,
+    ActiveHalvingGoldenTarget,
     GoldenTarget,
+    active_halving_golden_options,
     golden_options,
     normalize_operational,
     write_binary,
@@ -49,6 +52,17 @@ def regenerated(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return run_dir
 
 
+@pytest.fixture(scope="module")
+def regenerated_active(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("golden-active")
+    run_dir = tmp / "run"
+    run_foreground(
+        active_halving_golden_options(write_binary(tmp), run_dir, write_objective(tmp)),
+        ActiveHalvingGoldenTarget(),
+    )
+    return run_dir
+
+
 def _masked(path: Path, manifest: dict[str, object]) -> str:
     return normalize_operational(path.read_text(encoding="utf-8"), manifest)
 
@@ -56,6 +70,11 @@ def _masked(path: Path, manifest: dict[str, object]) -> str:
 def _golden(name: str) -> str:
     fixture_manifest = json.loads((FIXTURES / "manifest.json").read_text(encoding="utf-8"))
     return normalize_operational((FIXTURES / name).read_text(encoding="utf-8"), fixture_manifest)
+
+
+def _active_golden(name: str) -> str:
+    manifest = json.loads((ACTIVE_FIXTURES / "manifest.json").read_text(encoding="utf-8"))
+    return normalize_operational((ACTIVE_FIXTURES / name).read_text(encoding="utf-8"), manifest)
 
 
 def test_manifest_matches_golden_after_masking_operational_fields(regenerated: Path) -> None:
@@ -75,6 +94,40 @@ def test_evidence_matches_golden_after_masking_operational_fields(regenerated: P
 def test_report_matches_golden_after_masking_operational_fields(regenerated: Path) -> None:
     live = json.loads((regenerated / "manifest.json").read_text(encoding="utf-8"))
     assert _masked(regenerated / "report.json", live) == _golden("report.json")
+
+
+def test_active_halving_manifest_matches_golden(regenerated_active: Path) -> None:
+    live = json.loads((regenerated_active / "manifest.json").read_text(encoding="utf-8"))
+    assert _masked(regenerated_active / "manifest.json", live) == _active_golden("manifest.json")
+    active = live["active_elimination"]
+    assert active["shadow_policy_kind"] == "successive_halving"
+    assert active["shadow_method_version"] == "successive-halving-spare-near-tie-v1"
+    assert active["shadow_spare_margin"] == 0.1
+
+
+def test_active_halving_evidence_matches_golden(regenerated_active: Path) -> None:
+    live = json.loads((regenerated_active / "manifest.json").read_text(encoding="utf-8"))
+    assert _masked(regenerated_active / "evidence.jsonl", live) == _active_golden("evidence.jsonl")
+
+
+def test_active_halving_report_matches_golden(regenerated_active: Path) -> None:
+    live = json.loads((regenerated_active / "manifest.json").read_text(encoding="utf-8"))
+    assert _masked(regenerated_active / "report.json", live) == _active_golden("report.json")
+
+
+def test_active_halving_golden_freezes_a_tagged_rank_margin() -> None:
+    manifest = read_manifest(ACTIVE_FIXTURES / "manifest.json")
+    state = replay(manifest, read_events(ACTIVE_FIXTURES / "evidence.jsonl"))
+    assert state.terminal_status == "complete"
+    actions = [action for batch in state.elimination_allocations for action in batch.actions]
+    assert actions, "the active-halving golden must record at least one rank elimination"
+    assert all(
+        action.margin.__class__.__name__ == "SuccessiveHalvingRankMargin" for action in actions
+    )
+    report = json.loads((ACTIVE_FIXTURES / "report.json").read_text(encoding="utf-8"))
+    summary = report["active_elimination"]["summary"]
+    assert summary["nominal_eliminations"] == len(actions)
+    assert summary["planned_unique_pair_savings"] >= 0
 
 
 def test_golden_evidence_exercises_every_scientific_event() -> None:
