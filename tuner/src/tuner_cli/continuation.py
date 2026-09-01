@@ -313,7 +313,7 @@ def complete_cohort(manifest: Manifest, writer: EvidenceWriter, state: ReplaySta
     cohort_index = len(state.completed_cohorts)
     active = current_active_candidates(state)
     tuning = comparable_prefix_observations(state.observations, active, manifest.tuning_prefix)
-    if len(active) != manifest.cohort_size or len(tuning) != len(active):
+    if not manifest.finalists <= len(active) <= manifest.cohort_size or len(tuning) != len(active):
         return False
     writer.append(
         CohortCompletedPayload(

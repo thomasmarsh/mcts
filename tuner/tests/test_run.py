@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tuner_cli.artifacts import read_manifest
+from tuner_cli.cohort import current_active_candidates
 from tuner_cli.domain import (
     GameResult,
     ModelAttempt,
@@ -17,12 +18,15 @@ from tuner_cli.domain import (
     PairTask,
     ProposedConfiguration,
     SearchEffort,
+    ShadowCandidateDecision,
+    ShadowRaceDecision,
     StrategyMetrics,
     ValidationResult,
 )
 from tuner_cli.event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from tuner_cli.evidence import read_events, scientific_projection
 from tuner_cli.identity import candidate_from_config, canonical_json, game_id
+from tuner_cli.observations import comparable_prefix_observations
 from tuner_cli.replay import replay
 from tuner_cli.report import write_report
 from tuner_cli.run import RunOptions, run_foreground
@@ -101,11 +105,13 @@ class FakeTarget:
     def cancel(self) -> None:
         return None
 
+    def _outcome(self, task: PairTask, candidate_config: dict[str, str]) -> str:
+        del task
+        return "candidate_win" if candidate_config["family"] == "b" else "draw"
+
     def evaluate(self, task, candidate, opponent, game_config, timeout_seconds):  # type: ignore[no-untyped-def]
         self.calls.append(task)
-        outcome = (
-            "candidate_win" if json.loads(candidate.canonical_config)["family"] == "b" else "draw"
-        )
+        outcome = self._outcome(task, json.loads(candidate.canonical_config))
         games = []
         for seq, side in ((1, "first"), (2, "second")):
             raw = {
@@ -152,6 +158,39 @@ class FakeModel:
         return ProposedConfiguration(
             candidate_from_config({"family": f"model-{attempt.source_attempt}"}), None
         )
+
+
+class ActiveProfileModel:
+    def ask(
+        self,
+        observations: tuple[ModelObservation, ...],
+        frontier: ObservationFrontier,
+        excluded_fingerprints: frozenset[str],
+        attempt: ModelAttempt,
+    ) -> ProposedConfiguration:
+        del observations, frontier, excluded_fingerprints
+        family = (
+            "c" if attempt.source_attempt == 1 else ("e", "f", "g", "h")[attempt.source_attempt - 2]
+        )
+        return ProposedConfiguration(candidate_from_config({"family": family}), None)
+
+
+class ActiveProfileTarget(FakeTarget):
+    def __init__(self, recovery: bool = False) -> None:
+        super().__init__()
+        self.recovery = recovery
+
+    def _outcome(self, task: PairTask, candidate_config: dict[str, str]) -> str:
+        if task.task_case.phase != "tuning":
+            return "draw"
+        family = candidate_config["family"]
+        if not self.recovery:
+            return "candidate_win" if family == "c" else "draw"
+        if task.task_case.ordinal < 3:
+            return "candidate_win" if family == "c" else "draw"
+        if task.task_case.ordinal >= 12:
+            return "draw" if family == "c" else "candidate_win"
+        return "draw"
 
 
 class InterruptingTarget(FakeTarget):
@@ -489,6 +528,158 @@ def _run_and_load(options: RunOptions, target: FakeTarget | None = None) -> tupl
 
 def _completed_cohorts(events: list) -> list:
     return [event["payload"] for event in events if event["type"] == "cohort_completed"]
+
+
+def _active_options(
+    tmp_path: Path, run_name: str, tuning_pairs: int, tuning_pair_budget: int, audit: float
+) -> RunOptions:
+    return RunOptions(
+        _fake_binary(tmp_path),
+        tmp_path / run_name,
+        objective_file=_objective(tmp_path),
+        seed=42,
+        task_seed=43,
+        cohort_size=4,
+        finalists=1,
+        bootstrap_candidates=2,
+        random_reserve_candidates=1,
+        tuning_pairs=tuning_pairs,
+        tuning_pair_budget=tuning_pair_budget,
+        validation_pair_budget=2,
+        production_validation_pairs=2,
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
+        active_elimination_audit_probability=audit,
+    )
+
+
+def _mock_eliminating_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
+    def decide(manifest, state, cohort_index, prefix):  # type: ignore[no-untyped-def]
+        candidates = current_active_candidates(state)
+        observations = comparable_prefix_observations(state.observations, candidates, prefix)
+        boundary = next(
+            (item for item in candidates if json.loads(item.canonical_config)["family"] == "c"),
+            candidates[0],
+        )
+        return ShadowRaceDecision(
+            cohort_index,
+            prefix.prefix_id,
+            tuple(item.observation_id for item in observations),
+            boundary.candidate_id,
+            tuple(
+                ShadowCandidateDecision(
+                    item.candidate_id,
+                    4096 if item == boundary else 0,
+                    4096,
+                    "continue" if item == boundary else "eliminate",
+                )
+                for item in candidates
+            ),
+            manifest.shadow_policy.method_version,
+        )
+
+    monkeypatch.setattr("tuner_cli.continuation.decide_shadow_race", decide)
+    monkeypatch.setattr("tuner_cli.replay.decide_shadow_race", decide)
+
+
+def test_active_prune_completes_survivor_cohort_and_saves_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_eliminating_shadow(monkeypatch)
+    options = _active_options(tmp_path, "active-prune", 14, 56, 0.01)
+    run_foreground(options, ActiveProfileTarget(), model_proposer=ActiveProfileModel())
+    events = [
+        json.loads(line) for line in (options.run_dir / "evidence.jsonl").read_text().splitlines()
+    ]
+    manifest = json.loads((options.run_dir / "manifest.json").read_text())
+    report = json.loads((options.run_dir / "report.json").read_text())
+    allocation = next(
+        event["payload"]["allocation"]
+        for event in events
+        if event["type"] == "allocation_decided"
+        and event["payload"]["allocation"]["kind"] == "apply_elimination"
+    )
+    pruned = {
+        action["candidate_id"] for action in allocation["actions"] if action["action"] == "prune"
+    }
+    assert pruned
+    cohort = _completed_cohorts(events)[0]
+    survivors = set(cohort["candidate_ids"])
+    assert len(survivors) < 4
+    assert len(survivors) >= 1
+    assert survivors.isdisjoint(pruned)
+    assert all(
+        event["payload"]["candidate_id"] not in pruned
+        for event in events
+        if event["type"] == "pair_started"
+        and event["payload"]["phase"] == "tuning"
+        and event["payload"]["task_id"]
+        not in {item["task_id"] for item in manifest["corpora"]["tuning"]["cases"][:12]}
+    )
+    finalists = next(
+        event["payload"]["finalist_ids"]
+        for event in events
+        if event["type"] == "finalists_selected"
+    )
+    assert set(finalists) <= survivors
+    assert events[-1]["type"] == "run_completed"
+    assert report["compute"]["tuning"]["pair_attempts"] < 4 * 14
+    assert report["active_elimination"]["summary"]["pruned"] == len(pruned)
+    report_bytes = (options.run_dir / "report.json").read_bytes()
+    (options.run_dir / "report.json").unlink()
+    recording = ActiveProfileTarget()
+    run_foreground(replace(options, resume=True), recording, model_proposer=ActiveProfileModel())
+    assert not recording.calls
+    assert (options.run_dir / "report.json").read_bytes() == report_bytes
+
+
+def test_audited_reversal_suspends_later_foreground_cohorts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_eliminating_shadow(monkeypatch)
+    options = _active_options(tmp_path, "active-recovery", 16, 112, 0.999999)
+    run_foreground(options, ActiveProfileTarget(recovery=True), model_proposer=ActiveProfileModel())
+    events = [
+        json.loads(line) for line in (options.run_dir / "evidence.jsonl").read_text().splitlines()
+    ]
+    report = json.loads((options.run_dir / "report.json").read_text())
+    actions = [
+        action
+        for event in events
+        if event["type"] == "allocation_decided"
+        and event["payload"]["allocation"]["kind"] == "apply_elimination"
+        for action in event["payload"]["allocation"]["actions"]
+    ]
+    audited = {action["candidate_id"] for action in actions if action["action"] == "audit_continue"}
+    assert audited
+    first_cohort = _completed_cohorts(events)[0]
+    assert audited <= set(first_cohort["candidate_ids"])
+    suspension = next(
+        event["payload"]["allocation"]
+        for event in events
+        if event["type"] == "allocation_decided"
+        and event["payload"]["allocation"]["kind"] == "suspend_active_elimination"
+    )
+    assert suspension["after_cohort_index"] == 0
+    assert set(suspension["triggering_candidate_ids"]) <= audited
+    assert len(_completed_cohorts(events)) == 2
+    assert all(
+        event["payload"]["allocation"]["cohort_index"] == 0
+        for event in events
+        if event["type"] == "allocation_decided"
+        and event["payload"]["allocation"]["kind"] == "apply_elimination"
+    )
+    active = report["active_elimination"]
+    assert active["suspended"] is True
+    assert active["active_interval"]["last_cohort_index"] == 0
+    assert active["audited_boundary_reversals"]
+    report_bytes = (options.run_dir / "report.json").read_bytes()
+    (options.run_dir / "report.json").unlink()
+    recording = ActiveProfileTarget(recovery=True)
+    run_foreground(replace(options, resume=True), recording, model_proposer=ActiveProfileModel())
+    assert not recording.calls
+    assert (options.run_dir / "report.json").read_bytes() == report_bytes
 
 
 def test_budget_admits_cohorts_at_exact_boundaries(tmp_path: Path) -> None:
