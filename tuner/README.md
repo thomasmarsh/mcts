@@ -164,3 +164,28 @@ rebuilds `report.json`. A resumed run reproduces the uninterrupted run's
 scientific projection, selection, and validation exactly; only the compute
 ledger truthfully records the extra censored or retried attempts, including any
 budget overrun they cause.
+
+## Whole-run proposer policies and bake-offs
+
+`--proposer-policy` selects one frozen whole-run proposal policy. Its default,
+`smac_mixed`, preserves the SMAC-guided schedule. The other measured policies
+are `random`, `qmc` (scrambled Sobol), and `irace_generational` (a stateless
+elite-centred baseline). The selection is manifest-sensitive; it never changes
+the default automatically.
+
+Run a matched policy experiment with `tuner-proposer-bakeoff`:
+
+```bash
+uv run --project tuner tuner-proposer-bakeoff \
+  --spec /tmp/druid-proposer-bakeoff.json \
+  --experiment-dir /tmp/druid-proposer-bakeoff
+```
+
+The strict version-one specification fixes the four policies in this order:
+`random`, `qmc`, `smac_mixed`, `irace_generational`; it also fixes at least four
+proposal seeds, increasing tuning pair budgets, the task seed, objective, and
+all shared run settings. The experiment directory has an immutable
+`experiment.json`, ordinary replayable child run directories, and a replaceable
+`results.json`. `--resume` continues incomplete children through the normal
+foreground evidence path and rebuilds the result projection from completed
+child artifacts.

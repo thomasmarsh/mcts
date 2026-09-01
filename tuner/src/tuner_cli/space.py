@@ -23,7 +23,7 @@ from ConfigSpace import (
 )
 
 from .family_exclusions import validate_family_exclusions
-from .schema import TuningSchema
+from .schema import ParameterSpec, TuningSchema
 
 
 def build_space(
@@ -100,3 +100,29 @@ def random_values(space: ConfigurationSpace) -> ParamValues:
 def configuration_from_values(space: ConfigurationSpace, values: ParamValues) -> Configuration:
     """Build a ConfigSpace configuration from already canonical active values."""
     return Configuration(space, values=values)
+
+
+def conditional_values(schema: TuningSchema, values: dict[str, ParamValue]) -> ParamValues:
+    """Project proposed values through the schema's stable conditional order.
+
+    Callers provide values for every non-constant parameter; inactive values are
+    deliberately omitted so candidate identity stays canonical.
+    """
+    conditions = {
+        child: condition for condition in schema.conditions for child in condition.children
+    }
+    result: ParamValues = {}
+    for parameter in schema.parameters:
+        condition = conditions.get(parameter.name)
+        if condition is not None and result.get(condition.parent) not in condition.values:
+            continue
+        if parameter.kind == "constant":
+            assert parameter.constant_value is not None
+            result[parameter.name] = param_value(parameter.constant_value)
+        else:
+            result[parameter.name] = values[parameter.name]
+    return result
+
+
+def nonconstant_parameters(schema: TuningSchema) -> tuple[ParameterSpec, ...]:
+    return tuple(item for item in schema.parameters if item.kind != "constant")

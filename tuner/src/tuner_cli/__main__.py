@@ -22,6 +22,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--finalists", type=int, default=3)
     parser.add_argument("--bootstrap-candidates", type=int, default=3)
     parser.add_argument("--random-reserve-candidates", type=int, default=2)
+    parser.add_argument(
+        "--proposer-policy",
+        choices=("smac_mixed", "random", "qmc", "irace_generational"),
+        default="smac_mixed",
+    )
     parser.add_argument("--tuning-pairs", type=int, default=4)
     parser.add_argument("--tuning-pair-budget", type=int, required=True, metavar="PAIRS")
     parser.add_argument("--validation-pair-budget", type=int, required=True, metavar="PAIRS")
@@ -76,6 +81,7 @@ def _options(args: argparse.Namespace) -> RunOptions:
         shadow_elimination_threshold=args.shadow_elimination_threshold,
         active_elimination_audit_probability=args.active_elimination_audit_probability,
         excluded_families=normalize_family_exclusions(args.exclude_family),
+        proposer_policy=args.proposer_policy,
         resume=args.resume,
     )
 

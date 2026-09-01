@@ -3,50 +3,54 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Protocol
+from typing import Literal, Protocol
 
 from .domain import (
     Candidate,
-    ModelAttempt,
     ModelObservation,
     Observation,
     ObservationContext,
     ObservationFrontier,
     ObservationReference,
+    ProposalRequest,
     ProposalSource,
     ProposedConfiguration,
 )
 from .identity import canonical_json, observation_frontier, observation_reference
 
-POLICY_VERSION = "bootstrap-smac-reserve-v1"
+POLICY_VERSION = "whole-run-proposer-policy-v1"
 COST_POLICY_VERSION = "smac_pair_mean_cost_v1"
 SAMPLER_VERSION = "configspace-independent-v1"
+ProposerPolicy = Literal["smac_mixed", "random", "qmc", "irace_generational"]
+POLICIES: tuple[ProposerPolicy, ...] = ("random", "qmc", "smac_mixed", "irace_generational")
 
 
 class ModelProposer(Protocol):
     """Produces one configuration from completed comparable tuning observations."""
 
-    def ask(
-        self,
-        observations: tuple[ModelObservation, ...],
-        frontier: ObservationFrontier,
-        excluded_fingerprints: frozenset[str],
-        attempt: ModelAttempt,
-    ) -> ProposedConfiguration: ...
+    adapter_version: str
+
+    def ask(self, request: ProposalRequest) -> ProposedConfiguration: ...
 
 
 def source_schedule(
-    cohort_size: int, bootstrap_candidates: int, random_reserve_candidates: int
+    cohort_size: int,
+    bootstrap_candidates: int,
+    random_reserve_candidates: int,
+    policy: ProposerPolicy = "smac_mixed",
 ) -> tuple[ProposalSource, ...]:
     _validate_counts(cohort_size, bootstrap_candidates, random_reserve_candidates)
     model = cohort_size - bootstrap_candidates - random_reserve_candidates
-    post = _weighted_sources(model, random_reserve_candidates)
+    post = _weighted_sources(model, random_reserve_candidates, _guided_source(policy))
     bootstrap: tuple[ProposalSource, ...] = ("bootstrap_random",) * (bootstrap_candidates - 1)
     return ("schema_default", *bootstrap, *post)
 
 
 def challenger_source_schedule(
-    cohort_size: int, finalists: int, random_reserve_candidates: int
+    cohort_size: int,
+    finalists: int,
+    random_reserve_candidates: int,
+    policy: ProposerPolicy = "smac_mixed",
 ) -> tuple[ProposalSource, ...]:
     if any(
         isinstance(value, bool) for value in (cohort_size, finalists, random_reserve_candidates)
@@ -56,7 +60,21 @@ def challenger_source_schedule(
     if finalists < 1 or challengers < 1 or random_reserve_candidates < 1:
         raise ValueError("invalid finalist, reserve, and cohort count relationship")
     reserve = min(random_reserve_candidates, challengers - 1)
-    return _weighted_sources(challengers - reserve, reserve)
+    return _weighted_sources(challengers - reserve, reserve, _guided_source(policy))
+
+
+def _guided_source(policy: ProposerPolicy) -> ProposalSource:
+    result: ProposalSource | None = {
+        "smac_mixed": "smac_model",
+        "random": "random_search",
+        "qmc": "qmc_search",
+        "irace_generational": "irace_model",
+    }.get(policy)
+    return result if result is not None else _invalid_policy(policy)
+
+
+def _invalid_policy(policy: object) -> ProposalSource:
+    raise ValueError(f"unknown proposer policy {policy!r}")
 
 
 def _validate_counts(cohort_size: int, bootstrap: int, reserve: int) -> None:
@@ -68,11 +86,13 @@ def _validate_counts(cohort_size: int, bootstrap: int, reserve: int) -> None:
         raise ValueError("invalid bootstrap, reserve, and cohort count relationship")
 
 
-def _weighted_sources(model: int, reserve: int) -> tuple[ProposalSource, ...]:
+def _weighted_sources(
+    model: int, reserve: int, guided: ProposalSource
+) -> tuple[ProposalSource, ...]:
     result: list[ProposalSource] = []
-    sources: tuple[ProposalSource, ProposalSource] = ("smac_model", "random_reserve")
-    emitted: dict[ProposalSource, int] = {"smac_model": 0, "random_reserve": 0}
-    limits: dict[ProposalSource, int] = {"smac_model": model, "random_reserve": reserve}
+    sources: tuple[ProposalSource, ProposalSource] = (guided, "random_reserve")
+    emitted: dict[ProposalSource, int] = {guided: 0, "random_reserve": 0}
+    limits: dict[ProposalSource, int] = {guided: model, "random_reserve": reserve}
     for index in range(model + reserve):
         choices: list[ProposalSource] = [
             source for source in sources if emitted[source] < limits[source]
@@ -81,7 +101,7 @@ def _weighted_sources(model: int, reserve: int) -> tuple[ProposalSource, ...]:
             choices,
             key=lambda item: (
                 (index + 1) * limits[item] - emitted[item] * (model + reserve),
-                item == "smac_model",
+                item == guided,
             ),
         )
         result.append(source)
@@ -90,7 +110,10 @@ def _weighted_sources(model: int, reserve: int) -> tuple[ProposalSource, ...]:
 
 
 def derived_seed(root_seed: int, namespace: str, ordinal: int = 0) -> int:
-    if namespace not in {"bootstrap", "reserve", "smac"} or ordinal < 0:
+    if (
+        namespace not in {"bootstrap", "reserve", "smac", "random_search", "irace", "qmc"}
+        or ordinal < 0
+    ):
         raise ValueError("invalid proposal seed namespace")
     payload = {
         "version": "proposal-seed-v1",

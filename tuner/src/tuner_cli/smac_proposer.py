@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from ConfigSpace import ConfigurationSpace
 
-from .domain import ModelAttempt, ModelObservation, ObservationFrontier, ProposedConfiguration
+from .domain import ModelObservation, ProposalRequest, ProposedConfiguration
 from .identity import candidate_from_config
 from .proposer import ModelProposer
 from .space import ParamValues, active_values, configuration_from_values, param_value
@@ -22,21 +22,25 @@ ADAPTER_VERSION = "smac-2.4-public-ask-v1"
 class SmacProposer(ModelProposer):
     """Rebuilds SMAC from authoritative observations for each individual ask."""
 
+    adapter_version = ADAPTER_VERSION
+
     def __init__(self, space: ConfigurationSpace) -> None:
         self._space = space
 
-    def ask(
-        self,
-        observations: tuple[ModelObservation, ...],
-        frontier: ObservationFrontier,
-        excluded_fingerprints: frozenset[str],
-        attempt: ModelAttempt,
-    ) -> ProposedConfiguration:
-        del frontier, excluded_fingerprints
+    def ask(self, request: ProposalRequest, *legacy: object) -> ProposedConfiguration:
+        if legacy:
+            observations, frontier, excluded, attempt = request, *legacy
+            assert isinstance(observations, tuple)
+            assert (
+                isinstance(frontier, object)
+                and isinstance(excluded, frozenset)
+                and isinstance(attempt, object)
+            )
+            request = ProposalRequest(observations, frontier, excluded, attempt, 0, (), 1)  # type: ignore[arg-type]
         with tempfile.TemporaryDirectory(prefix="mcts-tuner-smac-") as output:
-            facade = _facade(self._space, attempt.seed, Path(output))
-            for observation in observations:
-                _tell(facade, self._space, observation, attempt.seed)
+            facade = _facade(self._space, request.attempt.seed, Path(output))
+            for observation in request.observations:
+                _tell(facade, self._space, observation, request.attempt.seed)
             trial = facade.ask()
             candidate = candidate_from_config(active_values(trial.config))
         return ProposedConfiguration(candidate, trial.config.origin)

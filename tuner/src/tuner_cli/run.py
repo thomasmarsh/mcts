@@ -16,7 +16,7 @@ from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
 from .family_exclusions import normalize_family_exclusions, validate_family_exclusions
 from .identity import candidate_from_config, sha256_file
 from .objective import ResolvedObjective, resolve_objective
-from .proposer import ModelProposer
+from .proposer import ModelProposer, ProposerPolicy
 from .replay import fold_events
 from .report import write_report
 from .schema import GameSpec, decode_game_spec
@@ -51,6 +51,7 @@ class RunOptions:
     shadow_elimination_threshold: float = 0.05
     active_elimination_audit_probability: float | None = None
     excluded_families: tuple[str, ...] = ()
+    proposer_policy: ProposerPolicy = "smac_mixed"
     resume: bool = False
 
 
@@ -79,9 +80,7 @@ def run_foreground(
     if fold_events(manifest, read_events(writer.path)).terminal_status == "complete":
         write_report(directory)
         return directory / "report.json"
-    model = model_proposer or SmacProposer(
-        build_space(spec.tuning, options.seed, manifest.excluded_families)
-    )
+    model = model_proposer or proposer_for(options.proposer_policy, spec, manifest)
     continue_run(
         manifest,
         writer,
@@ -94,6 +93,32 @@ def run_foreground(
     )
     write_report(directory)
     return directory / "report.json"
+
+
+def proposer_for(policy: ProposerPolicy, spec: GameSpec, manifest: Manifest) -> ModelProposer:
+    if policy == "smac_mixed":
+        return SmacProposer(
+            build_space(spec.tuning, options_seed(manifest), manifest.excluded_families)
+        )
+    if policy == "qmc":
+        from .proposer import derived_seed
+        from .qmc_proposer import QmcProposer
+
+        return QmcProposer(
+            spec.tuning, derived_seed(manifest.seed, "qmc"), manifest.excluded_families
+        )
+    if policy == "irace_generational":
+        from .irace_proposer import IraceProposer
+
+        return IraceProposer(spec.tuning, manifest.excluded_families)
+    if policy == "random":
+        # Random policy never asks an adapter.
+        return SmacProposer(build_space(spec.tuning, manifest.seed, manifest.excluded_families))
+    raise ValueError(f"unknown proposer policy {policy!r}")
+
+
+def options_seed(manifest: Manifest) -> int:
+    return manifest.seed
 
 
 def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
@@ -273,6 +298,7 @@ def manifest_for(
         options.excluded_families,
         options.active_elimination_audit_probability,
         options.diagnostic_pair_budget,
+        options.proposer_policy,
     )
 
 

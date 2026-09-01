@@ -589,9 +589,11 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
     completed_cohorts = len(state.completed_cohorts)
     # Derive configured slots from the actual completed cohort count and the
     # repeated frozen schedules.
-    model_slots = manifest.source_schedule.count("smac_model") + (
+    guided_source = manifest.proposer.encoded()["guided_source"]
+    assert isinstance(guided_source, str)
+    model_slots = manifest.source_schedule.count(guided_source) + (
         completed_cohorts - 1
-    ) * manifest.challenger_source_schedule.count("smac_model")
+    ) * manifest.challenger_source_schedule.count(guided_source)
     reserve_slots = manifest.source_schedule.count("random_reserve") + (
         completed_cohorts - 1
     ) * manifest.challenger_source_schedule.count("random_reserve")
@@ -602,7 +604,7 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
     rejected_json: JsonObject = {source: count for source, count in rejected.items()}
     return {
         "policy_version": manifest.proposer.encoded()["policy_version"],
-        "model_version": manifest.proposer.encoded()["smac_adapter_version"],
+        "model_version": manifest.proposer.encoded()["guided_adapter_version"],
         "cost_policy_version": manifest.proposer.encoded()["cost_policy_version"],
         "configured": {
             "bootstrap": manifest.bootstrap_candidates,
@@ -619,7 +621,15 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
         "rejections_by_source": rejected_json,
         "actual_source_attempts": {
             source: sum(item.source == source for item in state.proposals)
-            for source in ("schema_default", "bootstrap_random", "smac_model", "random_reserve")
+            for source in (
+                "schema_default",
+                "bootstrap_random",
+                "smac_model",
+                "random_reserve",
+                "random_search",
+                "qmc_search",
+                "irace_model",
+            )
         },
         "final_frontier_id": frontier.frontier_id,
         "final_observation_count": len(frontier.observation_ids),

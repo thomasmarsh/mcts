@@ -11,7 +11,15 @@ DiagnosticReason = Literal[
 ]
 EffortKind = Literal["iterations", "time_ms"]
 OpponentRole = Literal["default", "historical_reference"]
-ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
+ProposalSource = Literal[
+    "schema_default",
+    "bootstrap_random",
+    "smac_model",
+    "random_reserve",
+    "random_search",
+    "qmc_search",
+    "irace_model",
+]
 ShadowDisposition = Literal["continue", "eliminate", "protected"]
 EliminationAction = Literal["prune", "audit_continue"]
 ShadowMethodVersion = Literal[
@@ -99,6 +107,19 @@ class ProposalProvenance:
 class ModelAttempt:
     source_attempt: int
     seed: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalRequest:
+    """The complete, immutable information visible to a guided proposer."""
+
+    observations: tuple[ModelObservation, ...]
+    frontier: ObservationFrontier
+    excluded_fingerprints: frozenset[str]
+    attempt: ModelAttempt
+    generation_index: int
+    ranked_parents: tuple[Candidate, ...]
+    guided_candidates_per_generation: int
 
 
 @dataclass(frozen=True, slots=True)

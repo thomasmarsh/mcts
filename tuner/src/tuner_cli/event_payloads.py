@@ -92,7 +92,15 @@ _PROPOSAL_SOURCES: tuple[
 )
 _PHASES: tuple[Literal["tuning", "validation"], ...] = ("tuning", "validation")
 
-ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
+ProposalSource = Literal[
+    "schema_default",
+    "bootstrap_random",
+    "smac_model",
+    "random_reserve",
+    "random_search",
+    "qmc_search",
+    "irace_model",
+]
 Phase = Literal["tuning", "validation"]
 RejectionReason = Literal["duplicate", "semantic_validation"]
 

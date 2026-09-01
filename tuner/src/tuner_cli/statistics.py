@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 
 from .domain import Estimate, GameResult, PairResult
 
@@ -44,3 +45,22 @@ def tie_relation(difference: Estimate) -> str:
     if difference.upper < 0:
         return "worse"
     return "tie"
+
+
+def bootstrap_mean_interval(
+    values: tuple[float, ...], seed: int, resamples: int = 4096
+) -> Estimate:
+    """Deterministic percentile bootstrap for independent complete runs."""
+    if len(values) < 2 or any(not math.isfinite(value) for value in values) or resamples <= 0:
+        raise ValueError("bootstrap needs two finite values and positive resamples")
+    rng = random.Random(seed)
+    means = sorted(
+        sum(values[rng.randrange(len(values))] for _ in values) / len(values)
+        for _ in range(resamples)
+    )
+    # Nearest-rank order statistic keeps the encoded interval stable across Python versions.
+    return Estimate(
+        sum(values) / len(values),
+        means[round(0.025 * (resamples - 1))],
+        means[round(0.975 * (resamples - 1))],
+    )

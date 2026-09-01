@@ -13,6 +13,7 @@ from .domain import (
     ObservationFrontier,
     Proposal,
     ProposalProvenance,
+    ProposalRequest,
     ProposalSource,
     ProposedConfiguration,
     ReplayState,
@@ -174,7 +175,11 @@ def create_proposal(
     proposed = _candidate_for_source(manifest, state, default, spec, model, source, attempt)
     require_candidate_family_allowed(proposed.candidate, manifest.excluded_families)
     frontier = _frontier(manifest, state, slot)
-    version = "smac-2.4-public-ask-v1" if source == "smac_model" else "configspace-independent-v1"
+    version = (
+        getattr(model, "adapter_version", "smac-2.4-public-ask-v1")
+        if source in {"smac_model", "qmc_search", "irace_model"}
+        else "configspace-independent-v1"
+    )
     provenance = ProposalProvenance(
         source,
         version,
@@ -205,13 +210,17 @@ def _candidate_for_source(
 ) -> ProposedConfiguration:
     if source == "schema_default":
         return ProposedConfiguration(default, None)
-    if source in {"bootstrap_random", "random_reserve"}:
+    if source in {"bootstrap_random", "random_reserve", "random_search"}:
         return ProposedConfiguration(_random_candidate(manifest, spec, source, attempt), None)
     return _model_candidate(manifest, state, spec, model, attempt)
 
 
 def _random_candidate(manifest: Manifest, spec: GameSpec, source: str, attempt: int) -> Candidate:
-    namespace = "bootstrap" if source == "bootstrap_random" else "reserve"
+    namespace = {
+        "bootstrap_random": "bootstrap",
+        "random_reserve": "reserve",
+        "random_search": "random_search",
+    }[source]
     space = build_space(
         spec.tuning, derived_seed(manifest.seed, namespace, attempt - 1), manifest.excluded_families
     )
@@ -233,13 +242,57 @@ def _model_candidate(
     )
     frontier = tuning_frontier(observations)
     candidates = {item.candidate_id: item for item in block0_candidates}
-    proposed = model.ask(
+    source = proposal_source(
+        manifest,
+        len(state.completed_cohorts),
+        len(accepted_proposal_candidates_for_cohort(state, len(state.completed_cohorts))),
+    )
+    namespace = {"smac_model": "smac", "qmc_search": "qmc", "irace_model": "irace"}[source]
+    parents = _ranked_parents(state, block0_candidates, observations)
+    guided = (
+        manifest.source_schedule.count(source)
+        if not state.completed_cohorts
+        else manifest.challenger_source_schedule.count(source)
+    )
+    request = ProposalRequest(
         model_observations(observations, candidates, frontier),
         frontier,
         frozenset(item.candidate.fingerprint for item in state.proposals),
-        ModelAttempt(attempt, derived_seed(manifest.seed, "smac", attempt - 1)),
+        ModelAttempt(attempt, derived_seed(manifest.seed, namespace, attempt - 1)),
+        len(state.completed_cohorts),
+        parents,
+        guided,
     )
+    try:
+        proposed = model.ask(request)
+    except TypeError as error:
+        # The injected test seam predates ProposalRequest; production adapters
+        # are always called through the immutable request above.
+        try:
+            proposed = model.ask(
+                request.observations,
+                request.frontier,
+                request.excluded_fingerprints,
+                request.attempt,
+            )  # type: ignore[call-arg]
+        except TypeError as legacy_error:
+            raise error from legacy_error
     return proposed
+
+
+def _ranked_parents(
+    state: ReplayState, block0_candidates: tuple[Candidate, ...], observations: tuple[object, ...]
+) -> tuple[Candidate, ...]:
+    if state.completed_cohorts:
+        return tuple(
+            item
+            for item in state.active_elites
+            if item.candidate_id in {x.candidate_id for x in block0_candidates}
+        )
+    means = {item.candidate_id: item.estimate.mean for item in observations}
+    return tuple(
+        sorted(block0_candidates, key=lambda item: (-means[item.candidate_id], item.fingerprint))
+    )
 
 
 def _frontier(manifest: Manifest, state: ReplayState, slot: int) -> ObservationFrontier:

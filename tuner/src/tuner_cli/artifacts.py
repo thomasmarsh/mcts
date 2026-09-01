@@ -36,6 +36,7 @@ from .proposer import (
     COST_POLICY_VERSION,
     POLICY_VERSION,
     SAMPLER_VERSION,
+    ProposerPolicy,
     challenger_source_schedule,
     derived_seed,
     source_schedule,
@@ -72,11 +73,13 @@ def runtime_versions() -> dict[str, str]:
         "configspace": configspace_version(),
         "scikit_learn": version("scikit-learn"),
         "numpy": version("numpy"),
+        "scipy": version("scipy"),
     }
 
 
 @dataclass(frozen=True, slots=True)
 class ProposerSpecification:
+    policy: ProposerPolicy
     proposal_seed: int
     task_seed: int
     cohort_size: int
@@ -92,7 +95,10 @@ class ProposerSpecification:
 
     @property
     def model_candidates(self) -> int:
-        return self.source_schedule.count("smac_model")
+        return sum(
+            source not in {"schema_default", "bootstrap_random", "random_reserve"}
+            for source in self.source_schedule
+        )
 
     @property
     def attempt_cap(self) -> int:
@@ -101,6 +107,13 @@ class ProposerSpecification:
     def encoded(self) -> JsonObject:
         return {
             "policy_version": POLICY_VERSION,
+            "policy": self.policy,
+            "guided_source": {
+                "smac_mixed": "smac_model",
+                "random": "random_search",
+                "qmc": "qmc_search",
+                "irace_generational": "irace_model",
+            }[self.policy],
             "family_exclusion_policy_version": FAMILY_EXCLUSION_POLICY_VERSION,
             "excluded_families": list(self.excluded_families),
             "proposal_seed": self.proposal_seed,
@@ -119,7 +132,12 @@ class ProposerSpecification:
             "reserve_sampler_version": SAMPLER_VERSION,
             "bootstrap_seed": self.bootstrap_seed,
             "reserve_seed": self.reserve_seed,
-            "smac_adapter_version": ADAPTER_VERSION,
+            "guided_adapter_version": {
+                "smac_mixed": ADAPTER_VERSION,
+                "random": SAMPLER_VERSION,
+                "qmc": "scipy-sobol-scrambled-v1",
+                "irace_generational": "irace-elite-generational-v1",
+            }[self.policy],
             "runtime_versions": dict(self.runtime_versions),
         }
 
@@ -195,11 +213,13 @@ def proposer_specification(
     random_reserve_candidates: int,
     excluded_families: tuple[str, ...] = (),
     versions: dict[str, str] | None = None,
+    policy: ProposerPolicy = "smac_mixed",
 ) -> ProposerSpecification:
-    schedule = source_schedule(cohort_size, bootstrap_candidates, random_reserve_candidates)
+    schedule = source_schedule(cohort_size, bootstrap_candidates, random_reserve_candidates, policy)
     if finalists >= cohort_size:
         raise ValueError("finalists must be smaller than cohort size")
     return ProposerSpecification(
+        policy,
         proposal_seed,
         task_seed,
         cohort_size,
@@ -207,7 +227,7 @@ def proposer_specification(
         bootstrap_candidates,
         random_reserve_candidates,
         schedule,
-        challenger_source_schedule(cohort_size, finalists, random_reserve_candidates),
+        challenger_source_schedule(cohort_size, finalists, random_reserve_candidates, policy),
         derived_seed(proposal_seed, "bootstrap"),
         derived_seed(proposal_seed, "reserve"),
         tuple(sorted((runtime_versions() if versions is None else versions).items())),
@@ -432,6 +452,7 @@ def build_manifest(
     excluded_families: tuple[str, ...] = (),
     active_elimination_audit_probability: float | None = None,
     diagnostic_pair_budget: int = 0,
+    proposer_policy: ProposerPolicy = "smac_mixed",
 ) -> Manifest:
     validate_family_exclusions(spec.tuning, excluded_families)
     proposer = proposer_specification(
@@ -442,6 +463,7 @@ def build_manifest(
         bootstrap_candidates,
         random_reserve_candidates,
         excluded_families,
+        policy=proposer_policy,
     )
     if (
         isinstance(tuning_pair_budget, bool)
@@ -637,7 +659,7 @@ def _encode_manifest_object(
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
-        "command_policy_version": "bootstrap-smac-reserve-v1",
+        "command_policy_version": POLICY_VERSION,
         "compute_budget": {
             "policy_version": "safe-boundary-pair-attempts-v1",
             "tuning_pair_attempts": compute_budget.tuning_pair_attempts,
@@ -802,6 +824,8 @@ def _decode_prefix(value: object, corpus: TaskCorpus, label: str) -> TaskPrefix:
 def _decode_proposer(value: object) -> ProposerSpecification:
     fields = {
         "policy_version",
+        "policy",
+        "guided_source",
         "family_exclusion_policy_version",
         "excluded_families",
         "proposal_seed",
@@ -820,13 +844,13 @@ def _decode_proposer(value: object) -> ProposerSpecification:
         "reserve_sampler_version",
         "bootstrap_seed",
         "reserve_seed",
-        "smac_adapter_version",
+        "guided_adapter_version",
         "runtime_versions",
     }
     raw = object_fields(value, fields, "proposer")
     versions = object_fields(
         raw["runtime_versions"],
-        {"smac", "configspace", "scikit_learn", "numpy"},
+        {"smac", "configspace", "scikit_learn", "numpy", "scipy"},
         "runtime versions",
     )
     if not all(isinstance(item, str) and item for item in versions.values()):
@@ -839,6 +863,9 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     excluded_families = tuple(string(item, "excluded family", nonempty=True) for item in excluded)
     if tuple(sorted(set(excluded_families))) != excluded_families:
         raise ValueError("excluded families must be sorted and duplicate-free")
+    policy = string(raw["policy"], "proposer policy", nonempty=True)
+    if policy not in {"smac_mixed", "random", "qmc", "irace_generational"}:
+        raise ValueError("unsupported proposer policy")
     specification = proposer_specification(
         integer(raw["proposal_seed"], "proposal seed", positive=True),
         integer(raw["task_seed"], "task seed", positive=True),
@@ -851,6 +878,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
             key: string(item, f"runtime version {key}", nonempty=True)
             for key, item in versions.items()
         },
+        policy,  # type: ignore[arg-type]
     )
     if raw != specification.encoded():
         raise ValueError("proposer specification is inconsistent")
