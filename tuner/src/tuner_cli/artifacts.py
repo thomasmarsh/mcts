@@ -221,6 +221,9 @@ class CandidateFailurePolicySpecification:
 @dataclass(frozen=True, slots=True)
 class ActiveEliminationSpecification:
     audit_probability: float
+    shadow_policy_kind: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap"
+    shadow_method_version: ShadowMethodVersion = "stratified-paired-bootstrap-all-strata-v2"
+    shadow_spare_margin: float = 0.0
     sampler_version: Literal["stage-stratified-sha256-v1"] = "stage-stratified-sha256-v1"
     safety_rule_version: Literal["suspend-after-first-audited-boundary-reversal-v1"] = (
         "suspend-after-first-audited-boundary-reversal-v1"
@@ -229,6 +232,9 @@ class ActiveEliminationSpecification:
     def encoded(self) -> JsonObject:
         return {
             "audit_probability": self.audit_probability,
+            "shadow_policy_kind": self.shadow_policy_kind,
+            "shadow_method_version": self.shadow_method_version,
+            "shadow_spare_margin": self.shadow_spare_margin,
             "sampler_version": self.sampler_version,
             "safety_rule_version": self.safety_rule_version,
         }
@@ -541,7 +547,7 @@ def build_manifest(
         shadow_halving_spare_margin,
     )
     candidate_failure_policy = CandidateFailurePolicySpecification()
-    active_elimination = _active_elimination(active_elimination_audit_probability)
+    active_elimination = _active_elimination(active_elimination_audit_probability, shadow_policy)
     game_config_fingerprint = fingerprint(
         strict_json(spec.default_game_config, "game configuration")
     )
@@ -661,13 +667,29 @@ def _shadow_policy(
     raise ValueError("unsupported shadow policy")
 
 
-def _active_elimination(value: object | None) -> ActiveEliminationSpecification | None:
+def _active_elimination(
+    value: object | None, shadow_policy: ShadowPolicySpecification
+) -> ActiveEliminationSpecification | None:
     if value is None:
         return None
     probability = number(value, "active elimination audit probability")
     if not 0.0 < probability < 1.0:
         raise ValueError("active elimination audit probability must be in (0.0, 1.0)")
-    return ActiveEliminationSpecification(probability)
+    if isinstance(shadow_policy, SuccessiveHalvingPolicySpecification):
+        if shadow_policy.method_version != "successive-halving-spare-near-tie-v1":
+            raise ValueError(
+                "active elimination with successive halving requires the gate-approved "
+                "spare-near-tie policy (a positive spare margin)"
+            )
+        spare_margin = shadow_policy.spare_margin
+    else:
+        spare_margin = 0.0
+    return ActiveEliminationSpecification(
+        probability,
+        shadow_policy.kind,
+        shadow_policy.method_version,
+        spare_margin,
+    )
 
 
 _STATISTICAL_POLICY: JsonObject = {
@@ -1131,15 +1153,24 @@ def _decode_candidate_failure_policy(value: object) -> CandidateFailurePolicySpe
     return policy
 
 
-def _decode_active_elimination(value: object) -> ActiveEliminationSpecification | None:
+def _decode_active_elimination(
+    value: object, shadow_policy: ShadowPolicySpecification
+) -> ActiveEliminationSpecification | None:
     if value is None:
         return None
     raw = object_fields(
         value,
-        {"audit_probability", "sampler_version", "safety_rule_version"},
+        {
+            "audit_probability",
+            "shadow_policy_kind",
+            "shadow_method_version",
+            "shadow_spare_margin",
+            "sampler_version",
+            "safety_rule_version",
+        },
         "active elimination",
     )
-    policy = _active_elimination(raw["audit_probability"])
+    policy = _active_elimination(raw["audit_probability"], shadow_policy)
     if policy is None or raw != policy.encoded():
         raise ValueError("unsupported active elimination policy")
     return policy
@@ -1283,11 +1314,7 @@ def decode_manifest_object(value: object) -> Manifest:
     )
     shadow_policy = _decode_shadow_policy(raw["shadow_policy"])
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
-    active_elimination = _decode_active_elimination(raw["active_elimination"])
-    if active_elimination is not None and not isinstance(
-        shadow_policy, PairedBootstrapPolicySpecification
-    ):
-        raise ValueError("active elimination requires paired_bootstrap shadow policy")
+    active_elimination = _decode_active_elimination(raw["active_elimination"], shadow_policy)
     diagnostic_policy = _decode_diagnostic_policy(raw["diagnostic_policy"])
     panel = _decode_panel(raw["opponent_panel"])
     source_path, objective_id, objective_fingerprint = _decode_objective_ref(raw)

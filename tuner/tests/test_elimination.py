@@ -3,7 +3,15 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from tuner_cli.artifacts import ActiveEliminationSpecification, read_manifest
+import pytest
+
+from tuner_cli.artifacts import (
+    ActiveEliminationSpecification,
+    _active_elimination,
+    _decode_active_elimination,
+    _shadow_policy,
+    read_manifest,
+)
 from tuner_cli.domain import (
     ApplyElimination,
     Candidate,
@@ -48,6 +56,39 @@ def test_active_elimination_sampling_is_deterministic_and_ignores_non_eliminatio
     margin = first.actions[0].margin
     assert isinstance(margin, PairedProbabilityMargin)
     assert margin == PairedProbabilityMargin(0.05, 0.0, 0.05)
+
+
+def test_active_specification_binds_the_paired_shadow_policy_and_round_trips() -> None:
+    paired = _shadow_policy(0.0, 0.05, "paired_bootstrap")
+    spec = _active_elimination(0.25, paired)
+    assert spec == ActiveEliminationSpecification(
+        0.25, "paired_bootstrap", "stratified-paired-bootstrap-all-strata-v2", 0.0
+    )
+    assert _decode_active_elimination(spec.encoded(), paired) == spec
+
+
+def test_active_specification_binds_the_spare_near_tie_halving_policy() -> None:
+    halving = _shadow_policy(0.0, 0.05, "successive_halving", 4, 0.1)
+    spec = _active_elimination(0.25, halving)
+    assert spec == ActiveEliminationSpecification(
+        0.25, "successive_halving", "successive-halving-spare-near-tie-v1", 0.1
+    )
+    assert _decode_active_elimination(spec.encoded(), halving) == spec
+
+
+def test_active_elimination_rejects_the_ungated_eta2_halving_cut() -> None:
+    eta2 = _shadow_policy(0.0, 0.05, "successive_halving", 4, 0.0)
+    with pytest.raises(ValueError, match="gate-approved"):
+        _active_elimination(0.25, eta2)
+
+
+def test_decode_rejects_an_active_specification_bound_to_a_different_policy() -> None:
+    paired = _shadow_policy(0.0, 0.05, "paired_bootstrap")
+    halving = _shadow_policy(0.0, 0.05, "successive_halving", 4, 0.1)
+    bound_to_halving = _active_elimination(0.25, halving)
+    assert bound_to_halving is not None
+    with pytest.raises(ValueError):
+        _decode_active_elimination(bound_to_halving.encoded(), paired)
 
 
 def test_audited_boundary_reversal_uses_the_maximum_prefix_and_margin() -> None:

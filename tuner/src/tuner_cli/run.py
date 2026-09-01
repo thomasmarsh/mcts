@@ -151,8 +151,14 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         raise ValueError("diagnostic pair budget must be a non-Boolean integer at least zero")
     _validate_shadow_margins(options)
     if options.active_elimination_audit_probability is not None:
-        if options.shadow_policy != "paired_bootstrap":
-            raise ValueError("active elimination requires paired_bootstrap shadow policy")
+        if (
+            options.shadow_policy == "successive_halving"
+            and options.shadow_halving_spare_margin <= 0.0
+        ):
+            raise ValueError(
+                "active elimination with successive halving requires "
+                "--shadow-halving-spare-margin > 0 (the gate-approved spare-near-tie policy)"
+            )
         value = options.active_elimination_audit_probability
         if (
             isinstance(value, bool)
