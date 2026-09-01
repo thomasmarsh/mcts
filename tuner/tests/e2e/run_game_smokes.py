@@ -120,6 +120,17 @@ def _check_game(
             == manifest["proposer"]["excluded_families"]
         )
         assert manifest["kind"] == expected_kind
+        analysis = report["opponent_response_analysis"]
+        assert analysis["scope"]["phase"] == "tuning"
+        assert analysis["scope"]["prefix_id"] == manifest["prefixes"]["tuning"]["prefix_id"]
+        assert analysis["scope"]["opponent_ids"] == [
+            item["opponent_id"] for item in manifest["opponent_panel"]["opponents"]
+        ]
+        assert len(analysis["candidates"]) == manifest["proposer"]["cohort_size"]
+        assert all(
+            len(item["opponent_responses"]) == len(analysis["scope"]["opponent_ids"])
+            for item in analysis["candidates"]
+        )
         assert manifest["objective"]["fingerprint"] and manifest["opponent_panel"]["fingerprint"]
         assert manifest["epoch"]["fingerprint"]
         assert len(manifest["tuning_blocks"]) == (2 if time_only else 3)

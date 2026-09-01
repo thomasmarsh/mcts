@@ -14,6 +14,7 @@ from .domain import Candidate, Observation, ObservationContext, PairResult, Repl
 from .effort import encode_effort
 from .evidence import atomic_json, read_events
 from .observations import comparable_prefix_observations, paired_difference
+from .opponent_interactions import OpponentResponseAnalysis, build_opponent_response_analysis
 from .proposer import tuning_frontier
 from .replay import replay
 from .shadow_audit import CandidatePathAudit, ShadowAudit, build_shadow_audit
@@ -232,6 +233,18 @@ def build_report(run_dir: Path) -> JsonObject:
     finalists = state.finalists
     observations = _finalist_validation_observations(state, finalists)
     validation = _validation_pairs_by_candidate(state)
+    cohort = latest_completed_cohort(state)
+    if cohort is None:
+        raise ValueError("report requires a completed cohort")
+    tuning = comparable_prefix_observations(
+        state.observations, cohort.candidates, manifest.tuning_prefix
+    )
+    opponent_analysis = build_opponent_response_analysis(
+        manifest.panel,
+        cohort,
+        tuning,
+        tuple(state.completed_pairs),
+    )
     comparisons, tied, unresolved = _comparisons(observations)
     ranked = sorted(
         zip(finalists, observations, strict=True),
@@ -266,6 +279,9 @@ def build_report(run_dir: Path) -> JsonObject:
         "proposal_search": _proposal_search(manifest, state),
         "candidate_lifecycle": _candidate_lifecycle(manifest, state),
         "validation_order": _array(entries),
+        "opponent_response_analysis": _opponent_response_analysis(
+            manifest, cohort.cohort_index, tuning[0], opponent_analysis
+        ),
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
         "compute": _compute_section(manifest, state),
@@ -276,6 +292,11 @@ def build_report(run_dir: Path) -> JsonObject:
         "limitations": [
             "default-only starting state",
             "conservative small-sample intervals",
+            (
+                "opponent-response intervals are per-contrast only, with no across-matrix "
+                "multiplicity correction; ranking reversals are descriptive evidence, not a "
+                "family-wise error guarantee"
+            ),
             "explicit resume",
             (
                 "shadow-elimination outcomes are same-run maximum-tuning "
@@ -292,6 +313,71 @@ def build_report(run_dir: Path) -> JsonObject:
                 "estimate boundary reversals"
             ),
         ],
+    }
+
+
+def _opponent_response_analysis(
+    manifest: Manifest,
+    cohort_index: int,
+    observation: Observation,
+    analysis: OpponentResponseAnalysis,
+) -> JsonObject:
+    responses = {(item.candidate_id, item.opponent_id): item for item in analysis.responses}
+    candidates: list[JsonObject] = []
+    for candidate_id in dict.fromkeys(item.candidate_id for item in analysis.responses):
+        rows: list[JsonObject] = []
+        for opponent in manifest.panel.opponents:
+            response = responses[candidate_id, opponent.opponent_id]
+            rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "opponent_id": opponent.opponent_id,
+                    "mean": response.estimate.mean,
+                    "interval": {
+                        "lower": response.estimate.lower,
+                        "upper": response.estimate.upper,
+                    },
+                    "pair_count": response.pair_count,
+                    **_counts(list(response.pairs)),
+                }
+            )
+        candidates.append({"candidate_id": candidate_id, "opponent_responses": _array(rows)})
+    return {
+        "scope": {
+            "phase": "tuning",
+            "cohort_index": cohort_index,
+            "prefix_id": observation.context.task_prefix.prefix_id,
+            "opponent_ids": [item.opponent_id for item in manifest.panel.opponents],
+            "interval_method": "hoeffding_pair_bound_v1",
+            "interaction_rule": "opposite-paired-hoeffding-relations-v1",
+        },
+        "candidates": _array(candidates),
+        "pairwise_interactions": _array(
+            {
+                "left_candidate_id": item.left_candidate_id,
+                "right_candidate_id": item.right_candidate_id,
+                "contrasts": _array(
+                    {
+                        "opponent_id": contrast.opponent_id,
+                        "mean_difference": contrast.paired_difference.mean,
+                        "interval": {
+                            "lower": contrast.paired_difference.lower,
+                            "upper": contrast.paired_difference.upper,
+                        },
+                        "relation": contrast.relation,
+                    }
+                    for contrast in item.contrasts
+                ),
+                "ranking_reversals": _array(
+                    {
+                        "left_opponent_id": reversal.left_opponent_id,
+                        "right_opponent_id": reversal.right_opponent_id,
+                    }
+                    for reversal in item.ranking_reversals
+                ),
+            }
+            for item in analysis.interactions
+        ),
     }
 
 

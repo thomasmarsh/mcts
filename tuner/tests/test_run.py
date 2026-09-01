@@ -278,6 +278,27 @@ def test_foreground_fake_run_has_common_blocks_and_rebuildable_report(tmp_path: 
         {"kind": "iterations", "value": 3}
     ] * 14
     report = (run_dir / "report.json").read_bytes()
+    opponent_analysis = json.loads(report)["opponent_response_analysis"]
+    assert opponent_analysis["scope"] == {
+        "phase": "tuning",
+        "cohort_index": 1,
+        "prefix_id": manifest["prefixes"]["tuning"]["prefix_id"],
+        "opponent_ids": ["schema-default", "historical"],
+        "interval_method": "hoeffding_pair_bound_v1",
+        "interaction_rule": "opposite-paired-hoeffding-relations-v1",
+    }
+    state = replay(
+        read_manifest(run_dir / "manifest.json"), read_events(run_dir / "evidence.jsonl")
+    )
+    assert state.completed_cohorts
+    assert [item["candidate_id"] for item in opponent_analysis["candidates"]] == [
+        item.candidate_id for item in state.completed_cohorts[-1].candidates
+    ]
+    assert all(
+        [item["opponent_id"] for item in candidate["opponent_responses"]]
+        == opponent_analysis["scope"]["opponent_ids"]
+        for candidate in opponent_analysis["candidates"]
+    )
     write_report(run_dir)
     assert (run_dir / "report.json").read_bytes() == report
 
