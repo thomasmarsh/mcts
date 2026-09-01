@@ -23,20 +23,22 @@ use crate::SearchBudget;
 /// cutoff) from it, the same as any `Compose` family's `SearchSettings`.
 pub(crate) fn build_direct<G: Game + 'static>(
     direct: &DirectFamily,
+    seed: u64,
     budget: &SearchBudget,
 ) -> Box<dyn Search<G = G>> {
     match direct {
-        DirectFamily::Random => Box::new(Random::<G>::new()),
+        DirectFamily::Random => Box::new(Random::<G>::new().with_seed(seed)),
         DirectFamily::FlatMc {
             samples_per_move,
             max_rollout_depth,
             ucb1,
-        } => Box::new(FlatMonteCarloStrategy::<G> {
-            samples_per_move: *samples_per_move,
-            max_rollout_depth: *max_rollout_depth,
-            ucb1: *ucb1,
-            ..FlatMonteCarloStrategy::new()
-        }),
+        } => Box::new(
+            FlatMonteCarloStrategy::<G>::new()
+                .set_samples_per_move(*samples_per_move)
+                .set_max_rollout_depth(*max_rollout_depth)
+                .set_ucb1(*ucb1)
+                .with_seed(seed),
+        ),
         DirectFamily::Negamax {
             max_depth,
             table_bits,

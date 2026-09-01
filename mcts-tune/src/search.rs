@@ -414,7 +414,7 @@ pub(crate) fn make_candidate<G: Game + 'static>(
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
     match dispatch_family(&p.family, p)? {
-        FamilySpec::Direct(direct) => Ok(build_direct::<G>(&direct, budget)),
+        FamilySpec::Direct(direct) => Ok(build_direct::<G>(&direct, seed, budget)),
         FamilySpec::Compose(cs) => {
             let (spec, settings) = compose_settings(cs, p, seed, use_transpositions, budget)?;
             config_ir::validate_search_spec::<G>(&spec).map_err(HostError::bad_request)?;

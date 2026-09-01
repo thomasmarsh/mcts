@@ -14,9 +14,16 @@ pub struct Random<G: Game> {
 impl<G: Game> Random<G> {
     pub fn new() -> Self {
         Self {
-            rng: rand::rngs::SmallRng::from_entropy(),
+            rng: rand::rngs::SmallRng::seed_from_u64(0),
             game_type: PhantomData,
         }
+    }
+
+    /// Reseeds the move RNG. Two `Random` strategies built with the same
+    /// seed play the same sequence of moves.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = rand::rngs::SmallRng::seed_from_u64(seed);
+        self
     }
 }
 
