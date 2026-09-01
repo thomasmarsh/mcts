@@ -25,6 +25,11 @@ from .observations import comparable_prefix_observations, paired_difference
 from .selection import select_top_candidates
 from .shadow import favorable_resamples_by_stratum, paired_stratum_differences
 
+# A candidate is "clearly behind" the boundary in a stratum when its early paired
+# mean sits at least this far below zero; used only for the diagnostic per-stratum
+# dangerous-flip count, never as a gate clause.
+DANGEROUS_FLIP_MARGIN = 0.1
+
 
 @dataclass(frozen=True, slots=True)
 class StratumAudit:
@@ -97,6 +102,9 @@ class ShadowAudit:
     brier_score: float | None
     recorded_compute_after_first_elimination: PhaseCompute
     superseded_roster_looks: int
+    boundary_reversals: int
+    rule_tie_evictions: int
+    per_stratum_dangerous_flips: int
 
 
 def _mean(values: tuple[float, ...]) -> float:
@@ -392,6 +400,21 @@ def _finish_audit(
         if not item.protected and item.first_elimination_prefix_id is not None
     ]
     eligible = [item for item in paths if not item.protected and item.final_top_set and item.looks]
+    boundary_reversals = 0
+    rule_tie_evictions = 0
+    dangerous_flips = 0
+    for path in eliminated:
+        first = next(look for look in path.looks if look.disposition == "eliminate")
+        if first.maximum_mean_difference > 0.0:
+            boundary_reversals += 1
+        elif first.maximum_mean_difference == 0.0:
+            rule_tie_evictions += 1
+        dangerous_flips += sum(
+            1
+            for stratum in first.strata
+            if stratum.early_mean_difference <= -DANGEROUS_FLIP_MARGIN
+            and stratum.maximum_mean_difference >= 0.0
+        )
     brier = (
         None if not calibration else sum((p - y) ** 2 for p, y in calibration) / len(calibration)
     )
@@ -425,4 +448,7 @@ def _finish_audit(
         brier,
         total_compute,
         superseded_roster_looks,
+        boundary_reversals,
+        rule_tie_evictions,
+        dangerous_flips,
     )

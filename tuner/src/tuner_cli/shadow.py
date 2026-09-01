@@ -81,16 +81,35 @@ def _source_index(
     return int.from_bytes(sha256(payload.encode()).digest()[:8], "big") % length
 
 
+_RESAMPLE_INDEX_CACHE: dict[tuple[object, ...], dict[str, tuple[tuple[int, ...], ...]]] = {}
+
+
 def _resample_indexes(
     manifest: Manifest,
     cohort_index: int,
     prefix: TaskPrefix,
     strata: tuple[StratumDifferences, ...],
 ) -> dict[str, tuple[tuple[int, ...], ...]]:
-    """Build the common bootstrap draws once so every candidate shares a replicate."""
+    """Build the common bootstrap draws once so every candidate shares a replicate.
+
+    The draws depend only on the policy version, epoch, cohort index, prefix and
+    per-stratum pair counts -- never on the candidate utilities -- so the result
+    is memoised and reused across the many candidates of one race (and, in the
+    mechanism sweep, across every trial)."""
     if not isinstance(manifest.shadow_policy, PairedBootstrapPolicySpecification):
         raise ValueError("paired bootstrap evidence requires paired policy")
-    return {
+    key: tuple[object, ...] = (
+        manifest.shadow_policy.method_version,
+        manifest.epoch.epoch_id,
+        cohort_index,
+        prefix.prefix_id,
+        manifest.shadow_policy.resamples,
+        tuple((stratum.stratum_id, len(stratum.values)) for stratum in strata),
+    )
+    cached = _RESAMPLE_INDEX_CACHE.get(key)
+    if cached is not None:
+        return cached
+    built = {
         stratum.stratum_id: tuple(
             tuple(
                 _source_index(
@@ -108,6 +127,8 @@ def _resample_indexes(
         )
         for stratum in strata
     }
+    _RESAMPLE_INDEX_CACHE[key] = built
+    return built
 
 
 def favorable_resamples_by_stratum(
