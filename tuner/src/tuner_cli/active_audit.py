@@ -38,6 +38,12 @@ def _action_json(action: CandidateEliminationAction) -> JsonObject:
     }
 
 
+def _suffix_unique_pairs(manifest: Manifest, prefix_id: str) -> int:
+    """Manifest tuning cases strictly after the given elimination prefix."""
+    block = next(item for item in manifest.tuning_blocks if item.prefix_id == prefix_id)
+    return manifest.tuning_prefix.length - block.length
+
+
 def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
     if manifest.active_elimination is None:
         raise ValueError("active elimination is disabled")
@@ -50,6 +56,15 @@ def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
         for batch in state.elimination_allocations
     ]
     actions = [action for batch in state.elimination_allocations for action in batch.actions]
+    suffix_by_action = [
+        (action, _suffix_unique_pairs(manifest, batch.prefix_id))
+        for batch in state.elimination_allocations
+        for action in batch.actions
+    ]
+    gross_nominal_suffix_unique_pairs = sum(count for _, count in suffix_by_action)
+    audit_continuation_suffix_unique_pairs = sum(
+        count for action, count in suffix_by_action if action.action == "audit_continue"
+    )
     reversals = [
         reversal
         for cohort in state.completed_cohorts
@@ -60,6 +75,8 @@ def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
     suspension = state.active_elimination_suspension
     return {
         "policy": {
+            "policy_kind": manifest.active_elimination.shadow_policy_kind,
+            "policy_version": manifest.active_elimination.shadow_method_version,
             "audit_probability": manifest.active_elimination.audit_probability,
             "sampler_version": manifest.active_elimination.sampler_version,
             "safety_rule_version": manifest.active_elimination.safety_rule_version,
@@ -68,6 +85,12 @@ def build_active_audit(manifest: Manifest, state: ReplayState) -> JsonObject:
         "summary": {
             "pruned": sum(action.action == "prune" for action in actions),
             "audit_continued": sum(action.action == "audit_continue" for action in actions),
+            "nominal_eliminations": elimination_decisions,
+            "gross_nominal_suffix_unique_pairs": gross_nominal_suffix_unique_pairs,
+            "audit_continuation_suffix_unique_pairs": audit_continuation_suffix_unique_pairs,
+            "planned_unique_pair_savings": (
+                gross_nominal_suffix_unique_pairs - audit_continuation_suffix_unique_pairs
+            ),
             "elimination_decisions": elimination_decisions,
             "audited_continuations": sum(action.action == "audit_continue" for action in actions),
             "audited_boundary_reversals": len(reversals),
