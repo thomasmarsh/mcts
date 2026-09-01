@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol
 
 from .bakeoff_artifacts import BAKEOFF_BASELINE, BAKEOFF_CHALLENGER, BakeoffDecision
 from .codec import JsonObject, JsonValue
 from .domain import Estimate
 from .identity import canonical_json, fingerprint
 from .statistics import bootstrap_mean_interval
+
+
+class HeldOutFact(Protocol):
+    """The held-out evidence any bake-off child fact exposes for the shared metrics."""
+
+    @property
+    def held_out_means(self) -> tuple[tuple[str, float], ...]: ...
+
 
 REFERENCE_SET_RULE = "union-returned-finalists-v1"
 DECISION_RULE = "irace-vs-smac-largest-budget-v1"
@@ -53,7 +63,8 @@ class _CellMetrics:
         return self.top_set_recall
 
 
-def _reference_means(facts: list[ChildFact]) -> dict[str, float]:
+def held_out_reference_means(facts: Iterable[HeldOutFact]) -> dict[str, float]:
+    """Union-of-returned-finalists reference means, shared across bake-off kinds."""
     means: dict[str, float] = {}
     for fact in facts:
         for candidate_fingerprint, mean in fact.held_out_means:
@@ -64,16 +75,16 @@ def _reference_means(facts: list[ChildFact]) -> dict[str, float]:
     return means
 
 
-def _reference_top_set(means: dict[str, float], top_set_k: int) -> tuple[str, ...]:
+def held_out_reference_top_set(means: dict[str, float], top_set_k: int) -> tuple[str, ...]:
     ordered = sorted(means.items(), key=lambda item: (-item[1], item[0]))
     return tuple(candidate for candidate, _ in ordered[:top_set_k])
 
 
 def _cell_metrics(facts: list[ChildFact], top_set_k: int) -> list[_CellMetrics]:
-    means = _reference_means(facts)
+    means = held_out_reference_means(facts)
     if not means:
         raise ValueError("bakeoff budget has no returned finalists")
-    top_set = frozenset(_reference_top_set(means, top_set_k))
+    top_set = frozenset(held_out_reference_top_set(means, top_set_k))
     reference_best = max(means.values())
     result: list[_CellMetrics] = []
     for fact in facts:
@@ -88,7 +99,7 @@ def _cell_metrics(facts: list[ChildFact], top_set_k: int) -> list[_CellMetrics]:
     return result
 
 
-def _interval(values: tuple[float, ...], experiment: str, label: str) -> JsonObject:
+def across_seed_interval(values: tuple[float, ...], experiment: str, label: str) -> JsonObject:
     seed = int(fingerprint({"experiment": experiment, "metric": label})[:8], 16)
     estimate: Estimate = bootstrap_mean_interval(values, seed)
     return {"mean": estimate.mean, "lower": estimate.lower, "upper": estimate.upper}
@@ -128,7 +139,7 @@ def _policy_summary(
     }
     for metric in _METRICS:
         values = tuple(cell.value(metric) for cell in rows)
-        summary[metric] = _interval(values, experiment, f"{budget}:{policy}:{metric}")
+        summary[metric] = across_seed_interval(values, experiment, f"{budget}:{policy}:{metric}")
     return summary
 
 
@@ -149,7 +160,9 @@ def _contrast(
     contrast: JsonObject = {"budget": budget, "left_policy": left, "right_policy": right}
     for metric in _METRICS:
         differences = _paired_differences(cells, left, right, metric)
-        contrast[metric] = _interval(differences, experiment, f"{budget}:{left}-{right}:{metric}")
+        contrast[metric] = across_seed_interval(
+            differences, experiment, f"{budget}:{left}-{right}:{metric}"
+        )
     return contrast
 
 

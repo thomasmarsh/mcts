@@ -8,6 +8,7 @@ dependencies = ["ConfigSpace>=1.0.0,<2", "scikit-learn==1.6.1", "smac==2.4.0", "
 [project.scripts]
 tuner = "tuner_cli.__main__:main"
 tuner-proposer-bakeoff = "tuner_cli.proposer_bakeoff_main:main"
+tuner-elimination-bakeoff = "tuner_cli.elimination_bakeoff_main:main"
 tuner-mechanism = "tuner_cli.mechanism_main:main"
 
 [dependency-groups]
