@@ -136,3 +136,30 @@ def test_effort_flags_resolve_independently_and_are_exclusive() -> None:
     )
     with pytest.raises(SystemExit):
         parser.parse_args(base + ["--tuning-max-iterations", "1", "--tuning-max-time-ms", "1"])
+
+
+def test_shadow_halving_spare_margin_defaults_zero_and_threads_through() -> None:
+    parser = build_parser()
+    base = [
+        "--game-binary",
+        "game",
+        "--objective-file",
+        "objective.json",
+        "--run-dir",
+        "run",
+        "--task-seed",
+        "9",
+        "--tuning-pair-budget",
+        "24",
+        "--validation-pair-budget",
+        "6",
+        "--production-validation-pairs",
+        "3",
+    ]
+    assert _options(parser.parse_args(base)).shadow_halving_spare_margin == 0.0
+    options = _options(
+        parser.parse_args(
+            base + ["--shadow-policy", "successive_halving", "--shadow-halving-spare-margin", "0.1"]
+        )
+    )
+    assert options.shadow_halving_spare_margin == 0.1

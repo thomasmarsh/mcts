@@ -171,10 +171,9 @@ def _halving_evidence() -> SuccessiveHalvingEvidence:
     return SuccessiveHalvingEvidence(1, 4, 2, False)
 
 
-def test_variant_defaults_match_the_shipped_cut() -> None:
-    """keep_fraction=0.5, spare_margin=0.0 must reproduce the shipped policy."""
+def test_as_halving_zero_spare_margin_matches_the_shipped_cut() -> None:
+    """`spare_margin = 0.0` must leave the eta-2 rank cut untouched."""
     from tuner_cli.mechanism_sim import build_active_state, draw_trial, sample_cohort
-    from tuner_cli.mechanism_variants import decide_halving_variant
     from tuner_cli.race_policy import decide_shadow_race
 
     calibration = load_calibration(CALIBRATION)
@@ -185,11 +184,13 @@ def test_variant_defaults_match_the_shipped_cut() -> None:
         cohort = sample_cohort(calibration, manifest, rng, 0.02, 1.0)
         state = build_active_state(manifest, cohort, draw_trial(cohort, calibration, manifest, rng))
         shipped = decide_shadow_race(manifest, state, 0, early)
-        variant = decide_halving_variant(manifest, state, early)
-        assert variant.boundary_candidate_id == shipped.boundary_candidate_id
-        assert {d.candidate_id: d.disposition for d in variant.decisions} == {
-            d.candidate_id: d.disposition for d in shipped.decisions
-        }
+        zero_spare = decide_shadow_race(as_halving(manifest, 0.0), state, 0, early)
+        assert zero_spare == shipped
+        spared = decide_shadow_race(as_halving(manifest, 0.10), state, 0, early)
+        # A positive margin only ever keeps more candidates, never fewer.
+        kept = {d.candidate_id for d in spared.decisions if d.disposition == "continue"}
+        shipped_kept = {d.candidate_id for d in shipped.decisions if d.disposition == "continue"}
+        assert shipped_kept <= kept
 
 
 # --------------------------------------------------------------------------- #
@@ -233,7 +234,7 @@ def test_sweep_slice_bounds() -> None:
     assert 0.0 <= halving.boundary_reversal_rate <= 0.5
     assert sweep.overall["halving"].top_set_false_eviction_rate < 0.1
     assert "paired" not in sweep.gates
-    assert {"keep5", "keep6", "spare05", "spare10"} <= set(sweep.gates)
+    assert {"spare05", "spare10"} <= set(sweep.gates)
     # Re-running the same slice reproduces every aggregate exactly.
     again = run_sweep(
         calibration,

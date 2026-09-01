@@ -1,4 +1,13 @@
-"""Pure fixed eta-two shadow comparator over common-prefix observations."""
+"""Fixed eta-two shadow comparator over common-prefix observations.
+
+The rank cut keeps ``ceil(n/2)`` survivors and eliminates the rest. When the
+policy carries a positive ``spare_margin`` (method version
+``successive-halving-spare-near-tie-v1``), a would-be-eliminated candidate whose
+paired mean at the cut prefix is within the margin of the last kept candidate is
+carried to the next look rather than cut, so a near-coin-flip boundary pair is
+not resolved on a short common prefix. ``spare_margin`` of ``0.0`` is exactly the
+plain eta-2 cut.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +20,7 @@ from .domain import (
     SuccessiveHalvingEvidence,
     TaskPrefix,
 )
-from .observations import comparable_prefix_observations
+from .observations import comparable_prefix_observations, paired_difference
 from .selection import select_top_candidates
 
 
@@ -73,6 +82,15 @@ def decide_successive_halving_shadow_race(
     target = max(policy.survivor_floor, (len(survivors) + 1) // 2, len(protected))
     target = min(target, len(survivors))
     kept = {item.candidate_id for item in ranked[:target]}
+    if policy.spare_margin > 0.0 and target < len(ranked):
+        observation_by_id = {item.candidate_id: item for item in observations}
+        boundary_observation = observation_by_id[ranked[target - 1].candidate_id]
+        for candidate in ranked[target:]:
+            difference = paired_difference(
+                observation_by_id[candidate.candidate_id], boundary_observation
+            ).mean
+            if difference >= -policy.spare_margin:
+                kept.add(candidate.candidate_id)
     ranks = {item.candidate_id: index + 1 for index, item in enumerate(ranked)}
     decisions = tuple(
         ShadowCandidateDecision(

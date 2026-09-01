@@ -27,6 +27,7 @@ ShadowMethodVersion = Literal[
     "stratified-paired-bootstrap-v1",
     "stratified-paired-bootstrap-all-strata-v2",
     "successive-halving-common-prefix-eta2-v1",
+    "successive-halving-spare-near-tie-v1",
 ]
 
 

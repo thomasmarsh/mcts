@@ -28,17 +28,21 @@ from tuner_cli.successive_halving import decide_successive_halving_shadow_race
 
 FIXTURES = Path(__file__).parent / "fixtures" / "version4"
 _METHOD = "successive-halving-common-prefix-eta2-v1"
+_SPARE_METHOD = "successive-halving-spare-near-tie-v1"
 
 
-def _halving_policy(survivor_floor: int) -> SuccessiveHalvingPolicySpecification:
+def _halving_policy(
+    survivor_floor: int, spare_margin: float = 0.0
+) -> SuccessiveHalvingPolicySpecification:
     return SuccessiveHalvingPolicySpecification(
         "successive_halving",
-        _METHOD,
+        _SPARE_METHOD if spare_margin > 0.0 else _METHOD,
         2,
         0.0,
         12,
         survivor_floor,
         "tuning-point-estimate-fingerprint-v1",
+        spare_margin,
     )
 
 
@@ -138,6 +142,60 @@ def test_retained_elites_are_always_protected(
         assert dispositions[elite_id] == "protected"
     # The elites rank below the cut line, yet protection keeps every path alive.
     assert "eliminate" not in dispositions.values()
+
+
+def test_zero_spare_margin_reproduces_the_eta_two_decision(
+    manifest: Manifest, state: ReplayState, prefix: TaskPrefix
+) -> None:
+    eta2 = replace(manifest, shadow_policy=_halving_policy(manifest.finalists))
+    spare_zero = replace(
+        manifest,
+        shadow_policy=SuccessiveHalvingPolicySpecification(
+            "successive_halving",
+            _SPARE_METHOD,
+            2,
+            0.0,
+            12,
+            manifest.finalists,
+            "tuning-point-estimate-fingerprint-v1",
+            0.0,
+        ),
+    )
+    base = decide_successive_halving_shadow_race(eta2, state, 0, prefix)
+    softened = decide_successive_halving_shadow_race(spare_zero, state, 0, prefix)
+
+    assert softened == replace(base, policy_version=_SPARE_METHOD)
+
+
+def test_near_tie_candidates_are_spared_at_a_positive_margin(
+    manifest: Manifest, state: ReplayState, prefix: TaskPrefix
+) -> None:
+    from tuner_cli.observations import comparable_prefix_observations, paired_difference
+
+    cut = replace(manifest, shadow_policy=_halving_policy(manifest.finalists))
+    base = decide_successive_halving_shadow_race(cut, state, 0, prefix)
+    eliminated = {item.candidate_id for item in base.decisions if item.disposition == "eliminate"}
+    assert len(eliminated) == 2
+
+    cohort = current_active_candidates(state)
+    by_id = {
+        item.candidate_id: item
+        for item in comparable_prefix_observations(state.observations, cohort, prefix)
+    }
+    boundary = by_id[base.boundary_candidate_id]
+    # Both cut candidates sit within 0.05 of the boundary in paired mean, so a
+    # spare margin of 0.05 must carry both rather than resolve the boundary.
+    assert all(paired_difference(by_id[cid], boundary).mean >= -0.05 for cid in eliminated)
+
+    softened = replace(manifest, shadow_policy=_halving_policy(manifest.finalists, 0.05))
+    decision = decide_successive_halving_shadow_race(softened, state, 0, prefix)
+
+    assert decision.boundary_candidate_id == base.boundary_candidate_id
+    assert all(item.disposition == "continue" for item in decision.decisions)
+    for item in decision.decisions:
+        assert isinstance(item.evidence, SuccessiveHalvingEvidence)
+        assert item.evidence.newly_eliminated is False
+        assert item.evidence.target_survivor_count == 2  # the rank cut is unchanged
 
 
 def test_prior_hypothetical_eliminations_do_not_re_enter_a_later_rung(

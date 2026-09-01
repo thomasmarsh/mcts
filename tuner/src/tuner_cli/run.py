@@ -51,6 +51,7 @@ class RunOptions:
     shadow_practical_margin: float = 0.0
     shadow_elimination_threshold: float = 0.05
     shadow_policy: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap"
+    shadow_halving_spare_margin: float = 0.0
     active_elimination_audit_probability: float | None = None
     excluded_families: tuple[str, ...] = ()
     proposer_policy: ProposerPolicy = "smac_mixed"
@@ -148,14 +149,7 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         raise ValueError("all numeric arguments must be positive integers")
     if isinstance(options.diagnostic_pair_budget, bool) or options.diagnostic_pair_budget < 0:
         raise ValueError("diagnostic pair budget must be a non-Boolean integer at least zero")
-    for value, label, inclusive in (
-        (options.shadow_practical_margin, "shadow practical margin", True),
-        (options.shadow_elimination_threshold, "shadow elimination threshold", False),
-    ):
-        if isinstance(value, bool) or not math.isfinite(value):
-            raise ValueError(f"{label} must be a finite number")
-        if not (0.0 <= value <= 1.0 if inclusive else 0.0 < value < 0.5):
-            raise ValueError(f"{label} must be in {'[0.0, 1.0]' if inclusive else '(0.0, 0.5)'}")
+    _validate_shadow_margins(options)
     if options.active_elimination_audit_probability is not None:
         if options.shadow_policy != "paired_bootstrap":
             raise ValueError("active elimination requires paired_bootstrap shadow policy")
@@ -195,6 +189,20 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
     if not options.resume and directory.exists():
         raise ValueError(f"run directory already exists: {directory}; use --resume to continue it")
     return binary, directory, objective
+
+
+def _validate_shadow_margins(options: RunOptions) -> None:
+    for value, label, inclusive in (
+        (options.shadow_practical_margin, "shadow practical margin", True),
+        (options.shadow_elimination_threshold, "shadow elimination threshold", False),
+        (options.shadow_halving_spare_margin, "shadow halving spare margin", True),
+    ):
+        if isinstance(value, bool) or not math.isfinite(value):
+            raise ValueError(f"{label} must be a finite number")
+        if not (0.0 <= value <= 1.0 if inclusive else 0.0 < value < 0.5):
+            raise ValueError(f"{label} must be in {'[0.0, 1.0]' if inclusive else '(0.0, 0.5)'}")
+    if options.shadow_halving_spare_margin > 0.0 and options.shadow_policy != "successive_halving":
+        raise ValueError("shadow halving spare margin requires the successive_halving policy")
 
 
 def validate_evaluator_workers(workers: int, cpu_count: int | None) -> int:
@@ -300,6 +308,7 @@ def manifest_for(
         options.shadow_practical_margin,
         options.shadow_elimination_threshold,
         options.shadow_policy,
+        options.shadow_halving_spare_margin,
         options.excluded_families,
         options.active_elimination_audit_probability,
         options.diagnostic_pair_budget,

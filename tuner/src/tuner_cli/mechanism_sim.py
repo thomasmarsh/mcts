@@ -33,7 +33,6 @@ from .domain import (
     TaskPrefix,
 )
 from .mechanism_calibration import Calibration
-from .mechanism_variants import decide_halving_variant
 from .observations import observation, paired_difference
 from .race_policy import decide_shadow_race
 from .selection import select_top_candidates
@@ -60,17 +59,23 @@ def as_paired(manifest: Manifest, resamples: int = SWEEP_PAIRED_RESAMPLES) -> Ma
     return replace(manifest, shadow_policy=policy)
 
 
-def as_halving(manifest: Manifest) -> Manifest:
-    if isinstance(manifest.shadow_policy, SuccessiveHalvingPolicySpecification):
-        return manifest
+def as_halving(manifest: Manifest, spare_margin: float = 0.0) -> Manifest:
+    """The shipped successive-halving policy over ``manifest``. ``spare_margin``
+    of ``0.0`` is the plain eta-2 rank cut; a positive value carries a near-tie
+    boundary candidate rather than cutting it (the spare-near-tie softening)."""
     policy = SuccessiveHalvingPolicySpecification(
         kind="successive_halving",
-        method_version="successive-halving-common-prefix-eta2-v1",
+        method_version=(
+            "successive-halving-spare-near-tie-v1"
+            if spare_margin > 0.0
+            else "successive-halving-common-prefix-eta2-v1"
+        ),
         reduction_factor=2,
         practical_effect_margin=manifest.shadow_policy.practical_effect_margin,
         minimum_eligible_prefix_pairs=manifest.shadow_policy.minimum_eligible_prefix_pairs,
         survivor_floor=manifest.finalists,
         ranking_rule="tuning-point-estimate-fingerprint-v1",
+        spare_margin=spare_margin,
     )
     return replace(manifest, shadow_policy=policy)
 
@@ -287,14 +292,13 @@ def classify_trial(
     )
 
 
-# The eta-2 cut softenings measured alongside the shipped policy. "keep6" and
-# "keep5" retain more than half; "spare05"/"spare10" carry a would-be-eliminated
-# candidate that is within the given margin of the last kept one.
-HALVING_VARIANTS: tuple[tuple[str, float, float], ...] = (
-    ("keep5", 0.625, 0.0),
-    ("keep6", 0.75, 0.0),
-    ("spare05", 0.5, 0.05),
-    ("spare10", 0.5, 0.10),
+# The spare-near-tie softening measured alongside the shipped eta-2 cut: after
+# the rank cut, carry a would-be-eliminated candidate whose paired mean is within
+# the margin of the last kept one. Each runs the real
+# `decide_successive_halving_shadow_race`, not a variant re-implementation.
+SPARE_MARGINS: tuple[tuple[str, float], ...] = (
+    ("spare05", 0.05),
+    ("spare10", 0.10),
 )
 
 
@@ -337,13 +341,8 @@ def run_trial(
             paired_manifest, decide_shadow_race(paired_manifest, state, 0, early_prefix)
         ),
     }
-    for name, keep_fraction, spare_margin in HALVING_VARIANTS:
-        decision = decide_halving_variant(
-            halving_manifest,
-            state,
-            early_prefix,
-            keep_fraction=keep_fraction,
-            spare_margin=spare_margin,
-        )
-        result[name] = classify(halving_manifest, decision)
+    for name, spare_margin in SPARE_MARGINS:
+        spare_manifest = as_halving(manifest, spare_margin)
+        decision = decide_shadow_race(spare_manifest, state, 0, early_prefix)
+        result[name] = classify(spare_manifest, decision)
     return result

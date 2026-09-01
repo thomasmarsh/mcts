@@ -175,12 +175,16 @@ class PairedBootstrapPolicySpecification:
 @dataclass(frozen=True, slots=True)
 class SuccessiveHalvingPolicySpecification:
     kind: Literal["successive_halving"]
-    method_version: Literal["successive-halving-common-prefix-eta2-v1"]
+    method_version: Literal[
+        "successive-halving-common-prefix-eta2-v1",
+        "successive-halving-spare-near-tie-v1",
+    ]
     reduction_factor: Literal[2]
     practical_effect_margin: float
     minimum_eligible_prefix_pairs: int
     survivor_floor: int
     ranking_rule: Literal["tuning-point-estimate-fingerprint-v1"]
+    spare_margin: float = 0.0
 
     def encoded(self) -> JsonObject:
         return {
@@ -191,6 +195,7 @@ class SuccessiveHalvingPolicySpecification:
             "minimum_eligible_prefix_pairs": self.minimum_eligible_prefix_pairs,
             "survivor_floor": self.survivor_floor,
             "ranking_rule": self.ranking_rule,
+            "spare_margin": self.spare_margin,
         }
 
 
@@ -489,6 +494,7 @@ def build_manifest(
     shadow_practical_margin: float = 0.0,
     shadow_elimination_threshold: float = 0.05,
     shadow_policy_kind: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap",
+    shadow_halving_spare_margin: float = 0.0,
     excluded_families: tuple[str, ...] = (),
     active_elimination_audit_probability: float | None = None,
     diagnostic_pair_budget: int = 0,
@@ -528,7 +534,11 @@ def build_manifest(
         (tuning_effort, validation_effort, production_effort),
     )
     shadow_policy = _shadow_policy(
-        shadow_practical_margin, shadow_elimination_threshold, shadow_policy_kind, finalists
+        shadow_practical_margin,
+        shadow_elimination_threshold,
+        shadow_policy_kind,
+        finalists,
+        shadow_halving_spare_margin,
     )
     candidate_failure_policy = CandidateFailurePolicySpecification()
     active_elimination = _active_elimination(active_elimination_audit_probability)
@@ -608,13 +618,17 @@ def _shadow_policy(
     threshold: object,
     kind: object = "paired_bootstrap",
     finalists: object = 2,
+    spare_margin: object = 0.0,
 ) -> ShadowPolicySpecification:
     practical_margin = number(margin, "shadow practical margin")
     elimination_threshold = number(threshold, "shadow elimination threshold")
+    spare = number(spare_margin, "shadow halving spare margin")
     if not 0.0 <= practical_margin <= 1.0:
         raise ValueError("shadow practical margin must be in [0.0, 1.0]")
     if not 0.0 < elimination_threshold < 0.5:
         raise ValueError("shadow elimination threshold must be in (0.0, 0.5)")
+    if not 0.0 <= spare <= 1.0:
+        raise ValueError("shadow halving spare margin must be in [0.0, 1.0]")
     if kind == "paired_bootstrap":
         return PairedBootstrapPolicySpecification(
             "paired_bootstrap",
@@ -626,14 +640,23 @@ def _shadow_policy(
     if kind == "successive_halving":
         if elimination_threshold != 0.05:
             raise ValueError("successive halving does not accept a non-default shadow threshold")
+        method_version: Literal[
+            "successive-halving-common-prefix-eta2-v1",
+            "successive-halving-spare-near-tie-v1",
+        ] = (
+            "successive-halving-spare-near-tie-v1"
+            if spare > 0.0
+            else "successive-halving-common-prefix-eta2-v1"
+        )
         return SuccessiveHalvingPolicySpecification(
             "successive_halving",
-            "successive-halving-common-prefix-eta2-v1",
+            method_version,
             2,
             practical_margin,
             MINIMUM_ELIGIBLE_PREFIX_PAIRS,
             integer(finalists, "finalists", positive=True),
             "tuning-point-estimate-fingerprint-v1",
+            spare,
         )
     raise ValueError("unsupported shadow policy")
 
@@ -1187,6 +1210,7 @@ def _decode_successive_halving_policy(
             "minimum_eligible_prefix_pairs",
             "survivor_floor",
             "ranking_rule",
+            "spare_margin",
         },
         "successive halving shadow policy",
     )
@@ -1195,6 +1219,7 @@ def _decode_successive_halving_policy(
         0.05,
         "successive_halving",
         policy_raw["survivor_floor"],
+        policy_raw["spare_margin"],
     )
     if not isinstance(policy, SuccessiveHalvingPolicySpecification) or (
         policy_raw["method_version"] != policy.method_version
