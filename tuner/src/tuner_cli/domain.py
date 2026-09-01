@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from typing import Literal
 
 Phase = Literal["tuning", "validation"]
+DiagnosticReason = Literal[
+    "graph_connectivity", "potential_cycle_closure", "ranking_boundary", "unresolved_edge"
+]
 EffortKind = Literal["iterations", "time_ms"]
 OpponentRole = Literal["default", "historical_reference"]
 ProposalSource = Literal["schema_default", "bootstrap_random", "smac_model", "random_reserve"]
@@ -224,6 +227,27 @@ class PairResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DiagnosticPairTask:
+    pair_id: str
+    edge_id: str
+    ordinal: int
+    left_candidate_id: str
+    right_candidate_id: str
+    seed: int
+    search_effort: SearchEffort
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPairResult:
+    task: DiagnosticPairTask
+    games: tuple[GameResult, GameResult]
+
+    def __post_init__(self) -> None:
+        if tuple(game.candidate_side for game in self.games) != ("first", "second"):
+            raise ValueError("a diagnostic pair needs left-first then left-second games")
+
+
+@dataclass(frozen=True, slots=True)
 class Estimate:
     mean: float
     lower: float
@@ -272,6 +296,7 @@ class ValidationResult:
 class ComputeBudget:
     tuning_pair_attempts: int
     validation_pair_attempts: int
+    diagnostic_pair_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +314,7 @@ class PhaseCompute:
 class ComputeLedger:
     tuning: PhaseCompute = PhaseCompute()
     validation: PhaseCompute = PhaseCompute()
+    diagnostic: PhaseCompute = PhaseCompute()
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,6 +415,8 @@ class ReplayState:
     refill_attempts: tuple[tuple[int, str], ...] = ()
     elimination_allocations: tuple[ApplyElimination, ...] = ()
     active_elimination_suspension: SuspendActiveElimination | None = None
+    diagnostic_pairs: tuple[DiagnosticPairResult, ...] = ()
+    diagnostic_attempts: tuple[tuple[str, PairAttemptFacts], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,6 +431,18 @@ class ExecutePair:
     """The next pair of the frozen task plan is ready to run."""
 
     task: PairTask
+
+
+@dataclass(frozen=True, slots=True)
+class ChooseDiagnosticPair:
+    cohort_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluateDiagnosticPair:
+    cohort_index: int
+    reason: DiagnosticReason
+    task: DiagnosticPairTask
 
 
 @dataclass(frozen=True, slots=True)
@@ -510,12 +550,14 @@ ResourceAllocation = (
     | RetainElites
     | ApplyElimination
     | SuspendActiveElimination
+    | EvaluateDiagnosticPair
 )
 
 
 AllocationDecision = (
     ResolveProposal
     | ExecutePair
+    | ChooseDiagnosticPair
     | EmitObservation
     | EmitShadowRace
     | EnforceElimination

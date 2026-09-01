@@ -20,23 +20,29 @@ from .cohort import (
     proposal_disposition,
     proposal_payload,
 )
+from .diagnostic_graph import build_diagnostic_graph
 from .domain import (
     ApplyElimination,
     BeginValidation,
     Candidate,
+    ChooseDiagnosticPair,
     CompleteCohort,
     CompleteRun,
     DeepenCohort,
     DeepenCohortAllocation,
+    DiagnosticPairResult,
+    DiagnosticPairTask,
     EmitObservation,
     EmitShadowRace,
     EnforceElimination,
+    EvaluateDiagnosticPair,
     ExecutePair,
     FailCandidate,
     IntroduceCandidate,
     IntroduceProposal,
     NoDecision,
     ObservationContext,
+    PairResult,
     PairTask,
     Phase,
     RefillCandidate,
@@ -52,6 +58,8 @@ from .event_payloads import (
     AllocationDecidedPayload,
     CandidateFailedPayload,
     CohortCompletedPayload,
+    DiagnosticPairFailedPayload,
+    DiagnosticPairStartedPayload,
     FinalistsSelectedPayload,
     PairFailedPayload,
     PairIdentity,
@@ -60,7 +68,7 @@ from .event_payloads import (
     RunInterruptedPayload,
     ShadowRaceDecidedPayload,
 )
-from .evidence import SCIENTIFIC, EvidenceWriter, pair_payload, read_events
+from .evidence import SCIENTIFIC, EvidenceWriter, diagnostic_pair_payload, pair_payload, read_events
 from .executor import (
     PairExecutor,
     PairFailed,
@@ -74,7 +82,7 @@ from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .replay import fold_events, observation_payload
 from .schema import GameSpec
-from .selection import select_top_candidates
+from .selection import select_top_candidates, select_validation_shortlist
 from .shadow import decide_shadow_race
 from .target import PairExecutionError, Target
 
@@ -122,6 +130,8 @@ def advance_one(
             writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
         case BeginValidation():
             select_finalists(manifest, writer, state)
+        case EvaluateDiagnosticPair(_, _, task):
+            _execute_diagnostic(manifest, writer, target, state, task, timeout)
         case DeepenCohortAllocation():
             raise RuntimeError("deepening allocation must be folded immediately")
         case RetainElites():
@@ -197,6 +207,7 @@ def _advance_selected(
             | StartNextCohort()
             | EnforceElimination()
             | SuspendElimination()
+            | ChooseDiagnosticPair()
         ):
             raise RuntimeError("resource choice must be recorded before its effect")
         case NoDecision():
@@ -219,6 +230,8 @@ def execute_pairs(
     for outcome in outcomes:
         match outcome:
             case PairSucceeded(_, result):
+                if not isinstance(result, PairResult):
+                    raise RuntimeError("objective executor returned a non-objective pair")
                 writer.append(pair_payload(result))
             case PairFailed(job, error):
                 writer.append(failure_payload(job.task, error))
@@ -232,6 +245,30 @@ def execute_pairs(
                     )
                 )
                 raise KeyboardInterrupt
+
+
+def _execute_diagnostic(
+    manifest: Manifest,
+    writer: EvidenceWriter,
+    target: Target,
+    state: ReplayState,
+    task: DiagnosticPairTask,
+    timeout: int,
+) -> None:
+    cohort = latest_completed_cohort(state)
+    if cohort is None:
+        raise RuntimeError("diagnostic allocation has no completed cohort")
+    left = next(item for item in cohort.candidates if item.candidate_id == task.left_candidate_id)
+    right = next(item for item in cohort.candidates if item.candidate_id == task.right_candidate_id)
+    writer.append(DiagnosticPairStartedPayload(task))
+    try:
+        result = target.evaluate(task, left, right, manifest.spec.default_game_config, timeout)
+    except PairExecutionError as error:
+        writer.append(DiagnosticPairFailedPayload(task, error.kind, str(error)))
+        raise
+    if not isinstance(result, DiagnosticPairResult):
+        raise RuntimeError("target did not return the pending diagnostic result")
+    writer.append(diagnostic_pair_payload(result))
 
 
 def _pair_job(manifest: Manifest, state: ReplayState, task: PairTask, timeout: int) -> PairJob:
@@ -340,7 +377,12 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
     tuning = comparable_prefix_observations(
         state.observations, cohort.candidates, manifest.tuning_prefix
     )
-    finalists = select_top_candidates(cohort.candidates, tuning, manifest.finalists)
+    ordered = select_top_candidates(cohort.candidates, tuning, len(cohort.candidates))
+    rank = {item.candidate_id: index for index, item in enumerate(ordered)}
+    graph = build_diagnostic_graph(cohort.candidates, state.diagnostic_pairs, rank)
+    finalists, _reserve, _displaced = select_validation_shortlist(
+        cohort.candidates, tuning, manifest.finalists, graph
+    )
     context = tuning[0].context
     writer.append(
         FinalistsSelectedPayload(
@@ -351,7 +393,7 @@ def select_finalists(manifest: Manifest, writer: EvidenceWriter, state: ReplaySt
             context.task_prefix.prefix_id,
             context.task_prefix.task_ids,
             context.search_effort,
-            "tuning_point_estimate_fingerprint_v1",
+            "objective-top-with-one-cycle-reserve-v1",
         )
     )
     return True

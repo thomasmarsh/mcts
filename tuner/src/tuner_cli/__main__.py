@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tuning-pairs", type=int, default=4)
     parser.add_argument("--tuning-pair-budget", type=int, required=True, metavar="PAIRS")
     parser.add_argument("--validation-pair-budget", type=int, required=True, metavar="PAIRS")
+    parser.add_argument("--diagnostic-pair-budget", type=int, default=0, metavar="PAIRS")
     parser.add_argument("--production-validation-pairs", type=int, required=True)
     for phase in ("tuning", "validation", "production"):
         group = parser.add_mutually_exclusive_group()
@@ -64,6 +65,7 @@ def _options(args: argparse.Namespace) -> RunOptions:
         tuning_pairs=args.tuning_pairs,
         tuning_pair_budget=args.tuning_pair_budget,
         validation_pair_budget=args.validation_pair_budget,
+        diagnostic_pair_budget=args.diagnostic_pair_budget,
         production_validation_pairs=args.production_validation_pairs,
         tuning_effort=effort("tuning", 1_000),
         validation_effort=effort("validation", 10_000),

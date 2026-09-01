@@ -24,7 +24,7 @@ uv run --project tuner tuner \
   --seed 7 --task-seed 11 --cohort-size 8 --finalists 2 \
   --bootstrap-candidates 3 --random-reserve-candidates 2 \
   --exclude-family meta_mcts \
-  --tuning-pairs 6 --tuning-pair-budget 132 --validation-pair-budget 12 \
+  --tuning-pairs 6 --tuning-pair-budget 132 --diagnostic-pair-budget 8 --validation-pair-budget 12 \
   --production-validation-pairs 12 \
   --tuning-max-iterations 16 --validation-max-iterations 32 \
   --production-max-iterations 64
@@ -103,6 +103,17 @@ validation budget divides evenly across the finalists and derives one common
 held-out prefix (`budget / finalists` pairs each, at least one complete panel
 cycle, never longer than `--production-validation-pairs`). The number of
 cohorts is an output of the budget, not a configuration.
+
+`--diagnostic-pair-budget` defaults to zero. When positive, it permits direct,
+seat-swapped candidate-versus-candidate pairs only after the final affordable
+cohort and before finalist selection. These pairs use the frozen tuning search
+effort and a deterministic graph policy; they never enter objective
+observations, proposal costs, elimination, held-out estimates, or deployment
+claims. The report exposes their separate compute bucket and direct matchup
+graph. A 95% Hoeffding interval must establish every edge of a directed cycle
+before one cycle-connected candidate outside the objective shortlist may take
+the last validation slot; the objective winner is always retained. Direct-edge
+intervals are per-edge and are not graph-wide multiplicity corrected.
 
 The budgets are soft caps at scientifically safe boundaries: the tuner never
 stops between the two seats of a pair or inside an admitted cohort, so a retry

@@ -31,6 +31,8 @@ from .domain import (
     BeginValidation,
     CandidateEliminationAction,
     DeepenCohortAllocation,
+    DiagnosticPairTask,
+    EvaluateDiagnosticPair,
     IntroduceCandidate,
     RefillCandidate,
     ResourceAllocation,
@@ -50,6 +52,9 @@ EventType = Literal[
     "pair_started",
     "pair_completed",
     "pair_failed",
+    "diagnostic_pair_started",
+    "diagnostic_pair_completed",
+    "diagnostic_pair_failed",
     "run_interrupted",
     "run_failed",
     "observation_completed",
@@ -67,6 +72,7 @@ SCIENTIFIC: frozenset[EventType] = frozenset(
         "proposal_rejected",
         "cohort_completed",
         "pair_completed",
+        "diagnostic_pair_completed",
         "observation_completed",
         "finalists_selected",
         "run_completed",
@@ -118,6 +124,25 @@ def _decode_resource_allocation(value: object) -> ResourceAllocation:
     if kind == "begin_validation":
         item = object_fields(raw, {"kind", "tuning_prefix_id"}, "validation allocation")
         return BeginValidation(string(item["tuning_prefix_id"], "allocation tuning prefix id"))
+    if kind == "evaluate_diagnostic_pair":
+        item = object_fields(
+            raw, {"kind", "cohort_index", "reason", "task"}, "diagnostic allocation"
+        )
+        task = _decode_diagnostic_task(item["task"])
+        return EvaluateDiagnosticPair(
+            integer(item["cohort_index"], "diagnostic cohort index"),
+            literal(
+                item["reason"],
+                (
+                    "graph_connectivity",
+                    "potential_cycle_closure",
+                    "ranking_boundary",
+                    "unresolved_edge",
+                ),
+                "diagnostic reason",
+            ),
+            task,
+        )
     if kind == "retain_elites":
         item = object_fields(
             raw,
@@ -186,6 +211,13 @@ def _encode_resource_allocation(value: ResourceAllocation) -> JsonObject:
             return {"kind": "deepen_cohort", "block_index": block_index, "prefix_id": prefix_id}
         case BeginValidation(tuning_prefix_id):
             return {"kind": "begin_validation", "tuning_prefix_id": tuning_prefix_id}
+        case EvaluateDiagnosticPair(cohort_index, reason, task):
+            return {
+                "kind": "evaluate_diagnostic_pair",
+                "cohort_index": cohort_index,
+                "reason": reason,
+                "task": _encode_diagnostic_task(task),
+            }
         case RetainElites(cohort_index, candidate_ids, prefix_id):
             return {
                 "kind": "retain_elites",
@@ -606,6 +638,104 @@ _PAIR_IDENTITY_FIELDS = {
 }
 
 
+def _decode_diagnostic_task(value: object) -> DiagnosticPairTask:
+    item = object_fields(
+        value,
+        {
+            "pair_id",
+            "edge_id",
+            "ordinal",
+            "left_candidate_id",
+            "right_candidate_id",
+            "seed",
+            "search_effort",
+        },
+        "diagnostic task",
+    )
+    return DiagnosticPairTask(
+        string(item["pair_id"], "diagnostic pair id"),
+        string(item["edge_id"], "diagnostic edge id"),
+        integer(item["ordinal"], "diagnostic ordinal"),
+        string(item["left_candidate_id"], "diagnostic left candidate id"),
+        string(item["right_candidate_id"], "diagnostic right candidate id"),
+        integer(item["seed"], "diagnostic seed"),
+        decode_effort(item["search_effort"], "diagnostic search effort"),
+    )
+
+
+def _encode_diagnostic_task(task: DiagnosticPairTask) -> JsonObject:
+    return {
+        "pair_id": task.pair_id,
+        "edge_id": task.edge_id,
+        "ordinal": task.ordinal,
+        "left_candidate_id": task.left_candidate_id,
+        "right_candidate_id": task.right_candidate_id,
+        "seed": task.seed,
+        "search_effort": encode_effort(task.search_effort),
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPairStartedPayload:
+    event_type: ClassVar[EventType] = "diagnostic_pair_started"
+    task: DiagnosticPairTask
+
+    @staticmethod
+    def decode(value: object) -> DiagnosticPairStartedPayload:
+        return DiagnosticPairStartedPayload(_decode_diagnostic_task(value))
+
+    def encode(self) -> JsonObject:
+        return _encode_diagnostic_task(self.task)
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPairCompletedPayload:
+    event_type: ClassVar[EventType] = "diagnostic_pair_completed"
+    task: DiagnosticPairTask
+    games: tuple[JsonObject, JsonObject]
+
+    @staticmethod
+    def decode(value: object) -> DiagnosticPairCompletedPayload:
+        item = object_fields(value, {"task", "games"}, "diagnostic completion")
+        games = item["games"]
+        if not isinstance(games, list) or len(games) != 2:
+            raise ValueError("diagnostic completion needs two games")
+        return DiagnosticPairCompletedPayload(
+            _decode_diagnostic_task(item["task"]),
+            (json_object(games[0], "diagnostic game"), json_object(games[1], "diagnostic game")),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "task": _encode_diagnostic_task(self.task),
+            "games": [dict(self.games[0]), dict(self.games[1])],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticPairFailedPayload:
+    event_type: ClassVar[EventType] = "diagnostic_pair_failed"
+    task: DiagnosticPairTask
+    kind: str
+    message: str
+
+    @staticmethod
+    def decode(value: object) -> DiagnosticPairFailedPayload:
+        item = object_fields(value, {"task", "kind", "message"}, "diagnostic failure")
+        return DiagnosticPairFailedPayload(
+            _decode_diagnostic_task(item["task"]),
+            string(item["kind"], "diagnostic failure kind"),
+            string(item["message"], "diagnostic failure message"),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "task": _encode_diagnostic_task(self.task),
+            "kind": self.kind,
+            "message": self.message,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class PairStartedPayload:
     event_type: ClassVar[EventType] = "pair_started"
@@ -981,6 +1111,9 @@ EventPayload = (
     | PairStartedPayload
     | PairCompletedPayload
     | PairFailedPayload
+    | DiagnosticPairStartedPayload
+    | DiagnosticPairCompletedPayload
+    | DiagnosticPairFailedPayload
     | CandidateFailedPayload
     | RunInterruptedPayload
     | RunFailedPayload
@@ -999,6 +1132,9 @@ _DECODERS: dict[EventType, Callable[[object], EventPayload]] = {
     "pair_started": PairStartedPayload.decode,
     "pair_completed": PairCompletedPayload.decode,
     "pair_failed": PairFailedPayload.decode,
+    "diagnostic_pair_started": DiagnosticPairStartedPayload.decode,
+    "diagnostic_pair_completed": DiagnosticPairCompletedPayload.decode,
+    "diagnostic_pair_failed": DiagnosticPairFailedPayload.decode,
     "candidate_failed": CandidateFailedPayload.decode,
     "run_interrupted": RunInterruptedPayload.decode,
     "run_failed": RunFailedPayload.decode,

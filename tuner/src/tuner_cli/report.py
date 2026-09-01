@@ -10,13 +10,23 @@ from .active_audit import build_active_audit
 from .artifacts import Manifest, production_claim, read_manifest
 from .codec import JsonObject, JsonValue
 from .cohort import latest_completed_cohort
-from .domain import Candidate, Observation, ObservationContext, PairResult, ReplayState
+from .diagnostic_graph import DiagnosticGraph, build_diagnostic_graph
+from .domain import (
+    Candidate,
+    CohortRecord,
+    Observation,
+    ObservationContext,
+    PairResult,
+    PhaseCompute,
+    ReplayState,
+)
 from .effort import encode_effort
 from .evidence import atomic_json, read_events
 from .observations import comparable_prefix_observations, paired_difference
 from .opponent_interactions import OpponentResponseAnalysis, build_opponent_response_analysis
 from .proposer import tuning_frontier
 from .replay import replay
+from .selection import select_top_candidates, select_validation_shortlist
 from .shadow_audit import CandidatePathAudit, ShadowAudit, build_shadow_audit
 from .statistics import marginal_interval, pair_utility, tie_relation
 
@@ -245,6 +255,13 @@ def build_report(run_dir: Path) -> JsonObject:
         tuning,
         tuple(state.completed_pairs),
     )
+    objective_order = select_top_candidates(cohort.candidates, tuning, len(cohort.candidates))
+    rank = {item.candidate_id: index for index, item in enumerate(objective_order)}
+    diagnostic_graph = build_diagnostic_graph(cohort.candidates, state.diagnostic_pairs, rank)
+    objective_shortlist = select_top_candidates(cohort.candidates, tuning, manifest.finalists)
+    _shortlist, reserve, displaced = select_validation_shortlist(
+        cohort.candidates, tuning, manifest.finalists, diagnostic_graph
+    )
     comparisons, tied, unresolved = _comparisons(observations)
     ranked = sorted(
         zip(finalists, observations, strict=True),
@@ -281,6 +298,16 @@ def build_report(run_dir: Path) -> JsonObject:
         "validation_order": _array(entries),
         "opponent_response_analysis": _opponent_response_analysis(
             manifest, cohort.cohort_index, tuning[0], opponent_analysis
+        ),
+        "diagnostic_matchup_graph": _diagnostic_matchup_graph(
+            manifest,
+            cohort,
+            objective_order,
+            diagnostic_graph,
+            objective_shortlist,
+            finalists,
+            reserve,
+            displaced,
         ),
         "paired_finalist_comparisons": _array(comparisons),
         "unresolved_ties": _array(unresolved),
@@ -654,6 +681,7 @@ def _compute_section(manifest: Manifest, state: ReplayState) -> JsonObject:
         "budget": {
             "tuning_pair_attempts": budget.tuning_pair_attempts,
             "validation_pair_attempts": budget.validation_pair_attempts,
+            "diagnostic_pair_attempts": budget.diagnostic_pair_attempts,
         },
         "tuning": {
             "pair_attempts": ledger.tuning.pair_attempts,
@@ -684,6 +712,93 @@ def _compute_section(manifest: Manifest, state: ReplayState) -> JsonObject:
             "overrun_pair_attempts": max(
                 0, ledger.validation.pair_attempts - budget.validation_pair_attempts
             ),
+        },
+        "diagnostic": _compute_bucket(ledger.diagnostic, budget.diagnostic_pair_attempts),
+    }
+
+
+def _compute_bucket(value: PhaseCompute, budget: int) -> JsonObject:
+    return {
+        "pair_attempts": value.pair_attempts,
+        "completed_pairs": value.completed_pairs,
+        "failed_attempts": value.failed_attempts,
+        "censored_attempts": value.censored_attempts,
+        "physical_games": value.physical_games,
+        "search_iterations": value.search_iterations,
+        "wall_time_ms": value.wall_time_ms,
+        "unspent_pair_attempts": max(0, budget - value.pair_attempts),
+        "overrun_pair_attempts": max(0, value.pair_attempts - budget),
+    }
+
+
+def _diagnostic_matchup_graph(
+    manifest: Manifest,
+    cohort: CohortRecord,
+    order: tuple[Candidate, ...],
+    graph: DiagnosticGraph,
+    objective: tuple[Candidate, ...],
+    finalists: tuple[Candidate, ...],
+    reserve: str | None,
+    displaced: str | None,
+) -> JsonObject:
+    rank = {item.candidate_id: index for index, item in enumerate(order)}
+    return {
+        "scope": {
+            "context": "direct_candidate_diagnostic",
+            "cohort_index": cohort.cohort_index,
+            "candidate_ids": [item.candidate_id for item in order],
+            "pair_attempt_budget": manifest.compute_budget.diagnostic_pair_attempts,
+            "search_effort": encode_effort(manifest.efforts["tuning"]),
+            "edge_policy_version": manifest.diagnostic_policy.encoded()["edge_policy_version"],
+            "graph_rule_version": manifest.diagnostic_policy.encoded()["graph_rule_version"],
+            "objective_evidence_used_for_priority": True,
+            "objective_evidence_used_for_edge_estimates": False,
+        },
+        "allocations": {
+            "count": len(state_pairs := graph.edges)
+            and sum(len(edge.pair_results) for edge in state_pairs)
+            or 0,
+            "by_reason": {},
+        },
+        "nodes": [
+            {
+                "candidate_id": item.candidate_id,
+                "candidate_fingerprint": item.fingerprint,
+                "objective_rank": rank[item.candidate_id],
+            }
+            for item in order
+        ],
+        "edges": [
+            {
+                "edge_id": edge.edge_id,
+                "left_candidate_id": edge.left_candidate_id,
+                "right_candidate_id": edge.right_candidate_id,
+                "pair_count": len(edge.pair_results),
+                "game_count": 2 * len(edge.pair_results),
+                "estimate": edge.estimate.mean if edge.estimate else None,
+                "interval": None
+                if edge.estimate is None
+                else {"lower": edge.estimate.lower, "upper": edge.estimate.upper},
+                "material_direction": edge.material_direction,
+            }
+            for edge in graph.edges
+        ],
+        "material_cycle_components": [
+            {
+                "candidate_ids": list(item.candidate_ids),
+                "witness_cycle_candidate_ids": list(item.witness_cycle_candidate_ids),
+            }
+            for item in graph.material_cycle_components
+        ],
+        "shortlist_effect": {
+            "shortlist_rule_version": manifest.diagnostic_policy.encoded()[
+                "shortlist_rule_version"
+            ],
+            "maximum_reserve_slots": 1,
+            "objective_candidate_ids": [item.candidate_id for item in objective],
+            "reserve_candidate_id": reserve,
+            "displaced_candidate_id": displaced,
+            "finalist_ids": [item.candidate_id for item in finalists],
         },
     }
 

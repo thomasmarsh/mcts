@@ -172,6 +172,20 @@ class ActiveEliminationSpecification:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DiagnosticPolicySpecification:
+    maximum_reserve_slots: int = 1
+
+    def encoded(self) -> JsonObject:
+        return {
+            "edge_policy_version": "connected-cycle-boundary-uncertainty-v1",
+            "seed_policy_version": "diagnostic-allocation-seed-v1",
+            "graph_rule_version": "direct-hoeffding-cycle-components-v1",
+            "shortlist_rule_version": "objective-top-with-one-cycle-reserve-v1",
+            "maximum_reserve_slots": self.maximum_reserve_slots,
+        }
+
+
 def proposer_specification(
     proposal_seed: int,
     task_seed: int,
@@ -223,6 +237,7 @@ class Manifest:
     shadow_policy: ShadowPolicySpecification
     candidate_failure_policy: CandidateFailurePolicySpecification
     active_elimination: ActiveEliminationSpecification | None
+    diagnostic_policy: DiagnosticPolicySpecification
 
     @property
     def seed(self) -> int:
@@ -416,6 +431,7 @@ def build_manifest(
     shadow_elimination_threshold: float = 0.05,
     excluded_families: tuple[str, ...] = (),
     active_elimination_audit_probability: float | None = None,
+    diagnostic_pair_budget: int = 0,
 ) -> Manifest:
     validate_family_exclusions(spec.tuning, excluded_families)
     proposer = proposer_specification(
@@ -432,6 +448,8 @@ def build_manifest(
         or isinstance(validation_pair_budget, bool)
         or tuning_pair_budget <= 0
         or validation_pair_budget <= 0
+        or isinstance(diagnostic_pair_budget, bool)
+        or diagnostic_pair_budget < 0
     ):
         raise ValueError("compute budgets must be positive integers")
     if validation_pair_budget % finalists:
@@ -494,10 +512,11 @@ def build_manifest(
         selected_prefix(validation, production_validation_pairs),
         epoch,
         efforts,
-        ComputeBudget(tuning_pair_budget, validation_pair_budget),
+        ComputeBudget(tuning_pair_budget, validation_pair_budget, diagnostic_pair_budget),
         shadow_policy,
         candidate_failure_policy,
         active_elimination,
+        DiagnosticPolicySpecification(),
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -613,6 +632,7 @@ def _encode_manifest_object(
     shadow_policy: ShadowPolicySpecification,
     candidate_failure_policy: CandidateFailurePolicySpecification,
     active_elimination: ActiveEliminationSpecification | None,
+    diagnostic_policy: DiagnosticPolicySpecification,
 ) -> JsonObject:
     return {
         "schema_version": SCHEMA_VERSION,
@@ -622,10 +642,12 @@ def _encode_manifest_object(
             "policy_version": "safe-boundary-pair-attempts-v1",
             "tuning_pair_attempts": compute_budget.tuning_pair_attempts,
             "validation_pair_attempts": compute_budget.validation_pair_attempts,
+            "diagnostic_pair_attempts": compute_budget.diagnostic_pair_attempts,
         },
         "shadow_policy": shadow_policy.encoded(),
         "candidate_failure_policy": candidate_failure_policy.encoded(),
         "active_elimination": None if active_elimination is None else active_elimination.encoded(),
+        "diagnostic_policy": diagnostic_policy.encoded(),
         **_game_identity_section(spec, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
@@ -665,6 +687,7 @@ _FIELDS = {
     "shadow_policy",
     "candidate_failure_policy",
     "active_elimination",
+    "diagnostic_policy",
     "binary",
     "engine_fingerprint",
     "description",
@@ -1011,6 +1034,24 @@ def _decode_active_elimination(value: object) -> ActiveEliminationSpecification 
     return policy
 
 
+def _decode_diagnostic_policy(value: object) -> DiagnosticPolicySpecification:
+    raw = object_fields(
+        value,
+        {
+            "edge_policy_version",
+            "seed_policy_version",
+            "graph_rule_version",
+            "shortlist_rule_version",
+            "maximum_reserve_slots",
+        },
+        "diagnostic policy",
+    )
+    policy = DiagnosticPolicySpecification()
+    if raw != policy.encoded():
+        raise ValueError("unsupported diagnostic policy")
+    return policy
+
+
 def decode_manifest_object(value: object) -> Manifest:
     raw = object_fields(value, _FIELDS, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
@@ -1023,7 +1064,12 @@ def decode_manifest_object(value: object) -> Manifest:
     validate_family_exclusions(spec.tuning, proposer.excluded_families)
     budget_raw = object_fields(
         raw["compute_budget"],
-        {"policy_version", "tuning_pair_attempts", "validation_pair_attempts"},
+        {
+            "policy_version",
+            "tuning_pair_attempts",
+            "validation_pair_attempts",
+            "diagnostic_pair_attempts",
+        },
         "compute budget",
     )
     if budget_raw["policy_version"] != "safe-boundary-pair-attempts-v1":
@@ -1031,6 +1077,7 @@ def decode_manifest_object(value: object) -> Manifest:
     compute_budget = ComputeBudget(
         integer(budget_raw["tuning_pair_attempts"], "tuning pair attempts", positive=True),
         integer(budget_raw["validation_pair_attempts"], "validation pair attempts", positive=True),
+        integer(budget_raw["diagnostic_pair_attempts"], "diagnostic pair attempts"),
     )
     shadow_raw = object_fields(
         raw["shadow_policy"],
@@ -1065,6 +1112,7 @@ def decode_manifest_object(value: object) -> Manifest:
     )
     candidate_failure_policy = _decode_candidate_failure_policy(raw["candidate_failure_policy"])
     active_elimination = _decode_active_elimination(raw["active_elimination"])
+    diagnostic_policy = _decode_diagnostic_policy(raw["diagnostic_policy"])
     if (
         shadow_policy.resamples != 4096
         or shadow_policy.method_version != method_version
@@ -1124,6 +1172,7 @@ def decode_manifest_object(value: object) -> Manifest:
         shadow_policy,
         candidate_failure_policy,
         active_elimination,
+        diagnostic_policy,
     )
 
 
@@ -1155,5 +1204,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.shadow_policy,
         manifest.candidate_failure_policy,
         manifest.active_elimination,
+        manifest.diagnostic_policy,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

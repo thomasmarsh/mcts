@@ -9,9 +9,10 @@ from pathlib import Path
 
 from .artifacts import SCHEMA_VERSION
 from .codec import JsonObject, JsonValue, integer, object_fields, strict_json, string
-from .domain import GameResult, PairResult, PairTask
+from .domain import DiagnosticPairResult, GameResult, PairResult, PairTask
 from .event_payloads import (
     SCIENTIFIC,
+    DiagnosticPairCompletedPayload,
     EventPayload,
     EventType,
     PairCompletedPayload,
@@ -137,6 +138,12 @@ def pair_payload(result: PairResult) -> PairCompletedPayload:
     )
 
 
+def diagnostic_pair_payload(result: DiagnosticPairResult) -> DiagnosticPairCompletedPayload:
+    return DiagnosticPairCompletedPayload(
+        result.task, (game_payload(result.games[0]), game_payload(result.games[1]))
+    )
+
+
 def decode_pair_payload(payload: PairCompletedPayload, task: PairTask) -> PairResult:
     identity = payload.identity
     if (
@@ -182,6 +189,8 @@ def decode_pair_payload(payload: PairCompletedPayload, task: PairTask) -> PairRe
         "draws": outcomes.count("draw"),
     }
     decoded = parse_pair_output("\n".join(canonical_json(x) for x in [*raw_records, summary]), task)
+    if not isinstance(decoded, PairResult):
+        raise ValueError("objective completion decoded as diagnostic pair")
     for expected, actual in zip(payload.games, decoded.games, strict=True):
         if expected != game_payload(actual):
             raise ValueError("typed game fields disagree with raw game record")

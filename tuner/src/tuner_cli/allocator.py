@@ -16,6 +16,7 @@ from .domain import (
     BeginValidation,
     Candidate,
     CandidateFailure,
+    ChooseDiagnosticPair,
     CompleteCohort,
     CompleteRun,
     DeepenCohort,
@@ -54,9 +55,9 @@ ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
 
 def allocation_policy_version(manifest: Manifest) -> str:
     return (
-        "audited-active-elimination-suspend-v1"
+        "audited-active-elimination-diagnostic-v2"
         if manifest.active_elimination
-        else ALLOCATION_POLICY_VERSION
+        else "budgeted-multi-cohort-diagnostic-v2"
     )
 
 
@@ -141,6 +142,12 @@ def _cohort_boundary_decision(manifest: Manifest, state: ReplayState) -> Allocat
     budget = manifest.compute_budget.tuning_pair_attempts
     if used + challenger_pairs <= budget:
         return StartNextCohort()
+    from .diagnostic_matchmaking import next_diagnostic_allocation
+
+    if next_diagnostic_allocation(manifest, state) is not None:
+        cohort = latest_completed_cohort(state)
+        assert cohort is not None
+        return ChooseDiagnosticPair(cohort.cohort_index)
     return SelectFinalists()
 
 
@@ -177,6 +184,10 @@ def resource_allocation(
             )
         case SelectFinalists():
             return BeginValidation(manifest.tuning_prefix.prefix_id)
+        case ChooseDiagnosticPair():
+            from .diagnostic_matchmaking import next_diagnostic_allocation
+
+            return next_diagnostic_allocation(manifest, state)
         case StartNextCohort():
             cohort = latest_completed_cohort(state)
             if cohort is None:

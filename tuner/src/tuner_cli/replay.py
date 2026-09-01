@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -13,6 +14,7 @@ from .allocator import (
     resource_allocation,
 )
 from .artifacts import Manifest, production_claim
+from .codec import is_json_object
 from .cohort import (
     accepted_proposal_candidates,
     accepted_proposal_candidates_for_cohort,
@@ -21,13 +23,16 @@ from .cohort import (
     latest_completed_cohort,
 )
 from .compute import LedgerBuilder
+from .diagnostic_graph import build_diagnostic_graph
 from .domain import (
     ApplyElimination,
     Candidate,
     CandidateFailure,
     CohortRecord,
     DeepenCohortAllocation,
+    DiagnosticPairResult,
     EmitShadowRace,
+    EvaluateDiagnosticPair,
     IntroduceCandidate,
     Observation,
     ObservationContext,
@@ -49,6 +54,9 @@ from .event_payloads import (
     AllocationDecidedPayload,
     CandidateFailedPayload,
     CohortCompletedPayload,
+    DiagnosticPairCompletedPayload,
+    DiagnosticPairFailedPayload,
+    DiagnosticPairStartedPayload,
     FinalistsSelectedPayload,
     ObservationCompletedPayload,
     PairCompletedPayload,
@@ -67,7 +75,7 @@ from .family_exclusions import require_candidate_family_allowed
 from .identity import candidate_from_canonical_config
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
-from .selection import select_top_candidates
+from .selection import select_top_candidates, select_validation_shortlist
 from .shadow import decide_shadow_race
 
 Disposition = Literal["accepted", "rejected"]
@@ -128,6 +136,8 @@ class _Replay:
     refill_attempts: dict[int, str] = field(default_factory=lambda: {})
     elimination_allocations: list[ApplyElimination] = field(default_factory=lambda: [])
     active_elimination_suspension: SuspendActiveElimination | None = None
+    diagnostic_pairs: list[DiagnosticPairResult] = field(default_factory=lambda: [])
+    diagnostic_attempts: dict[str, PairAttemptFacts] = field(default_factory=lambda: {})
 
     def state(self) -> ReplayState:
         attempts = tuple(
@@ -162,6 +172,8 @@ class _Replay:
             tuple(sorted(self.refill_attempts.items())),
             tuple(self.elimination_allocations),
             self.active_elimination_suspension,
+            tuple(self.diagnostic_pairs),
+            tuple(sorted(self.diagnostic_attempts.items())),
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -417,6 +429,76 @@ def _apply_allocation(state: _Replay, payload: AllocationDecidedPayload) -> None
     state.allocations += 1
 
 
+def _decode_diagnostic_completion(payload: DiagnosticPairCompletedPayload) -> DiagnosticPairResult:
+    from .target import parse_pair_output
+
+    raw: list[str] = []
+    for game in payload.games:
+        record = game.get("raw_record")
+        if not isinstance(record, str):
+            raise ValueError("diagnostic game lacks raw record")
+        raw.append(record)
+    outcomes: list[str] = []
+    for item in raw:
+        record = json.loads(item)
+        if not is_json_object(record):
+            raise ValueError("diagnostic game raw record is invalid")
+        outcome = record.get("outcome")
+        if not isinstance(outcome, str):
+            raise ValueError("diagnostic game raw record is invalid")
+        outcomes.append(outcome)
+    summary = {
+        "type": "configured_comparison_summary",
+        "games": 2,
+        "wins": outcomes.count("candidate_win"),
+        "losses": outcomes.count("baseline_win"),
+        "draws": outcomes.count("draw"),
+    }
+    result = parse_pair_output(
+        "\n".join((*raw, json.dumps(summary, sort_keys=True, separators=(",", ":")))),
+        payload.task,
+    )
+    if not isinstance(result, DiagnosticPairResult):
+        raise ValueError("diagnostic completion decoded as objective pair")
+    return result
+
+
+def _apply_diagnostic(
+    state: _Replay,
+    payload: DiagnosticPairStartedPayload
+    | DiagnosticPairCompletedPayload
+    | DiagnosticPairFailedPayload,
+) -> None:
+    pending = state.pending
+    if not isinstance(pending, EvaluateDiagnosticPair) or pending.task != payload.task:
+        raise ValueError("diagnostic event does not match pending allocation")
+    facts = state.diagnostic_attempts.get(payload.task.pair_id, PairAttemptFacts())
+    if isinstance(payload, DiagnosticPairStartedPayload):
+        state.diagnostic_attempts[payload.task.pair_id] = PairAttemptFacts(
+            facts.started_attempts + 1,
+            facts.failed_attempts,
+            facts.censored_attempts,
+            facts.completed_attempts,
+        )
+    elif isinstance(payload, DiagnosticPairFailedPayload):
+        if facts.failed_attempts + facts.completed_attempts >= facts.started_attempts:
+            raise ValueError("diagnostic failure lacks a started attempt")
+        state.diagnostic_attempts[payload.task.pair_id] = PairAttemptFacts(
+            facts.started_attempts,
+            facts.failed_attempts + 1,
+            facts.censored_attempts,
+            facts.completed_attempts,
+        )
+    else:
+        if facts.completed_attempts or facts.failed_attempts >= facts.started_attempts:
+            raise ValueError("diagnostic completion lacks a started attempt")
+        state.diagnostic_pairs.append(_decode_diagnostic_completion(payload))
+        state.diagnostic_attempts[payload.task.pair_id] = PairAttemptFacts(
+            facts.started_attempts, facts.failed_attempts, facts.censored_attempts, 1
+        )
+        state.pending = None
+
+
 def _apply_cohort(state: _Replay, payload: CohortCompletedPayload) -> None:
     cohort_index = len(state.completed_cohorts)
     candidates = state.active()
@@ -460,7 +542,12 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
     tuning = comparable_prefix_observations(
         tuple(state.observations), cohort.candidates, state.manifest.tuning_prefix
     )
-    finalists = select_top_candidates(cohort.candidates, tuning, state.manifest.finalists)
+    ordered = select_top_candidates(cohort.candidates, tuning, len(cohort.candidates))
+    rank = {item.candidate_id: index for index, item in enumerate(ordered)}
+    graph = build_diagnostic_graph(cohort.candidates, tuple(state.diagnostic_pairs), rank)
+    finalists, _reserve, _displaced = select_validation_shortlist(
+        cohort.candidates, tuning, state.manifest.finalists, graph
+    )
     context = _context(state.manifest, "tuning", state.state())
     expected = FinalistsSelectedPayload(
         tuple(item.candidate_id for item in finalists),
@@ -470,7 +557,7 @@ def _apply_finalists(state: _Replay, payload: FinalistsSelectedPayload) -> None:
         context.task_prefix.prefix_id,
         context.task_prefix.task_ids,
         context.search_effort,
-        "tuning_point_estimate_fingerprint_v1",
+        "objective-top-with-one-cycle-reserve-v1",
     )
     if payload != expected:
         raise ValueError("finalist selection does not match tuning evidence")
@@ -603,6 +690,12 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
             state.terminal = "configuration_failed"
         case PairStartedPayload() | PairFailedPayload() as payload:
             _operational_pair(state, payload)
+        case (
+            DiagnosticPairStartedPayload()
+            | DiagnosticPairCompletedPayload()
+            | DiagnosticPairFailedPayload()
+        ) as payload:
+            _apply_diagnostic(state, payload)
         case RunInterruptedPayload():
             return
 

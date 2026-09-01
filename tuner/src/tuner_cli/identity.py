@@ -12,6 +12,7 @@ from typing import TypeGuard
 from .codec import JsonObject, JsonValue
 from .domain import (
     Candidate,
+    DiagnosticPairTask,
     Estimate,
     ObjectiveEpoch,
     Observation,
@@ -77,7 +78,7 @@ def stable_id(kind: str, identity_payload: object) -> str:
 
 
 def derive_task_seed(root_seed: int, phase: str, ordinal: int) -> int:
-    if phase not in {"tuning", "validation"} or ordinal < 0:
+    if phase not in {"tuning", "validation", "diagnostic"} or ordinal < 0:
         raise ValueError("invalid task seed inputs")
     payload = {
         "namespace": "mcts-tuner-task-seed-v2",
@@ -279,7 +280,45 @@ def pair_task(candidate: Candidate, case: TaskCase, budget: SearchEffort) -> Pai
     return PairTask(pair_id, candidate.candidate_id, case, budget)
 
 
-def game_id(task: PairTask, candidate_side: str) -> str:
+def game_id(task: PairTask | DiagnosticPairTask, candidate_side: str) -> str:
     if candidate_side not in {"first", "second"}:
         raise ValueError("invalid candidate side")
     return stable_id("game", {"pair_id": task.pair_id, "candidate_side": candidate_side})
+
+
+def diagnostic_edge_id(epoch_id: str, left: Candidate, right: Candidate) -> str:
+    first, second = sorted((left, right), key=lambda item: item.fingerprint)
+    return stable_id(
+        "diagnostic-edge",
+        {"objective_epoch_id": epoch_id, "left": first.fingerprint, "right": second.fingerprint},
+    )
+
+
+def diagnostic_pair_task(
+    epoch_id: str,
+    root_seed: int,
+    cohort_index: int,
+    ordinal: int,
+    left: Candidate,
+    right: Candidate,
+    effort: SearchEffort,
+) -> DiagnosticPairTask:
+    if ordinal < 0:
+        raise ValueError("diagnostic ordinal must be non-negative")
+    first, second = sorted((left, right), key=lambda item: item.fingerprint)
+    edge_id = diagnostic_edge_id(epoch_id, first, second)
+    seed = derive_task_seed(root_seed, "diagnostic", cohort_index * 1_000_000 + ordinal)
+    pair_id = stable_id(
+        "diagnostic-pair",
+        {
+            "edge_id": edge_id,
+            "ordinal": ordinal,
+            "seed": seed,
+            "left": first.fingerprint,
+            "right": second.fingerprint,
+            "search_effort": encode_effort(effort),
+        },
+    )
+    return DiagnosticPairTask(
+        pair_id, edge_id, ordinal, first.candidate_id, second.candidate_id, seed, effort
+    )

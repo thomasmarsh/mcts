@@ -7,6 +7,9 @@ import json
 from .codec import is_json_object
 from .domain import ComputeLedger, PhaseCompute
 from .event_payloads import (
+    DiagnosticPairCompletedPayload,
+    DiagnosticPairFailedPayload,
+    DiagnosticPairStartedPayload,
     PairCompletedPayload,
     PairFailedPayload,
     PairStartedPayload,
@@ -26,6 +29,7 @@ class LedgerBuilder:
     def __init__(self) -> None:
         self._tuning = _PhaseAccumulator()
         self._validation = _PhaseAccumulator()
+        self._diagnostic = _PhaseAccumulator()
 
     def apply(self, event: EvidenceEvent) -> None:
         payload = event.payload
@@ -47,11 +51,23 @@ class LedgerBuilder:
                         phase.physical_games += 1
                         phase.search_iterations += game_iterations(game)
                         phase.wall_time_ms += game_elapsed(game)
+            case DiagnosticPairStartedPayload():
+                self._diagnostic.attempts += 1
+            case DiagnosticPairCompletedPayload():
+                self._diagnostic.completed_pairs += 1
+                for game in payload.games:
+                    self._diagnostic.physical_games += 1
+                    self._diagnostic.search_iterations += game_iterations(game)
+                    self._diagnostic.wall_time_ms += game_elapsed(game)
+            case DiagnosticPairFailedPayload():
+                self._diagnostic.failed_attempts += 1
             case _:
                 pass
 
     def ledger(self) -> ComputeLedger:
-        return ComputeLedger(self._tuning.compute(), self._validation.compute())
+        return ComputeLedger(
+            self._tuning.compute(), self._validation.compute(), self._diagnostic.compute()
+        )
 
     def _phase(self, phase: str) -> _PhaseAccumulator:
         return self._tuning if phase == "tuning" else self._validation

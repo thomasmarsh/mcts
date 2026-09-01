@@ -40,6 +40,7 @@ class RunOptions:
     tuning_pairs: int = 4
     tuning_pair_budget: int = 32
     validation_pair_budget: int = 24
+    diagnostic_pair_budget: int = 0
     production_validation_pairs: int = 8
     tuning_effort: SearchEffort = SearchEffort("iterations", 1_000)
     validation_effort: SearchEffort = SearchEffort("iterations", 10_000)
@@ -118,6 +119,8 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
     )
     if any(isinstance(item, bool) or item <= 0 for item in numeric):
         raise ValueError("all numeric arguments must be positive integers")
+    if isinstance(options.diagnostic_pair_budget, bool) or options.diagnostic_pair_budget < 0:
+        raise ValueError("diagnostic pair budget must be a non-Boolean integer at least zero")
     for value, label, inclusive in (
         (options.shadow_practical_margin, "shadow practical margin", True),
         (options.shadow_elimination_threshold, "shadow elimination threshold", False),
@@ -269,6 +272,7 @@ def manifest_for(
         options.shadow_elimination_threshold,
         options.excluded_families,
         options.active_elimination_audit_probability,
+        options.diagnostic_pair_budget,
     )
 
 

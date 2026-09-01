@@ -11,6 +11,8 @@ from typing import Literal, Protocol
 from .codec import JsonObject, JsonValue, is_json_object, literal, strict_json, string
 from .domain import (
     Candidate,
+    DiagnosticPairResult,
+    DiagnosticPairTask,
     GameResult,
     Opponent,
     PairResult,
@@ -49,12 +51,12 @@ class Target(Protocol):
 
     def evaluate(
         self,
-        task: PairTask,
+        task: PairTask | DiagnosticPairTask,
         candidate: Candidate,
-        opponent: Opponent,
+        opponent: Opponent | Candidate,
         game_config: str,
         timeout_seconds: int,
-    ) -> PairResult: ...
+    ) -> PairResult | DiagnosticPairResult: ...
 
     def cancel(self) -> None: ...
 
@@ -124,12 +126,12 @@ class GameBinaryTarget:
 
     def evaluate(
         self,
-        task: PairTask,
+        task: PairTask | DiagnosticPairTask,
         candidate: Candidate,
-        opponent: Opponent,
+        opponent: Opponent | Candidate,
         game_config: str,
         timeout_seconds: int,
-    ) -> PairResult:
+    ) -> PairResult | DiagnosticPairResult:
         command = [
             str(self.binary_path),
             "compare",
@@ -143,12 +145,19 @@ class GameBinaryTarget:
             "--rounds",
             "1",
             "--seed",
-            str(task.task_case.seed),
+            str(task.task_case.seed if isinstance(task, PairTask) else task.seed),
         ]
         command.extend(
-            ["--max-iterations", str(task.budget.value)]
-            if task.budget.kind == "iterations"
-            else ["--max-time-ms", str(task.budget.value)]
+            [
+                "--max-iterations",
+                str((task.budget if isinstance(task, PairTask) else task.search_effort).value),
+            ]
+            if (task.budget if isinstance(task, PairTask) else task.search_effort).kind
+            == "iterations"
+            else [
+                "--max-time-ms",
+                str((task.budget if isinstance(task, PairTask) else task.search_effort).value),
+            ]
         )
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -229,7 +238,9 @@ def _validation_response(response: JsonObject) -> tuple[bool, list[ValidationErr
     return valid, errors
 
 
-def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
+def parse_pair_output(
+    stdout: str, task: PairTask | DiagnosticPairTask
+) -> PairResult | DiagnosticPairResult:
     records: list[JsonObject] = []
     for line in stdout.splitlines():
         if not line.strip():
@@ -247,7 +258,7 @@ def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
         "configured_comparison_summary",
     ]:
         raise ValueError("expected exactly two game records followed by one summary")
-    expected_seed = _splitmix_seed(task.task_case.seed)
+    expected_seed = _splitmix_seed(task.task_case.seed if isinstance(task, PairTask) else task.seed)
     games = (
         _decode_game(records[0], task, expected_seed, "first", 1),
         _decode_game(records[1], task, expected_seed, "second", 2),
@@ -260,11 +271,17 @@ def parse_pair_output(stdout: str, task: PairTask) -> PairResult:
     }
     if any(_integer(records[2], key) != value for key, value in expected.items()):
         raise ValueError("summary does not match physical game outcomes")
-    return PairResult(task, games)
+    return (
+        PairResult(task, games) if isinstance(task, PairTask) else DiagnosticPairResult(task, games)
+    )
 
 
 def _decode_game(
-    record: JsonObject, task: PairTask, seed: int, side: Literal["first", "second"], seq: int
+    record: JsonObject,
+    task: PairTask | DiagnosticPairTask,
+    seed: int,
+    side: Literal["first", "second"],
+    seq: int,
 ) -> GameResult:
     outcome_value = string(record.get("outcome"), "outcome")
     if outcome_value == "candidate_win":

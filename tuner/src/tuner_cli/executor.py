@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Protocol
 
-from .domain import Candidate, Opponent, PairResult, PairTask
+from .domain import Candidate, Opponent, PairTask
 from .target import PairExecutionError, Target
 
 
@@ -22,7 +22,7 @@ class PairJob:
 @dataclass(frozen=True, slots=True)
 class PairSucceeded:
     job: PairJob
-    result: PairResult
+    result: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +49,12 @@ class PairExecutor(Protocol):
 
 def _evaluate(target: Target, job: PairJob) -> PairOutcome:
     try:
+        result = target.evaluate(
+            job.task, job.candidate, job.opponent, job.game_config, job.timeout_seconds
+        )
         return PairSucceeded(
             job,
-            target.evaluate(
-                job.task, job.candidate, job.opponent, job.game_config, job.timeout_seconds
-            ),
+            result,
         )
     except PairExecutionError as error:
         return PairFailed(job, error)
