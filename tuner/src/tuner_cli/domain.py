@@ -486,6 +486,8 @@ class ReplayState:
     active_elimination_suspension: SuspendActiveElimination | None = None
     diagnostic_pairs: tuple[DiagnosticPairResult, ...] = ()
     diagnostic_attempts: tuple[tuple[str, PairAttemptFacts], ...] = ()
+    effective_budget: ComputeBudget = ComputeBudget(0, 0, 0)
+    superseded_finalists: tuple[tuple[Candidate, ...], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

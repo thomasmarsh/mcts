@@ -49,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--active-elimination-audit-probability", type=float)
     parser.add_argument("--exclude-family", action="append", default=[], metavar="FAMILY")
     parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
+    extend = parser.add_argument_group(
+        "budget extension", "raise a frozen run's pair budgets; valid only with --resume"
+    )
+    extend.add_argument("--extend-tuning-pairs", type=int, default=0, metavar="N")
+    extend.add_argument("--extend-validation-pairs", type=int, default=0, metavar="N")
+    extend.add_argument("--extend-diagnostic-pairs", type=int, default=0, metavar="N")
+    extend.add_argument("--extend-reason", default="", metavar="TEXT")
+    extend.add_argument("--extend-requested-at", default="", metavar="ISO8601")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
 
@@ -91,6 +99,11 @@ def _options(args: argparse.Namespace) -> RunOptions:
         excluded_families=normalize_family_exclusions(args.exclude_family),
         proposer_policy=args.proposer_policy,
         resume=args.resume,
+        extend_tuning_pairs=args.extend_tuning_pairs,
+        extend_validation_pairs=args.extend_validation_pairs,
+        extend_diagnostic_pairs=args.extend_diagnostic_pairs,
+        extend_reason=args.extend_reason,
+        extend_requested_at=args.extend_requested_at,
     )
 
 

@@ -19,6 +19,7 @@ from .domain import (
     ChooseDiagnosticPair,
     CompleteCohort,
     CompleteRun,
+    ComputeBudget,
     DeepenCohort,
     DeepenCohortAllocation,
     EmitObservation,
@@ -51,6 +52,18 @@ from .race_policy import shadow_prefix_eligible
 from .selection import select_top_candidates
 
 ALLOCATION_POLICY_VERSION = "budgeted-multi-cohort-v1"
+
+
+def effective_budget(manifest: Manifest, state: ReplayState) -> ComputeBudget:
+    """The compute budget in force for allocation decisions: the frozen manifest
+    budget plus every recorded ``budget_extended`` delta, in event order.
+
+    ``manifest.compute_budget`` is never edited; replay folds the extensions
+    into ``state.effective_budget`` and this is the single seam the allocator
+    reads so an extended run funds more work without a manifest change.
+    """
+    del manifest
+    return state.effective_budget
 
 
 def allocation_policy_version(manifest: Manifest) -> str:
@@ -139,7 +152,7 @@ def _cohort_boundary_decision(manifest: Manifest, state: ReplayState) -> Allocat
     prefix_length = manifest.tuning_prefix.length
     challenger_pairs = (manifest.cohort_size - manifest.finalists) * prefix_length
     used = state.compute.tuning.pair_attempts
-    budget = manifest.compute_budget.tuning_pair_attempts
+    budget = effective_budget(manifest, state).tuning_pair_attempts
     if used + challenger_pairs <= budget:
         return StartNextCohort()
     from .diagnostic_matchmaking import next_diagnostic_allocation

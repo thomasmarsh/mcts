@@ -68,10 +68,12 @@ EventType = Literal[
     "allocation_decided",
     "shadow_race_decided",
     "candidate_failed",
+    "budget_extended",
 ]
 
 SCIENTIFIC: frozenset[EventType] = frozenset(
     {
+        "budget_extended",
         "proposal_created",
         "proposal_accepted",
         "proposal_rejected",
@@ -1234,8 +1236,69 @@ class RunCompletedPayload:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class BudgetExtendedPayload:
+    """An operator-recorded increase to one or more frozen pair budgets.
+
+    Deltas are non-negative and at least one is strictly positive. The event is
+    append-only evidence: it never edits ``manifest.compute_budget``. Replay
+    folds the ordered deltas into ``ReplayState.effective_budget`` and, when the
+    run had already completed, re-opens it at the next cohort boundary.
+    """
+
+    event_type: ClassVar[EventType] = "budget_extended"
+    tuning_pair_attempts_delta: int
+    validation_pair_attempts_delta: int
+    diagnostic_pair_attempts_delta: int
+    reason: str
+    requested_at: str
+
+    @staticmethod
+    def decode(value: object) -> BudgetExtendedPayload:
+        item = object_fields(
+            value,
+            {
+                "tuning_pair_attempts_delta",
+                "validation_pair_attempts_delta",
+                "diagnostic_pair_attempts_delta",
+                "reason",
+                "requested_at",
+            },
+            "budget extension",
+        )
+        deltas = tuple(
+            integer(item[name], label)
+            for name, label in (
+                ("tuning_pair_attempts_delta", "tuning pair attempts delta"),
+                ("validation_pair_attempts_delta", "validation pair attempts delta"),
+                ("diagnostic_pair_attempts_delta", "diagnostic pair attempts delta"),
+            )
+        )
+        if any(delta < 0 for delta in deltas):
+            raise ValueError("budget extension deltas must be non-negative")
+        if not any(deltas):
+            raise ValueError("budget extension must raise at least one budget")
+        return BudgetExtendedPayload(
+            deltas[0],
+            deltas[1],
+            deltas[2],
+            string(item["reason"], "budget extension reason"),
+            string(item["requested_at"], "budget extension request time"),
+        )
+
+    def encode(self) -> JsonObject:
+        return {
+            "tuning_pair_attempts_delta": self.tuning_pair_attempts_delta,
+            "validation_pair_attempts_delta": self.validation_pair_attempts_delta,
+            "diagnostic_pair_attempts_delta": self.diagnostic_pair_attempts_delta,
+            "reason": self.reason,
+            "requested_at": self.requested_at,
+        }
+
+
 EventPayload = (
     AllocationDecidedPayload
+    | BudgetExtendedPayload
     | ShadowRaceDecidedPayload
     | ProposalCreatedPayload
     | ProposalAcceptedPayload
@@ -1257,6 +1320,7 @@ EventPayload = (
 
 _DECODERS: dict[EventType, Callable[[object], EventPayload]] = {
     "allocation_decided": AllocationDecidedPayload.decode,
+    "budget_extended": BudgetExtendedPayload.decode,
     "shadow_race_decided": ShadowRaceDecidedPayload.decode,
     "proposal_created": ProposalCreatedPayload.decode,
     "proposal_accepted": ProposalAcceptedPayload.decode,

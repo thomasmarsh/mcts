@@ -30,7 +30,9 @@ use mcts_bench::supervised_launch::LaunchDescriptor;
 use super::{
     runs::*,
     traces::*,
-    tuner_runs::{get_tuner_run, launch_tuner_run, list_tuner_runs, stop_tuner_run},
+    tuner_runs::{
+        extend_tuner_run, get_tuner_run, launch_tuner_run, list_tuner_runs, stop_tuner_run,
+    },
     types::*,
 };
 // Router constructor
@@ -72,6 +74,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         )
         .route("/api/bench/tuner/runs/{run_id}", get(get_tuner_run))
         .route("/api/bench/tuner/runs/{run_id}/stop", post(stop_tuner_run))
+        .route(
+            "/api/bench/tuner/runs/{run_id}/extend",
+            post(extend_tuner_run).layer(launch_timeout),
+        )
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))

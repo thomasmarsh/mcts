@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -12,6 +13,7 @@ from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .continuation import continue_run
 from .domain import Candidate, SearchEffort
 from .effort import exceeds_same_kind
+from .event_payloads import BudgetExtendedPayload
 from .evidence import EvidenceWriter, read_events, write_manifest
 from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
 from .family_exclusions import normalize_family_exclusions, validate_family_exclusions
@@ -56,6 +58,11 @@ class RunOptions:
     excluded_families: tuple[str, ...] = ()
     proposer_policy: ProposerPolicy = "smac_mixed"
     resume: bool = False
+    extend_tuning_pairs: int = 0
+    extend_validation_pairs: int = 0
+    extend_diagnostic_pairs: int = 0
+    extend_reason: str = ""
+    extend_requested_at: str = ""
 
 
 def run_foreground(
@@ -80,6 +87,7 @@ def run_foreground(
     objective = resolve_objective(objective_path, spec.kind, objective_default)
     validate_objective_options(options, objective)
     manifest, writer = open_run(options, directory, spec, objective, active_target)
+    append_budget_extension(options, writer)
     if fold_events(manifest, read_events(writer.path)).terminal_status == "complete":
         write_report(directory)
         return directory / "report.json"
@@ -149,6 +157,7 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         raise ValueError("all numeric arguments must be positive integers")
     if isinstance(options.diagnostic_pair_budget, bool) or options.diagnostic_pair_budget < 0:
         raise ValueError("diagnostic pair budget must be a non-Boolean integer at least zero")
+    _validate_extension_options(options)
     _validate_shadow_margins(options)
     if options.active_elimination_audit_probability is not None:
         if (
@@ -195,6 +204,42 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
     if not options.resume and directory.exists():
         raise ValueError(f"run directory already exists: {directory}; use --resume to continue it")
     return binary, directory, objective
+
+
+def _extension_deltas(options: RunOptions) -> tuple[int, int, int]:
+    return (
+        options.extend_tuning_pairs,
+        options.extend_validation_pairs,
+        options.extend_diagnostic_pairs,
+    )
+
+
+def _validate_extension_options(options: RunOptions) -> None:
+    deltas = _extension_deltas(options)
+    if any(isinstance(delta, bool) or delta < 0 for delta in deltas):
+        raise ValueError("budget extension deltas must be non-Boolean integers at least zero")
+    if not any(deltas):
+        return
+    if not options.resume:
+        raise ValueError("budget extension flags are valid only with --resume")
+    if not options.extend_reason.strip():
+        raise ValueError("a budget extension requires --extend-reason")
+
+
+def append_budget_extension(options: RunOptions, writer: EvidenceWriter) -> None:
+    """Record one ``budget_extended`` event before continuing a resumed run.
+
+    The manifest budget is never edited; the extension is append-only evidence
+    that replay folds into the effective budget (re-opening the run if it had
+    already completed).
+    """
+    deltas = _extension_deltas(options)
+    if not any(deltas):
+        return
+    requested_at = options.extend_requested_at.strip() or datetime.now(timezone.utc).isoformat()
+    writer.append(
+        BudgetExtendedPayload(deltas[0], deltas[1], deltas[2], options.extend_reason, requested_at)
+    )
 
 
 def _validate_shadow_margins(options: RunOptions) -> None:

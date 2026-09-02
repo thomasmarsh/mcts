@@ -5,7 +5,9 @@ use axum::{
     http::StatusCode,
     response::Json,
 };
-use mcts_bench::tuner_launch::{self, TerminalOutcome, TunerLaunchRecord, TunerLaunchRequest};
+use mcts_bench::tuner_launch::{
+    self, BudgetExtension, TerminalOutcome, TunerLaunchRecord, TunerLaunchRequest,
+};
 use serde::Serialize;
 
 use super::{BenchError, BenchState};
@@ -88,6 +90,31 @@ pub(crate) async fn get_tuner_run(
             message: format!("tuner run '{run_id}' not found"),
         })?;
     Ok(Json(view(record)))
+}
+
+/// `POST /api/bench/tuner/runs/{run_id}/extend`
+///
+/// Raise one or more of a frozen run's pair budgets and resume it. The tuner
+/// records the increase as one append-only `budget_extended` evidence event
+/// (`manifest.compute_budget` is never edited) and continues the run; a run
+/// that had already completed re-opens at its last cohort boundary.
+pub(crate) async fn extend_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+    Json(extension): Json<BudgetExtension>,
+) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
+    let record =
+        tuner_launch::extend(&state.bench_runs_dir, &run_id, &extension).map_err(|error| {
+            BenchError {
+                status: match error.kind() {
+                    std::io::ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
+                    std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+                    _ => StatusCode::INTERNAL_SERVER_ERROR,
+                },
+                message: format!("failed to extend tuner run: {error}"),
+            }
+        })?;
+    Ok((StatusCode::ACCEPTED, Json(view(record))))
 }
 
 pub(crate) async fn stop_tuner_run(

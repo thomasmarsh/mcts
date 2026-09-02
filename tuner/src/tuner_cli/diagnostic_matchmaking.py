@@ -20,7 +20,12 @@ def next_diagnostic_allocation(
         or state.pending_resource_allocation is not None
     ):
         return None
-    if state.compute.diagnostic.pair_attempts >= manifest.compute_budget.diagnostic_pair_attempts:
+    from .allocator import effective_budget
+
+    if (
+        state.compute.diagnostic.pair_attempts
+        >= effective_budget(manifest, state).diagnostic_pair_attempts
+    ):
         return None
     observations = comparable_prefix_observations(
         state.observations, cohort.candidates, manifest.tuning_prefix

@@ -226,6 +226,112 @@ impl TunerLaunchRequest {
     }
 }
 
+/// A request to raise one or more of a frozen run's pair budgets and resume it.
+///
+/// The tuner never edits `manifest.compute_budget`; the extension is recorded
+/// as one append-only `budget_extended` evidence event by `tuner_cli --resume
+/// --extend-*`, which replay folds into the effective budget (re-opening the
+/// run if it had already completed).
+#[derive(Clone, Debug, Deserialize)]
+pub struct BudgetExtension {
+    #[serde(default)]
+    pub tuning_pair_attempts_delta: u64,
+    #[serde(default)]
+    pub validation_pair_attempts_delta: u64,
+    #[serde(default)]
+    pub diagnostic_pair_attempts_delta: u64,
+    pub reason: String,
+}
+
+/// Strip any prior `--resume` / `--extend-*` flags (and their values) from a
+/// recorded launch argv so a fresh resume can append its own.
+fn resumable_argv(argv: &[String]) -> Vec<String> {
+    let takes_value = |flag: &str| {
+        matches!(
+            flag,
+            "--extend-tuning-pairs"
+                | "--extend-validation-pairs"
+                | "--extend-diagnostic-pairs"
+                | "--extend-reason"
+                | "--extend-requested-at"
+        )
+    };
+    let mut kept = Vec::with_capacity(argv.len());
+    let mut skip_next = false;
+    for arg in argv {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--resume" {
+            continue;
+        }
+        if takes_value(arg) {
+            skip_next = true;
+            continue;
+        }
+        kept.push(arg.clone());
+    }
+    kept
+}
+
+/// Record a `budget_extended` event on `run_id` and relaunch it with
+/// `--resume`. Reuses the run's most recent launch argv (its frozen scientific
+/// inputs) and adds only the resume and extension flags.
+pub fn extend(
+    root: &Path,
+    run_id: &str,
+    extension: &BudgetExtension,
+) -> io::Result<TunerLaunchRecord> {
+    if extension.reason.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a budget extension requires a reason",
+        ));
+    }
+    if extension.tuning_pair_attempts_delta == 0
+        && extension.validation_pair_attempts_delta == 0
+        && extension.diagnostic_pair_attempts_delta == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a budget extension must raise at least one budget",
+        ));
+    }
+    let record = records(root)?
+        .into_iter()
+        .find(|record| record.run_id == run_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "tuner run not found"))?;
+    if !record.run_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "tuner run directory is missing",
+        ));
+    }
+    let mut argv = resumable_argv(&record.argv);
+    argv.push("--resume".into());
+    for (flag, delta) in [
+        ("--extend-tuning-pairs", extension.tuning_pair_attempts_delta),
+        (
+            "--extend-validation-pairs",
+            extension.validation_pair_attempts_delta,
+        ),
+        (
+            "--extend-diagnostic-pairs",
+            extension.diagnostic_pair_attempts_delta,
+        ),
+    ] {
+        argv.push(flag.into());
+        argv.push(delta.to_string());
+    }
+    argv.push("--extend-reason".into());
+    argv.push(extension.reason.clone());
+    argv.push("--extend-requested-at".into());
+    argv.push(crate::launch::iso_timestamp());
+    let run_dir = record.run_dir.clone();
+    spawn_and_journal(root, run_id, run_dir, argv)
+}
+
 pub fn safe_run_id(run_id: &str) -> bool {
     !run_id.is_empty()
         && run_id != "."
@@ -635,6 +741,69 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert_eq!(outcome, Some(TerminalOutcome::Signalled));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resumable_argv_drops_prior_resume_and_extension_flags() {
+        let argv = vec![
+            "uv".to_string(),
+            "-m".into(),
+            "tuner_cli".into(),
+            "--tuning-pair-budget".into(),
+            "10".into(),
+            "--resume".into(),
+            "--extend-tuning-pairs".into(),
+            "6".into(),
+            "--extend-reason".into(),
+            "earlier extension".into(),
+        ];
+        assert_eq!(
+            resumable_argv(&argv),
+            ["uv", "-m", "tuner_cli", "--tuning-pair-budget", "10"]
+        );
+    }
+
+    #[test]
+    fn extend_rejects_empty_reason_and_all_zero_deltas() {
+        let root = scratch("extend-reject");
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "run".into(),
+                argv: vec!["uv".into()],
+                run_dir: root.join("run"),
+                pid: Some(1),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: Some(TerminalOutcome::Exited),
+            },
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("run")).unwrap();
+        let blank = BudgetExtension {
+            tuning_pair_attempts_delta: 6,
+            validation_pair_attempts_delta: 0,
+            diagnostic_pair_attempts_delta: 0,
+            reason: "  ".into(),
+        };
+        assert_eq!(
+            extend(&root, "run", &blank).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        let zero = BudgetExtension {
+            tuning_pair_attempts_delta: 0,
+            validation_pair_attempts_delta: 0,
+            diagnostic_pair_attempts_delta: 0,
+            reason: "fund more".into(),
+        };
+        assert_eq!(
+            extend(&root, "run", &zero).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            extend(&root, "missing", &zero).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }

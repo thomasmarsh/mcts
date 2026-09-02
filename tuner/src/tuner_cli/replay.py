@@ -29,6 +29,7 @@ from .domain import (
     Candidate,
     CandidateFailure,
     CohortRecord,
+    ComputeBudget,
     DeepenCohortAllocation,
     DiagnosticPairResult,
     EmitShadowRace,
@@ -52,6 +53,7 @@ from .domain import (
 )
 from .event_payloads import (
     AllocationDecidedPayload,
+    BudgetExtendedPayload,
     CandidateFailedPayload,
     CohortCompletedPayload,
     DiagnosticPairCompletedPayload,
@@ -138,6 +140,21 @@ class _Replay:
     active_elimination_suspension: SuspendActiveElimination | None = None
     diagnostic_pairs: list[DiagnosticPairResult] = field(default_factory=lambda: [])
     diagnostic_attempts: dict[str, PairAttemptFacts] = field(default_factory=lambda: {})
+    budget_extensions: list[BudgetExtendedPayload] = field(default_factory=lambda: [])
+    superseded_finalists: list[tuple[Candidate, ...]] = field(default_factory=lambda: [])
+    superseded_pairs: list[PairResult] = field(default_factory=lambda: [])
+    superseded_observations: list[Observation] = field(default_factory=lambda: [])
+
+    def effective_budget(self) -> ComputeBudget:
+        base = self.manifest.compute_budget
+        return ComputeBudget(
+            base.tuning_pair_attempts
+            + sum(item.tuning_pair_attempts_delta for item in self.budget_extensions),
+            base.validation_pair_attempts
+            + sum(item.validation_pair_attempts_delta for item in self.budget_extensions),
+            base.diagnostic_pair_attempts
+            + sum(item.diagnostic_pair_attempts_delta for item in self.budget_extensions),
+        )
 
     def state(self) -> ReplayState:
         attempts = tuple(
@@ -174,6 +191,8 @@ class _Replay:
             self.active_elimination_suspension,
             tuple(self.diagnostic_pairs),
             tuple(sorted(self.diagnostic_attempts.items())),
+            self.effective_budget(),
+            tuple(self.superseded_finalists),
         )
 
     def active(self) -> tuple[Candidate, ...]:
@@ -603,12 +622,18 @@ def _scientific_count(state: _Replay) -> int:
         len(state.proposals)
         + len(state.dispositions)
         + len(state.completed)
+        + len(state.superseded_pairs)
         + len(state.observations)
+        + len(state.superseded_observations)
         + len(state.shadow_races)
         + len(state.candidate_failures)
+        + len(state.budget_extensions)
         + state.allocations
         + len(state.completed_cohorts)
         + (state.finalists is not None)
+        # Each re-open leaves a prior finalists_selected and run_completed in the
+        # log as superseded scientific evidence.
+        + 2 * len(state.superseded_finalists)
         + 1
     )
 
@@ -656,7 +681,57 @@ def _matches_pair_identity(payload: PairStartedPayload | PairFailedPayload, task
     )
 
 
+def _apply_budget_extension(state: _Replay, payload: BudgetExtendedPayload) -> None:
+    if state.terminal == "configuration_failed":
+        raise ValueError("a configuration-failed run cannot be extended")
+    state.budget_extensions.append(payload)
+    budget = state.effective_budget()
+    finalists = state.manifest.finalists
+    if budget.validation_pair_attempts % finalists:
+        raise ValueError("extended validation budget must divide finalists")
+    if budget.validation_pair_attempts // finalists > len(
+        state.manifest.production_validation_corpus.cases
+    ):
+        raise ValueError("extended validation budget exceeds the frozen validation corpus")
+    if state.terminal == "complete":
+        # Re-open a completed run: the prior finalists_selected / validation
+        # pairs / run_completed events stay in the log as factual evidence, but
+        # the active replay state rewinds to the last cohort boundary so the
+        # allocator can fund a fresh challenger cohort and a fresh finalist
+        # selection and validation from the raised budget. The superseded
+        # finalists, validation pairs, and validation observations are set aside
+        # (still counted for the scientific event total) so the fresh pass does
+        # not collide with them.
+        state.terminal = "open"
+        if state.finalists is not None:
+            state.superseded_finalists.append(state.finalists)
+        state.finalists = None
+        superseded_pair_ids = {
+            pair.task.pair_id
+            for pair in state.completed
+            if pair.task.task_case.phase == "validation"
+        }
+        state.superseded_pairs.extend(
+            pair for pair in state.completed if pair.task.pair_id in superseded_pair_ids
+        )
+        state.completed = [
+            pair for pair in state.completed if pair.task.pair_id not in superseded_pair_ids
+        ]
+        state.superseded_observations.extend(
+            item for item in state.observations if item.phase == "validation"
+        )
+        state.observations = [item for item in state.observations if item.phase != "validation"]
+        state.pair_attempts = {
+            pair_id: facts
+            for pair_id, facts in state.pair_attempts.items()
+            if pair_id not in superseded_pair_ids
+        }
+
+
 def _apply(state: _Replay, event: EvidenceEvent) -> None:
+    if isinstance(event.payload, BudgetExtendedPayload):
+        _apply_budget_extension(state, event.payload)
+        return
     if state.terminal != "open":
         raise ValueError("event follows terminal run state")
     match event.payload:

@@ -77,6 +77,65 @@ async fn launch_rejects_an_unsafe_run_id() {
 }
 
 #[tokio::test]
+async fn extend_validates_the_request_and_relaunches() {
+    let (app, root) = seeded_app(default_seed);
+    let runs_root = root.join("bench-runs");
+    let run_dir = runs_root.join("tuner_ext");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    tuner_launch::append_launch(
+        &runs_root,
+        &TunerLaunchRecord {
+            run_id: "tuner_ext".into(),
+            argv: vec!["true".into()],
+            run_dir: run_dir.clone(),
+            pid: Some(1),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            terminal_outcome: Some(TerminalOutcome::Exited),
+        },
+    )
+    .unwrap();
+
+    // A reason is required and at least one delta must be positive.
+    let (status, _) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/runs/tuner_ext/extend",
+        json!({ "tuning_pair_attempts_delta": 6, "reason": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/runs/missing/extend",
+        json!({ "reason": "fund more" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A valid request relaunches the run with --resume and the extend flags.
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/runs/tuner_ext/extend",
+        json!({ "tuning_pair_attempts_delta": 6, "reason": "fund another cohort" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let argv = body_json(&body)["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(argv.contains(&"--resume".to_string()));
+    assert!(argv
+        .windows(2)
+        .any(|pair| pair == ["--extend-tuning-pairs", "6"]));
+    assert!(argv
+        .windows(2)
+        .any(|pair| pair == ["--extend-reason", "fund another cohort"]));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn stop_is_idempotent_on_an_already_exited_run() {
     let (app, root) = seeded_app(default_seed);
     let runs_root = root.join("bench-runs");
