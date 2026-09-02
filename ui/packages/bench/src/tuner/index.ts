@@ -46,6 +46,24 @@ export {
 } from "./models/config-diff-model.js";
 export { buildPreset, type PresetSpec, type PresetCopyResult } from "./models/preset-copy.js";
 export {
+  emptyDraft,
+  draftFromContent,
+  draftToContent,
+  validateDraft,
+  reduceWeights,
+  canonicalize,
+  effectiveConfig,
+  schemaDefaultConfig,
+  activeParamNames,
+  blankInlineOpponent,
+  slugKey,
+  type ObjectiveDraft,
+  type OpponentDraft,
+  type OpponentKind,
+  type JsonObject,
+  type DraftParse,
+} from "./models/objective-model.js";
+export {
   derivePairInspector,
   type PairInspectorView,
   type PairGameView,

@@ -157,12 +157,22 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
           </For>
         </select>
       </label>
-      <Show when={matchingObjectives().length === 0}>
-        <p class="tuner-launch-hint">
-          No objective files configured. Add one under the server's objectives directory
-          (<code>MCTS_TUNER_OBJECTIVES_DIR</code>).
-        </p>
-      </Show>
+      <p class="tuner-launch-hint">
+        <Show
+          when={matchingObjectives().length === 0}
+          fallback={<a href="#/tuner/objectives">Manage objectives</a>}
+        >
+          No objective for <strong>{gameKind() || "this game"}</strong> yet —{" "}
+          <a
+            href={`#/tuner/objectives/new${
+              gameKind() ? `?game=${encodeURIComponent(gameKind())}` : ""
+            }`}
+          >
+            create one
+          </a>
+          .
+        </Show>
+      </p>
 
       <label>
         Run id

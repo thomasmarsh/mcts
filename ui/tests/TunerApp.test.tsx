@@ -277,7 +277,109 @@ describe("TunerApp objective manager", () => {
       expect(screen.getByTestId("tuner-objective-editor")).toBeInTheDocument(),
     );
     await vi.waitFor(() =>
-      expect(screen.getByTestId("objective-editor-raw")).toHaveTextContent("schema_version"),
+      expect(screen.getByTestId("objective-id-input")).toHaveValue("nim-v1"),
+    );
+  });
+});
+
+describe("TunerApp objective editor", () => {
+  const existing = {
+    schema_version: 1,
+    objective_id: "nim-v1",
+    game_kind: "nim",
+    opponents: [
+      {
+        id: "schema-default",
+        label: "Schema default",
+        role: "default",
+        weight: 2,
+        config: { source: "schema_default" },
+      },
+      {
+        id: "hist",
+        label: "Historical",
+        role: "historical_reference",
+        weight: 4,
+        config: { source: "inline", value: { c: 1.4 } },
+      },
+    ],
+    start_distribution: { kind: "default_only" },
+  };
+  const objectiveRow = {
+    key: "nim-v1",
+    objective_id: "nim-v1",
+    game_kind: "nim",
+    opponent_count: 2,
+    updated_at: null,
+    is_seed: false,
+  };
+
+  async function openEditor(over: Parameters<typeof mockTunerEnv>[0]) {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send([objectiveRow]),
+          listRuns: () => Effect.send([]),
+          getObjective: () =>
+            Effect.send({ key: "nim-v1", content: existing, updated_at: null, is_seed: false }),
+          ...over,
+        })}
+      />
+    ));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-fleet")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Manage objectives" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-manager")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-editor")).toBeInTheDocument(),
+    );
+  }
+
+  it("saves the reduced-weight canonical body", async () => {
+    const putObjective = vi.fn((key: string, content: unknown) =>
+      Effect.send({ key, content, updated_at: null, is_seed: false }),
+    );
+    await openEditor({ putObjective });
+
+    await vi.waitFor(() => expect(screen.getAllByTestId("objective-opponent").length).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(putObjective).toHaveBeenCalledTimes(1));
+    const [key, content] = putObjective.mock.calls[0]!;
+    expect(key).toBe("nim-v1");
+    expect((content as { opponents: { weight: number }[] }).opponents.map((o) => o.weight)).toEqual([
+      1, 2,
+    ]);
+    // Save navigates back to the manager.
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-manager")).toBeInTheDocument(),
+    );
+  });
+
+  it("disables Save and shows the reason for a bad draft", async () => {
+    await openEditor({});
+    const idInput = screen.getByTestId("objective-id-input") as HTMLInputElement;
+    fireEvent.input(idInput, { target: { value: "" } });
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("objective-validation")).toHaveTextContent(/objective id/i),
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("renders a rejected server validation", async () => {
+    await openEditor({
+      validateObjective: () =>
+        Effect.send({ ok: false, errors: ["objective needs at least two opponents"] }),
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Validate on server" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("objective-server-validation")).toHaveTextContent(
+        "at least two opponents",
+      ),
     );
   });
 });

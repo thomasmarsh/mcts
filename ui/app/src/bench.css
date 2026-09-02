@@ -4314,6 +4314,47 @@ body.bench-active #analysis-panel {
   font-size: 0.8rem;
   margin-bottom: 6px;
 }
+.tuner-toggle-active {
+  font-weight: 600;
+  text-decoration: underline;
+}
+.tuner-objective-opponent {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+}
+.tuner-objective-opponent-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.tuner-objective-caption {
+  font-size: 0.78rem;
+  color: #686a75;
+}
+.tuner-objective-config {
+  margin-top: 8px;
+}
+.tuner-objective-param-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+.tuner-objective-param {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  gap: 2px;
+}
+.tuner-objective-validation {
+  margin: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
 
 .tuner-copy-preset {
   display: inline-flex;
