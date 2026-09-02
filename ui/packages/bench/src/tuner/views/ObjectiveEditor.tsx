@@ -270,7 +270,8 @@ export const ObjectiveEditor: Component<{
       </Show>
 
       <h4>Opponent panel</h4>
-      <For each={draft().opponents}>
+      <div class="tuner-objective-opponents">
+        <For each={draft().opponents}>
         {(opponent, index) => (
           <div class="tuner-objective-opponent" data-testid="objective-opponent">
             <Show
@@ -375,7 +376,8 @@ export const ObjectiveEditor: Component<{
             </Show>
           </div>
         )}
-      </For>
+        </For>
+      </div>
       <button type="button" class="tuner-fleet-new" onClick={addOpponent}>
         Add opponent
       </button>
@@ -419,7 +421,7 @@ export const ObjectiveEditor: Component<{
         </div>
       </Show>
 
-      <div class="tuner-fleet-actions">
+      <div class="tuner-objective-editor-footer">
         <button
           type="button"
           id="objective-save"

@@ -4300,42 +4300,108 @@ body.bench-active #analysis-panel {
   background: var(--surface-alt, #f0f0f0);
   color: #686a75;
 }
+.tuner-objective-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 720px;
+  padding: 16px 18px 0;
+  background: #14151b;
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+}
+.tuner-objective-editor h3 {
+  margin: 0;
+  font-size: 15px;
+  color: #e9eaf0;
+}
+.tuner-objective-editor h4 {
+  margin: 8px 0 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #808291;
+}
+.tuner-objective-editor label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #b7b8c2;
+}
+.tuner-objective-editor input,
+.tuner-objective-editor select,
+.tuner-objective-editor textarea {
+  background: #101116;
+  border: 1px solid #2a2b33;
+  border-radius: 6px;
+  color: #e9eaf0;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
 .tuner-objective-editor-raw {
+  font-family: ui-monospace, monospace;
   font-size: 0.78rem;
   overflow-x: auto;
-  padding: 8px;
-  background: var(--surface-alt, #f5f5f5);
-  border-radius: 4px;
+  width: 100%;
 }
 .tuner-config-diff-toggle {
   display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 0.8rem;
-  margin-bottom: 6px;
+  border: 1px solid #2a2b33;
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+.tuner-config-diff-toggle button {
+  background: #101116;
+  border: none;
+  border-right: 1px solid #2a2b33;
+  color: #9a9ba6;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.tuner-config-diff-toggle button:last-child {
+  border-right: none;
 }
 .tuner-toggle-active {
+  background: #2b3355 !important;
+  color: #e9eaf0 !important;
   font-weight: 600;
-  text-decoration: underline;
+  text-decoration: none;
+}
+.tuner-objective-opponents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 .tuner-objective-opponent {
-  border: 1px solid var(--border, #ddd);
-  border-radius: 4px;
-  padding: 8px 10px;
-  margin: 6px 0;
+  border: 1px solid #2a2b33;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 0;
+  background: #101116;
 }
 .tuner-objective-opponent-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 12px;
   align-items: flex-end;
+}
+.tuner-objective-opponent-head label {
+  width: 140px;
+}
+.tuner-objective-opponent-head .tuner-objective-delete-confirm {
+  margin-left: auto;
+  align-self: center;
 }
 .tuner-objective-caption {
   font-size: 0.78rem;
   color: #686a75;
 }
 .tuner-objective-config {
-  margin-top: 8px;
+  margin-top: 10px;
 }
 .tuner-objective-param-grid {
   display: grid;
@@ -4349,11 +4415,26 @@ body.bench-active #analysis-panel {
   gap: 2px;
 }
 .tuner-objective-validation {
-  margin: 12px 0;
+  margin: 4px 0;
+  padding: 10px 12px;
+  background: #101116;
+  border: 1px solid #2a2b33;
+  border-radius: 6px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   align-items: flex-start;
+}
+.tuner-objective-editor-footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 0;
+  margin-top: 4px;
+  background: #14151b;
+  border-top: 1px solid #2a2b33;
 }
 
 .tuner-copy-preset {
