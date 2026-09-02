@@ -3816,6 +3816,12 @@ body.bench-active #analysis-panel {
 /* ── Version-4 tuner UI (fleet / launch / run overview) ──────────────── */
 
 .tuner-app {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: calc(var(--topbar-h) + var(--subtabbar-h) + 24px) 24px 48px;
   max-width: 1100px;
   margin: 0 auto;
