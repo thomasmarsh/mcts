@@ -1,5 +1,39 @@
-use game_host::TunerInfo;
+use game_host::{GameConfigSchema, TunerInfo, TunerParameter};
 use serde_json::json;
+
+fn int_param(name: &str, min: i64, max: i64, default: i64) -> TunerParameter {
+    TunerParameter {
+        name: name.to_string(),
+        spec: json!({ "type": "int", "bounds": [min, max], "default": default }),
+    }
+}
+
+/// A `game_config` schema for a game whose only setup axis is a single
+/// square board `size` bounded `min..=max` (AtariGo).
+pub fn square_board_config_schema(min: i64, max: i64, default: i64) -> GameConfigSchema {
+    GameConfigSchema {
+        parameters: vec![int_param("size", min, max, default)],
+        conditions: vec![],
+    }
+}
+
+/// A `game_config` schema for a game whose board is a `{w, h}` object, each
+/// dimension bounded independently and rendered as dotted `size.w` /
+/// `size.h` int fields (Druid).
+pub fn dimensions_board_config_schema(
+    min: i64,
+    max: i64,
+    default_w: i64,
+    default_h: i64,
+) -> GameConfigSchema {
+    GameConfigSchema {
+        parameters: vec![
+            int_param("size.w", min, max, default_w),
+            int_param("size.h", min, max, default_h),
+        ],
+        conditions: vec![],
+    }
+}
 
 use crate::family_catalog::{
     condition, direct_family_names, family_choices, family_conditions, param,
@@ -24,6 +58,9 @@ pub fn strategy_tuner_info_with_mcgs(
         id: "strategy".into(),
         baselines: baselines.iter().map(|s| s.to_string()).collect(),
         game_config: json!({}),
+        // Filled in per-game (AtariGo/Druid) alongside `game_config`; every
+        // fixed-board game keeps this empty default.
+        game_config_schema: GameConfigSchema::default(),
         eval_rounds,
         parameters: {
             let mut parameters = vec![

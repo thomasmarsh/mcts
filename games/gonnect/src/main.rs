@@ -481,6 +481,7 @@ impl GameAdapter for GonnectAdapter {
             id: "gonnect/qbf".into(),
             default_rounds: BookBuildConfig::default().rounds,
             game_config: self.default_config(),
+            game_config_schema: self.config_schema(),
         })
     }
 

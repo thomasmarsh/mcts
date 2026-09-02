@@ -1,6 +1,6 @@
 use crate::{
     AiMoveResult, AiPresetInfo, Analysis, BookInfo, CompareValidationField, ConfiguredMatchResult,
-    HostError, TunerInfo,
+    GameConfigSchema, HostError, TunerInfo,
 };
 use serde_json::Value;
 
@@ -20,6 +20,14 @@ pub trait GameAdapter: Send + Sync {
     /// A default/example config value for `new_state`.  Also serves as a
     /// config schema hint for generic new-game forms.
     fn default_config(&self) -> Value;
+
+    /// The game-setup axis `new_state` / `tune_eval` / `book_build` accept
+    /// as `game_config`, described (bounds, types) so a generic caller can
+    /// render and validate a form without a per-game hardcode. The default
+    /// is empty: the board is fixed at compile time, nothing to configure.
+    fn config_schema(&self) -> GameConfigSchema {
+        GameConfigSchema::default()
+    }
 
     fn new_state(&self, config: Value) -> Result<Value, HostError>;
     fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError>;

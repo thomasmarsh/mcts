@@ -2,7 +2,10 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
+use game_host::{
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, GameConfigSchema, HostError,
+    TunerInfo,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -161,6 +164,13 @@ impl GameAdapter for AtarigoAdapter {
     fn default_config(&self) -> Value {
         serde_json::json!({ "size": DEFAULT_SIZE })
     }
+    fn config_schema(&self) -> GameConfigSchema {
+        mcts_tune::square_board_config_schema(
+            MIN_SIZE as i64,
+            MAX_SIZE as i64,
+            DEFAULT_SIZE as i64,
+        )
+    }
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         let config: NewGameConfig = serde_json::from_value(config)
             .map_err(|e| HostError::bad_request(format!("invalid config: {e}")))?;
@@ -281,6 +291,7 @@ impl GameAdapter for AtarigoAdapter {
         let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
+            game_config_schema: self.config_schema(),
             ..mcts_tune::strategy_tuner_info(&baselines, TUNE_EVAL_ROUNDS)
         })
     }
@@ -433,6 +444,22 @@ mod tests {
                 .unwrap_or_else(|e| panic!("new_state({n}) failed: {e}"));
             assert_eq!(v["cells"].as_array().unwrap().len(), n * n);
         }
+    }
+
+    #[test]
+    fn config_schema_bounds_match_check_size_and_accept_default_config() {
+        let schema = AtarigoAdapter.config_schema();
+        assert!(schema.validate(&AtarigoAdapter.default_config()).is_ok());
+        for n in MIN_SIZE..=MAX_SIZE {
+            assert!(schema.validate(&serde_json::json!({ "size": n })).is_ok());
+            assert!(check_size(n).is_ok());
+        }
+        assert!(schema
+            .validate(&serde_json::json!({ "size": MIN_SIZE - 1 }))
+            .is_err());
+        assert!(schema
+            .validate(&serde_json::json!({ "size": MAX_SIZE + 1 }))
+            .is_err());
     }
 
     #[test]

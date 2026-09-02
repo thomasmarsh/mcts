@@ -56,6 +56,7 @@ impl GameAdapter for BookableFakeAdapter {
             id: "test".into(),
             default_rounds: 20,
             game_config: serde_json::json!({}),
+            game_config_schema: Default::default(),
         })
     }
 

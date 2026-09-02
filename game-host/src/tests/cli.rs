@@ -67,6 +67,7 @@ impl GameAdapter for TunableFakeAdapter {
             }],
             conditions: vec![],
             game_config: serde_json::json!({}),
+            game_config_schema: Default::default(),
         })
     }
 
@@ -715,3 +716,113 @@ fn test_run_cli_tune_with_no_further_args_falls_back_to_stdin_stdout_loop() {
 // -----------------------------------------------------------------------
 // `book` subcommand tests
 // -----------------------------------------------------------------------
+
+// -----------------------------------------------------------------------
+// `config_schema` / `game_config_schema` describe surface
+// -----------------------------------------------------------------------
+
+/// Delegates every adapter method to [`FakeAdapter`] except the game-config
+/// axis, so a test can pair an arbitrary `config_schema` with an arbitrary
+/// `default_config` (including a deliberately inconsistent pair).
+struct ConfigSchemaAdapter {
+    default_config: Value,
+    schema: GameConfigSchema,
+}
+
+impl GameAdapter for ConfigSchemaAdapter {
+    fn kind(&self) -> &'static str {
+        FakeAdapter.kind()
+    }
+    fn label(&self) -> &'static str {
+        FakeAdapter.label()
+    }
+    fn description(&self) -> &'static str {
+        FakeAdapter.description()
+    }
+    fn default_config(&self) -> Value {
+        self.default_config.clone()
+    }
+    fn config_schema(&self) -> GameConfigSchema {
+        self.schema.clone()
+    }
+    fn new_state(&self, config: Value) -> Result<Value, HostError> {
+        FakeAdapter.new_state(config)
+    }
+    fn legal_moves(&self, state: &Value) -> Result<Vec<Value>, HostError> {
+        FakeAdapter.legal_moves(state)
+    }
+    fn apply(&self, state: &Value, mv: &Value) -> Result<Value, HostError> {
+        FakeAdapter.apply(state, mv)
+    }
+    fn view(&self, state: &Value) -> Result<Value, HostError> {
+        FakeAdapter.view(state)
+    }
+    fn ai_presets(&self) -> Vec<AiPresetInfo> {
+        FakeAdapter.ai_presets()
+    }
+    fn ai_move(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+    ) -> Result<AiMoveResult, HostError> {
+        FakeAdapter.ai_move(state, preset, custom)
+    }
+    fn analyze(
+        &self,
+        state: &Value,
+        preset: &str,
+        custom: Option<&Value>,
+        budget_ms: Option<u64>,
+    ) -> Result<Analysis, HostError> {
+        FakeAdapter.analyze(state, preset, custom, budget_ms)
+    }
+}
+
+fn size_schema(min: i64, max: i64, default: i64) -> GameConfigSchema {
+    GameConfigSchema {
+        parameters: vec![TunerParameter {
+            name: "size".into(),
+            spec: serde_json::json!({ "type": "int", "bounds": [min, max], "default": default }),
+        }],
+        conditions: vec![],
+    }
+}
+
+#[test]
+fn describe_reports_empty_config_schema_by_default() {
+    let (out, code) = run_cli_capture(&["describe"], "");
+    assert_eq!(code, 0);
+    let description: GameDescription = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert!(description.config_schema.is_empty());
+}
+
+#[test]
+fn describe_round_trips_a_declared_config_schema() {
+    let adapter = ConfigSchemaAdapter {
+        default_config: serde_json::json!({ "size": 9 }),
+        schema: size_schema(3, 19, 9),
+    };
+    let (out, code) = run_cli_capture_with(adapter, &["describe"], "");
+    assert_eq!(code, 0);
+    let description: GameDescription = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert_eq!(description.config_schema, size_schema(3, 19, 9));
+}
+
+#[test]
+fn tune_describe_round_trips_game_config_schema() {
+    let (out, code) = run_cli_capture_with(TunableFakeAdapter, &["tune", "describe"], "");
+    assert_eq!(code, 0);
+    let info: TunerInfo = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+    assert!(info.game_config_schema.is_empty());
+}
+
+#[test]
+#[should_panic(expected = "does not validate against config_schema")]
+fn describe_debug_asserts_default_config_matches_schema() {
+    let adapter = ConfigSchemaAdapter {
+        default_config: serde_json::json!({ "size": 999 }),
+        schema: size_schema(3, 19, 9),
+    };
+    let _ = run_cli_capture_with(adapter, &["describe"], "");
+}

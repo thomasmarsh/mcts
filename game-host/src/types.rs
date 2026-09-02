@@ -297,7 +297,7 @@ pub struct ConfiguredComparisonSummary {
 /// `default` for `float`/`int`, `type`/`choices`/`default` for
 /// `categorical`, `type`/`default` for `bool`, or `type`/`value` for
 /// `constant`).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TunerParameter {
     pub name: String,
     #[serde(flatten)]
@@ -308,11 +308,150 @@ pub struct TunerParameter {
 /// config, every name in `then` also becomes active. `if` is a single-entry
 /// object mapping a parent parameter name to either one value or a list of
 /// values (mirrors the YAML `if:`/`then:` shape).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TunerCondition {
     #[serde(rename = "if")]
     pub if_: Value,
     pub then: Vec<String>,
+}
+
+/// The game-setup axis that `new_state` / `tune_eval` / `book_build` accept
+/// as `game_config`, described so a generic caller (a launch form, a tuner
+/// CLI) can render and validate a form without a per-game hardcode.
+///
+/// Reuses the `TunerParameter` / `TunerCondition` shapes verbatim: an `int`
+/// with `bounds` covers AtariGo/Druid `size` (Druid's `{w, h}` object is
+/// two dotted `size.w` / `size.h` parameters), `categorical` covers a future
+/// "variant" knob, `constant` documents a locked field. An empty
+/// `parameters` list (the default) means the board is fixed at compile time
+/// -- nothing to configure, the same thing `default_config()` returning
+/// `{}` already means for `new_state`.
+///
+/// `default_config()` stays the source of the default *values*; this adds
+/// the bounds and types. The two must agree: `default_config()` always
+/// validates against `config_schema()` (a `debug_assert` in `describe`
+/// checks it).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GameConfigSchema {
+    #[serde(default)]
+    pub parameters: Vec<TunerParameter>,
+    #[serde(default)]
+    pub conditions: Vec<TunerCondition>,
+}
+
+impl GameConfigSchema {
+    /// Whether this schema has any configurable field at all.
+    pub fn is_empty(&self) -> bool {
+        self.parameters.is_empty()
+    }
+
+    /// Check a `game_config` value against this schema: it must be a JSON
+    /// object, every (dotted) leaf key must name a declared parameter, and
+    /// every value must satisfy that parameter's `type` / `bounds` /
+    /// `choices` / `value`. Conditions only *add* activatable fields, so for
+    /// this structural check every declared parameter is treated as
+    /// available -- the authoritative "conditioned key only when active"
+    /// check lives in the tuner's Python `resolve_objective`.
+    pub fn validate(&self, config: &Value) -> Result<(), String> {
+        let obj = config
+            .as_object()
+            .ok_or_else(|| "game_config must be a JSON object".to_string())?;
+        if self.parameters.is_empty() {
+            return if obj.is_empty() {
+                Ok(())
+            } else {
+                Err("this game's board is fixed -- it has no configurable setup axis".to_string())
+            };
+        }
+        let mut leaves = Vec::new();
+        for (key, value) in obj {
+            flatten_dotted(value, key, &mut leaves);
+        }
+        for (path, value) in &leaves {
+            let param = self
+                .parameters
+                .iter()
+                .find(|p| &p.name == path)
+                .ok_or_else(|| format!("unknown game_config key: {path}"))?;
+            check_value_against_spec(value, &param.spec)
+                .map_err(|message| format!("{path}: {message}"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Flatten a JSON value to `(dotted path, leaf value)` pairs: an object
+/// recurses with `parent.child` keys, anything else is a leaf at `prefix`.
+fn flatten_dotted(value: &Value, prefix: &str, out: &mut Vec<(String, Value)>) {
+    match value.as_object() {
+        Some(map) if !map.is_empty() => {
+            for (key, child) in map {
+                flatten_dotted(child, &format!("{prefix}.{key}"), out);
+            }
+        }
+        _ => out.push((prefix.to_string(), value.clone())),
+    }
+}
+
+/// Check one leaf value against a `TunerParameter` spec (`type` plus the
+/// type-specific keys). Unknown `type`s pass -- a stricter schema can only
+/// tighten this.
+fn check_value_against_spec(value: &Value, spec: &Value) -> Result<(), String> {
+    match spec.get("type").and_then(Value::as_str) {
+        Some("int") => {
+            let n = value
+                .as_i64()
+                .ok_or_else(|| "expected an integer".to_string())?;
+            if let Some(bounds) = spec.get("bounds").and_then(Value::as_array) {
+                if let (Some(lo), Some(hi)) = (bounds.first(), bounds.get(1)) {
+                    let (lo, hi) = (lo.as_i64().unwrap_or(i64::MIN), hi.as_i64().unwrap_or(i64::MAX));
+                    if n < lo || n > hi {
+                        return Err(format!("{n} is out of bounds [{lo}, {hi}]"));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some("float") => {
+            let x = value.as_f64().ok_or_else(|| "expected a number".to_string())?;
+            if let Some(bounds) = spec.get("bounds").and_then(Value::as_array) {
+                if let (Some(lo), Some(hi)) = (bounds.first(), bounds.get(1)) {
+                    let (lo, hi) = (
+                        lo.as_f64().unwrap_or(f64::NEG_INFINITY),
+                        hi.as_f64().unwrap_or(f64::INFINITY),
+                    );
+                    if x < lo || x > hi {
+                        return Err(format!("{x} is out of bounds [{lo}, {hi}]"));
+                    }
+                }
+            }
+            Ok(())
+        }
+        Some("categorical") => {
+            let choices = spec
+                .get("choices")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "categorical parameter has no choices".to_string())?;
+            if choices.contains(value) {
+                Ok(())
+            } else {
+                Err(format!("{value} is not one of the allowed choices"))
+            }
+        }
+        Some("bool") => {
+            if value.is_boolean() {
+                Ok(())
+            } else {
+                Err("expected a boolean".to_string())
+            }
+        }
+        Some("constant") => match spec.get("value") {
+            Some(expected) if expected == value => Ok(()),
+            Some(expected) => Err(format!("must equal the constant {expected}")),
+            None => Ok(()),
+        },
+        _ => Ok(()),
+    }
 }
 
 /// Metadata describing a game's tunable strategy search space, as reported
@@ -343,6 +482,14 @@ pub struct TunerInfo {
     /// Druid today) -- a caller should treat that as "nothing to configure",
     /// same as `default_config()` itself already means for `new_state`.
     pub game_config: Value,
+    /// Bounds and types for the `game_config` axis above, so a tuner CLI or
+    /// launch form can accept and validate a non-default value (e.g.
+    /// AtariGo on 9x9) rather than only offering "the default". A sibling of
+    /// `game_config` rather than a replacement so existing readers of the
+    /// bare default value are untouched. `{parameters: [], conditions: []}`
+    /// (the default) for every fixed-board game.
+    #[serde(default)]
+    pub game_config_schema: GameConfigSchema,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -385,4 +532,112 @@ pub struct BookInfo {
     /// `rounds`/`seed`. `{}` for a game whose board is fixed at compile
     /// time.
     pub game_config: Value,
+    /// Bounds and types for the `game_config` axis -- same purpose and shape
+    /// as `TunerInfo::game_config_schema`. Present to keep the three
+    /// `describe` surfaces parallel; book generation does not yet consume
+    /// it.
+    #[serde(default)]
+    pub game_config_schema: GameConfigSchema,
+}
+
+#[cfg(test)]
+mod game_config_schema_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn size_schema() -> GameConfigSchema {
+        GameConfigSchema {
+            parameters: vec![TunerParameter {
+                name: "size".into(),
+                spec: json!({ "type": "int", "bounds": [3, 19], "default": 9 }),
+            }],
+            conditions: vec![],
+        }
+    }
+
+    #[test]
+    fn empty_schema_accepts_only_an_empty_object() {
+        let schema = GameConfigSchema::default();
+        assert!(schema.is_empty());
+        assert!(schema.validate(&json!({})).is_ok());
+        assert!(schema.validate(&json!({ "size": 9 })).is_err());
+    }
+
+    #[test]
+    fn int_parameter_is_bounds_checked() {
+        let schema = size_schema();
+        assert!(schema.validate(&json!({ "size": 9 })).is_ok());
+        assert!(schema.validate(&json!({ "size": 3 })).is_ok());
+        assert!(schema.validate(&json!({ "size": 19 })).is_ok());
+        assert!(schema.validate(&json!({ "size": 2 })).is_err());
+        assert!(schema.validate(&json!({ "size": 20 })).is_err());
+        assert!(schema.validate(&json!({ "size": "big" })).is_err());
+    }
+
+    #[test]
+    fn unknown_key_is_rejected() {
+        assert!(size_schema().validate(&json!({ "variant": "x" })).is_err());
+    }
+
+    #[test]
+    fn non_object_config_is_rejected() {
+        assert!(size_schema().validate(&json!(9)).is_err());
+    }
+
+    #[test]
+    fn nested_object_flattens_to_dotted_paths() {
+        let schema = GameConfigSchema {
+            parameters: vec![
+                TunerParameter {
+                    name: "size.w".into(),
+                    spec: json!({ "type": "int", "bounds": [3, 10], "default": 5 }),
+                },
+                TunerParameter {
+                    name: "size.h".into(),
+                    spec: json!({ "type": "int", "bounds": [3, 10], "default": 5 }),
+                },
+            ],
+            conditions: vec![],
+        };
+        assert!(schema
+            .validate(&json!({ "size": { "w": 7, "h": 9 } }))
+            .is_ok());
+        assert!(schema
+            .validate(&json!({ "size": { "w": 7, "h": 99 } }))
+            .is_err());
+    }
+
+    #[test]
+    fn categorical_and_constant_specs_are_checked() {
+        let schema = GameConfigSchema {
+            parameters: vec![
+                TunerParameter {
+                    name: "variant".into(),
+                    spec: json!({ "type": "categorical", "choices": ["a", "b"], "default": "a" }),
+                },
+                TunerParameter {
+                    name: "locked".into(),
+                    spec: json!({ "type": "constant", "value": 4 }),
+                },
+            ],
+            conditions: vec![],
+        };
+        assert!(schema.validate(&json!({ "variant": "b", "locked": 4 })).is_ok());
+        assert!(schema.validate(&json!({ "variant": "c" })).is_err());
+        assert!(schema.validate(&json!({ "locked": 5 })).is_err());
+    }
+
+    #[test]
+    fn tuner_info_deserializes_without_the_schema_field() {
+        let info: TunerInfo = serde_json::from_value(json!({
+            "id": "strategy",
+            "baselines": ["strong"],
+            "eval_rounds": 5,
+            "parameters": [],
+            "conditions": [],
+            "game_config": {}
+        }))
+        .unwrap();
+        assert!(info.game_config_schema.is_empty());
+    }
 }

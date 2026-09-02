@@ -16,7 +16,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use game_host::{run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, HostError, TunerInfo};
+use game_host::{
+    run_cli, AiMoveResult, AiPresetInfo, Analysis, GameAdapter, GameConfigSchema, HostError,
+    TunerInfo,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -233,6 +236,20 @@ impl GameAdapter for DruidAdapter {
         serde_json::json!({ "size": game_druid::DEFAULT_SIZE })
     }
 
+    fn config_schema(&self) -> GameConfigSchema {
+        // Druid's board is a `{w, h}` object. `Size::is_supported` is not a
+        // plain rectangle (it also bounds the Zobrist height tables), but
+        // every square and near-square board up to 10x10 is inside it, which
+        // covers the practical range; the tuner's `resolve_objective` still
+        // runs the exact `is_supported` predicate before a run starts.
+        mcts_tune::dimensions_board_config_schema(
+            3,
+            10,
+            i64::from(game_druid::DEFAULT_SIZE.w),
+            i64::from(game_druid::DEFAULT_SIZE.h),
+        )
+    }
+
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         Ok(state_to_value(&initial_state_from_config(Some(config))?))
     }
@@ -421,6 +438,7 @@ impl GameAdapter for DruidAdapter {
         let baselines = presets().ai_preset_ids();
         Some(TunerInfo {
             game_config: self.default_config(),
+            game_config_schema: self.config_schema(),
             ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
         })
     }
@@ -717,6 +735,29 @@ mod tests {
             )
             .expect_err("an unsupported board size should error before any games are played");
         assert_eq!(err.code, 400);
+    }
+
+    #[test]
+    fn config_schema_accepts_default_config_and_supported_square_sizes() {
+        let adapter = DruidAdapter::default();
+        let schema = adapter.config_schema();
+        assert!(schema.validate(&adapter.default_config()).is_ok());
+        for n in 3..=10u8 {
+            let size = Size { w: n, h: n };
+            assert!(
+                size.is_supported(),
+                "schema advertises {n}x{n} but Size::is_supported rejects it"
+            );
+            assert!(schema
+                .validate(&serde_json::json!({ "size": { "w": n, "h": n } }))
+                .is_ok());
+        }
+        assert!(schema
+            .validate(&serde_json::json!({ "size": { "w": 2, "h": 5 } }))
+            .is_err());
+        assert!(schema
+            .validate(&serde_json::json!({ "size": { "w": 11, "h": 11 } }))
+            .is_err());
     }
 
     #[test]

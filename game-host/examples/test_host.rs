@@ -215,6 +215,7 @@ impl GameAdapter for TestHost {
             }],
             conditions: vec![],
             game_config: serde_json::json!({}),
+            game_config_schema: Default::default(),
         })
     }
 }

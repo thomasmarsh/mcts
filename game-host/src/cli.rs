@@ -1,6 +1,6 @@
 use crate::{
     derive_seed, run_host, AiPresetInfo, CompareValidationField, ConfiguredComparisonSummary,
-    ConfiguredMatchResult, GameAdapter, HostError, TunerInfo,
+    ConfiguredMatchResult, GameAdapter, GameConfigSchema, HostError, TunerInfo,
 };
 use serde_json::Value;
 use std::io::{self, Read, Write};
@@ -12,17 +12,33 @@ pub struct GameDescription {
     pub label: String,
     pub description: String,
     pub default_config: Value,
+    /// Bounds and types for the `default_config` axis, so a generic new-game
+    /// form can render and validate it. Always present;
+    /// `{parameters: [], conditions: []}` for a fixed-board game.
+    #[serde(default)]
+    pub config_schema: GameConfigSchema,
     pub ai_presets: Vec<AiPresetInfo>,
     pub tuning: Option<TunerInfo>,
 }
 
 impl GameDescription {
     fn of<A: GameAdapter>(adapter: &A) -> Self {
+        let default_config = adapter.default_config();
+        let config_schema = adapter.config_schema();
+        // A game that declares a `config_schema` must keep `default_config()`
+        // consistent with it. A game with the empty default schema is exempt
+        // -- its `default_config()` is still a free-form example value.
+        debug_assert!(
+            config_schema.is_empty() || config_schema.validate(&default_config).is_ok(),
+            "default_config() {default_config} does not validate against config_schema(): {:?}",
+            config_schema.validate(&default_config)
+        );
         Self {
             kind: adapter.kind().to_owned(),
             label: adapter.label().to_owned(),
             description: adapter.description().to_owned(),
-            default_config: adapter.default_config(),
+            default_config,
+            config_schema,
             ai_presets: adapter.ai_presets(),
             tuning: adapter.tuner(),
         }
