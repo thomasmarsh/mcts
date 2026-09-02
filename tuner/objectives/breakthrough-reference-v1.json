@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "objective_id": "breakthrough-reference-v1",
+  "game_kind": "breakthrough",
+  "opponents": [
+    {
+      "id": "schema-default",
+      "label": "Schema default",
+      "role": "default",
+      "weight": 1,
+      "config": {"source": "schema_default"}
+    },
+    {
+      "id": "historical-ucb1",
+      "label": "Historical UCB1",
+      "role": "historical_reference",
+      "weight": 2,
+      "config": {
+        "source": "inline",
+        "value": {
+          "c": 1.414,
+          "family": "ucb1",
+          "final_action": "robust_child",
+          "q_init": "Infinity"
+        }
+      }
+    },
+    {
+      "id": "historical-strong",
+      "label": "Historical strong configuration",
+      "role": "historical_reference",
+      "weight": 3,
+      "config": {
+        "source": "inline",
+        "value": {
+          "c": 1.414,
+          "epsilon": 0.3,
+          "family": "ucb1_dm_nst",
+          "final_action": "robust_child",
+          "nst_backoff_threshold": 5,
+          "q_init": "Infinity"
+        }
+      }
+    }
+  ],
+  "start_distribution": {"kind": "default_only"}
+}
