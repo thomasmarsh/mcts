@@ -3,6 +3,11 @@
 A Haskell domain model for the model-guided paired-racing game-strategy tuner.
 Types and function signatures only — no implementation.
 
+New to this? Start with [TUTORIAL.md](TUTORIAL.md) for a from-scratch
+introduction to the concepts and how the pieces fit together. This README is
+the reference (module table, invariants, Python mapping); the tutorial is the
+story.
+
 ## Module summaries
 
 | Module | Purpose |
