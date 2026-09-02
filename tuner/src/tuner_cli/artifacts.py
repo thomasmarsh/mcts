@@ -301,6 +301,7 @@ class Manifest:
     epoch: ObjectiveEpoch
     proposer_spec: ProposerSpecification
     run_id: str
+    game_config: str
     game_config_fingerprint: str
     effort_values: tuple[SearchEffort, SearchEffort, SearchEffort]
     compute_budget: ComputeBudget
@@ -548,9 +549,7 @@ def build_manifest(
     )
     candidate_failure_policy = CandidateFailurePolicySpecification()
     active_elimination = _active_elimination(active_elimination_audit_probability, shadow_policy)
-    game_config_fingerprint = fingerprint(
-        strict_json(spec.default_game_config, "game configuration")
-    )
+    game_config_fingerprint = fingerprint(strict_json(objective.game_config, "game configuration"))
     tuning = build_corpus(
         "tuning", tuning_pairs, task_seed, objective.panel, game_config_fingerprint
     )
@@ -581,6 +580,7 @@ def build_manifest(
         objective.source_path,
         objective.objective_id,
         objective.fingerprint,
+        objective.game_config,
         game_config_fingerprint,
         proposer,
         objective.panel,
@@ -708,7 +708,9 @@ _LIMITATIONS: tuple[str, ...] = (
 )
 
 
-def _game_identity_section(spec: GameSpec, game_config_fingerprint: str) -> JsonObject:
+def _game_identity_section(
+    spec: GameSpec, game_config: str, game_config_fingerprint: str
+) -> JsonObject:
     return {
         "binary": {"path": str(spec.binary_path), "sha256": spec.binary_sha256},
         "engine_fingerprint": spec.engine_fingerprint,
@@ -718,7 +720,7 @@ def _game_identity_section(spec: GameSpec, game_config_fingerprint: str) -> Json
         "label": spec.label,
         "game_description": spec.description,
         "tuning_schema_fingerprint": spec.schema_fingerprint,
-        "game_config": spec.default_game_config,
+        "game_config": game_config,
         "game_config_fingerprint": game_config_fingerprint,
     }
 
@@ -746,6 +748,7 @@ def _encode_manifest_object(
     objective_source_path: Path,
     objective_id: str,
     objective_fingerprint: str,
+    game_config: str,
     game_config_fingerprint: str,
     proposer: ProposerSpecification,
     panel: OpponentPanel,
@@ -777,7 +780,7 @@ def _encode_manifest_object(
         "candidate_failure_policy": candidate_failure_policy.encoded(),
         "active_elimination": None if active_elimination is None else active_elimination.encoded(),
         "diagnostic_policy": diagnostic_policy.encoded(),
-        **_game_identity_section(spec, game_config_fingerprint),
+        **_game_identity_section(spec, game_config, game_config_fingerprint),
         "proposer": proposer.encoded(),
         "objective": {
             "source_path": str(objective_source_path),
@@ -990,7 +993,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     return specification
 
 
-def _decode_game_identity(raw: JsonObject) -> tuple[GameSpec, str]:
+def _decode_game_identity(raw: JsonObject) -> tuple[GameSpec, str, str]:
     binary = object_fields(raw["binary"], {"path", "sha256"}, "binary")
     spec = decode_game_spec(
         strict_json(string(raw["description"], "description"), "description"),
@@ -1004,18 +1007,22 @@ def _decode_game_identity(raw: JsonObject) -> tuple[GameSpec, str]:
         "label": spec.label,
         "game_description": spec.description,
         "tuning_schema_fingerprint": spec.schema_fingerprint,
-        "game_config": spec.default_game_config,
     }
     if any(
         canonical_json(raw[key]) != canonical_json(expected) for key, expected in duplicated.items()
     ):
         raise ValueError("manifest disagrees with game description")
+    game_config = string(raw["game_config"], "game configuration")
     game_config_fingerprint = string(
         raw["game_config_fingerprint"], "game configuration fingerprint"
     )
-    if fingerprint(strict_json(spec.default_game_config)) != game_config_fingerprint:
+    if fingerprint(strict_json(game_config)) != game_config_fingerprint:
         raise ValueError("game configuration fingerprint is invalid")
-    return spec, game_config_fingerprint
+    if not spec.game_config_schema.is_empty:
+        errors = spec.game_config_schema.validate_config(strict_json(game_config))
+        if errors:
+            raise ValueError(f"manifest game_config is invalid: {'; '.join(errors)}")
+    return spec, game_config, game_config_fingerprint
 
 
 def _decode_objective_ref(raw: JsonObject) -> tuple[Path, str, str]:
@@ -1292,7 +1299,7 @@ def decode_manifest_object(value: object) -> Manifest:
     stored = string(raw["fingerprint"], "manifest fingerprint")
     if fingerprint({key: item for key, item in raw.items() if key != "fingerprint"}) != stored:
         raise ValueError("manifest fingerprint does not match content")
-    spec, game_config_fingerprint = _decode_game_identity(raw)
+    spec, game_config, game_config_fingerprint = _decode_game_identity(raw)
     proposer = _decode_proposer(raw["proposer"])
     validate_family_exclusions(spec.tuning, proposer.excluded_families)
     budget_raw = object_fields(
@@ -1358,6 +1365,7 @@ def decode_manifest_object(value: object) -> Manifest:
         epoch,
         proposer,
         string(raw["run_id"], "run id", nonempty=True),
+        game_config,
         game_config_fingerprint,
         efforts,
         compute_budget,
@@ -1381,6 +1389,7 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.objective_source_path,
         manifest.objective_id,
         manifest.objective_fingerprint,
+        manifest.game_config,
         manifest.game_config_fingerprint,
         manifest.proposer_spec,
         manifest.panel,

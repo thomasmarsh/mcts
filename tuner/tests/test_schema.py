@@ -50,18 +50,55 @@ def test_decoder_rejects_contract_and_condition_errors(tmp_path) -> None:
     raw = _description()
     tuning = raw["tuning"]
     assert isinstance(tuning, dict)
-    tuning["game_config"] = {"size": 6}
-    with pytest.raises(ValueError, match="game_config"):
-        decode_game_spec(raw, tmp_path / "game", "0" * 64)
-
-    raw = _description()
-    tuning = raw["tuning"]
-    assert isinstance(tuning, dict)
     tuning["conditions"] = [
         {"if": {"flag": True}, "then": ["family"]},
         {"if": {"family": "a"}, "then": ["flag"]},
     ]
     with pytest.raises(ValueError, match="cycle"):
+        decode_game_spec(raw, tmp_path / "game", "0" * 64)
+
+
+def test_decoder_accepts_and_describes_a_game_config_axis(tmp_path) -> None:
+    raw = _description()
+    raw["default_config"] = {"size": 13}
+    raw["config_schema"] = {
+        "parameters": [{"name": "size", "type": "int", "bounds": [3, 19], "default": 13}],
+        "conditions": [],
+    }
+    tuning = raw["tuning"]
+    assert isinstance(tuning, dict)
+    tuning["game_config"] = {"size": 13}
+    tuning["game_config_schema"] = raw["config_schema"]
+    spec = decode_game_spec(raw, tmp_path / "game-atarigo", "0" * 64)
+    assert not spec.game_config_schema.is_empty
+    assert spec.game_config_schema.validate_config({"size": 9}) == []
+    assert spec.game_config_schema.validate_config({"size": 99}) != []
+    assert spec.game_config_schema.validate_config({"width": 9}) != []
+
+
+def test_decoder_no_longer_requires_game_config_to_equal_default(tmp_path) -> None:
+    raw = _description()
+    tuning = raw["tuning"]
+    assert isinstance(tuning, dict)
+    tuning["game_config"] = {"size": 6}
+    spec = decode_game_spec(raw, tmp_path / "game", "0" * 64)
+    assert spec.default_game_config == '{"size":5}'
+    assert spec.tuning.game_config == '{"size":6}'
+
+
+def test_decoder_rejects_inconsistent_config_schema_siblings(tmp_path) -> None:
+    raw = _description()
+    raw["config_schema"] = {
+        "parameters": [{"name": "size", "type": "int", "bounds": [3, 19], "default": 13}],
+        "conditions": [],
+    }
+    tuning = raw["tuning"]
+    assert isinstance(tuning, dict)
+    tuning["game_config_schema"] = {
+        "parameters": [{"name": "size", "type": "int", "bounds": [3, 25], "default": 13}],
+        "conditions": [],
+    }
+    with pytest.raises(ValueError, match="disagrees"):
         decode_game_spec(raw, tmp_path / "game", "0" * 64)
 
 

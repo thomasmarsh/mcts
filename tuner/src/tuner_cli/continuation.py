@@ -262,7 +262,7 @@ def _execute_diagnostic(
     right = next(item for item in cohort.candidates if item.candidate_id == task.right_candidate_id)
     writer.append(DiagnosticPairStartedPayload(task))
     try:
-        result = target.evaluate(task, left, right, manifest.spec.default_game_config, timeout)
+        result = target.evaluate(task, left, right, manifest.game_config, timeout)
     except PairExecutionError as error:
         writer.append(DiagnosticPairFailedPayload(task, error.kind, str(error)))
         raise
@@ -278,7 +278,7 @@ def _pair_job(manifest: Manifest, state: ReplayState, task: PairTask, timeout: i
     opponent = next(
         item for item in manifest.panel.opponents if item.opponent_id == task.task_case.opponent_id
     )
-    return PairJob(task, candidate, opponent, manifest.spec.default_game_config, timeout)
+    return PairJob(task, candidate, opponent, manifest.game_config, timeout)
 
 
 def _pair_identity(task: PairTask) -> PairIdentity:

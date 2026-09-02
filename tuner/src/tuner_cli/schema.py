@@ -39,6 +39,74 @@ class ActivationCondition:
 
 
 @dataclass(frozen=True, slots=True)
+class GameConfigSchema:
+    """Bounds and types for the ``game_config`` (board setup) axis.
+
+    Reuses the strategy-search parameter/condition shapes: an ``int`` with
+    ``bounds`` covers AtariGo/Druid ``size`` (Druid's ``{w, h}`` object is two
+    dotted ``size.w`` / ``size.h`` parameters). An empty ``parameters`` tuple
+    means the board is fixed at compile time -- nothing to configure.
+    """
+
+    parameters: tuple[ParameterSpec, ...]
+    conditions: tuple[ActivationCondition, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.parameters
+
+    def _flatten(
+        self, config: dict[str, JsonValue], prefix: str = ""
+    ) -> list[tuple[str, JsonValue]]:
+        leaves: list[tuple[str, JsonValue]] = []
+        for key, value in config.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict) and value:
+                leaves.extend(self._flatten(value, path))
+            else:
+                leaves.append((path, value))
+        return leaves
+
+    def _active_names(self, values: dict[str, JsonValue]) -> set[str]:
+        conditioned = {
+            child: condition for condition in self.conditions for child in condition.children
+        }
+        active: set[str] = set()
+        for parameter in self.parameters:
+            condition = conditioned.get(parameter.name)
+            if condition is not None and not any(
+                _same_scalar(values.get(condition.parent), value) for value in condition.values
+            ):
+                continue
+            active.add(parameter.name)
+        return active
+
+    def validate_config(self, config: JsonValue) -> list[str]:
+        """Return a list of human-readable problems with ``config`` (empty ⇒ ok)."""
+        if not isinstance(config, dict):
+            return ["game_config must be a JSON object"]
+        typed: dict[str, JsonValue] = config
+        if self.is_empty:
+            if typed:
+                return ["this game's board is fixed -- it has no configurable setup axis"]
+            return []
+        leaves = self._flatten(typed)
+        values = dict(leaves)
+        by_name = {parameter.name: parameter for parameter in self.parameters}
+        active = self._active_names(values)
+        errors: list[str] = []
+        for name, value in leaves:
+            parameter = by_name.get(name)
+            if parameter is None:
+                errors.append(f"unknown game_config key {name!r}")
+            elif not _value_in_domain(value, parameter):
+                errors.append(f"game_config {name} value {value!r} is outside its domain")
+            elif name not in active:
+                errors.append(f"game_config {name} is not active for the chosen configuration")
+        return errors
+
+
+@dataclass(frozen=True, slots=True)
 class TuningSchema:
     id: str
     baselines: tuple[str, ...]
@@ -56,6 +124,7 @@ class GameSpec:
     default_game_config: str
     ai_presets: tuple[AiPresetSpec, ...]
     tuning: TuningSchema
+    game_config_schema: GameConfigSchema
     description_fingerprint: str
     schema_fingerprint: str
     binary_path: Path
@@ -66,6 +135,29 @@ class GameSpec:
 
 def _object(value: object, label: str, fields: set[str]) -> JsonObject:
     return object_fields(value, fields, label)
+
+
+def _object_opt(value: object, required: set[str], optional: set[str], label: str) -> JsonObject:
+    """Like :func:`object_fields` but tolerating (not requiring) ``optional`` keys."""
+    item = json_object(value, label)
+    actual = set(item)
+    missing, unknown = sorted(required - actual), sorted(actual - required - optional)
+    if missing or unknown:
+        raise ValueError(f"{label} has invalid fields (missing={missing}, unknown={unknown})")
+    return item
+
+
+def _game_config_schema(raw: object) -> GameConfigSchema:
+    item = _object(raw, "game config schema", {"parameters", "conditions"})
+    parameters_raw, conditions_raw = item["parameters"], item["conditions"]
+    if not isinstance(parameters_raw, list) or not isinstance(conditions_raw, list):
+        raise ValueError("game config schema parameters and conditions must be arrays")
+    parameters = tuple(_parameter(entry) for entry in parameters_raw)
+    if len({parameter.name for parameter in parameters}) != len(parameters):
+        raise ValueError("game config schema parameters must be uniquely named")
+    conditions = tuple(_condition(entry) for entry in conditions_raw)
+    _validate_conditions(parameters, conditions)
+    return GameConfigSchema(parameters, conditions)
 
 
 def _string(value: object, label: str, *, nonempty: bool = False) -> str:
@@ -271,11 +363,28 @@ def _validate_conditions(
         visit(name)
 
 
+def _resolve_config_schema(top: JsonObject, tuning: JsonObject) -> GameConfigSchema:
+    """The game-setup axis schema, from ``describe.config_schema`` with
+    ``tune describe``'s sibling ``game_config_schema`` as a consistency check
+    (or the sole source when only the latter is present)."""
+    if "config_schema" in top:
+        schema = _game_config_schema(top["config_schema"])
+        if "game_config_schema" in tuning and canonical_json(
+            tuning["game_config_schema"]
+        ) != canonical_json(top["config_schema"]):
+            raise ValueError("tune describe game_config_schema disagrees with config_schema")
+        return schema
+    if "game_config_schema" in tuning:
+        return _game_config_schema(tuning["game_config_schema"])
+    return GameConfigSchema((), ())
+
+
 def decode_game_spec(raw: JsonValue, binary_path: Path, binary_sha256: str) -> GameSpec:
-    top = _object(
+    top = _object_opt(
         raw,
-        "describe response",
         {"kind", "label", "description", "default_config", "ai_presets", "tuning"},
+        {"config_schema"},
+        "describe response",
     )
     kind = _string(top["kind"], "kind", nonempty=True)
     label = _string(top["label"], "label")
@@ -297,10 +406,11 @@ def decode_game_spec(raw: JsonValue, binary_path: Path, binary_sha256: str) -> G
     tuning_raw = top["tuning"]
     if tuning_raw is None:
         raise ValueError("game does not provide tuning metadata")
-    tuning = _object(
+    tuning = _object_opt(
         tuning_raw,
-        "tuning",
         {"id", "baselines", "eval_rounds", "parameters", "conditions", "game_config"},
+        {"game_config_schema"},
+        "tuning",
     )
     baselines_raw = tuning["baselines"]
     if not isinstance(baselines_raw, list):
@@ -324,8 +434,7 @@ def decode_game_spec(raw: JsonValue, binary_path: Path, binary_sha256: str) -> G
     _validate_conditions(parameters, conditions)
     default_game_config = canonical_json(top["default_config"])
     game_config = canonical_json(tuning["game_config"])
-    if game_config != default_game_config:
-        raise ValueError("tuning game_config must equal default_config")
+    game_config_schema = _resolve_config_schema(top, tuning)
     schema = TuningSchema(
         _string(tuning["id"], "tuning id", nonempty=True),
         baselines,
@@ -342,6 +451,7 @@ def decode_game_spec(raw: JsonValue, binary_path: Path, binary_sha256: str) -> G
         default_game_config,
         presets,
         schema,
+        game_config_schema,
         description_fingerprint,
         fingerprint(tuning),
         binary_path,

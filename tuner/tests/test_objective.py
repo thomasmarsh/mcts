@@ -7,21 +7,79 @@ import pytest
 
 from tuner_cli.identity import candidate_from_config
 from tuner_cli.objective import resolve_objective
+from tuner_cli.schema import GameConfigSchema, ParameterSpec
+
+_SIZE_SCHEMA = GameConfigSchema((ParameterSpec("size", "int", (3, 19), None, 13, None),), ())
+
+_PANEL: list[dict[str, object]] = [
+    {
+        "id": "default",
+        "label": "Default",
+        "role": "default",
+        "weight": 1,
+        "config": {"source": "schema_default"},
+    },
+    {
+        "id": "historical",
+        "label": "Historical",
+        "role": "historical_reference",
+        "weight": 1,
+        "config": {"source": "inline", "value": {"family": "b"}},
+    },
+]
 
 
-def _write(path: Path, opponents: list[dict[str, object]]) -> Path:
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "objective_id": "example-v1",
-                "game_kind": "example",
-                "opponents": opponents,
-                "start_distribution": {"kind": "default_only"},
-            }
-        )
-    )
+def _write(path: Path, opponents: list[dict[str, object]], game_config: object = None) -> Path:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "objective_id": "example-v1",
+        "game_kind": "example",
+        "opponents": opponents,
+        "start_distribution": {"kind": "default_only"},
+    }
+    if game_config is not None:
+        body["game_config"] = game_config
+    path.write_text(json.dumps(body))
     return path
+
+
+def test_game_config_override_resolves_and_is_carried(tmp_path: Path) -> None:
+    default = candidate_from_config({"family": "a"})
+    resolved = resolve_objective(
+        _write(tmp_path / "o.json", _PANEL, {"size": 9}),
+        "example",
+        default,
+        _SIZE_SCHEMA,
+        '{"size":13}',
+    )
+    assert resolved.game_config == '{"size":9}'
+
+
+def test_game_config_defaults_when_absent(tmp_path: Path) -> None:
+    default = candidate_from_config({"family": "a"})
+    resolved = resolve_objective(
+        _write(tmp_path / "o.json", _PANEL), "example", default, _SIZE_SCHEMA, '{"size":13}'
+    )
+    assert resolved.game_config == '{"size":13}'
+
+
+@pytest.mark.parametrize(
+    ("game_config", "match"),
+    [
+        ({"size": 99}, "domain"),
+        ({"width": 9}, "unknown"),
+        ({"size": 13}, "equals the default"),
+    ],
+)
+def test_game_config_override_is_validated(tmp_path: Path, game_config: object, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        resolve_objective(
+            _write(tmp_path / "bad.json", _PANEL, game_config),
+            "example",
+            candidate_from_config({"family": "a"}),
+            _SIZE_SCHEMA,
+            '{"size":13}',
+        )
 
 
 def test_resolved_panel_is_content_identified_not_path_identified(tmp_path: Path) -> None:

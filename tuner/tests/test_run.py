@@ -25,7 +25,7 @@ from tuner_cli.domain import (
 )
 from tuner_cli.event_payloads import PairCompletedPayload, PairFailedPayload, PairStartedPayload
 from tuner_cli.evidence import read_events, scientific_projection
-from tuner_cli.identity import candidate_from_config, canonical_json, game_id
+from tuner_cli.identity import candidate_from_config, canonical_json, fingerprint, game_id
 from tuner_cli.observations import comparable_prefix_observations
 from tuner_cli.replay import replay
 from tuner_cli.report import write_report
@@ -938,6 +938,62 @@ def test_budget_options_are_validated_up_front(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError):
             run_foreground(bad, FakeTarget(), model_proposer=FakeModel())
+
+
+class SizedTarget(FakeTarget):
+    """A fake game that advertises a bounded board ``size`` setup axis."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.game_configs: list[str] = []
+
+    def describe(self) -> dict[str, object]:
+        described = super().describe()
+        schema = {
+            "parameters": [{"name": "size", "type": "int", "bounds": [3, 19], "default": 5}],
+            "conditions": [],
+        }
+        described["config_schema"] = schema
+        tuning = described["tuning"]
+        assert isinstance(tuning, dict)
+        tuning["game_config_schema"] = schema
+        return described
+
+    def validate(self, candidates, opponent, game_config):  # type: ignore[no-untyped-def]
+        self.game_configs.append(game_config)
+        return super().validate(candidates, opponent, game_config)
+
+    def evaluate(self, task, candidate, opponent, game_config, timeout_seconds):  # type: ignore[no-untyped-def]
+        self.game_configs.append(game_config)
+        return super().evaluate(task, candidate, opponent, game_config, timeout_seconds)
+
+
+def _sized_objective(tmp_path: Path, size: int | None) -> Path:
+    path = tmp_path / "sized-objective.json"
+    body = json.loads(_objective(tmp_path).read_text())
+    if size is not None:
+        body["game_config"] = {"size": size}
+    path.write_text(json.dumps(body))
+    return path
+
+
+def test_game_config_override_threads_into_the_run(tmp_path: Path) -> None:
+    target = SizedTarget()
+    options = replace(
+        _budgeted_options(tmp_path, 20, run_name="sized"),
+        objective_file=_sized_objective(tmp_path, 9),
+    )
+    run_foreground(options, target, model_proposer=FakeModel())
+
+    manifest = read_manifest(options.run_dir / "manifest.json")
+    assert manifest.game_config == '{"size":9}'
+    assert manifest.game_config_fingerprint == fingerprint({"size": 9})
+    assert target.game_configs and set(target.game_configs) == {'{"size":9}'}
+
+    # Editing the objective's game_config makes the frozen run incompatible.
+    _sized_objective(tmp_path, 7)
+    with pytest.raises(ValueError, match="differs from manifest"):
+        run_foreground(replace(options, resume=True), target, model_proposer=FakeModel())
 
 
 def test_worker_count_is_validated_before_creating_artifacts(

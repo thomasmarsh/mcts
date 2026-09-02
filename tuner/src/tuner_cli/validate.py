@@ -25,7 +25,13 @@ def validate_objective_file(game_binary: Path, objective_file: Path) -> JsonObje
         binary = game_binary.expanduser().resolve()
         spec = game_spec(GameBinaryTarget(binary), binary)
         default = schema_default(spec, 0)
-        resolved = resolve_objective(objective_file, spec.kind, default)
+        resolved = resolve_objective(
+            objective_file,
+            spec.kind,
+            default,
+            spec.game_config_schema,
+            spec.default_game_config,
+        )
     except (OSError, RuntimeError, ValueError) as error:
         return {"ok": False, "errors": [str(error)]}
     return {

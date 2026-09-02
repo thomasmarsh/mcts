@@ -323,7 +323,7 @@ def _panel_results(
     target: Target, manifest: Manifest, candidate: Candidate
 ) -> tuple[ValidationResult, ...]:
     return tuple(
-        target.validate((candidate,), opponent, manifest.spec.default_game_config)
+        target.validate((candidate,), opponent, manifest.game_config)
         for opponent in manifest.panel.opponents
     )
 

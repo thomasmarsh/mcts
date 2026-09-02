@@ -84,7 +84,13 @@ def run_foreground(
     validate_family_exclusions(spec.tuning, options.excluded_families)
     objective_default = schema_default(spec, options.seed)
     proposal_default = schema_default(spec, options.seed, options.excluded_families)
-    objective = resolve_objective(objective_path, spec.kind, objective_default)
+    objective = resolve_objective(
+        objective_path,
+        spec.kind,
+        objective_default,
+        spec.game_config_schema,
+        spec.default_game_config,
+    )
     validate_objective_options(options, objective)
     manifest, writer = open_run(options, directory, spec, objective, active_target)
     append_budget_extension(options, writer)
@@ -330,7 +336,7 @@ def preflight_default(
     failures = [
         opponent.opponent_id
         for opponent in objective.panel.opponents
-        if not target.validate((default,), opponent, spec.default_game_config).valid
+        if not target.validate((default,), opponent, objective.game_config).valid
     ]
     if failures:
         raise ValueError(f"schema default failed panel preflight: {', '.join(failures)}")
