@@ -28,14 +28,9 @@ use mcts_bench::log::RegistryEvent;
 use mcts_bench::supervised_launch::LaunchDescriptor;
 
 use super::{
-    commands::*,
     runs::*,
     traces::*,
-    tuning::{
-        add_tuning_session_budget, get_tuning_analysis_overview, get_tuning_session,
-        get_tuning_sessions, get_tuning_trial_detail, get_tuning_trials, resume_tuning_session,
-        stop_tuning_session,
-    },
+    tuner_runs::{get_tuner_run, launch_tuner_run, list_tuner_runs, stop_tuner_run},
     types::*,
 };
 // Router constructor
@@ -69,35 +64,14 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 
     Router::new()
         .route("/api/bench/tuner/kinds", get(list_tuner_kinds))
-        .route("/api/bench/tuner/sessions", get(get_tuning_sessions))
         .route(
-            "/api/bench/tuner/sessions/{session_id}",
-            get(get_tuning_session),
+            "/api/bench/tuner/runs",
+            post(launch_tuner_run)
+                .get(list_tuner_runs)
+                .layer(launch_timeout),
         )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/stop",
-            post(stop_tuning_session),
-        )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/resume",
-            post(resume_tuning_session).layer(launch_timeout),
-        )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/budget",
-            post(add_tuning_session_budget).layer(launch_timeout),
-        )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/analysis",
-            get(get_tuning_analysis_overview),
-        )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/trials",
-            get(get_tuning_trials),
-        )
-        .route(
-            "/api/bench/tuner/sessions/{session_id}/trials/{trial_id}",
-            get(get_tuning_trial_detail),
-        )
+        .route("/api/bench/tuner/runs/{run_id}", get(get_tuner_run))
+        .route("/api/bench/tuner/runs/{run_id}/stop", post(stop_tuner_run))
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))
@@ -109,7 +83,6 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             get(get_run_game_moves),
         )
         .route("/api/bench/runs/{run_id}/live", get(live_run_moves))
-        .route("/api/bench/launch", post(launch_run).layer(launch_timeout))
         .route("/api/bench/runs/{run_id}/stop", post(stop_run))
         .route("/api/bench/runs/{run_id}", delete(delete_run))
         .layer(cors)
@@ -125,8 +98,8 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 /// through `server::adapter::registry()`'s live gameplay sessions -- that
 /// registry only covers the games with a UI renderer, which used to leave
 /// tunable-but-UI-less games (e.g. `nim`) unable to appear here even though
-/// `POST /api/bench/launch` never needed a live session for them either
-/// (the tuner CLI subprocess it spawns locates the game binary itself).
+/// launching a tuner run never needed a live session for them either (the
+/// tuner CLI subprocess it spawns locates the game binary itself).
 /// Only games that implement `tuner()` appear -- tuning support is opt-in
 /// per game.
 pub(crate) async fn list_tuner_kinds() -> Json<Vec<TunerGameInfo>> {

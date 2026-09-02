@@ -225,20 +225,12 @@ fn list_runs(
                 CAST(r.started_at AS TEXT), \
                 CAST(r.ended_at AS TEXT), \
                 r.status, r.project_id, r.experiment_id, \
-                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                COALESCE( \
-                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                         THEN attempt.session_id END, \
-                    CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
-                         THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
-                ) \
+                COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0) \
          FROM runs r \
          LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m \
            ON r.run_id = m.run_id \
          LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t \
            ON r.run_id = t.run_id \
-         LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
-         LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
          WHERE 1=1",
     );
     if let Some(game) = &query.game {
@@ -277,7 +269,6 @@ fn list_runs(
                 status: row.get(10)?,
                 match_count: row.get(13)?,
                 trial_count: row.get(14)?,
-                tuning_session_id: row.get(15)?,
             })
         })
         .map_err(storage)?
@@ -294,19 +285,11 @@ fn load_run(connection: &Connection, run_id: &str) -> Result<RunDetail, RunRepos
                     CAST(r.started_at AS TEXT), CAST(r.ended_at AS TEXT), \
                     r.status, r.log_path, r.exit_code, \
                     COALESCE(m.match_count, 0), COALESCE(t.trial_count, 0), \
-                    CAST(i.config AS TEXT), i.cost, \
-                    COALESCE( \
-                        CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                             THEN attempt.session_id END, \
-                        CASE WHEN r.kind = 'tuner' AND json_extract_string(r.config, '$.optimizer_id') IS NOT NULL \
-                             THEN COALESCE(json_extract_string(r.config, '$.session_id'), json_extract_string(r.config, '$.optimizer_id')) END \
-                    ) \
+                    CAST(i.config AS TEXT), i.cost \
              FROM runs r \
              LEFT JOIN (SELECT run_id, COUNT(*) AS match_count FROM match_results GROUP BY run_id) m ON r.run_id = m.run_id \
              LEFT JOIN (SELECT run_id, COUNT(*) AS trial_count FROM trials GROUP BY run_id) t ON r.run_id = t.run_id \
              LEFT JOIN incumbents i ON r.run_id = i.run_id \
-             LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = r.run_id \
-             LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
              WHERE r.run_id = ?1",
             params![run_id],
             |row| {
@@ -320,7 +303,7 @@ fn load_run(connection: &Connection, run_id: &str) -> Result<RunDetail, RunRepos
                     git_sha: row.get(8)?, git_dirty: row.get(9)?, host: row.get(10)?, pid: row.get(11)?,
                     started_at: row.get(12)?, ended_at: row.get(13)?, status: row.get(14)?,
                     log_path: row.get(15)?, exit_code: row.get(16)?, match_count: row.get(17)?,
-                    trial_count: row.get(18)?, tuning_session_id: row.get(21)?,
+                    trial_count: row.get(18)?,
                     incumbent: incumbent_config.zip(incumbent_cost).map(|(config, cost)| RunIncumbent {
                         config: serde_json::from_str(&config).unwrap_or(serde_json::Value::Null), cost,
                     }),
@@ -630,18 +613,11 @@ fn load_deletion_info(
 ) -> Result<RunDeletionInfo, RunRepositoryError> {
     connection
         .query_row(
-            "SELECT run.status, \
-                    CASE WHEN session.optimizer_id IS NOT NULL AND session.lifecycle_path IS NOT NULL \
-                         THEN attempt.session_id END \
-             FROM runs run \
-             LEFT JOIN tuning_attempts attempt ON attempt.bench_run_id = run.run_id \
-             LEFT JOIN tuning_sessions session ON session.session_id = attempt.session_id \
-             WHERE run.run_id = ?1",
+            "SELECT run.status FROM runs run WHERE run.run_id = ?1",
             params![run_id],
             |row| {
                 Ok(RunDeletionInfo {
                     status: row.get(0)?,
-                    tuning_session_id: row.get(1)?,
                 })
             },
         )

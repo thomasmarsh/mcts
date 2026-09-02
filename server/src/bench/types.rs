@@ -32,10 +32,6 @@ use mcts_bench::run_command_repository::RunCommandRepository;
 use mcts_bench::run_repository::RunRepository;
 use mcts_bench::supervised_launch::LaunchDescriptor;
 use mcts_bench::tournament::wilson_interval;
-use mcts_bench::tuning_analysis_repository::TuningAnalysisRepository;
-use mcts_bench::tuning_command_repository::TuningCommandRepository;
-use mcts_bench::tuning_session_repository::TuningSessionRepository;
-use mcts_bench::tuning_trial_repository::TuningTrialRepository;
 
 use super::lifecycle;
 use super::process;
@@ -50,12 +46,7 @@ pub struct BenchState {
     pub projects_repository: Arc<dyn ProjectsRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
-    pub tuning_analysis_repository: Arc<dyn TuningAnalysisRepository + Send + Sync>,
-    pub tuning_command_repository: Arc<dyn TuningCommandRepository + Send + Sync>,
-    pub tuning_session_repository: Arc<dyn TuningSessionRepository + Send + Sync>,
-    pub tuning_trial_repository: Arc<dyn TuningTrialRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
-    pub run_launcher: RunLauncher,
     pub process_group_signaller: ProcessGroupSignaller,
 }
 
@@ -77,11 +68,6 @@ impl TestDatabase {
     }
 }
 
-pub type RunLauncher = Arc<
-    dyn Fn(String, Vec<String>, String, String, Option<String>) -> std::io::Result<LaunchedRun>
-        + Send
-        + Sync,
->;
 pub type ProcessGroupSignaller = Arc<dyn Fn(i64) -> std::io::Result<()> + Send + Sync>;
 
 /// Signal one detached run's process group through the process adapter.
@@ -112,14 +98,6 @@ pub struct TrialsParams {
     pub limit: Option<i64>,
 }
 
-#[derive(Deserialize)]
-pub struct LaunchBody {
-    pub kind: String,
-    pub game: String,
-    #[serde(default)]
-    pub config: Option<Value>,
-}
-
 // ---------------------------------------------------------------------------
 // Response types
 // ---------------------------------------------------------------------------
@@ -141,10 +119,6 @@ pub struct RunSummary {
     pub status: String,
     pub match_count: i64,
     pub trial_count: i64,
-    /// Modern logical session that owns this physical tuner attempt.
-    /// Present as soon as a server-created tuner run has its pinned config,
-    /// before lifecycle ingestion projects the attempt row.
-    pub tuning_session_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -168,9 +142,6 @@ pub struct RunDetail {
     pub exit_code: Option<i64>,
     pub match_count: i64,
     pub trial_count: i64,
-    /// The modern logical tuning session that owns this physical attempt.
-    /// Absent for non-tuner runs and legacy tuner rows.
-    pub tuning_session_id: Option<String>,
     /// tuner's own current best config for this run (from its intensifier,
     /// not a naive `MIN(cost)` over `trials` -- see `LogRecord::Incumbent`'s
     /// doc comment for why that distinction matters once multiple baseline
@@ -192,18 +163,6 @@ pub struct IncumbentInfo {
 pub struct RunLogResponse {
     pub lines: Vec<String>,
     pub next_offset: u64,
-}
-
-#[derive(Serialize)]
-pub struct LaunchResponse {
-    pub run_id: String,
-    pub pid: u32,
-    pub log_path: String,
-    /// If the child process exited within 500ms of launch, the contents of
-    /// its stderr (redirected to stdout.log).  None means the child was
-    /// still alive after the check window — the launch succeeded normally.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub launch_error: Option<String>,
 }
 
 /// A game's tunable strategy search-space metadata, as reported by

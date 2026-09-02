@@ -46,7 +46,6 @@ pub struct RunSummary {
     pub status: String,
     pub match_count: i64,
     pub trial_count: i64,
-    pub tuning_session_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -70,7 +69,6 @@ pub struct RunDetail {
     pub exit_code: Option<i64>,
     pub match_count: i64,
     pub trial_count: i64,
-    pub tuning_session_id: Option<String>,
     pub incumbent: Option<RunIncumbent>,
 }
 
@@ -170,7 +168,6 @@ pub struct RunGameMove {
 #[derive(Debug)]
 pub struct RunDeletionInfo {
     pub status: String,
-    pub tuning_session_id: Option<String>,
 }
 
 /// Logical storage operations over benchmark runs.

@@ -1,5 +1,14 @@
 # Bench and tuner Tuning Architecture
 
+> **Superseded.** This document describes the legacy Optuna/OpenSkill tuning
+> stack (`/api/bench/tuner/sessions/*`, the DuckDB `tuning_*` tables, the
+> `POST /api/bench/launch` tuner branch). That stack has been removed. The
+> version-4 foreground tuner reconnects to the bench server through
+> `/api/bench/tuner/runs` (detached launch/stop) with its run directory as the
+> sole scientific authority; a rebuildable query projection and read-only API
+> replace the DuckDB read path. This file is kept only for historical context
+> until the new architecture is written up.
+
 This document describes the system built around tuner: how a tuning request moves through the TypeScript UI, Rust server and launcher, Python optimizer, game binary, append-only logs, DuckDB ingestion, and back to the UI. It intentionally does not explain Bayesian optimization or the tuner's internal algorithms.
 
 The most important architectural distinction is this:

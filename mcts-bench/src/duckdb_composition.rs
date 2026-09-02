@@ -14,10 +14,6 @@ use crate::project_repository::ProjectRepository;
 use crate::projects_attempt::ProjectsRepository;
 use crate::run_command_repository::RunCommandRepository;
 use crate::run_repository::RunRepository;
-use crate::tuning_analysis_repository::TuningAnalysisRepository;
-use crate::tuning_command_repository::TuningCommandRepository;
-use crate::tuning_session_repository::TuningSessionRepository;
-use crate::tuning_trial_repository::TuningTrialRepository;
 
 /// Runs one ingestion pass against the benchmark artifact directory.
 pub trait BenchIngest: Send + Sync {
@@ -44,10 +40,6 @@ pub struct BenchAdapters {
     pub projects_repository: Arc<dyn ProjectsRepository + Send + Sync>,
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
-    pub tuning_analysis_repository: Arc<dyn TuningAnalysisRepository + Send + Sync>,
-    pub tuning_command_repository: Arc<dyn TuningCommandRepository + Send + Sync>,
-    pub tuning_session_repository: Arc<dyn TuningSessionRepository + Send + Sync>,
-    pub tuning_trial_repository: Arc<dyn TuningTrialRepository + Send + Sync>,
     pub ingest: Arc<dyn BenchIngest>,
 }
 
@@ -80,26 +72,6 @@ impl BenchAdapters {
             ),
             run_command_repository: Arc::new(
                 crate::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(
-                    connection.clone(),
-                ),
-            ),
-            tuning_analysis_repository: Arc::new(
-                crate::tuning_analysis_repository_duckdb::SharedDuckDbTuningAnalysisRepository::new(
-                    connection.clone(),
-                ),
-            ),
-            tuning_command_repository: Arc::new(
-                crate::tuning_command_repository_duckdb::SharedDuckDbTuningCommandRepository::new(
-                    connection.clone(),
-                ),
-            ),
-            tuning_session_repository: Arc::new(
-                crate::tuning_session_repository_duckdb::SharedDuckDbTuningSessionRepository::new(
-                    connection.clone(),
-                ),
-            ),
-            tuning_trial_repository: Arc::new(
-                crate::tuning_trial_repository_duckdb::SharedDuckDbTuningTrialRepository::new(
                     connection.clone(),
                 ),
             ),

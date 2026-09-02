@@ -1,0 +1,640 @@
+//! Detached launcher and operational journal for foreground `tuner_cli` runs.
+//!
+//! This deliberately does *not* go through [`crate::supervised_launch`]. That
+//! seam is built around the bench attempt/journal lifecycle model (attempt
+//! ids, launch nonces, wrapper-process readiness evidence, a DuckDB
+//! projection). A version-4 tuner run's `<run-dir>/{manifest,evidence,report}`
+//! triple is already its own scientific authority; imposing a second
+//! lifecycle store on it would contradict that. What the bench server needs
+//! here is only enough operational metadata to stop a launched run and answer
+//! "is its process alive", so this module keeps a small append-only journal
+//! (`<runs-root>/launches.jsonl`) and nothing else.
+
+use std::collections::HashMap;
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+
+use serde::{Deserialize, Serialize};
+
+/// A launch request for one foreground `tuner_cli` run.
+///
+/// Only the fields `tuner_cli`'s argument parser marks `required` are
+/// mandatory here. Every optional knob is `Option`: a `None` is simply not
+/// passed on the command line, leaving `tuner_cli`'s own default as the single
+/// source of truth rather than duplicating it in Rust.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TunerLaunchRequest {
+    pub game_binary: PathBuf,
+    pub objective_file: PathBuf,
+    #[serde(skip_deserializing)]
+    pub runs_root: PathBuf,
+    pub run_id: String,
+    pub task_seed: i64,
+    pub tuning_pair_budget: u64,
+    pub validation_pair_budget: u64,
+    pub production_validation_pairs: u64,
+    #[serde(default)]
+    pub seed: Option<i64>,
+    #[serde(default)]
+    pub cohort_size: Option<u64>,
+    #[serde(default)]
+    pub finalists: Option<u64>,
+    #[serde(default)]
+    pub bootstrap_candidates: Option<u64>,
+    #[serde(default)]
+    pub random_reserve_candidates: Option<u64>,
+    #[serde(default)]
+    pub tuning_pairs: Option<u64>,
+    #[serde(default)]
+    pub diagnostic_pair_budget: Option<u64>,
+    #[serde(default)]
+    pub pair_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub evaluator_workers: Option<u64>,
+    #[serde(default)]
+    pub proposer_policy: Option<String>,
+    #[serde(default)]
+    pub shadow_practical_margin: Option<f64>,
+    #[serde(default)]
+    pub shadow_elimination_threshold: Option<f64>,
+    #[serde(default)]
+    pub shadow_policy: Option<String>,
+    #[serde(default)]
+    pub shadow_halving_spare_margin: Option<f64>,
+    #[serde(default)]
+    pub active_elimination_audit_probability: Option<f64>,
+    #[serde(default)]
+    pub tuning_max_iterations: Option<u64>,
+    #[serde(default)]
+    pub tuning_max_time_ms: Option<u64>,
+    #[serde(default)]
+    pub validation_max_iterations: Option<u64>,
+    #[serde(default)]
+    pub validation_max_time_ms: Option<u64>,
+    #[serde(default)]
+    pub production_max_iterations: Option<u64>,
+    #[serde(default)]
+    pub production_max_time_ms: Option<u64>,
+    #[serde(default)]
+    pub exclude_family: Vec<String>,
+}
+
+impl TunerLaunchRequest {
+    pub fn run_dir(&self) -> PathBuf {
+        self.runs_root.join(&self.run_id)
+    }
+
+    pub fn validate(&self) -> io::Result<()> {
+        if !safe_run_id(&self.run_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "run id must be one safe path segment",
+            ));
+        }
+        for (iterations, time, name) in [
+            (self.tuning_max_iterations, self.tuning_max_time_ms, "tuning"),
+            (
+                self.validation_max_iterations,
+                self.validation_max_time_ms,
+                "validation",
+            ),
+            (
+                self.production_max_iterations,
+                self.production_max_time_ms,
+                "production",
+            ),
+        ] {
+            if iterations.is_some() && time.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{name} effort accepts either iterations or time"),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn argv(&self) -> Vec<String> {
+        let mut argv = vec![
+            "uv".into(),
+            "run".into(),
+            "--project".into(),
+            "tuner".into(),
+            "python".into(),
+            "-m".into(),
+            "tuner_cli".into(),
+            "--game-binary".into(),
+            self.game_binary.to_string_lossy().into_owned(),
+            "--objective-file".into(),
+            self.objective_file.to_string_lossy().into_owned(),
+            "--run-dir".into(),
+            self.run_dir().to_string_lossy().into_owned(),
+            "--task-seed".into(),
+            self.task_seed.to_string(),
+            "--tuning-pair-budget".into(),
+            self.tuning_pair_budget.to_string(),
+            "--validation-pair-budget".into(),
+            self.validation_pair_budget.to_string(),
+            "--production-validation-pairs".into(),
+            self.production_validation_pairs.to_string(),
+        ];
+        let mut push = |flag: &str, value: Option<String>| {
+            if let Some(value) = value {
+                argv.push(flag.into());
+                argv.push(value);
+            }
+        };
+        push("--seed", self.seed.map(|v| v.to_string()));
+        push("--cohort-size", self.cohort_size.map(|v| v.to_string()));
+        push("--finalists", self.finalists.map(|v| v.to_string()));
+        push(
+            "--bootstrap-candidates",
+            self.bootstrap_candidates.map(|v| v.to_string()),
+        );
+        push(
+            "--random-reserve-candidates",
+            self.random_reserve_candidates.map(|v| v.to_string()),
+        );
+        push("--tuning-pairs", self.tuning_pairs.map(|v| v.to_string()));
+        push(
+            "--diagnostic-pair-budget",
+            self.diagnostic_pair_budget.map(|v| v.to_string()),
+        );
+        push(
+            "--pair-timeout-seconds",
+            self.pair_timeout_seconds.map(|v| v.to_string()),
+        );
+        push(
+            "--evaluator-workers",
+            self.evaluator_workers.map(|v| v.to_string()),
+        );
+        push("--proposer-policy", self.proposer_policy.clone());
+        push(
+            "--shadow-practical-margin",
+            self.shadow_practical_margin.map(|v| v.to_string()),
+        );
+        push(
+            "--shadow-elimination-threshold",
+            self.shadow_elimination_threshold.map(|v| v.to_string()),
+        );
+        push("--shadow-policy", self.shadow_policy.clone());
+        push(
+            "--shadow-halving-spare-margin",
+            self.shadow_halving_spare_margin.map(|v| v.to_string()),
+        );
+        push(
+            "--active-elimination-audit-probability",
+            self.active_elimination_audit_probability
+                .map(|v| v.to_string()),
+        );
+        push(
+            "--tuning-max-iterations",
+            self.tuning_max_iterations.map(|v| v.to_string()),
+        );
+        push(
+            "--tuning-max-time-ms",
+            self.tuning_max_time_ms.map(|v| v.to_string()),
+        );
+        push(
+            "--validation-max-iterations",
+            self.validation_max_iterations.map(|v| v.to_string()),
+        );
+        push(
+            "--validation-max-time-ms",
+            self.validation_max_time_ms.map(|v| v.to_string()),
+        );
+        push(
+            "--production-max-iterations",
+            self.production_max_iterations.map(|v| v.to_string()),
+        );
+        push(
+            "--production-max-time-ms",
+            self.production_max_time_ms.map(|v| v.to_string()),
+        );
+        for family in &self.exclude_family {
+            argv.push("--exclude-family".into());
+            argv.push(family.clone());
+        }
+        argv
+    }
+}
+
+pub fn safe_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id != "."
+        && run_id != ".."
+        && run_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalOutcome {
+    Exited,
+    Signalled,
+    SpawnFailed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TunerLaunchRecord {
+    pub run_id: String,
+    pub argv: Vec<String>,
+    pub run_dir: PathBuf,
+    pub pid: Option<u32>,
+    pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_outcome: Option<TerminalOutcome>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum JournalEvent {
+    Launch {
+        record: TunerLaunchRecord,
+    },
+    Terminal {
+        run_id: String,
+        outcome: TerminalOutcome,
+    },
+}
+
+pub fn launch(request: &TunerLaunchRequest) -> io::Result<TunerLaunchRecord> {
+    request.validate()?;
+    let run_dir = request.run_dir();
+    if run_dir.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "run directory already exists",
+        ));
+    }
+    fs::create_dir_all(&run_dir)?;
+    let argv = request.argv();
+    spawn_and_journal(&request.runs_root, &request.run_id, run_dir, argv)
+}
+
+/// Spawn `argv` as a detached child in its own process group, redirect its
+/// output into the run directory, and record the launch (and, from a reaper
+/// thread, its terminal outcome) in the runs-root journal.
+fn spawn_and_journal(
+    runs_root: &Path,
+    run_id: &str,
+    run_dir: PathBuf,
+    argv: Vec<String>,
+) -> io::Result<TunerLaunchRecord> {
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]);
+    command.stdout(Stdio::from(fs::File::create(run_dir.join("launch.out"))?));
+    command.stderr(Stdio::from(fs::File::create(run_dir.join("launch.err"))?));
+    #[cfg(unix)]
+    command.process_group(0);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let record = TunerLaunchRecord {
+                run_id: run_id.to_owned(),
+                argv,
+                run_dir,
+                pid: None,
+                started_at: crate::launch::iso_timestamp(),
+                terminal_outcome: None,
+            };
+            append_launch(runs_root, &record)?;
+            append_terminal(runs_root, run_id, TerminalOutcome::SpawnFailed)?;
+            return Err(error);
+        }
+    };
+    let record = TunerLaunchRecord {
+        run_id: run_id.to_owned(),
+        argv,
+        run_dir,
+        pid: Some(child.id()),
+        started_at: crate::launch::iso_timestamp(),
+        terminal_outcome: None,
+    };
+    append_launch(runs_root, &record)?;
+    let root = runs_root.to_owned();
+    let id = run_id.to_owned();
+    std::thread::spawn(move || {
+        let outcome = match child.wait() {
+            #[cfg(unix)]
+            Ok(status) if status.signal().is_some() => TerminalOutcome::Signalled,
+            Ok(_) => TerminalOutcome::Exited,
+            Err(_) => TerminalOutcome::Exited,
+        };
+        let _ = append_terminal(&root, &id, outcome);
+    });
+    Ok(record)
+}
+
+pub fn append_launch(root: &Path, record: &TunerLaunchRecord) -> io::Result<()> {
+    append(
+        root,
+        &JournalEvent::Launch {
+            record: record.clone(),
+        },
+    )
+}
+
+pub fn append_terminal(root: &Path, run_id: &str, outcome: TerminalOutcome) -> io::Result<()> {
+    if records(root)?
+        .into_iter()
+        .find(|record| record.run_id == run_id)
+        .is_some_and(|record| record.terminal_outcome.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "terminal outcome is already recorded",
+        ));
+    }
+    append(
+        root,
+        &JournalEvent::Terminal {
+            run_id: run_id.into(),
+            outcome,
+        },
+    )
+}
+
+fn append(root: &Path, event: &JournalEvent) -> io::Result<()> {
+    fs::create_dir_all(root)?;
+    // One line, one `write_all`: an `O_APPEND` write of a whole record is
+    // atomic against concurrent launches; a split json-then-newline is not.
+    let mut line = serde_json::to_vec(event).map_err(io::Error::other)?;
+    line.push(b'\n');
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join("launches.jsonl"))?
+        .write_all(&line)
+}
+
+/// All launch records, newest launch last, each folded together with its
+/// terminal outcome if one has been recorded.
+pub fn records(root: &Path) -> io::Result<Vec<TunerLaunchRecord>> {
+    let path = root.join("launches.jsonl");
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut by_id: HashMap<String, TunerLaunchRecord> = HashMap::new();
+    for line in BufReader::new(fs::File::open(path)?).lines() {
+        let event: JournalEvent = serde_json::from_str(&line?).map_err(io::Error::other)?;
+        match event {
+            JournalEvent::Launch { record } => {
+                if !by_id.contains_key(&record.run_id) {
+                    order.push(record.run_id.clone());
+                }
+                by_id.insert(record.run_id.clone(), record);
+            }
+            JournalEvent::Terminal { run_id, outcome } => {
+                if let Some(record) = by_id.get_mut(&run_id) {
+                    record.terminal_outcome = Some(outcome);
+                }
+            }
+        }
+    }
+    Ok(order
+        .into_iter()
+        .filter_map(|id| by_id.remove(&id))
+        .collect())
+}
+
+pub fn is_alive(pid: u32) -> bool {
+    crate::launch::is_alive(pid)
+}
+
+/// Deliver `SIGINT` to the launched run's whole process group (the child is
+/// spawned into its own group), so `tuner_cli` and any evaluator workers it
+/// spawned all see it. `tuner_cli` maps `KeyboardInterrupt` to exit 130 and
+/// leaves the run resumable.
+pub fn interrupt(pid: u32) -> io::Result<()> {
+    let status = Command::new("kill")
+        .arg("-INT")
+        .arg(format!("-{pid}"))
+        .status()?;
+    if status.success() {
+        return Ok(());
+    }
+    // Fall back to the bare pid if the group signal was rejected (e.g. the
+    // child never became a group leader on this platform).
+    let status = Command::new("kill")
+        .arg("-INT")
+        .arg(pid.to_string())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "process is no longer alive",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_request(root: &Path, run_id: &str) -> TunerLaunchRequest {
+        TunerLaunchRequest {
+            game_binary: "/games/druid".into(),
+            objective_file: "/objectives/default.yaml".into(),
+            runs_root: root.to_owned(),
+            run_id: run_id.into(),
+            task_seed: 7,
+            tuning_pair_budget: 10,
+            validation_pair_budget: 20,
+            production_validation_pairs: 30,
+            seed: None,
+            cohort_size: None,
+            finalists: None,
+            bootstrap_candidates: None,
+            random_reserve_candidates: None,
+            tuning_pairs: None,
+            diagnostic_pair_budget: None,
+            pair_timeout_seconds: None,
+            evaluator_workers: None,
+            proposer_policy: None,
+            shadow_practical_margin: None,
+            shadow_elimination_threshold: None,
+            shadow_policy: None,
+            shadow_halving_spare_margin: None,
+            active_elimination_audit_probability: None,
+            tuning_max_iterations: None,
+            tuning_max_time_ms: None,
+            validation_max_iterations: None,
+            validation_max_time_ms: None,
+            production_max_iterations: None,
+            production_max_time_ms: None,
+            exclude_family: vec![],
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mcts-tuner-launch-{}-{}-{name}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn argv_carries_required_flags_and_omits_unset_optionals() {
+        let root = PathBuf::from("runs");
+        let argv = base_request(&root, "run_12a").argv();
+        assert_eq!(
+            &argv[..7],
+            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli"]
+        );
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--run-dir", "runs/run_12a"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--tuning-pair-budget", "10"]));
+        // Unset optionals never reach the command line -- tuner_cli owns the
+        // default.
+        assert!(!argv.iter().any(|arg| arg == "--seed"));
+        assert!(!argv.iter().any(|arg| arg == "--proposer-policy"));
+        assert!(!argv.iter().any(|arg| arg == "--shadow-halving-spare-margin"));
+    }
+
+    #[test]
+    fn argv_emits_only_the_optionals_that_are_set() {
+        let root = PathBuf::from("runs");
+        let mut request = base_request(&root, "run_12a");
+        request.seed = Some(99);
+        request.proposer_policy = Some("random".into());
+        request.tuning_max_iterations = Some(1000);
+        request.exclude_family = vec!["ucb".into(), "grave".into()];
+        let argv = request.argv();
+        assert!(argv.windows(2).any(|pair| pair == ["--seed", "99"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--proposer-policy", "random"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--tuning-max-iterations", "1000"]));
+        assert_eq!(
+            argv.iter().filter(|arg| *arg == "--exclude-family").count(),
+            2
+        );
+    }
+
+    #[test]
+    fn validate_rejects_unsafe_run_id_and_double_effort() {
+        let root = PathBuf::from("runs");
+        assert!(base_request(&root, "../escape").validate().is_err());
+        assert!(base_request(&root, "ok").validate().is_ok());
+        let mut both = base_request(&root, "ok");
+        both.tuning_max_iterations = Some(1);
+        both.tuning_max_time_ms = Some(1);
+        assert!(both.validate().is_err());
+    }
+
+    #[test]
+    fn launch_rejects_an_existing_run_directory() {
+        let root = scratch("existing");
+        let request = base_request(&root, "taken");
+        fs::create_dir_all(request.run_dir()).unwrap();
+        let error = launch(&request).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn journal_round_trips_and_takes_exactly_one_terminal_outcome() {
+        let root = scratch("journal");
+        let record = TunerLaunchRecord {
+            run_id: "run_12a".into(),
+            argv: vec!["uv".into()],
+            run_dir: root.join("run_12a"),
+            pid: Some(12),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            terminal_outcome: None,
+        };
+        append_launch(&root, &record).unwrap();
+        append_terminal(&root, "run_12a", TerminalOutcome::Exited).unwrap();
+        assert_eq!(
+            records(&root).unwrap()[0].terminal_outcome,
+            Some(TerminalOutcome::Exited)
+        );
+        assert!(append_terminal(&root, "run_12a", TerminalOutcome::Signalled).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn records_preserve_launch_order() {
+        let root = scratch("order");
+        for id in ["c", "a", "b"] {
+            append_launch(
+                &root,
+                &TunerLaunchRecord {
+                    run_id: id.into(),
+                    argv: vec![],
+                    run_dir: root.join(id),
+                    pid: Some(1),
+                    started_at: "2026-01-01T00:00:00Z".into(),
+                    terminal_outcome: None,
+                },
+            )
+            .unwrap();
+        }
+        let ids: Vec<_> = records(&root)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.run_id)
+            .collect();
+        assert_eq!(ids, ["c", "a", "b"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spawn_journals_a_launch_then_a_terminal_outcome_and_stops_cleanly() {
+        let root = scratch("spawn");
+        let run_dir = root.join("live");
+        fs::create_dir_all(&run_dir).unwrap();
+        let record = spawn_and_journal(
+            &root,
+            "live",
+            run_dir.clone(),
+            vec!["sh".into(), "-c".into(), "sleep 30".into()],
+        )
+        .unwrap();
+        let pid = record.pid.unwrap();
+        assert!(run_dir.join("launch.out").exists());
+        assert!(is_alive(pid));
+
+        interrupt(pid).unwrap();
+        // The reaper thread records the terminal outcome asynchronously.
+        let mut outcome = None;
+        for _ in 0..200 {
+            if let Some(found) = records(&root)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.run_id == "live")
+                .and_then(|r| r.terminal_outcome)
+            {
+                outcome = Some(found);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert_eq!(outcome, Some(TerminalOutcome::Signalled));
+        let _ = fs::remove_dir_all(&root);
+    }
+}

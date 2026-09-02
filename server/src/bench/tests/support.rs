@@ -50,19 +50,7 @@ pub(super) static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
 /// connection into the `BenchState`.  Returns the Router and the temp
 /// dir (kept alive for the test's duration).
 pub(super) fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
-    seeded_app_with(
-        seed_fn,
-        Arc::new(|run_id, command, kind, game, label| {
-            launch::launch_with_run_id(
-                run_id,
-                command,
-                &kind,
-                &game,
-                label.as_deref(),
-                crate::BUILD_INFO,
-            )
-        }),
-    )
+    seeded_app_with(seed_fn)
 }
 
 #[test]
@@ -112,19 +100,16 @@ fn adapter_fixture_ingests_and_reads_a_registry_run() {
 
 pub(super) fn seeded_app_with(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    run_launcher: RunLauncher,
 ) -> (Router, PathBuf) {
-    let (app, path, _) = seeded_app_with_state(seed_fn, run_launcher);
+    let (app, path, _) = seeded_app_with_state(seed_fn);
     (app, path)
 }
 
 pub(super) fn seeded_app_with_state(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    run_launcher: RunLauncher,
 ) -> (Router, PathBuf, Arc<BenchState>) {
     seeded_app_with_state_and_signaller(
         seed_fn,
-        run_launcher,
         Arc::new(|_| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -136,7 +121,6 @@ pub(super) fn seeded_app_with_state(
 
 pub(super) fn seeded_app_with_state_and_signaller(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
-    run_launcher: RunLauncher,
     process_group_signaller: ProcessGroupSignaller,
 ) -> (Router, PathBuf, Arc<BenchState>) {
     let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -163,27 +147,11 @@ pub(super) fn seeded_app_with_state_and_signaller(
         projects_repository: adapters.projects_repository,
         run_repository: adapters.run_repository,
         run_command_repository: adapters.run_command_repository,
-        tuning_analysis_repository: adapters.tuning_analysis_repository,
-        tuning_command_repository: adapters.tuning_command_repository,
-        tuning_session_repository: adapters.tuning_session_repository,
-        tuning_trial_repository: adapters.tuning_trial_repository,
         bench_runs_dir,
-        run_launcher,
         process_group_signaller,
     });
 
     (bench_router(state.clone()), tmp_dir, state)
-}
-
-pub(super) fn injected_general_launcher() -> RunLauncher {
-    Arc::new(|run_id, _command, _kind, _game, _label| {
-        Ok(LaunchedRun {
-            run_id,
-            pid: 999_999_999,
-            log_path: PathBuf::from("bench-runs/injected/log.jsonl"),
-            log_dir: PathBuf::from("bench-runs/injected"),
-        })
-    })
 }
 
 /// Default seed: one completed run with two match results and one trial.

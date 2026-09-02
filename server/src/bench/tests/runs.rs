@@ -41,27 +41,6 @@ async fn test_list_runs_returns_seeded_run() {
 }
 
 #[tokio::test]
-async fn test_modern_tuner_run_is_identified_before_lifecycle_ingestion() {
-    let app = seeded_app(|conn, _| {
-        conn.execute(
-            "INSERT INTO runs (run_id, kind, game, config, git_sha, git_dirty, host, started_at, status, log_path) \
-             VALUES ('tuner-starting', 'tuner', 'nim', '{\"optimizer_id\":\"optimizer-new\",\"session_id\":\"session-new\"}', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/tuner.log')",
-            [],
-        )
-        .unwrap();
-    })
-    .0;
-
-    let (status, body) = http_get(app.clone(), "/api/bench/runs").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    assert_eq!(body_json(&body)[0]["tuning_session_id"], "session-new");
-
-    let (status, body) = http_get(app, "/api/bench/runs/tuner-starting").await;
-    assert_eq!(status, HttpStatusCode::OK);
-    assert_eq!(body_json(&body)["tuning_session_id"], "session-new");
-}
-
-#[tokio::test]
 async fn test_list_runs_filter_by_status() {
     let app = seeded_app(|conn, dir| {
         default_seed(conn, dir);

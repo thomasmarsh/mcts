@@ -303,14 +303,6 @@ pub(crate) async fn delete_run(
         .run_repository
         .load_deletion_info(&run_id)
         .map_err(|error| run_repository_error_for_run(error, &run_id))?;
-    if let Some(session_id) = deletion.tuning_session_id {
-        return Err(BenchError {
-            status: StatusCode::CONFLICT,
-            message: format!(
-                "run '{run_id}' belongs to tuning session '{session_id}' and retains its trace evidence -- use the future session Delete workflow"
-            ),
-        });
-    }
     if deletion.status == "running" {
         return Err(BenchError {
             status: StatusCode::CONFLICT,

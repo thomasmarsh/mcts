@@ -207,183 +207,6 @@ pub const CREATE_TABLES: &[&str] = &[
         launch_result TEXT,
         launch_diagnostic TEXT
     )",
-    "CREATE TABLE IF NOT EXISTS tuning_sessions (
-        session_id TEXT PRIMARY KEY,
-        status TEXT NOT NULL CHECK (status IN ('active', 'idle')),
-        manifest JSON NOT NULL,
-        manifest_fingerprint TEXT,
-        target_trial_count BIGINT,
-        created_at TIMESTAMP NOT NULL,
-        last_sequence BIGINT NOT NULL,
-        optimizer_id TEXT,
-        lifecycle_path TEXT,
-        control_version BIGINT NOT NULL DEFAULT 0,
-        control_signature TEXT
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_session_commands (
-        command_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        request JSON NOT NULL,
-        request_fingerprint TEXT NOT NULL,
-        outcome JSON NOT NULL,
-        recorded_at TIMESTAMP NOT NULL
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_launch_reservations (
-        session_id TEXT PRIMARY KEY REFERENCES tuning_sessions(session_id),
-        command_id TEXT NOT NULL UNIQUE,
-        attempt_id TEXT NOT NULL UNIQUE,
-        physical_run_id TEXT NOT NULL UNIQUE,
-        target_trial_count BIGINT NOT NULL,
-        reserved_at TIMESTAMP NOT NULL
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_stop_reservations (
-        session_id TEXT PRIMARY KEY REFERENCES tuning_sessions(session_id),
-        command_id TEXT NOT NULL UNIQUE,
-        attempt_id TEXT NOT NULL,
-        reserved_at TIMESTAMP NOT NULL
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_lifecycle_sources (
-        source_path TEXT PRIMARY KEY,
-        bench_run_id TEXT
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_attempts (
-        attempt_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        bench_run_id TEXT REFERENCES runs(run_id),
-        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'stopped')),
-        started_at TIMESTAMP NOT NULL,
-        ended_at TIMESTAMP,
-        failure TEXT
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_pool_revisions (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        pool_snapshot_fingerprint TEXT NOT NULL,
-        display_ordinal UINTEGER NOT NULL,
-        first_event_id TEXT NOT NULL,
-        first_attempt_id TEXT NOT NULL REFERENCES tuning_attempts(attempt_id),
-        observed_at TIMESTAMP NOT NULL,
-        PRIMARY KEY (session_id, pool_snapshot_fingerprint),
-        UNIQUE (session_id, display_ordinal)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_pool_anchors (
-        session_id TEXT NOT NULL,
-        pool_snapshot_fingerprint TEXT NOT NULL,
-        anchor_ordinal UINTEGER NOT NULL,
-        anchor_id TEXT NOT NULL,
-        config JSON NOT NULL,
-        mu DOUBLE NOT NULL,
-        sigma DOUBLE NOT NULL,
-        provenance TEXT NOT NULL CHECK (provenance IN ('bootstrap_default', 'bootstrap_random', 'configured', 'trial', 'legacy_unknown')),
-        insertion_reason TEXT NOT NULL CHECK (insertion_reason IN ('bootstrap', 'configured', 'champion', 'skill_band', 'legacy_unknown')),
-        source_trial_id TEXT,
-        PRIMARY KEY (session_id, pool_snapshot_fingerprint, anchor_ordinal),
-        UNIQUE (session_id, pool_snapshot_fingerprint, anchor_id),
-        FOREIGN KEY (session_id, pool_snapshot_fingerprint) REFERENCES tuning_pool_revisions(session_id, pool_snapshot_fingerprint)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_trials (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        trial_id TEXT NOT NULL,
-        attempt_id TEXT NOT NULL REFERENCES tuning_attempts(attempt_id),
-        trial_number BIGINT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'complete', 'failed', 'pruned', 'cancelled')),
-        config JSON,
-        created_at TIMESTAMP NOT NULL,
-        started_at TIMESTAMP,
-        ended_at TIMESTAMP,
-        score DOUBLE,
-        mu DOUBLE,
-        sigma DOUBLE,
-        stop_reason TEXT,
-        failure TEXT,
-        PRIMARY KEY (session_id, trial_id)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_pool_decisions (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        trial_id TEXT NOT NULL,
-        event_id TEXT NOT NULL,
-        before_pool_snapshot_fingerprint TEXT NOT NULL,
-        action TEXT NOT NULL CHECK (action IN ('inserted', 'rejected')),
-        reason TEXT NOT NULL CHECK (reason IN ('champion', 'skill_band', 'covered')),
-        anchor JSON,
-        after_pool_snapshot_fingerprint TEXT NOT NULL,
-        decided_at TIMESTAMP NOT NULL,
-        PRIMARY KEY (session_id, trial_id),
-        UNIQUE (event_id),
-        FOREIGN KEY (session_id, trial_id) REFERENCES tuning_trials(session_id, trial_id)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_trial_reports (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        trial_id TEXT NOT NULL,
-        trial_number BIGINT NOT NULL,
-        completed_pairs UBIGINT NOT NULL,
-        event_id TEXT NOT NULL,
-        reported_at TIMESTAMP NOT NULL,
-        mu DOUBLE NOT NULL,
-        sigma DOUBLE NOT NULL,
-        score DOUBLE NOT NULL,
-        score_formula_version UINTEGER NOT NULL,
-        conservative_k DOUBLE NOT NULL,
-        outcome TEXT NOT NULL CHECK (outcome IN ('continue', 'complete', 'prune')),
-        reason TEXT NOT NULL CHECK (reason IN ('below_min_pairs', 'pruning_disabled', 'startup_exempt', 'hyperband_keep', 'confidence', 'max_pairs', 'hyperband_prune')),
-        pruning_exempt BOOLEAN NOT NULL,
-        bracket_id TEXT,
-        rung_resource UBIGINT,
-        PRIMARY KEY (session_id, trial_id, completed_pairs),
-        UNIQUE (event_id)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_evaluation_pairs (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        pair_id TEXT NOT NULL,
-        trial_id TEXT NOT NULL,
-        attempt_id TEXT NOT NULL REFERENCES tuning_attempts(attempt_id),
-        pair_index UINTEGER NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('running', 'complete', 'failed')),
-        seed UBIGINT NOT NULL,
-        round UINTEGER NOT NULL,
-        opponent JSON NOT NULL,
-        pool_snapshot_fingerprint TEXT NOT NULL,
-        rating_before_mu DOUBLE NOT NULL,
-        rating_before_sigma DOUBLE NOT NULL,
-        rating_after_mu DOUBLE,
-        rating_after_sigma DOUBLE,
-        score DOUBLE,
-        started_at TIMESTAMP NOT NULL,
-        ended_at TIMESTAMP,
-        failure TEXT,
-        PRIMARY KEY (session_id, pair_id),
-        UNIQUE (session_id, trial_id, pair_index)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_games (
-        session_id TEXT NOT NULL REFERENCES tuning_sessions(session_id),
-        pair_id TEXT NOT NULL,
-        game_id TEXT NOT NULL,
-        candidate_side TEXT NOT NULL CHECK (candidate_side IN ('first', 'second')),
-        outcome TEXT NOT NULL CHECK (outcome IN ('candidate_win', 'baseline_win', 'draw')),
-        seed UBIGINT NOT NULL,
-        round UINTEGER NOT NULL,
-        trace_game_seq UBIGINT,
-        plies UINTEGER NOT NULL,
-        elapsed_ms UBIGINT NOT NULL,
-        candidate_metrics JSON NOT NULL,
-        baseline_metrics JSON NOT NULL,
-        finished_at TIMESTAMP NOT NULL,
-        PRIMARY KEY (session_id, game_id),
-        UNIQUE (session_id, pair_id, candidate_side)
-    )",
-    "CREATE TABLE IF NOT EXISTS tuning_lifecycle_events (
-        event_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
-        attempt_id TEXT NOT NULL,
-        session_sequence BIGINT NOT NULL,
-        timestamp TIMESTAMP NOT NULL,
-        event_type TEXT NOT NULL,
-        payload JSON NOT NULL,
-        raw JSON NOT NULL,
-        source_path TEXT NOT NULL,
-        source_offset BIGINT NOT NULL,
-        accepted BOOLEAN,
-        rejection_reason TEXT
-    )",
 ];
 
 pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
@@ -423,17 +246,6 @@ pub fn ensure_schema(conn: &duckdb::Connection) -> duckdb::Result<()> {
         ],
     )?;
     ensure_columns(conn, "experiment_cells", &[("cell_seed", "UBIGINT")])?;
-    ensure_columns(conn, "tuning_trials", &[("stop_reason", "TEXT")])?;
-    ensure_columns(
-        conn,
-        "tuning_sessions",
-        &[
-            ("optimizer_id", "TEXT"),
-            ("lifecycle_path", "TEXT"),
-            ("control_version", "BIGINT DEFAULT 0"),
-            ("control_signature", "TEXT"),
-        ],
-    )?;
     ensure_columns(
         conn,
         "game_moves",
@@ -530,16 +342,6 @@ mod tests {
             "artifact_tasks",
             "_artifact_trace_cursor",
             "attempt_events",
-            "tuning_sessions",
-            "tuning_session_commands",
-            "tuning_launch_reservations",
-            "tuning_stop_reservations",
-            "tuning_attempts",
-            "tuning_pool_revisions",
-            "tuning_pool_anchors",
-            "tuning_trials",
-            "tuning_trial_reports",
-            "tuning_lifecycle_events",
         ] {
             assert!(tables.iter().any(|t| t == want), "missing table: {want}");
         }
@@ -634,52 +436,6 @@ mod tests {
                 ("observed_at".into(), "NO".into()),
             ]
         );
-    }
-
-    #[test]
-    fn upgrades_partially_migrated_tuning_sessions_without_skipping_later_columns() {
-        let conn = duckdb::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE tuning_sessions (session_id TEXT PRIMARY KEY, status TEXT NOT NULL, manifest JSON NOT NULL, manifest_fingerprint TEXT, target_trial_count BIGINT, created_at TIMESTAMP NOT NULL, last_sequence BIGINT NOT NULL, optimizer_id TEXT, lifecycle_path TEXT);
-             CREATE TABLE tuning_attempts (attempt_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, bench_run_id TEXT, status TEXT NOT NULL, started_at TIMESTAMP NOT NULL, ended_at TIMESTAMP, failure TEXT);
-             CREATE TABLE tuning_trials (session_id TEXT NOT NULL, trial_id TEXT NOT NULL, attempt_id TEXT NOT NULL, trial_number BIGINT NOT NULL, status TEXT NOT NULL, config JSON, created_at TIMESTAMP NOT NULL, started_at TIMESTAMP, ended_at TIMESTAMP, score DOUBLE, mu DOUBLE, sigma DOUBLE, failure TEXT, PRIMARY KEY (session_id, trial_id));",
-        )
-        .unwrap();
-
-        ensure_schema(&conn).unwrap();
-
-        let nullable: String = conn
-            .query_row(
-                "SELECT is_nullable FROM information_schema.columns WHERE table_name = 'tuning_trials' AND column_name = 'stop_reason'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(nullable, "YES");
-        let control_columns: Vec<(String, Option<String>)> = conn
-            .prepare(
-                "SELECT column_name, column_default FROM information_schema.columns WHERE table_name = 'tuning_sessions' AND column_name IN ('control_version', 'control_signature') ORDER BY column_name",
-            )
-            .unwrap()
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap()
-            .filter_map(Result::ok)
-            .collect();
-        assert_eq!(
-            control_columns,
-            vec![
-                ("control_signature".into(), None),
-                ("control_version".into(), Some("0".into())),
-            ]
-        );
-        let reports: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'tuning_trial_reports'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(reports, 1);
     }
 
     #[test]
