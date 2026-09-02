@@ -17,8 +17,12 @@ import {
   draftFromContent,
   draftToContent,
   emptyDraft,
+  flattenDotted,
+  gameConfigSchema,
+  nestDotted,
   slugKey,
   validateDraft,
+  type JsonObject,
   type ObjectiveDraft,
   type OpponentDraft,
 } from "../models/objective-model.js";
@@ -120,6 +124,35 @@ export const ObjectiveEditor: Component<{
     }));
   }
 
+  const gcSchema = createMemo(() => gameConfigSchema(schema()));
+
+  function setGameParam(name: string, value: JsonValue | undefined): void {
+    setDraft((d) => {
+      const gameConfig = { ...d.gameConfig };
+      if (value === undefined || value === "") delete gameConfig[name];
+      else gameConfig[name] = value;
+      return {
+        ...d,
+        gameConfig,
+        gameConfigText: JSON.stringify(nestDotted(gameConfig), null, 2),
+      };
+    });
+  }
+
+  function syncGameRaw(): void {
+    setDraft((d) => {
+      try {
+        const parsed = JSON.parse(d.gameConfigText);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return { ...d, gameConfig: flattenDotted(parsed as JsonObject) };
+        }
+      } catch {
+        /* leave the buffer; validateDraft surfaces the parse error */
+      }
+      return d;
+    });
+  }
+
   function addOpponent(): void {
     setDraft((d) => ({
       ...d,
@@ -140,16 +173,17 @@ export const ObjectiveEditor: Component<{
     dispatch({ tag: "validateObjective", key: effectiveKey(), content: draftToContent(draft()) });
   }
 
-  const renderField = (opponent: OpponentDraft, index: number, p: TunerParameter) => {
-    const current = opponent.config[p.name];
+  const renderField = (
+    p: TunerParameter,
+    current: JsonValue | undefined,
+    onChange: (value: JsonValue | undefined) => void,
+  ) => {
     const def = paramDefault(p);
     if (p.type === "categorical") {
       return (
         <select
           value={current === undefined ? "" : String(current)}
-          onInput={(e) =>
-            setParam(index, p.name, e.currentTarget.value === "" ? undefined : e.currentTarget.value)
-          }
+          onInput={(e) => onChange(e.currentTarget.value === "" ? undefined : e.currentTarget.value)}
         >
           <option value="">(default{def !== undefined ? `: ${String(def)}` : ""})</option>
           <For each={p.choices ?? []}>{(c) => <option value={c}>{c}</option>}</For>
@@ -161,7 +195,7 @@ export const ObjectiveEditor: Component<{
         <input
           type="checkbox"
           checked={current === true || (current === undefined && def === true)}
-          onInput={(e) => setParam(index, p.name, e.currentTarget.checked)}
+          onInput={(e) => onChange(e.currentTarget.checked)}
         />
       );
     }
@@ -179,9 +213,9 @@ export const ObjectiveEditor: Component<{
         value={current === undefined ? "" : String(current)}
         onInput={(e) => {
           const raw = e.currentTarget.value;
-          if (raw === "") return setParam(index, p.name, undefined);
+          if (raw === "") return onChange(undefined);
           const n = Number(raw);
-          if (Number.isFinite(n)) setParam(index, p.name, p.type === "int" ? Math.trunc(n) : n);
+          if (Number.isFinite(n)) onChange(p.type === "int" ? Math.trunc(n) : n);
         }}
       />
     );
@@ -203,7 +237,7 @@ export const ObjectiveEditor: Component<{
           {(p) => (
             <label class="tuner-objective-param">
               <span>{p.name}</span>
-              {renderField(opponent, index, p)}
+              {renderField(p, opponent.config[p.name], (v) => setParam(index, p.name, v))}
             </label>
           )}
         </For>
@@ -268,6 +302,72 @@ export const ObjectiveEditor: Component<{
           schema). Clear the inline configs to switch games.
         </p>
       </Show>
+
+      <h4>Game setup</h4>
+      <div class="tuner-objective-game-config" data-testid="objective-game-config">
+        <Show
+          when={gcSchema().parameters.length > 0}
+          fallback={
+            <p class="tuner-objective-caption">
+              This game's board is fixed — nothing to configure.
+            </p>
+          }
+        >
+          <div class="tuner-config-diff-toggle">
+            <button
+              type="button"
+              classList={{ "tuner-toggle-active": draft().gameConfigMode === "form" }}
+              onClick={() => setDraft((d) => ({ ...d, gameConfigMode: "form" }))}
+            >
+              Form
+            </button>
+            <button
+              type="button"
+              classList={{ "tuner-toggle-active": draft().gameConfigMode === "raw" }}
+              onClick={() =>
+                setDraft((d) => ({
+                  ...d,
+                  gameConfigMode: "raw",
+                  gameConfigText: JSON.stringify(nestDotted(d.gameConfig), null, 2),
+                }))
+              }
+            >
+              Raw JSON
+            </button>
+          </div>
+          <Show
+            when={draft().gameConfigMode === "form"}
+            fallback={
+              <textarea
+                class="tuner-objective-editor-raw"
+                rows="4"
+                data-testid="objective-game-config-raw"
+                value={draft().gameConfigText}
+                onInput={(e) => setDraft((d) => ({ ...d, gameConfigText: e.currentTarget.value }))}
+                onBlur={syncGameRaw}
+              />
+            }
+          >
+            <div class="tuner-objective-param-grid">
+              <For
+                each={gcSchema().parameters.filter((p) =>
+                  activeParamNames(gcSchema(), draft().gameConfig).has(p.name),
+                )}
+              >
+                {(p) => (
+                  <label class="tuner-objective-param">
+                    <span>{p.name}</span>
+                    {renderField(p, draft().gameConfig[p.name], (v) => setGameParam(p.name, v))}
+                  </label>
+                )}
+              </For>
+            </div>
+          </Show>
+          <p class="tuner-objective-caption">
+            Leave every field at its default to tune on the game's built-in board.
+          </p>
+        </Show>
+      </div>
 
       <h4>Opponent panel</h4>
       <div class="tuner-objective-opponents">

@@ -384,6 +384,92 @@ describe("TunerApp objective editor", () => {
   });
 });
 
+describe("TunerApp objective editor — game setup", () => {
+  const gameConfigKinds = [
+    ...kinds,
+    {
+      game: "atarigo",
+      tuner: {
+        id: "strategy",
+        baselines: ["strong"],
+        eval_rounds: 20,
+        parameters: [],
+        conditions: [],
+        game_config: { size: 13 },
+        game_config_schema: {
+          parameters: [{ name: "size", type: "int", bounds: [3, 19], default: 13 }],
+          conditions: [],
+        },
+      },
+    },
+  ];
+
+  async function openNewEditor(over: Parameters<typeof mockTunerEnv>[0] = {}) {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(gameConfigKinds),
+          listObjectives: () => Effect.send([]),
+          listRuns: () => Effect.send([]),
+          ...over,
+        })}
+      />
+    ));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-fleet")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Manage objectives" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-manager")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "New objective" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-editor")).toBeInTheDocument(),
+    );
+  }
+
+  it("shows the fixed-board caption until a configurable game is picked", async () => {
+    await openNewEditor();
+    expect(screen.getByTestId("objective-game-config")).toHaveTextContent(
+      "This game's board is fixed",
+    );
+
+    fireEvent.input(screen.getByRole("combobox"), { target: { value: "nim" } });
+    expect(screen.getByTestId("objective-game-config")).toHaveTextContent(
+      "This game's board is fixed",
+    );
+  });
+
+  it("renders a bounded size field for AtariGo and flags an out-of-bounds value", async () => {
+    await openNewEditor();
+    fireEvent.input(screen.getByRole("combobox"), { target: { value: "atarigo" } });
+
+    const section = screen.getByTestId("objective-game-config");
+    const sizeField = within(section).getByRole("spinbutton") as HTMLInputElement;
+    expect(sizeField).toHaveAttribute("min", "3");
+    expect(sizeField).toHaveAttribute("max", "19");
+
+    fireEvent.input(sizeField, { target: { value: "25" } });
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("objective-validation")).toHaveTextContent(/within \[3, 19\]/),
+    );
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("threads game_config into the validated body", async () => {
+    const validateObjective = vi.fn((_key: string, _content: unknown) =>
+      Effect.send({ ok: true, errors: [] }),
+    );
+    await openNewEditor({ validateObjective });
+    fireEvent.input(screen.getByRole("combobox"), { target: { value: "atarigo" } });
+
+    const section = screen.getByTestId("objective-game-config");
+    fireEvent.input(within(section).getByRole("spinbutton"), { target: { value: "9" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Validate on server" }));
+    await vi.waitFor(() => expect(validateObjective).toHaveBeenCalledTimes(1));
+    expect(validateObjective.mock.calls[0]![1]).toMatchObject({ game_config: { size: 9 } });
+  });
+});
+
 describe("TunerApp run overview", () => {
   it("shows the ship verdict, validation ranking, and caveats for a completed run", async () => {
     render(() => <TunerApp env={completedRunEnv()} />);

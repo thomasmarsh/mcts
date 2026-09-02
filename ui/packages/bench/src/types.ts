@@ -190,6 +190,16 @@ export interface TunerCondition {
   then: string[];
 }
 
+/** Bounds and types for a game's `game_config` setup axis
+ * (`game_host::GameConfigSchema`), reusing the `TunerParameter` /
+ * `TunerCondition` shapes verbatim. An empty `parameters` list means the
+ * board is fixed at compile time — nothing to configure. Druid's `{w, h}`
+ * size is two dotted `size.w` / `size.h` parameters. */
+export interface GameConfigSchema {
+  parameters: TunerParameter[];
+  conditions: TunerCondition[];
+}
+
 /** A game's tunable search space, as reported by `tune describe`
  * (`game_host::TunerInfo`) and surfaced through `GET
  * /api/bench/tuner/kinds`. `baselines` is a list rather than a single id so
@@ -208,6 +218,10 @@ export interface TunerInfo {
    * the game's board is fixed at compile time and there's nothing to
    * configure here. */
   game_config: unknown;
+  /** Bounds and types for the `game_config` axis, so a launch form or the
+   * objective editor can accept and validate a non-default value (e.g.
+   * AtariGo on 9×9). Absent / empty `parameters` for a fixed-board game. */
+  game_config_schema?: GameConfigSchema;
 }
 
 /** `GET /api/bench/tuner/kinds` element — one tunable game. */

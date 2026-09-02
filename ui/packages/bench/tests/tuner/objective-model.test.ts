@@ -5,11 +5,26 @@ import {
   draftFromContent,
   draftToContent,
   emptyDraft,
+  flattenDotted,
+  nestDotted,
   reduceWeights,
   slugKey,
   validateDraft,
   type ObjectiveDraft,
 } from "../../src/tuner/models/objective-model.js";
+
+const ATARIGO: TunerInfo = {
+  id: "strategy",
+  baselines: ["strong"],
+  eval_rounds: 5,
+  parameters: [{ name: "c", type: "float", bounds: [0, 2], default: 1.4 }],
+  conditions: [],
+  game_config: { size: 13 },
+  game_config_schema: {
+    parameters: [{ name: "size", type: "int", bounds: [3, 19], default: 13 }],
+    conditions: [],
+  },
+};
 
 // Copies of the checked-in seed corpus (`tuner/objectives/*.json`), kept here
 // so the round-trip is exercised without a filesystem read. If a seed's
@@ -196,6 +211,106 @@ describe("activeParamNames", () => {
       true,
     );
     expect(activeParamNames(schema, {}).has("c")).toBe(true);
+  });
+});
+
+describe("flattenDotted / nestDotted", () => {
+  it("round-trips a nested object through dotted keys", () => {
+    const nested = { size: { w: 7, h: 9 } };
+    expect(flattenDotted(nested)).toEqual({ "size.w": 7, "size.h": 9 });
+    expect(nestDotted({ "size.w": 7, "size.h": 9 })).toEqual(nested);
+  });
+
+  it("treats a scalar top-level key as its own leaf", () => {
+    expect(flattenDotted({ size: 9 })).toEqual({ size: 9 });
+    expect(nestDotted({ size: 9 })).toEqual({ size: 9 });
+  });
+});
+
+describe("game_config round-trip", () => {
+  const seed = (gameConfig?: JsonValue): JsonValue => ({
+    schema_version: 1,
+    objective_id: "atarigo-v1",
+    game_kind: "atarigo",
+    opponents: [
+      {
+        id: "schema-default",
+        label: "Schema default",
+        role: "default",
+        weight: 1,
+        config: { source: "schema_default" },
+      },
+      {
+        id: "hist",
+        label: "Historical",
+        role: "historical_reference",
+        weight: 1,
+        config: { source: "inline", value: { c: 1.2 } },
+      },
+    ],
+    start_distribution: { kind: "default_only" },
+    ...(gameConfig !== undefined ? { game_config: gameConfig } : {}),
+  });
+
+  it("omits game_config when the objective has none", () => {
+    const { draft, warnings } = draftFromContent(seed());
+    expect(warnings).toEqual([]);
+    expect(draftToContent(draft)).toEqual(seed());
+    expect("game_config" in draftToContent(draft)).toBe(false);
+  });
+
+  it("round-trips an objective carrying game_config byte-identically", () => {
+    const { draft, warnings } = draftFromContent(seed({ size: 9 }));
+    expect(warnings).toEqual([]);
+    expect(draft.gameConfig).toEqual({ size: 9 });
+    expect(draftToContent(draft)).toEqual(seed({ size: 9 }));
+  });
+});
+
+describe("validateDraft — game_config", () => {
+  const atariDraft = (gameConfig: JsonValue): ObjectiveDraft => {
+    const d = emptyDraft("atarigo");
+    d.objectiveId = "atarigo-v1";
+    d.opponents[1] = {
+      id: "hist",
+      label: "Historical",
+      kind: "inline",
+      weight: 1,
+      config: { c: 1.2 },
+      configText: '{"c":1.2}',
+      configMode: "form",
+    };
+    d.gameConfig = flattenDotted(gameConfig);
+    d.gameConfigText = JSON.stringify(gameConfig);
+    return d;
+  };
+
+  it("accepts an in-bounds size", () => {
+    expect(validateDraft(atariDraft({ size: 9 }), ATARIGO)).toEqual([]);
+  });
+
+  it("rejects an out-of-bounds size", () => {
+    expect(
+      validateDraft(atariDraft({ size: 25 }), ATARIGO).some((e) => /within \[3, 19\]/.test(e)),
+    ).toBe(true);
+  });
+
+  it("rejects an unknown game-setup field", () => {
+    expect(
+      validateDraft(atariDraft({ variant: "x" }), ATARIGO).some((e) => /unknown field "variant"/.test(e)),
+    ).toBe(true);
+  });
+
+  it("rejects a game_config equal to the default", () => {
+    expect(
+      validateDraft(atariDraft({ size: 13 }), ATARIGO).some((e) => /matches the default/.test(e)),
+    ).toBe(true);
+  });
+
+  it("rejects any override for a fixed-board game", () => {
+    const d = atariDraft({ size: 9 });
+    const fixed: TunerInfo = { ...ATARIGO, game_config: {}, game_config_schema: undefined };
+    expect(validateDraft(d, fixed).some((e) => /board is fixed/.test(e))).toBe(true);
   });
 });
 

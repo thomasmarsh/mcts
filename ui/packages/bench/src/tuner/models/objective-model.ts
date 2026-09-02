@@ -5,9 +5,25 @@
 // on panel semantics; this module just makes the legal panel the easy one to
 // build and catches the common mistakes before a round-trip.
 
-import type { JsonValue, TunerInfo } from "../../types.js";
+import type {
+  GameConfigSchema,
+  JsonValue,
+  TunerCondition,
+  TunerInfo,
+  TunerParameter,
+} from "../../types.js";
 
 export type JsonObject = { [key: string]: JsonValue };
+
+/** The shape `activeParamNames` / `schemaDefaultConfig` need — satisfied by
+ * both `TunerInfo` (the strategy search space) and `GameConfigSchema` (the
+ * game-setup axis). */
+export interface ParamSchema {
+  parameters: TunerParameter[];
+  conditions: TunerCondition[];
+}
+
+const EMPTY_SCHEMA: GameConfigSchema = { parameters: [], conditions: [] };
 
 export type OpponentKind = "schema_default" | "inline";
 
@@ -32,6 +48,14 @@ export interface ObjectiveDraft {
   gameKind: string;
   /** `opponents[0]` is always the pinned schema-default opponent. */
   opponents: OpponentDraft[];
+  /** The optional `game_config` override, held **flat** with dotted keys
+   * (`{"size.w": 7}`) so it lines up 1:1 with `config_schema.parameters`;
+   * nested back to `{size: {w: 7}}` only on the wire. Empty ⇒ the key is
+   * omitted and the run uses the binary's `default_config()`. */
+  gameConfig: JsonObject;
+  /** Raw-JSON buffer for `game_config`, in **nested** wire shape. */
+  gameConfigText: string;
+  gameConfigMode: "form" | "raw";
 }
 
 export interface DraftParse {
@@ -44,6 +68,39 @@ const PINNED_DEFAULT_ID = "schema-default";
 
 function asObject(v: JsonValue | undefined): JsonObject | null {
   return v !== null && typeof v === "object" && !Array.isArray(v) ? (v as JsonObject) : null;
+}
+
+/** Flatten a nested object to dotted leaf keys: `{size:{w:7,h:9}} →
+ * {"size.w":7,"size.h":9}`. A non-object or empty object at the root yields
+ * `{}`. */
+export function flattenDotted(value: JsonValue | undefined): JsonObject {
+  const out: JsonObject = {};
+  const walk = (v: JsonValue, prefix: string): void => {
+    const o = asObject(v);
+    if (o && Object.keys(o).length > 0) {
+      for (const key of Object.keys(o)) walk(o[key]!, prefix ? `${prefix}.${key}` : key);
+    } else if (prefix) {
+      out[prefix] = v;
+    }
+  };
+  walk(value ?? {}, "");
+  return out;
+}
+
+/** Inverse of `flattenDotted`: `{"size.w":7} → {size:{w:7}}`. */
+export function nestDotted(flat: JsonObject): JsonObject {
+  const out: JsonObject = {};
+  for (const key of Object.keys(flat)) {
+    const parts = key.split(".");
+    let cursor = out;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const next = asObject(cursor[parts[i]!]) ?? {};
+      cursor[parts[i]!] = next;
+      cursor = next;
+    }
+    cursor[parts[parts.length - 1]!] = flat[key]!;
+  }
+  return out;
 }
 
 function gcd2(a: number, b: number): number {
@@ -92,6 +149,9 @@ export function emptyDraft(gameKind: string): ObjectiveDraft {
     objectiveId: "",
     gameKind,
     opponents: [schemaDefaultOpponent(), blankInlineOpponent(1)],
+    gameConfig: {},
+    gameConfigText: "{}",
+    gameConfigMode: "form",
   };
 }
 
@@ -149,7 +209,24 @@ export function draftFromContent(content: JsonValue, fallbackGame = ""): DraftPa
   }
   if (opponents.length < 2) opponents.push(blankInlineOpponent(opponents.length));
 
-  return { draft: { objectiveId, gameKind, opponents }, warnings };
+  const rawGameConfig = asObject(root["game_config"]);
+  if (root["game_config"] !== undefined && !rawGameConfig) {
+    warnings.push("game_config is not a JSON object; ignored");
+  }
+  const gameConfig = flattenDotted(rawGameConfig ?? {});
+  const gameConfigText = JSON.stringify(rawGameConfig ?? {}, null, 2);
+
+  return {
+    draft: {
+      objectiveId,
+      gameKind,
+      opponents,
+      gameConfig,
+      gameConfigText,
+      gameConfigMode: "form",
+    },
+    warnings,
+  };
 }
 
 /** Recursively sort object keys so two equal configs serialise identically. */
@@ -174,6 +251,19 @@ export function effectiveConfig(opponent: OpponentDraft): JsonObject {
   return opponent.config;
 }
 
+/** The flat, dotted `game_config` a draft will emit: its raw-JSON buffer
+ * (flattened) when that parses as an object, otherwise the last good form
+ * state. */
+export function effectiveGameConfig(draft: ObjectiveDraft): JsonObject {
+  try {
+    const parsed = asObject(JSON.parse(draft.gameConfigText));
+    if (parsed) return flattenDotted(parsed);
+  } catch {
+    /* fall through to the last good form state */
+  }
+  return draft.gameConfig;
+}
+
 /** Assemble the wire JSON: reduce weights, set the fixed
  * `schema_version` / `start_distribution`, canonicalise each inline config. */
 export function draftToContent(draft: ObjectiveDraft): JsonObject {
@@ -191,18 +281,23 @@ export function draftToContent(draft: ObjectiveDraft): JsonObject {
       config,
     };
   });
-  return {
+  const wire: JsonObject = {
     schema_version: 1,
     objective_id: draft.objectiveId,
     game_kind: draft.gameKind,
     opponents,
     start_distribution: { kind: "default_only" },
   };
+  const gameConfig = nestDotted(effectiveGameConfig(draft));
+  if (Object.keys(gameConfig).length > 0) {
+    wire["game_config"] = canonicalize(gameConfig);
+  }
+  return wire;
 }
 
 /** The game's schema-default config as a plain object, best-effort from its
  * tuner parameter list (each parameter carries a `default` or `value`). */
-export function schemaDefaultConfig(schema: TunerInfo): JsonObject {
+export function schemaDefaultConfig(schema: ParamSchema): JsonObject {
   const out: JsonObject = {};
   for (const p of schema.parameters) {
     const d = p.default !== undefined ? p.default : p.value;
@@ -214,7 +309,7 @@ export function schemaDefaultConfig(schema: TunerInfo): JsonObject {
 /** Which parameters are active for `config`, applying `tuner.conditions`
  * (a conditioned parameter is active only when some condition that lists it
  * in `then` has its `if` satisfied) — same gating the tuner uses. */
-export function activeParamNames(schema: TunerInfo, config: JsonObject): Set<string> {
+export function activeParamNames(schema: ParamSchema, config: JsonObject): Set<string> {
   const conditioned = new Set<string>();
   for (const c of schema.conditions) for (const then of c.then) conditioned.add(then);
 
@@ -306,6 +401,74 @@ export function validateDraft(draft: ObjectiveDraft, schema?: TunerInfo | null):
       errors.push("Two opponents have the same effective configuration.");
       break;
     }
+  }
+
+  errors.push(...validateGameConfig(draft, schema));
+
+  return errors;
+}
+
+/** The `game_config` schema for a game, defaulting to the empty (fixed
+ * board) schema when `tune describe` predates the field. */
+export function gameConfigSchema(schema?: TunerInfo | null): GameConfigSchema {
+  return schema?.game_config_schema ?? EMPTY_SCHEMA;
+}
+
+/** §4.1 `game_config` rules the UI checks locally: valid JSON, every key a
+ * known `config_schema` parameter, numeric values in bounds, and the whole
+ * override not equal to the game's default (write nothing instead). */
+function validateGameConfig(draft: ObjectiveDraft, schema?: TunerInfo | null): string[] {
+  const errors: string[] = [];
+  const gcSchema = gameConfigSchema(schema);
+
+  if (draft.gameConfigMode === "raw") {
+    let parsed: JsonValue;
+    try {
+      parsed = JSON.parse(draft.gameConfigText);
+    } catch {
+      return ["Game setup config is not valid JSON."];
+    }
+    if (!asObject(parsed)) return ["Game setup config must be a JSON object."];
+  }
+
+  const config = effectiveGameConfig(draft);
+  const keys = Object.keys(config);
+  if (keys.length === 0) return errors;
+
+  if (gcSchema.parameters.length === 0) {
+    errors.push("This game's board is fixed — remove the game setup override.");
+    return errors;
+  }
+
+  const active = activeParamNames(gcSchema, config);
+  for (const key of keys) {
+    const param = gcSchema.parameters.find((p) => p.name === key);
+    if (!param) {
+      errors.push(`Game setup: unknown field "${key}".`);
+      continue;
+    }
+    if (!active.has(key)) {
+      errors.push(`Game setup: "${key}" is not active for the current selection.`);
+      continue;
+    }
+    const value = config[key];
+    if ((param.type === "int" || param.type === "float") && param.bounds) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        errors.push(`Game setup: "${key}" must be a number.`);
+      } else if (value < param.bounds[0] || value > param.bounds[1]) {
+        errors.push(
+          `Game setup: "${key}" must be within [${param.bounds[0]}, ${param.bounds[1]}].`,
+        );
+      }
+    }
+  }
+
+  const defaultConfig = flattenDotted((schema?.game_config as JsonValue | undefined) ?? {});
+  const same =
+    JSON.stringify(canonicalize(nestDotted(config))) ===
+    JSON.stringify(canonicalize(nestDotted(defaultConfig)));
+  if (same) {
+    errors.push("Game setup matches the default — leave it unset to use the default.");
   }
 
   return errors;

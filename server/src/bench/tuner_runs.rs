@@ -224,6 +224,9 @@ fn precheck_objective(body: &serde_json::Value) -> Result<String, BenchError> {
     if object.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
         return Err(bad_request("objective schema_version must be 1".into()));
     }
+    if object.get("game_config").is_some_and(|value| !value.is_object()) {
+        return Err(bad_request("objective game_config must be a JSON object".into()));
+    }
     object
         .get("game_kind")
         .and_then(serde_json::Value::as_str)

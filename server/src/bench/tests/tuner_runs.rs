@@ -254,6 +254,13 @@ async fn objective_crud_round_trips_and_validates() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
+    // A non-object game_config is refused by the pre-check.
+    let mut bad_config = objective_body("ttt");
+    bad_config["game_config"] = json!(9);
+    let (status, _) =
+        http_put_json(app.clone(), "/api/bench/tuner/objectives/nope2", bad_config).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
     // Path traversal is refused on every keyed route.
     for uri in [
         "/api/bench/tuner/objectives/..%2Fsecret",
