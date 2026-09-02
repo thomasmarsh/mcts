@@ -1,15 +1,23 @@
-// RunOverview — a run's landing view: the header, the live progress rail,
-// and the launch-log tail (the sub-second feedback the old UI lacked). The
-// ship verdict, validation table, cohort strip, and the science / evidence
-// tabs are not built yet.
+// RunOverview — a run's landing view and the ship decision. Header + live
+// progress rail + launch-log tail (the sub-second feedback the old UI
+// lacked), then, once the projection has the run, the ship verdict and the
+// ranked validation table. Cohort race strips and the full science /
+// evidence views are their own slices.
 
 import { createMemo, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import type { TunerRoute } from "../tuner-routes.js";
+import { deriveProgress } from "../models/progress-model.js";
+import { deriveVerdict } from "../models/verdict-model.js";
+import { schemaDefaults } from "../models/config-diff-model.js";
 import { RunStatusBadge } from "../primitives/RunStatusBadge.js";
 import { ProgressRail } from "../primitives/ProgressRail.js";
+import { ShipVerdict } from "../primitives/ShipVerdict.js";
+import { Forest } from "../primitives/Forest.js";
+import { DataTable } from "../primitives/DataTable.js";
+import type { VerdictCandidate } from "../models/verdict-model.js";
 
 export const RunOverview: Component<{
   store: Store<TunerState, TunerAction>;
@@ -25,8 +33,36 @@ export const RunOverview: Component<{
   const projectionRow = createMemo(() =>
     (peek(state().projectionRuns) ?? []).find((r) => r.run_id === props.runId),
   );
+  const detail = createMemo(() => peek(state().projectionDetail));
   const status = createMemo(() => journalRow()?.status ?? (projectionRow() ? "exited" : null));
   const live = createMemo(() => status() === "live");
+
+  const progress = createMemo(() =>
+    deriveProgress({
+      status: status(),
+      startedAt: journalRow()?.started_at ?? null,
+      nowMs: Date.now(),
+      compute: detail()?.compute,
+    }),
+  );
+
+  const gameKind = createMemo(
+    () => detail()?.manifest?.game_kind ?? projectionRow()?.game_kind ?? null,
+  );
+  const baseConfig = createMemo(() => {
+    const info = (peek(state().kinds) ?? []).find((k) => k.game === gameKind());
+    return info ? schemaDefaults(info.tuner.parameters) : {};
+  });
+  const verdict = createMemo(() =>
+    deriveVerdict({
+      validation: peek(state().validation),
+      candidates: peek(state().candidates),
+      report: peek(state().report),
+    }),
+  );
+
+  const openCandidate = (candidateId: string): void =>
+    props.navigate({ view: "run", runId: props.runId, tab: "overview", candidate: candidateId });
 
   return (
     <div class="tuner-run-overview" data-testid="tuner-run-overview">
@@ -43,6 +79,12 @@ export const RunOverview: Component<{
         <Show when={live()}>
           <button onClick={() => dispatch({ tag: "stopRun", runId: props.runId })}>Stop</button>
         </Show>
+        <button
+          onClick={() => dispatch({ tag: "refreshProjection" })}
+          disabled={state().refreshing}
+        >
+          {state().refreshing ? "Refreshing…" : "Refresh science"}
+        </button>
       </div>
 
       <Show when={journalRow()?.run_dir}>
@@ -53,18 +95,89 @@ export const RunOverview: Component<{
           {state().stopError}
         </div>
       </Show>
+      <Show when={state().refreshError}>
+        <div class="launch-error" role="alert">
+          {state().refreshError}
+        </div>
+      </Show>
 
       <ProgressRail
         status={status()}
         startedAt={journalRow()?.started_at ?? null}
         nowMs={Date.now()}
+        compute={detail()?.compute}
       />
+
+      <Show when={progress().phase !== "starting" && !live()}>
+        <p class="tuner-run-compute-summary">
+          {progress().pairs.completed} of {progress().pairs.attempted} pair attempts completed
+          {progress().pairs.failed > 0 ? `, ${progress().pairs.failed} failed` : ""}
+        </p>
+      </Show>
+
+      <Show when={verdict().ranked.length > 0 || verdict().finalist}>
+        <ShipVerdict
+          verdict={verdict()}
+          gameKind={gameKind()}
+          baseConfig={baseConfig()}
+          onOpenCandidate={openCandidate}
+        />
+
+        <section class="tuner-validation-table">
+          <h3>Validation ranking</h3>
+          <Forest
+            domain={verdict().domain}
+            reference={0}
+            rows={verdict().ranked.map((r) => ({
+              key: r.candidateId,
+              label: `#${r.rank} ${r.shortId}`,
+              mean: r.estimate,
+              lower: r.lower,
+              upper: r.upper,
+              highlight: r.rank === 1,
+              onClick: () => openCandidate(r.candidateId),
+            }))}
+          />
+          <DataTable<VerdictCandidate>
+            testid="validation-wdl"
+            rows={verdict().ranked}
+            rowKey={(r) => r.candidateId}
+            onRowClick={(r) => openCandidate(r.candidateId)}
+            columns={[
+              { key: "rank", header: "#", render: (r) => r.rank },
+              { key: "id", header: "Candidate", render: (r) => r.shortId },
+              {
+                key: "est",
+                header: "Estimate",
+                align: "right",
+                render: (r) => r.estimate.toFixed(3),
+              },
+              {
+                key: "wdl",
+                header: "W / D / L",
+                align: "right",
+                render: (r) => `${r.wins} / ${r.draws} / ${r.losses}`,
+              },
+              {
+                key: "tie",
+                header: "",
+                render: (r) =>
+                  verdict().ties.some((t) => t.left === r.candidateId || t.right === r.candidateId)
+                    ? "tie"
+                    : "",
+              },
+            ]}
+          />
+        </section>
+      </Show>
 
       <div class="tuner-run-links">
         <button onClick={() => props.navigate({ view: "run", runId: props.runId, tab: "science" })}>
           Full science →
         </button>
-        <button onClick={() => props.navigate({ view: "run", runId: props.runId, tab: "evidence" })}>
+        <button
+          onClick={() => props.navigate({ view: "run", runId: props.runId, tab: "evidence" })}
+        >
           Raw evidence →
         </button>
       </div>
@@ -78,11 +191,25 @@ export const RunOverview: Component<{
             </div>
           </Show>
           <pre class="tuner-log-lines" data-testid="tuner-log-lines">
-            <For each={state().log.lines}>{(line) => <>{line}{"\n"}</>}</For>
+            <For each={state().log.lines}>
+              {(line) => (
+                <>
+                  {line}
+                  {"\n"}
+                </>
+              )}
+            </For>
           </pre>
           <Show when={state().log.errLines.length > 0}>
             <pre class="tuner-log-err" data-testid="tuner-log-err">
-              <For each={state().log.errLines}>{(line) => <>{line}{"\n"}</>}</For>
+              <For each={state().log.errLines}>
+                {(line) => (
+                  <>
+                    {line}
+                    {"\n"}
+                  </>
+                )}
+              </For>
             </pre>
           </Show>
         </section>

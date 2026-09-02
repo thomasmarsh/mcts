@@ -14,23 +14,19 @@
 // different run or re-initialising invalidates whatever is still in flight.
 
 import { Effect } from "@mcts/core";
-import {
-  idle,
-  toErr,
-  toLoading,
-  toOk,
-  peek,
-  type RemoteData,
-} from "./remote-data.js";
+import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
 import { JOURNAL_POLL_MS, journalPollDelayMs } from "./tuner-poll.js";
 import type { TunerEnv } from "./tuner-env.js";
 import type {
+  ProjectionCandidate,
+  ProjectionRunDetail,
   ProjectionRunListItem,
+  ProjectionValidation,
   TunerLaunchRequest,
   TunerObjectiveFile,
   TunerRunView,
 } from "./tuner-types.js";
-import type { TunerGameInfo } from "../types.js";
+import type { JsonValue, TunerGameInfo } from "../types.js";
 
 /** Fixed cadence for the open run's launch-log tail. */
 export const LOG_TAIL_MS = 3_000;
@@ -63,6 +59,16 @@ export interface TunerState {
   launch: TunerLaunchState;
   /** null → fleet dashboard; a run id → that run's overview. */
   openRunId: string | null;
+  /** Per-run projection resources for the open run's overview / drawer.
+   * Reloaded (under a fresh `resourceGeneration`) whenever the open run
+   * changes or a `projection/refresh` completes. */
+  projectionDetail: RemoteData<ProjectionRunDetail>;
+  validation: RemoteData<ProjectionValidation>;
+  candidates: RemoteData<ProjectionCandidate[]>;
+  report: RemoteData<JsonValue>;
+  /** `?candidate=<cid>` — the candidate drawer's subject, or null. */
+  openCandidateId: string | null;
+  resourceGeneration: number;
   log: TunerLogTailState;
   stopError: string | null;
   /** true while a manual `projection/refresh` POST is in flight. */
@@ -81,6 +87,12 @@ export function initialTunerState(): TunerState {
     objectives: idle(),
     launch: { status: "idle", error: null, lastRunId: null },
     openRunId: null,
+    projectionDetail: idle(),
+    validation: idle(),
+    candidates: idle(),
+    report: idle(),
+    openCandidateId: null,
+    resourceGeneration: 0,
     log: { lines: [], errLines: [], offset: 0, error: null, active: false },
     stopError: null,
     refreshing: false,
@@ -110,6 +122,17 @@ export type TunerAction =
   | { tag: "launchFailed"; error: string }
   | { tag: "openRun"; runId: string }
   | { tag: "closeRun" }
+  | { tag: "loadRunResources"; runId: string }
+  | { tag: "detailLoaded"; generation: number; detail: ProjectionRunDetail }
+  | { tag: "detailFailed"; generation: number; error: string }
+  | { tag: "validationLoaded"; generation: number; validation: ProjectionValidation }
+  | { tag: "validationFailed"; generation: number; error: string }
+  | { tag: "candidatesLoaded"; generation: number; candidates: ProjectionCandidate[] }
+  | { tag: "candidatesFailed"; generation: number; error: string }
+  | { tag: "reportLoaded"; generation: number; report: JsonValue }
+  | { tag: "reportFailed"; generation: number; error: string }
+  | { tag: "openCandidate"; candidateId: string }
+  | { tag: "closeCandidate" }
   | { tag: "logTick"; generation: number }
   | {
       tag: "logLoaded";
@@ -146,7 +169,12 @@ function fetchProjection(env: TunerEnv): Effect<TunerAction> {
     .catch((e): TunerAction => ({ tag: "projectionFailed", error: String(e) }));
 }
 
-function fetchLog(env: TunerEnv, runId: string, since: number, generation: number): Effect<TunerAction> {
+function fetchLog(
+  env: TunerEnv,
+  runId: string,
+  since: number,
+  generation: number,
+): Effect<TunerAction> {
   return env
     .getRunLog(runId, since)
     .map((log): TunerAction => ({
@@ -157,6 +185,48 @@ function fetchLog(env: TunerEnv, runId: string, since: number, generation: numbe
       nextOffset: log.next_offset,
     }))
     .catch((e): TunerAction => ({ tag: "logFailed", generation, error: String(e) }));
+}
+
+/** Load every per-run projection resource the overview / drawer needs,
+ * tagged with the current `resourceGeneration` so a stale response for a
+ * previously-open run is ignored. */
+function fetchRunResources(env: TunerEnv, runId: string, generation: number): Effect<TunerAction> {
+  return Effect.merge(
+    env
+      .getProjectionRun(runId)
+      .map((detail): TunerAction => ({ tag: "detailLoaded", generation, detail }))
+      .catch((e): TunerAction => ({ tag: "detailFailed", generation, error: String(e) })),
+    env
+      .getProjectionValidation(runId)
+      .map((validation): TunerAction => ({ tag: "validationLoaded", generation, validation }))
+      .catch((e): TunerAction => ({ tag: "validationFailed", generation, error: String(e) })),
+    env
+      .getProjectionCandidates(runId)
+      .map((candidates): TunerAction => ({ tag: "candidatesLoaded", generation, candidates }))
+      .catch((e): TunerAction => ({ tag: "candidatesFailed", generation, error: String(e) })),
+    env
+      .getProjectionReport(runId)
+      .map((report): TunerAction => ({ tag: "reportLoaded", generation, report }))
+      .catch((e): TunerAction => ({ tag: "reportFailed", generation, error: String(e) })),
+  );
+}
+
+function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Effect<TunerAction> {
+  draft.resourceGeneration += 1;
+  draft.projectionDetail = toLoading(draft.projectionDetail);
+  draft.validation = toLoading(draft.validation);
+  draft.candidates = toLoading(draft.candidates);
+  draft.report = toLoading(draft.report);
+  return fetchRunResources(env, runId, draft.resourceGeneration);
+}
+
+function clearResources(draft: TunerState): void {
+  draft.resourceGeneration += 1;
+  draft.projectionDetail = idle();
+  draft.validation = idle();
+  draft.candidates = idle();
+  draft.report = idle();
+  draft.openCandidateId = null;
 }
 
 export function tunerReducer(
@@ -217,7 +287,8 @@ export function tunerReducer(
             });
       // A run just went terminal — pull a fresh projection so the completed
       // list gains its row without waiting for a manual refresh.
-      const refresh = after < before ? Effect.send<TunerAction>({ tag: "refreshProjection" }) : null;
+      const refresh =
+        after < before ? Effect.send<TunerAction>({ tag: "refreshProjection" }) : null;
       if (tick && refresh) return Effect.merge(tick, refresh);
       return tick ?? refresh;
     }
@@ -246,10 +317,14 @@ export function tunerReducer(
         .map((): TunerAction => ({ tag: "refreshDone" }))
         .catch((e): TunerAction => ({ tag: "refreshFailed", error: String(e) }));
     }
-    case "refreshDone":
+    case "refreshDone": {
       draft.refreshing = false;
       draft.lastProjectionRefreshAt = Date.now();
-      return fetchProjection(env);
+      const list = fetchProjection(env);
+      return draft.openRunId
+        ? Effect.merge(list, startResourceLoad(draft, env, draft.openRunId))
+        : list;
+    }
     case "refreshFailed":
       draft.refreshing = false;
       draft.refreshError = action.error;
@@ -278,6 +353,7 @@ export function tunerReducer(
       return Effect.merge(
         Effect.send<TunerAction>({ tag: "logTick", generation: draft.logGeneration }),
         Effect.send<TunerAction>({ tag: "journalTick", generation: draft.journalGeneration }),
+        startResourceLoad(draft, env, action.run.run_id),
       );
     }
     case "launchFailed":
@@ -285,15 +361,67 @@ export function tunerReducer(
       return null;
 
     case "openRun": {
+      const changed = draft.openRunId !== action.runId;
       draft.openRunId = action.runId;
       draft.stopError = null;
       draft.logGeneration += 1;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
-      return Effect.send<TunerAction>({ tag: "logTick", generation: draft.logGeneration });
+      const logTick = Effect.send<TunerAction>({
+        tag: "logTick",
+        generation: draft.logGeneration,
+      });
+      if (!changed) return logTick;
+      draft.openCandidateId = null;
+      return Effect.merge(logTick, startResourceLoad(draft, env, action.runId));
     }
     case "closeRun":
       draft.openRunId = null;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
+      clearResources(draft);
+      return null;
+
+    case "loadRunResources": {
+      if (action.runId !== draft.openRunId) return null;
+      return startResourceLoad(draft, env, action.runId);
+    }
+    case "detailLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.projectionDetail = toOk(action.detail, Date.now());
+      return null;
+    case "detailFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.projectionDetail = toErr(action.error, draft.projectionDetail);
+      return null;
+    case "validationLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.validation = toOk(action.validation, Date.now());
+      return null;
+    case "validationFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.validation = toErr(action.error, draft.validation);
+      return null;
+    case "candidatesLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.candidates = toOk(action.candidates, Date.now());
+      return null;
+    case "candidatesFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.candidates = toErr(action.error, draft.candidates);
+      return null;
+    case "reportLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.report = toOk(action.report, Date.now());
+      return null;
+    case "reportFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.report = toErr(action.error, draft.report);
+      return null;
+
+    case "openCandidate":
+      draft.openCandidateId = action.candidateId;
+      return null;
+    case "closeCandidate":
+      draft.openCandidateId = null;
       return null;
 
     case "logTick": {

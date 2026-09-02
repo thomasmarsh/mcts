@@ -30,12 +30,29 @@ describe("tuner-routes", () => {
     });
   });
 
+  it("carries the candidate drawer query param", () => {
+    expect(parseTunerHash("#/tuner/run/r1/science?candidate=candidate-abc")).toEqual({
+      view: "run",
+      runId: "r1",
+      tab: "science",
+      candidate: "candidate-abc",
+    });
+    expect(parseTunerHash("#/tuner/run/r1?candidate=c1")).toEqual({
+      view: "run",
+      runId: "r1",
+      tab: "overview",
+      candidate: "c1",
+    });
+  });
+
   it("round-trips through tunerHash", () => {
     for (const route of [
       { view: "fleet" as const },
       { view: "launch" as const },
       { view: "run" as const, runId: "r/1", tab: "overview" as const },
       { view: "run" as const, runId: "r1", tab: "evidence" as const },
+      { view: "run" as const, runId: "r1", tab: "overview" as const, candidate: "candidate-x/y" },
+      { view: "run" as const, runId: "r1", tab: "science" as const, candidate: "c2" },
     ]) {
       expect(parseTunerHash(tunerHash(route))).toEqual(route);
     }

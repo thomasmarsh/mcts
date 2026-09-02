@@ -28,6 +28,7 @@ import { parseTunerHash, tunerHash, type TunerRoute } from "./tuner-routes.js";
 import { FleetDashboard } from "./views/FleetDashboard.js";
 import { LaunchForm } from "./views/LaunchForm.js";
 import { RunOverview } from "./views/RunOverview.js";
+import { CandidateDrawer } from "./views/CandidateDrawer.js";
 
 function currentHash(): string {
   return typeof window === "undefined" ? "" : window.location.hash;
@@ -35,11 +36,7 @@ function currentHash(): string {
 
 export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
   const env = props.env ?? createTunerEnv(createTunerApiClient());
-  const store: Store<TunerState, TunerAction> = createStore(
-    initialTunerState(),
-    tunerReducer,
-    env,
-  );
+  const store: Store<TunerState, TunerAction> = createStore(initialTunerState(), tunerReducer, env);
 
   const [hash, setHash] = createSignal(currentHash());
   const route = createMemo(() => parseTunerHash(hash()));
@@ -47,6 +44,7 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
     const r = route();
     return r.view === "run" ? r : null;
   });
+  const drawerCandidate = createMemo(() => runRoute()?.candidate ?? null);
 
   function navigate(next: TunerRoute): void {
     const h = tunerHash(next);
@@ -74,11 +72,26 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
     else store.dispatch({ tag: "closeRun" });
   });
 
+  // Mirror the `?candidate=` param into the reducer so the drawer's subject
+  // is part of app state, not just the URL.
+  let lastCandidate: string | null = null;
+  createEffect(() => {
+    const cid = drawerCandidate();
+    if (cid === lastCandidate) return;
+    lastCandidate = cid;
+    if (cid) store.dispatch({ tag: "openCandidate", candidateId: cid });
+    else store.dispatch({ tag: "closeCandidate" });
+  });
+
   // A successful launch navigates to the new run's overview.
   let navigatedLaunch: string | null = null;
   createEffect(() => {
     const s = store.getState()();
-    if (s.launch.status === "done" && s.launch.lastRunId && s.launch.lastRunId !== navigatedLaunch) {
+    if (
+      s.launch.status === "done" &&
+      s.launch.lastRunId &&
+      s.launch.lastRunId !== navigatedLaunch
+    ) {
       navigatedLaunch = s.launch.lastRunId;
       navigate({ view: "run", runId: s.launch.lastRunId, tab: "overview" });
     }
@@ -100,24 +113,36 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
         </Match>
         <Match when={runRoute()}>
           {(r) => (
-            <Show
-              when={r().tab === "overview"}
-              fallback={
-                <div class="tuner-run-overview">
-                  <button
-                    class="tuner-back"
-                    onClick={() => navigate({ view: "run", runId: r().runId, tab: "overview" })}
-                  >
-                    ← Overview
-                  </button>
-                  <p class="tuner-fleet-empty">
-                    The {r().tab} view is not built yet.
-                  </p>
-                </div>
-              }
+            <div
+              class="tuner-run-pane"
+              classList={{ "tuner-run-pane-drawer": !!drawerCandidate() }}
             >
-              <RunOverview store={store} runId={r().runId} navigate={navigate} />
-            </Show>
+              <Show
+                when={r().tab === "overview"}
+                fallback={
+                  <div class="tuner-run-overview">
+                    <button
+                      class="tuner-back"
+                      onClick={() => navigate({ view: "run", runId: r().runId, tab: "overview" })}
+                    >
+                      ← Overview
+                    </button>
+                    <p class="tuner-fleet-empty">The {r().tab} view is not built yet.</p>
+                  </div>
+                }
+              >
+                <RunOverview store={store} runId={r().runId} navigate={navigate} />
+              </Show>
+              <Show when={drawerCandidate()}>
+                {(cid) => (
+                  <CandidateDrawer
+                    store={store}
+                    candidateId={cid()}
+                    onClose={() => navigate({ view: "run", runId: r().runId, tab: r().tab })}
+                  />
+                )}
+              </Show>
+            </div>
           )}
         </Match>
       </Switch>
