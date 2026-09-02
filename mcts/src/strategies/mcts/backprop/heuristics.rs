@@ -7,7 +7,7 @@ use crate::game::{Game, Transform};
 use rustc_hash::FxHashMap;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn update_amaf<G: Game>(
+pub fn update_amaf<G: Game>(
     parent_id_opt: Option<index::Id>,
     parent_incoming_sym: Transform,
     trace: &[(G::A, usize)],

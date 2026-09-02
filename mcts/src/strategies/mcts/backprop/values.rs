@@ -381,17 +381,17 @@ pub(crate) fn derive_softmax_value<A: crate::game::Action>(
     }
 }
 
-/// Normal-normal conjugate update of a node's *own* observations (its
-/// accumulated `score`/`num_visits`, ignoring any children) into a
-/// posterior `(mean, variance)` -- Tesauro/Rajan/Segal 2010's leaf-node
-/// prior/posterior step, generalized from their 0/1-reward Beta example to
-/// this codebase's real-valued utilities. `prior_variance`/`obs_variance`
-/// are `BayesGaussian`/`BayesNumeric`'s own hyperparameters; the prior mean
-/// is fixed at `0.0`, matching this codebase's symmetric `[-1, 1]` utility
-/// convention. Used both as the posterior for a true leaf (no expanded
-/// children yet) and, inside `numeric_max_of_pdfs`'s caller, as the
-/// per-grid-point PDF an interior node's MAX-of-children combination starts
-/// from for any not-yet-visited child.
+// Normal-normal conjugate update of a node's *own* observations (its
+// accumulated `score`/`num_visits`, ignoring any children) into a
+// posterior `(mean, variance)` -- Tesauro/Rajan/Segal 2010's leaf-node
+// prior/posterior step, generalized from their 0/1-reward Beta example to
+// this codebase's real-valued utilities. `prior_variance`/`obs_variance`
+// are `BayesGaussian`/`BayesNumeric`'s own hyperparameters; the prior mean
+// is fixed at `0.0`, matching this codebase's symmetric `[-1, 1]` utility
+// convention. Used both as the posterior for a true leaf (no expanded
+// children yet) and, inside `numeric_max_of_pdfs`'s caller, as the
+// per-grid-point PDF an interior node's MAX-of-children combination starts
+// from for any not-yet-visited child.
 
 #[cfg(test)]
 mod softmax_tests {

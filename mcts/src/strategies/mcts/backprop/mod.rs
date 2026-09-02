@@ -19,6 +19,7 @@ pub use power_mean::PowerMeanBackprop;
 pub use softmax::SoftmaxBackprop;
 pub use td::TdBackprop;
 
+pub use heuristics::update_amaf;
 pub(crate) use heuristics::*;
 pub(crate) use solver::*;
 pub(crate) use values::*;

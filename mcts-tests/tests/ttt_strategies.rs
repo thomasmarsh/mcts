@@ -675,7 +675,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // sibling's `player_idx` instead inverts the check for any
     // alternating 2-player game.
     use game_ttt::*;
-    use mcts::backprop::{BackpropStrategy, Classic};
+    use mcts::backprop::update_amaf;
     use mcts::node::{ChildArray, Node, NodeState};
 
     type G = TicTacToe;
@@ -701,7 +701,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
 
     // Case 1: O (root's mover, player 1) plays Move(7) later in the
     // simulation -- a genuine AMAF match, should update Move(7)'s edge.
-    Classic.update_amaf::<G>(
+    update_amaf::<G>(
         Some(root_id),
         Transform::IDENTITY,
         &[(Move(7), 1)],
@@ -723,7 +723,7 @@ fn test_update_amaf_matches_by_movers_player_not_childs() {
     // Case 2: X (the *sibling's* mover, not root's) "plays" Move(7)
     // later -- not a valid AMAF match for root's Move(7) option, since X
     // never had the choice to play it from root. Must not update.
-    Classic.update_amaf::<G>(
+    update_amaf::<G>(
         Some(root_id),
         Transform::IDENTITY,
         &[(Move(7), 0)],
