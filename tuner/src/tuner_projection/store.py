@@ -1,0 +1,206 @@
+"""SQLite read-model persistence: DDL application, per-run transactional
+replacement, change-fingerprint bookkeeping, and a canonical dump.
+
+No scientific logic lives here -- the store only writes the frozen row
+dataclasses that ``rows.py`` produces.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
+from .rows import (
+    ActiveEliminationDecisionRow,
+    CandidateRow,
+    CohortRow,
+    ComputePhaseRow,
+    GameRow,
+    ObservationRow,
+    PairRow,
+    ProposalRow,
+    RunManifestRow,
+    RunReportRow,
+    RunRow,
+    ShadowDecisionRow,
+    ValidationRow,
+)
+from .schema import CONTENT_TABLES, DDL, PROJECTION_SCHEMA_VERSION
+
+
+@dataclass(frozen=True, slots=True)
+class ChangeFingerprint:
+    evidence_size: int
+    evidence_mtime_ns: int
+    manifest_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class RunProjection:
+    """Every row a single run contributes, keyed the way the tables are keyed."""
+
+    run: RunRow
+    fingerprint: ChangeFingerprint
+    manifest: RunManifestRow | None
+    report: RunReportRow | None
+    cohorts: Sequence[CohortRow] = ()
+    candidates: Sequence[CandidateRow] = ()
+    proposals: Sequence[ProposalRow] = ()
+    pairs: Sequence[PairRow] = ()
+    games: Sequence[GameRow] = ()
+    observations: Sequence[ObservationRow] = ()
+    shadow_decisions: Sequence[ShadowDecisionRow] = ()
+    active_elimination_decisions: Sequence[ActiveEliminationDecisionRow] = ()
+    validation_rows: Sequence[ValidationRow] = ()
+    compute_phases: Sequence[ComputePhaseRow] = ()
+
+
+_CHILD_TABLES: tuple[str, ...] = (
+    "run_manifest",
+    "run_report",
+    "cohorts",
+    "candidates",
+    "proposals",
+    "pairs",
+    "games",
+    "observations",
+    "shadow_decisions",
+    "active_elimination_decisions",
+    "validation_rows",
+    "compute_phases",
+)
+
+
+class Store:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def fingerprint(self, run_id: str) -> ChangeFingerprint | None:
+        cursor = self._connection.execute(
+            "SELECT evidence_size, evidence_mtime_ns, manifest_fingerprint "
+            "FROM ingest_state WHERE run_id = ?",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return ChangeFingerprint(int(row[0]), int(row[1]), str(row[2]))
+
+    def projected_run_ids(self) -> list[str]:
+        cursor = self._connection.execute("SELECT run_id FROM runs ORDER BY run_id")
+        return [str(item[0]) for item in cursor.fetchall()]
+
+    def delete_run(self, run_id: str) -> None:
+        with self._connection:
+            for table in (*_CHILD_TABLES, "runs", "ingest_state"):
+                self._connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+
+    def replace_run(self, projection: RunProjection) -> None:
+        run_id = projection.run.run_id
+        with self._connection:
+            for table in (*_CHILD_TABLES, "runs", "ingest_state"):
+                self._connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+            _insert(self._connection, "runs", [projection.run])
+            manifest = [projection.manifest] if projection.manifest is not None else []
+            report = [projection.report] if projection.report is not None else []
+            _insert(self._connection, "run_manifest", manifest)
+            _insert(self._connection, "run_report", report)
+            _insert(self._connection, "cohorts", projection.cohorts)
+            _insert(self._connection, "candidates", projection.candidates)
+            _insert(self._connection, "proposals", projection.proposals)
+            _insert(self._connection, "pairs", projection.pairs)
+            _insert(self._connection, "games", projection.games)
+            _insert(self._connection, "observations", projection.observations)
+            _insert(self._connection, "shadow_decisions", projection.shadow_decisions)
+            _insert(
+                self._connection,
+                "active_elimination_decisions",
+                projection.active_elimination_decisions,
+            )
+            _insert(self._connection, "validation_rows", projection.validation_rows)
+            _insert(self._connection, "compute_phases", projection.compute_phases)
+            self._connection.execute(
+                "INSERT INTO ingest_state VALUES (?, ?, ?, ?)",
+                (
+                    run_id,
+                    projection.fingerprint.evidence_size,
+                    projection.fingerprint.evidence_mtime_ns,
+                    projection.fingerprint.manifest_fingerprint,
+                ),
+            )
+
+    def vacuum(self) -> None:
+        self._connection.execute("VACUUM")
+
+    def canonical_dump(self) -> str:
+        lines: list[str] = []
+        for table in CONTENT_TABLES:
+            columns = _column_names(self._connection, table)
+            order = ", ".join(str(index + 1) for index in range(len(columns)))
+            cursor = self._connection.execute(f"SELECT * FROM {table} ORDER BY {order}")
+            for row in cursor.fetchall():
+                rendered = ", ".join(_render(value) for value in row)
+                lines.append(f"{table}({', '.join(columns)}): {rendered}")
+        return "\n".join(lines) + "\n"
+
+
+def _column_names(connection: sqlite3.Connection, table: str) -> list[str]:
+    cursor = connection.execute(f"PRAGMA table_info({table})")
+    return [str(item[1]) for item in cursor.fetchall()]
+
+
+def _render(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, str):
+        return repr(value)
+    if isinstance(value, float):
+        return repr(value)
+    if isinstance(value, int):
+        return str(value)
+    raise TypeError(f"unexpected column type: {type(value)!r}")
+
+
+def _insert(connection: sqlite3.Connection, table: str, rows: Sequence[object]) -> None:
+    if not rows:
+        return
+    columns = _column_names(connection, table)
+    placeholders = ", ".join("?" for _ in columns)
+    payload = [tuple(_field(row, column) for column in columns) for row in rows]
+    connection.executemany(f"INSERT INTO {table} VALUES ({placeholders})", payload)
+
+
+def _field(row: object, name: str) -> str | int | float | None:
+    value = getattr(row, name)
+    if value is None or isinstance(value, (str, int, float)):
+        return value
+    raise TypeError(f"row field {name!r} is not a SQLite scalar: {type(value)!r}")
+
+
+def open_store(db_path: Path) -> Store:
+    fresh = not db_path.exists()
+    connection = sqlite3.connect(db_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    if fresh:
+        connection.executescript(DDL)
+        connection.execute(
+            "INSERT INTO projection_meta VALUES ('projection_schema_version', ?)",
+            (str(PROJECTION_SCHEMA_VERSION),),
+        )
+        connection.commit()
+    _check_schema_version(connection)
+    return Store(connection)
+
+
+def _check_schema_version(connection: sqlite3.Connection) -> None:
+    cursor = connection.execute(
+        "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
+    )
+    row = cursor.fetchone()
+    if row is None or int(row[0]) != PROJECTION_SCHEMA_VERSION:
+        raise ValueError("projection database has an incompatible schema version")

@@ -10,6 +10,7 @@ tuner = "tuner_cli.__main__:main"
 tuner-proposer-bakeoff = "tuner_cli.proposer_bakeoff_main:main"
 tuner-elimination-bakeoff = "tuner_cli.elimination_bakeoff_main:main"
 tuner-mechanism = "tuner_cli.mechanism_main:main"
+tuner-project = "tuner_projection.__main__:main"
 
 [dependency-groups]
 dev = [

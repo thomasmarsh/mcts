@@ -4,7 +4,11 @@ import ast
 import re
 from pathlib import Path
 
-SOURCE = Path(__file__).parents[1] / "src" / "tuner_cli"
+_SRC = Path(__file__).parents[1] / "src"
+SOURCE = _SRC / "tuner_cli"
+# The projection package is held to the same public-seam, annotation, and
+# line-count discipline as the core tuner modules.
+PROJECTION_SOURCE = _SRC / "tuner_projection"
 
 # Roughly this many logical statements is the hard split point for a single
 # function (see the session hardening contract). Nested definitions are counted
@@ -13,7 +17,7 @@ MAX_LOGICAL_LINES = 40
 
 
 def _modules() -> tuple[Path, ...]:
-    return tuple(sorted(SOURCE.glob("*.py")))
+    return tuple(sorted([*SOURCE.glob("*.py"), *PROJECTION_SOURCE.glob("*.py")]))
 
 
 def _functions(tree: ast.AST) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
