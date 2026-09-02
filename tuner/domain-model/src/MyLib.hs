@@ -1,8 +1,10 @@
 module MyLib (module X) where
 
+import Json as X
 import Identity as X
 import Effort as X
 import ConfigSpace as X
+import Schema as X
 import FamilyExclusions as X
 import Deployment as X
 import Statistics as X
@@ -10,13 +12,21 @@ import Evaluation as X
 import Candidate as X
 import Evidence as X
 import Observations as X
+import Selection as X
 import Proposal as X
 import Tasks as X
 import Shadow as X
 import Elimination as X
+import ActiveElimination as X
 import Diagnostic as X
+import DiagnosticMatchmaking as X
 import Racing as X
 import Allocation as X
 import Ranking as X
 import Artifacts as X
 import EventPayloads as X
+import ShadowAudit as X
+import OpponentInteractions as X
+import Target as X
+import Bakeoff as X
+import Mechanism as X

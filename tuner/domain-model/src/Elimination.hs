@@ -1,16 +1,39 @@
 module Elimination where
 
-import Shadow (ShadowRaceDecision)
-
 -- | An active elimination action: prune a candidate or audit-continue it.
 data EliminationAction = Prune | AuditContinue
   deriving (Eq, Show)
 
--- | A single candidate elimination action with decision margin.
+-- | Paired-bootstrap elimination margin: the confidence shortfall at the cut.
+data PairedProbabilityMargin = PairedProbabilityMargin
+  { ppmEliminationProbabilityThreshold :: Double
+  , ppmFavorableProbability            :: Double
+  , ppmThresholdMinusProbability       :: Double
+  }
+  deriving (Eq, Show)
+
+-- | Rank-cut elimination margin: how far below the survivor cutoff a candidate
+-- fell. ``shrmRanksBelowCutoff`` is a positive one-based distance; ``shrmSparedCount``
+-- is the number of near-tie candidates carried past the cut on the same look.
+data SuccessiveHalvingRankMargin = SuccessiveHalvingRankMargin
+  { shrmRank                :: Int
+  , shrmTargetSurvivorCount :: Int
+  , shrmRanksBelowCutoff    :: Int
+  , shrmSparedCount         :: Int
+  }
+  deriving (Eq, Show)
+
+-- | The typed elimination decision margin carried on an enforced action.
+data EliminationDecisionMargin
+  = PairedProbabilityMarginElim PairedProbabilityMargin
+  | SuccessiveHalvingRankMarginElim SuccessiveHalvingRankMargin
+  deriving (Eq, Show)
+
+-- | A single candidate elimination action with its decision margin.
 data CandidateEliminationAction = CandidateEliminationAction
-  { ceaCandidateId   :: String
-  , ceaAction        :: EliminationAction
-  , ceaDecisionMargin :: Double
+  { ceaCandidateId :: String
+  , ceaAction      :: EliminationAction
+  , ceaMargin      :: EliminationDecisionMargin
   }
   deriving (Eq, Show)
 
@@ -24,10 +47,10 @@ data ApplyElimination = ApplyElimination
 
 -- | A suspension of active elimination after a boundary reversal.
 data SuspendActiveElimination = SuspendActiveElimination
-  { saeAfterCohortIndex       :: Int
-  , saeTriggeringCandidateIds  :: [String]
+  { saeAfterCohortIndex      :: Int
+  , saeTriggeringCandidateIds :: [String]
   , saeTriggeringPrefixIds    :: [String]
-  , saeSafeyRuleVersion       :: String
+  , saeSafetyRuleVersion      :: String
   }
   deriving (Eq, Show)
 
@@ -41,11 +64,3 @@ data AuditedBoundaryReversal = AuditedBoundaryReversal
   , abrMaximumPrefixPairedMeanDifference :: Double
   }
   deriving (Eq, Show)
-
--- | Determine active elimination from a shadow race with audit sampling.
-activeEliminationAllocation :: ShadowRaceDecision -> Double -> ApplyElimination
-activeEliminationAllocation = undefined
-
--- | Find completed-cohort audit continuations that reach the boundary.
-auditedBoundaryReversals :: [ApplyElimination] -> [ShadowRaceDecision] -> [AuditedBoundaryReversal]
-auditedBoundaryReversals = undefined

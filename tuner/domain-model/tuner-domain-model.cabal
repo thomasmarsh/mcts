@@ -12,9 +12,11 @@ library
     import:           warnings
     exposed-modules:
         MyLib,
+        Json,
         Identity,
         Effort,
         ConfigSpace,
+        Schema,
         FamilyExclusions,
         Deployment,
         Statistics,
@@ -22,16 +24,24 @@ library
         Candidate,
         Evidence,
         Observations,
+        Selection,
         Proposal,
         Tasks,
         Shadow,
         Elimination,
+        ActiveElimination,
         Diagnostic,
+        DiagnosticMatchmaking,
         Racing,
         Allocation,
         Ranking,
         Artifacts,
-        EventPayloads
+        EventPayloads,
+        ShadowAudit,
+        OpponentInteractions,
+        Target,
+        Bakeoff,
+        Mechanism
     build-depends:    base ^>=4.20.2.0
     hs-source-dirs:   src
     default-language: GHC2024

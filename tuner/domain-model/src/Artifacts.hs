@@ -4,43 +4,51 @@ import Candidate (ProposalSource)
 import Deployment (ObjectiveEpoch, OpponentPanel)
 import Effort (SearchEffort)
 import Evaluation (TaskCorpus, TaskPrefix)
+import Json (JsonValue)
 import Proposal (ProposerPolicy)
 import Racing (ComputeBudget)
+import Schema (GameSpec)
+import Shadow (ShadowMethodVersion, ShadowPolicyKind)
 
 -- | A proposer specification: frozen policy parameters.
 data ProposerSpecification = ProposerSpecification
-  { psPolicy                  :: ProposerPolicy
-  , psProposalSeed            :: Int
-  , psTaskSeed                :: Int
-  , psCohortSize              :: Int
-  , psFinalists               :: Int
-  , psBootstrapCandidates     :: Int
-  , psRandomReserveCandidates :: Int
-  , psSourceSchedule          :: [ProposalSource]
+  { psPolicy                   :: ProposerPolicy
+  , psProposalSeed             :: Int
+  , psTaskSeed                 :: Int
+  , psCohortSize               :: Int
+  , psFinalists                :: Int
+  , psBootstrapCandidates      :: Int
+  , psRandomReserveCandidates  :: Int
+  , psSourceSchedule           :: [ProposalSource]
   , psChallengerSourceSchedule :: [ProposalSource]
-  , psBootstrapSeed           :: Int
-  , psReserveSeed             :: Int
+  , psBootstrapSeed            :: Int
+  , psReserveSeed              :: Int
+  , psRuntimeVersions          :: [(String, String)]
   , psExcludedFamilies         :: [String]
   }
   deriving (Eq, Show)
 
 -- | Shadow policy specification: paired bootstrap variant.
 data PairedBootstrapPolicySpec = PairedBootstrapPolicySpec
-  { pbpPracticalEffectMargin          :: Double
+  { pbpKind                         :: ShadowPolicyKind
+  , pbpPracticalEffectMargin        :: Double
   , pbpEliminationProbabilityThreshold :: Double
-  , pbpResamples                      :: Int
-  , pbpMethodVersion                  :: String
-  , pbpMinimumEligiblePrefixPairs      :: Int
+  , pbpResamples                    :: Int
+  , pbpMethodVersion                :: ShadowMethodVersion
+  , pbpMinimumEligiblePrefixPairs   :: Int
   }
   deriving (Eq, Show)
 
 -- | Shadow policy specification: successive halving variant.
 data SuccessiveHalvingPolicySpec = SuccessiveHalvingPolicySpec
-  { shpReductionFactor             :: Int
-  , shpPracticalEffectMargin       :: Double
-  , shpMinimumEligiblePrefixPairs   :: Int
-  , shpSurvivorFloor               :: Int
-  , shpMethodVersion               :: String
+  { shpKind                       :: ShadowPolicyKind
+  , shpMethodVersion              :: ShadowMethodVersion
+  , shpReductionFactor            :: Int
+  , shpPracticalEffectMargin      :: Double
+  , shpMinimumEligiblePrefixPairs :: Int
+  , shpSurvivorFloor              :: Int
+  , shpRankingRule                :: String
+  , shpSpareMargin                :: Double
   }
   deriving (Eq, Show)
 
@@ -50,45 +58,74 @@ data ShadowPolicySpec
   | SuccessiveHalvingPolicy SuccessiveHalvingPolicySpec
   deriving (Eq, Show)
 
--- | Active elimination specification.
-data ActiveEliminationSpec = ActiveEliminationSpec
-  { aesAuditProbability :: Double
-  , aesSamplerVersion   :: String
-  , aesSafeyRuleVersion  :: String
-  }
-  deriving (Eq, Show)
-
 -- | Candidate failure policy specification.
 data CandidateFailurePolicySpec = CandidateFailurePolicySpec
   { cfpsMaxPairAttempts :: Int
+  , cfpsPolicyVersion   :: String
+  }
+  deriving (Eq, Show)
+
+-- | Active elimination specification.
+data ActiveEliminationSpec = ActiveEliminationSpec
+  { aesAuditProbability    :: Double
+  , aesShadowPolicyKind    :: ShadowPolicyKind
+  , aesShadowMethodVersion :: ShadowMethodVersion
+  , aesShadowSpareMargin   :: Double
+  , aesSamplerVersion      :: String
+  , aesSafetyRuleVersion   :: String
   }
   deriving (Eq, Show)
 
 -- | Diagnostic policy specification.
 data DiagnosticPolicySpec = DiagnosticPolicySpec
-  { dpsMaximumReserveSlots :: Int
+  { dpsMaximumReserveSlots  :: Int
+  , dpsEdgePolicyVersion    :: String
+  , dpsSeedPolicyVersion    :: String
+  , dpsGraphRuleVersion     :: String
+  , dpsShortlistRuleVersion :: String
   }
   deriving (Eq, Show)
 
 -- | The frozen manifest: everything needed to reproduce a tuning run.
 data Manifest = Manifest
   { mFingerprint                :: String
-  , mRunId                      :: String
-  , mEpoch                      :: ObjectiveEpoch
+  , mSpec                       :: GameSpec
+  , mObjectiveSourcePath        :: String  -- filesystem path
+  , mObjectiveId                :: String
+  , mObjectiveFingerprint       :: String
   , mPanel                      :: OpponentPanel
-  , mTuningCorpus                :: TaskCorpus
-  , mProductionValidationCorpus  :: TaskCorpus
+  , mTuningCorpus               :: TaskCorpus
+  , mProductionValidationCorpus :: TaskCorpus
   , mTuningPrefix               :: TaskPrefix
-  , mTuningBlocks                :: [TaskPrefix]
-  , mValidationPrefix            :: TaskPrefix
-  , mEffortValues                :: (SearchEffort, SearchEffort, SearchEffort)
-  , mComputeBudget               :: ComputeBudget
-  , mProposerSpec                :: ProposerSpecification
-  , mShadowPolicy                :: ShadowPolicySpec
-  , mCandidateFailurePolicy       :: CandidateFailurePolicySpec
-  , mActiveElimination            :: Maybe ActiveEliminationSpec
-  , mDiagnosticPolicy             :: DiagnosticPolicySpec
-  , mGameConfigFingerprint        :: String
-  , mObjectiveFingerprint         :: String
+  , mTuningBlocks               :: [TaskPrefix]
+  , mValidationPrefix           :: TaskPrefix
+  , mEpoch                      :: ObjectiveEpoch
+  , mProposerSpec               :: ProposerSpecification
+  , mRunId                      :: String
+  , mGameConfigFingerprint      :: String
+  , mEffortValues               :: (SearchEffort, SearchEffort, SearchEffort)
+  , mComputeBudget              :: ComputeBudget
+  , mShadowPolicy               :: ShadowPolicySpec
+  , mCandidateFailurePolicy     :: CandidateFailurePolicySpec
+  , mActiveElimination          :: Maybe ActiveEliminationSpec
+  , mDiagnosticPolicy           :: DiagnosticPolicySpec
   }
   deriving (Eq, Show)
+
+-- | Build and fingerprint a manifest from resolved inputs.
+buildManifest :: Manifest
+buildManifest = undefined
+
+-- | Strictly decode a manifest transport object.
+decodeManifestObject :: JsonValue -> Manifest
+decodeManifestObject = undefined
+
+-- | Return the frozen transport representation at the publishing boundary.
+manifestJson :: Manifest -> JsonValue
+manifestJson = undefined
+
+-- | Classify the validation evidence as a production claim or a mechanics smoke
+-- test, listing any missing production axes.
+productionClaim
+  :: TaskPrefix -> TaskCorpus -> SearchEffort -> SearchEffort -> (String, [String])
+productionClaim = undefined

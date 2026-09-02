@@ -1,6 +1,7 @@
 module Candidate where
 
 import ConfigSpace (CanonicalConfig)
+import Effort (SearchEffort)
 
 -- | An immutable canonical configuration. Re-evaluating at another seed or
 -- fidelity adds evidence to the same candidate.
@@ -19,7 +20,7 @@ data ProposalSource
   | RandomReserve
   | RandomSearch
   | QmcSearch
-  | IraqeModel
+  | IraceModel
   deriving (Eq, Show)
 
 -- | Provenance of a proposed candidate.
@@ -41,7 +42,7 @@ data ObservationFrontier = ObservationFrontier
   , ofObjectiveEpochId   :: String
   , ofPrefixId           :: String
   , ofTaskIds            :: [String]
-  , ofSearchEffort       :: String  -- encoded effort
+  , ofSearchEffort       :: SearchEffort
   , ofObservationIds     :: [String]
   }
   deriving (Eq, Show)

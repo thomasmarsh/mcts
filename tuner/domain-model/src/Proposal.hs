@@ -2,7 +2,7 @@ module Proposal where
 
 import Candidate (Candidate, ObservationFrontier, ProposalSource)
 import Effort (SearchEffort)
-import Evidence (Observation)
+import Evidence (Observation, ObservationContext)
 
 -- | A model observation: a candidate with its reference and cost.
 data ModelObservation = ModelObservation
@@ -77,8 +77,8 @@ challengerSourceSchedule = undefined
 derivedSeed :: Int -> String -> Int -> Int
 derivedSeed = undefined
 
--- | Build an empty observation frontier.
-emptyFrontier :: String -> String -> String -> [String] -> SearchEffort -> ObservationFrontier
+-- | Build an empty observation frontier for a context.
+emptyFrontier :: ObservationContext -> ObservationFrontier
 emptyFrontier = undefined
 
 -- | Build a tuning frontier from completed comparable observations.

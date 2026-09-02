@@ -1,6 +1,6 @@
 module Racing where
 
-import Candidate (Candidate, CandidateFailure, PairAttemptFacts, Proposal)
+import Candidate (Candidate, CandidateFailure, PairAttemptFacts, Proposal, ProposalDisposition)
 import Diagnostic (EvaluateDiagnosticPair)
 import Elimination (ApplyElimination, SuspendActiveElimination)
 import Evaluation (PairResult, DiagnosticPairResult, PairTask, Phase)
@@ -63,7 +63,7 @@ data ResourceAllocation
 -- and compute usage accumulated since the tuner started.
 data ReplayState = ReplayState
   { rsProposals                  :: [Proposal]
-  , rsDispositions               :: [(Int, Bool)]  -- (proposalIndex, accepted)
+  , rsDispositions               :: [(Int, ProposalDisposition)]
   , rsCompletedCohorts           :: [CohortRecord]
   , rsActiveElites               :: [Candidate]
   , rsCompletedPairs             :: [PairResult]
@@ -102,7 +102,3 @@ data AllocationDecision
   | CompleteRun
   | NoDecision
   deriving (Eq, Show)
-
--- | Selection: pick top candidates by mean observed utility.
-selectTopCandidates :: [Candidate] -> [Observation] -> Int -> [Candidate]
-selectTopCandidates = undefined

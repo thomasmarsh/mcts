@@ -2,6 +2,14 @@ module Shadow where
 
 import Evaluation (TaskPrefix)
 
+-- | The frozen set of shadow-race method versions.
+data ShadowMethodVersion
+  = StratifiedPairedBootstrapV1
+  | StratifiedPairedBootstrapAllStrataV2
+  | SuccessiveHalvingCommonPrefixEta2V1
+  | SuccessiveHalvingSpareNearTieV1
+  deriving (Eq, Show)
+
 -- | Disposition of a candidate in a shadow race decision.
 data ShadowDisposition = Continue | Eliminate | Protected
   deriving (Eq, Show)
@@ -49,7 +57,7 @@ data ShadowRaceDecision = ShadowRaceDecision
   , srdBoundaryCandidateId :: String
   , srdDecisions           :: [ShadowCandidateDecision]
   , srdPolicyKind          :: ShadowPolicyKind
-  , srdPolicyVersion       :: String
+  , srdPolicyVersion       :: ShadowMethodVersion
   }
   deriving (Eq, Show)
 

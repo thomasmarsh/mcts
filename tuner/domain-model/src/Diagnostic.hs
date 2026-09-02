@@ -2,17 +2,16 @@ module Diagnostic where
 
 import Candidate (Candidate)
 import Evaluation (DiagnosticPairTask, DiagnosticPairResult)
-import Evidence (Observation)
 import Statistics (Estimate)
 
 -- | A directed edge in the diagnostic matchup graph.
 data DiagnosticEdge = DiagnosticEdge
-  { deEdgeId             :: String
-  , deLeftCandidateId    :: String
-  , deRightCandidateId   :: String
-  , dePairResults        :: [DiagnosticPairResult]
-  , deEstimate           :: Maybe Estimate
-  , deMaterialDirection  :: Maybe String  -- "left_to_right" | "right_to_left" | Nothing
+  { deEdgeId            :: String
+  , deLeftCandidateId   :: String
+  , deRightCandidateId  :: String
+  , dePairResults       :: [DiagnosticPairResult]
+  , deEstimate          :: Maybe Estimate
+  , deMaterialDirection :: Maybe String  -- "left_to_right" | "right_to_left" | Nothing
   }
   deriving (Eq, Show)
 
@@ -55,18 +54,3 @@ data EvaluateDiagnosticPair = EvaluateDiagnosticPair
   , edpTask        :: DiagnosticPairTask
   }
   deriving (Eq, Show)
-
--- | Find the next diagnostic pair to allocate.
-nextDiagnosticAllocation
-  :: [Candidate]
-  -> [DiagnosticPairResult]
-  -> Int  -- diagnostic budget remaining
-  -> Int  -- finalist count
-  -> Maybe EvaluateDiagnosticPair
-nextDiagnosticAllocation = undefined
-
--- | Select validation shortlist accounting for non-transitive cycles.
-selectValidationShortlist
-  :: [Candidate] -> [Observation] -> Int -> DiagnosticGraph
-  -> ([Candidate], Maybe String, Maybe String)
-selectValidationShortlist = undefined

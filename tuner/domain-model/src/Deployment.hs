@@ -1,5 +1,6 @@
 module Deployment where
 
+import Candidate (Candidate)
 import Effort (SearchEffort)
 
 -- | Role of an opponent in the panel.
@@ -40,10 +41,12 @@ data ObjectiveEpoch = ObjectiveEpoch
 
 -- | A deployment case: everything needed to reproduce one comparison.
 data DeploymentCase = DeploymentCase
-  { dcGameConfig     :: String  -- canonical JSON game config
-  , dcOpening        :: String  -- starting position/opening prefix
-  , dcOpponentConfig :: String  -- opponent's canonical config
-  , dcSeed           :: Int
+  { dcGameConfig        :: String  -- canonical JSON game config
+  , dcOpening           :: String  -- starting position/opening prefix
+  , dcOpponentConfig    :: String  -- opponent's canonical config
+  , dcSeed              :: Int
+  , dcRules             :: String  -- rule set fingerprint/identity
+  , dcAdjudicationPolicy :: String -- adjudication policy fingerprint/identity
   }
   deriving (Eq, Show)
 
@@ -56,7 +59,24 @@ data DeploymentDistribution = DeploymentDistribution
 
 -- | A declared optimization objective.
 data TuningObjective = TuningObjective
-  { objEpoch            :: ObjectiveEpoch
-  , objProductionBudget :: SearchEffort
+  { objEpoch                  :: ObjectiveEpoch
+  , objDeploymentDistribution :: DeploymentDistribution
+  , objProductionBudget       :: SearchEffort
   }
   deriving (Eq, Show)
+
+-- | A resolved deployment objective read from a versioned objective file.
+data ResolvedObjective = ResolvedObjective
+  { roObjectiveId                :: String
+  , roGameKind                   :: String
+  , roFingerprint                :: String
+  , roSourcePath                 :: String  -- filesystem path
+  , roPanel                      :: OpponentPanel
+  , roStartDistributionFingerprint :: String
+  }
+  deriving (Eq, Show)
+
+-- | Resolve and freeze a deployment objective against a game kind and the
+-- schema-default candidate.
+resolveObjective :: String -> String -> Candidate -> ResolvedObjective
+resolveObjective = undefined

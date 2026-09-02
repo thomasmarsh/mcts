@@ -1,11 +1,23 @@
 module FamilyExclusions where
 
--- | Frozen named-family exclusion policy. Excluded families must be sorted and
--- duplicate-free, and must not exclude every family.
+import Candidate (Candidate)
+import Schema (TuningSchema)
+
+-- | A family name in the configuration schema.
 type FamilyName = String
 
-validateFamilyExclusions :: [FamilyName] -> [FamilyName] -> Bool
-validateFamilyExclusions _choices _excluded = undefined
+-- | The frozen named-family exclusion policy version.
+familyExclusionPolicyVersion :: String
+familyExclusionPolicyVersion = "named-family-exclusions-v1"
 
-requireCandidateFamilyAllowed :: FamilyName -> [FamilyName] -> Bool
-requireCandidateFamilyAllowed _family _excluded = undefined
+-- | Normalize excluded families: nonempty, trimmed, sorted, duplicate-free.
+normalizeFamilyExclusions :: [FamilyName] -> [FamilyName]
+normalizeFamilyExclusions = undefined
+
+-- | Validate excluded families against a tuning schema.
+validateFamilyExclusions :: TuningSchema -> [FamilyName] -> Either String ()
+validateFamilyExclusions = undefined
+
+-- | Reject a candidate whose family is excluded.
+requireCandidateFamilyAllowed :: Candidate -> [FamilyName] -> Either String ()
+requireCandidateFamilyAllowed = undefined

@@ -11,7 +11,7 @@ weightedSchedule = undefined
 validateCycleEndpoint :: OpponentPanel -> Int -> Bool
 validateCycleEndpoint = undefined
 
--- | Build a task crpus for a phase.
+-- | Build a task corpus for a phase.
 buildCorpus :: Phase -> Int -> Int -> OpponentPanel -> String -> TaskCorpus
 buildCorpus = undefined
 

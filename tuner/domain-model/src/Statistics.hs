@@ -1,5 +1,9 @@
 module Statistics where
 
+-- | The fixed Hoeffding confidence level used across the tuner.
+alpha :: Double
+alpha = 0.05
+
 -- | Game outcome utility: win=1, draw=0.5, loss=0.
 data Utility = Utility Double
   deriving (Eq, Show)
@@ -24,9 +28,14 @@ pairUtility first second = (first + second) / 2.0
 marginalInterval :: [Double] -> Estimate
 marginalInterval = undefined
 
--- | Paired difference interval between two equal-length sequences.
-pairedDifference :: [Double] -> [Double] -> Estimate
-pairedDifference = undefined
+-- | Numeric primitive for paired difference intervals between two
+-- equal-length sequences; contextual callers use 'Observations.pairedDifference'.
+pairedDifferenceValues :: [Double] -> [Double] -> Estimate
+pairedDifferenceValues = undefined
+
+-- | Deterministic percentile bootstrap interval for independent complete runs.
+bootstrapMeanInterval :: [Double] -> Int -> Int -> Estimate
+bootstrapMeanInterval = undefined
 
 -- | Tie relation from a difference estimate.
 data TieRelation = Better | Worse | Tie
