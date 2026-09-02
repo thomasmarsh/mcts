@@ -231,3 +231,63 @@ describe("TunerApp run overview", () => {
     );
   });
 });
+
+const scienceReport = {
+  validation_claim: { claim: "mechanics_smoke", missing_production_axes: [] },
+  limitations: [],
+  unresolved_ties: [],
+  proposal_search: {
+    configured: { bootstrap: 2, model: 2, random_reserve: 2, cohorts: 2, retained_elites: 2 },
+    actual_source_attempts: { schema_default: 1, smac_model: 3 },
+    rejections_by_source: { smac_model: 1 },
+    accepted: [{ source: "schema_default" }, { source: "smac_model" }, { source: "smac_model" }],
+    model_version: "smac-2.4-public-ask-v1",
+    final_observation_count: 4,
+    final_frontier_id: "frontier-deadbeef01234567",
+  },
+  shadow_elimination: {
+    policy: { enforced: false, kind: "paired_bootstrap" },
+    cohorts: [
+      {
+        cohort_index: 0,
+        candidate_paths: [
+          {
+            candidate_id: "candidate-aaaa1111",
+            final_top_set: true,
+            looks: [{ prefix_id: "prefix-p6", disposition: "continue", maximum_mean_difference: 0.5 }],
+          },
+        ],
+      },
+    ],
+  },
+};
+
+describe("TunerApp run science", () => {
+  it("renders the convergence, proposal funnel, and cohort race from the report", async () => {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          ...completedRunEnv(),
+          getProjectionReport: () => Effect.send(scienceReport),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("done-1")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("done-1"));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-overview")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Full science →" }));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-science")).toBeInTheDocument());
+    expect(screen.getByTestId("science-convergence")).toBeInTheDocument();
+    expect(screen.getByTestId("funnel-bars")).toBeInTheDocument();
+    expect(screen.getByTestId("kpi-row")).toHaveTextContent("smac-2.4-public-ask-v1");
+    expect(screen.getByTestId("race-strip")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Show numbers" })[0]!);
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("convergence-numbers")).toBeInTheDocument(),
+    );
+  });
+});

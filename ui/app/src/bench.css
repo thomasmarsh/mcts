@@ -4337,3 +4337,198 @@ body.bench-active #analysis-panel {
   font-size: 0.82rem;
   opacity: 0.8;
 }
+
+/* Run Science — convergence, proposal funnel, cohort race, observations. */
+.tuner-run-science {
+  padding: 12px 0;
+}
+.tuner-science-section {
+  border-top: 1px solid var(--border, #e0e0e0);
+  padding: 12px 0;
+}
+.tuner-science-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  color: inherit;
+}
+.tuner-science-heading h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.tuner-science-caret {
+  opacity: 0.6;
+}
+.tuner-science-caption {
+  font-size: 0.82rem;
+  opacity: 0.75;
+  margin: 6px 0 10px;
+  max-width: 60ch;
+}
+.tuner-science-numbers-toggle {
+  margin-top: 8px;
+  font-size: 0.78rem;
+  background: none;
+  border: 1px solid var(--border, #d0d0d0);
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.tuner-kpi-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 12px;
+}
+.tuner-kpi-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tuner-kpi-tile-value {
+  font-family: ui-monospace, monospace;
+  font-size: 0.9rem;
+}
+.tuner-kpi-tile-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.tuner-funnel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tuner-funnel-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 0.78rem;
+}
+.tuner-funnel-track {
+  position: relative;
+  height: 12px;
+  background: var(--surface-alt, #f0f0f0);
+  border-radius: 3px;
+}
+.tuner-funnel-total {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 12px;
+  background: #b9cfe6;
+  border-radius: 3px;
+}
+.tuner-funnel-filled {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 12px;
+  background: #14508c;
+  border-radius: 3px;
+}
+.tuner-funnel-count {
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+}
+.tuner-funnel-note {
+  opacity: 0.6;
+}
+
+.tuner-stepline {
+  margin-top: 8px;
+  color: #14508c;
+}
+.tuner-stepline-svg {
+  width: 100%;
+  height: 60px;
+  display: block;
+}
+.tuner-stepline-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  color: inherit;
+}
+.tuner-stepline-tick {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.tuner-stepline-val {
+  font-family: ui-monospace, monospace;
+}
+
+.tuner-race-cohort {
+  margin-top: 12px;
+}
+.tuner-race-cohort h4 {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+}
+.tuner-race-wrap {
+  overflow-x: auto;
+}
+.tuner-race {
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+.tuner-race th {
+  font-weight: 500;
+  padding: 2px 6px;
+  text-align: left;
+  opacity: 0.7;
+}
+.tuner-race-rowhead {
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+}
+.tuner-race-rownote {
+  opacity: 0.5;
+}
+.tuner-race td {
+  padding: 2px 4px;
+  text-align: center;
+}
+.tuner-race-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  background: #d0d0d0;
+}
+.tuner-race-cell-continue .tuner-race-dot {
+  background: #b9cfe6;
+}
+.tuner-race-cell-promote .tuner-race-dot {
+  background: #3f9d5a;
+}
+.tuner-race-cell-eliminate .tuner-race-dot {
+  background: #c65b4e;
+}
+.tuner-race-cell-protect .tuner-race-dot {
+  background: #8a7fd0;
+}
+.tuner-race-cell-empty .tuner-race-dot {
+  background: transparent;
+  border: 1px dashed #c0c0c0;
+}
+.tuner-race-row-highlight .tuner-race-rowhead {
+  font-weight: 700;
+}
+.tuner-race-legend {
+  font-size: 0.74rem;
+  opacity: 0.6;
+  margin-top: 6px;
+}

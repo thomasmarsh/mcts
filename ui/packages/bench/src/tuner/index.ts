@@ -4,6 +4,7 @@ export { TunerApp } from "./TunerApp.js";
 export { FleetDashboard } from "./views/FleetDashboard.js";
 export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
 export { RunOverview } from "./views/RunOverview.js";
+export { RunScience } from "./views/RunScience.js";
 export { CandidateDrawer } from "./views/CandidateDrawer.js";
 
 export { RunStatusBadge } from "./primitives/RunStatusBadge.js";
@@ -16,6 +17,10 @@ export { CandidateChip } from "./primitives/CandidateChip.js";
 export { ConfigDiff } from "./primitives/ConfigDiff.js";
 export { ShipVerdict } from "./primitives/ShipVerdict.js";
 export { CopyPresetButton } from "./primitives/CopyPresetButton.js";
+export { StepLine, type StepPoint } from "./primitives/StepLine.js";
+export { FunnelBars, type FunnelRow } from "./primitives/FunnelBars.js";
+export { KpiRow, type KpiItem } from "./primitives/KpiRow.js";
+export { RaceStrip, dispositionClass, type RaceStripRow } from "./primitives/RaceStrip.js";
 
 export {
   deriveVerdict,
@@ -31,6 +36,21 @@ export {
   type ConfigDiffRow,
 } from "./models/config-diff-model.js";
 export { buildPreset, type PresetSpec, type PresetCopyResult } from "./models/preset-copy.js";
+export { deriveProposalFunnel, type ProposalFunnel, type ProposalStage } from "./models/funnel-model.js";
+export {
+  deriveCohortRace,
+  type RaceGraph,
+  type CohortRace,
+  type RaceRow,
+} from "./models/race-model.js";
+export {
+  deriveConvergence,
+  deriveObservations,
+  type Convergence,
+  type ConvergenceStep,
+  type Observations,
+  type ObservationRow,
+} from "./models/science-models.js";
 
 export {
   tunerReducer,

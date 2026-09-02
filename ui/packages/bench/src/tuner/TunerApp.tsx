@@ -28,6 +28,7 @@ import { parseTunerHash, tunerHash, type TunerRoute } from "./tuner-routes.js";
 import { FleetDashboard } from "./views/FleetDashboard.js";
 import { LaunchForm } from "./views/LaunchForm.js";
 import { RunOverview } from "./views/RunOverview.js";
+import { RunScience } from "./views/RunScience.js";
 import { CandidateDrawer } from "./views/CandidateDrawer.js";
 
 function currentHash(): string {
@@ -117,8 +118,7 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
               class="tuner-run-pane"
               classList={{ "tuner-run-pane-drawer": !!drawerCandidate() }}
             >
-              <Show
-                when={r().tab === "overview"}
+              <Switch
                 fallback={
                   <div class="tuner-run-overview">
                     <button
@@ -131,8 +131,13 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
                   </div>
                 }
               >
-                <RunOverview store={store} runId={r().runId} navigate={navigate} />
-              </Show>
+                <Match when={r().tab === "overview"}>
+                  <RunOverview store={store} runId={r().runId} navigate={navigate} />
+                </Match>
+                <Match when={r().tab === "science"}>
+                  <RunScience store={store} runId={r().runId} navigate={navigate} />
+                </Match>
+              </Switch>
               <Show when={drawerCandidate()}>
                 {(cid) => (
                   <CandidateDrawer
