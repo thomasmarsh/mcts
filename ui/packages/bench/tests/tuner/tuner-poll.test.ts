@@ -1,0 +1,28 @@
+import { describe, expect, it } from "vitest";
+import {
+  JOURNAL_POLL_MS,
+  journalPollDelayMs,
+  PROJECTION_REFRESH_MS,
+  projectionRefreshDelayMs,
+} from "../../src/tuner/tuner-poll.js";
+
+describe("tuner-poll", () => {
+  it("polls the journal on a fixed cadence while any run is live", () => {
+    expect(journalPollDelayMs(1)).toBe(JOURNAL_POLL_MS);
+    expect(journalPollDelayMs(4)).toBe(JOURNAL_POLL_MS);
+  });
+
+  it("stops journal polling once every run has exited", () => {
+    expect(journalPollDelayMs(0)).toBeNull();
+  });
+
+  it("auto-refreshes the projection only while the open run is live", () => {
+    expect(projectionRefreshDelayMs("live")).toBe(PROJECTION_REFRESH_MS);
+  });
+
+  it("falls back to manual refresh when the open run is finished or absent", () => {
+    expect(projectionRefreshDelayMs("exited")).toBeNull();
+    expect(projectionRefreshDelayMs("unknown")).toBeNull();
+    expect(projectionRefreshDelayMs("none")).toBeNull();
+  });
+});

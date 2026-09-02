@@ -16,7 +16,7 @@ export default tseslint.config(
   // every reducer/component routes network calls through env.xxx().
   {
     files: ["app/src/**/*.{ts,tsx}", "packages/*/src/**/*.{ts,tsx}"],
-    ignores: ["**/api-client.ts"],
+    ignores: ["**/api-client.ts", "**/tuner-api-client.ts"],
     rules: {
       "no-restricted-globals": [
         "error",
