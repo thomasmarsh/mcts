@@ -3,6 +3,8 @@
 export { TunerApp } from "./TunerApp.js";
 export { FleetDashboard } from "./views/FleetDashboard.js";
 export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
+export { ObjectiveManager } from "./views/ObjectiveManager.js";
+export { ObjectiveEditor } from "./views/ObjectiveEditor.js";
 export { RunOverview } from "./views/RunOverview.js";
 export { RunScience } from "./views/RunScience.js";
 export { RunEvidence } from "./views/RunEvidence.js";

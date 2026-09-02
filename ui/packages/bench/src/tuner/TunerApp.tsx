@@ -27,6 +27,8 @@ import {
 import { parseTunerHash, tunerHash, type TunerRoute } from "./tuner-routes.js";
 import { FleetDashboard } from "./views/FleetDashboard.js";
 import { LaunchForm } from "./views/LaunchForm.js";
+import { ObjectiveManager } from "./views/ObjectiveManager.js";
+import { ObjectiveEditor } from "./views/ObjectiveEditor.js";
 import { RunOverview } from "./views/RunOverview.js";
 import { RunScience } from "./views/RunScience.js";
 import { RunEvidence } from "./views/RunEvidence.js";
@@ -47,6 +49,10 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
     return r.view === "run" ? r : null;
   });
   const drawerCandidate = createMemo(() => runRoute()?.candidate ?? null);
+  const objectiveRoute = createMemo(() => {
+    const r = route();
+    return r.view === "objective" ? r : null;
+  });
 
   function navigate(next: TunerRoute): void {
     const h = tunerHash(next);
@@ -72,6 +78,23 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
     lastOpen = open;
     if (open) store.dispatch({ tag: "openRun", runId: open });
     else store.dispatch({ tag: "closeRun" });
+  });
+
+  // Keep the reducer's open-objective aligned with the route so the editor
+  // loads (and reloads) the right file.
+  let lastObjective: string | null | undefined = undefined;
+  createEffect(() => {
+    const r = objectiveRoute();
+    if (!r) {
+      if (lastObjective !== undefined) {
+        lastObjective = undefined;
+        store.dispatch({ tag: "closeObjective" });
+      }
+      return;
+    }
+    if (r.key === lastObjective) return;
+    lastObjective = r.key;
+    store.dispatch({ tag: "openObjective", key: r.key });
   });
 
   // Mirror the `?candidate=` param into the reducer so the drawer's subject
@@ -112,6 +135,19 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
             </button>
             <LaunchForm store={store} />
           </div>
+        </Match>
+        <Match when={route().view === "objectives"}>
+          <ObjectiveManager store={store} navigate={navigate} />
+        </Match>
+        <Match when={objectiveRoute()}>
+          {(r) => (
+            <ObjectiveEditor
+              store={store}
+              objectiveKey={r().key}
+              game={r().game}
+              navigate={navigate}
+            />
+          )}
         </Match>
         <Match when={runRoute()}>
           {(r) => (

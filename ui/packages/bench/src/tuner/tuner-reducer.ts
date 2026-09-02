@@ -24,7 +24,9 @@ import type {
   ProjectionRunDetail,
   ProjectionRunListItem,
   ProjectionValidation,
+  ObjectiveValidationResult,
   TunerLaunchRequest,
+  TunerObjectiveDetail,
   TunerObjectiveFile,
   TunerRunView,
 } from "./tuner-types.js";
@@ -58,6 +60,15 @@ export interface TunerState {
   projectionRuns: RemoteData<ProjectionRunListItem[]>;
   kinds: RemoteData<TunerGameInfo[]>;
   objectives: RemoteData<TunerObjectiveFile[]>;
+  /** The objective the editor has open (`null` in create mode), keyed so a
+   * stale detail response for a previously-open objective is ignored. */
+  openObjectiveKey: string | null;
+  objectiveDetail: RemoteData<TunerObjectiveDetail>;
+  objectiveSave: { status: "idle" | "pending" | "done" | "error"; error: string | null };
+  objectiveValidation: RemoteData<ObjectiveValidationResult>;
+  /** Key of the objective currently being deleted, or null. */
+  objectiveMutating: string | null;
+  objectiveMutateError: string | null;
   launch: TunerLaunchState;
   /** null → fleet dashboard; a run id → that run's overview. */
   openRunId: string | null;
@@ -95,6 +106,12 @@ export function initialTunerState(): TunerState {
     projectionRuns: idle(),
     kinds: idle(),
     objectives: idle(),
+    openObjectiveKey: null,
+    objectiveDetail: idle(),
+    objectiveSave: { status: "idle", error: null },
+    objectiveValidation: idle(),
+    objectiveMutating: null,
+    objectiveMutateError: null,
     launch: { status: "idle", error: null, lastRunId: null },
     openRunId: null,
     projectionDetail: idle(),
@@ -123,6 +140,19 @@ export type TunerAction =
   | { tag: "kindsFailed"; error: string }
   | { tag: "objectivesLoaded"; objectives: TunerObjectiveFile[] }
   | { tag: "objectivesFailed"; error: string }
+  | { tag: "openObjective"; key: string | null }
+  | { tag: "closeObjective" }
+  | { tag: "objectiveDetailLoaded"; key: string; detail: TunerObjectiveDetail }
+  | { tag: "objectiveDetailFailed"; key: string; error: string }
+  | { tag: "saveObjective"; key: string; content: JsonValue }
+  | { tag: "saveObjectiveOk"; detail: TunerObjectiveDetail }
+  | { tag: "saveObjectiveFailed"; error: string }
+  | { tag: "deleteObjective"; key: string }
+  | { tag: "deleteObjectiveOk" }
+  | { tag: "deleteObjectiveFailed"; error: string }
+  | { tag: "validateObjective"; key: string; content: JsonValue }
+  | { tag: "validateObjectiveOk"; result: ObjectiveValidationResult }
+  | { tag: "validateObjectiveFailed"; error: string }
   | { tag: "journalTick"; generation: number }
   | { tag: "runsLoaded"; runs: TunerRunView[] }
   | { tag: "runsFailed"; error: string }
@@ -179,6 +209,13 @@ function fetchJournal(env: TunerEnv): Effect<TunerAction> {
     .listRuns()
     .map((runs): TunerAction => ({ tag: "runsLoaded", runs }))
     .catch((e): TunerAction => ({ tag: "runsFailed", error: String(e) }));
+}
+
+function fetchObjectives(env: TunerEnv): Effect<TunerAction> {
+  return env
+    .listObjectives()
+    .map((objectives): TunerAction => ({ tag: "objectivesLoaded", objectives }))
+    .catch((e): TunerAction => ({ tag: "objectivesFailed", error: String(e) }));
 }
 
 function fetchProjection(env: TunerEnv): Effect<TunerAction> {
@@ -273,10 +310,7 @@ export function tunerReducer(
           .listKinds()
           .map((kinds): TunerAction => ({ tag: "kindsLoaded", kinds }))
           .catch((e): TunerAction => ({ tag: "kindsFailed", error: String(e) })),
-        env
-          .listObjectives()
-          .map((objectives): TunerAction => ({ tag: "objectivesLoaded", objectives }))
-          .catch((e): TunerAction => ({ tag: "objectivesFailed", error: String(e) })),
+        fetchObjectives(env),
         fetchJournal(env),
         fetchProjection(env),
       );
@@ -293,6 +327,89 @@ export function tunerReducer(
       return null;
     case "objectivesFailed":
       draft.objectives = toErr(action.error, draft.objectives);
+      return null;
+
+    case "openObjective": {
+      draft.openObjectiveKey = action.key;
+      draft.objectiveSave = { status: "idle", error: null };
+      draft.objectiveValidation = idle();
+      draft.objectiveMutateError = null;
+      if (action.key === null) {
+        draft.objectiveDetail = idle();
+        return null;
+      }
+      draft.objectiveDetail = toLoading(draft.objectiveDetail);
+      const key = action.key;
+      return env
+        .getObjective(key)
+        .map((detail): TunerAction => ({ tag: "objectiveDetailLoaded", key, detail }))
+        .catch((e): TunerAction => ({ tag: "objectiveDetailFailed", key, error: String(e) }));
+    }
+    case "closeObjective":
+      draft.openObjectiveKey = null;
+      draft.objectiveDetail = idle();
+      draft.objectiveSave = { status: "idle", error: null };
+      draft.objectiveValidation = idle();
+      draft.objectiveMutateError = null;
+      return null;
+    case "objectiveDetailLoaded":
+      if (action.key !== draft.openObjectiveKey) return null;
+      draft.objectiveDetail = toOk(action.detail, Date.now());
+      return null;
+    case "objectiveDetailFailed":
+      if (action.key !== draft.openObjectiveKey) return null;
+      draft.objectiveDetail = toErr(action.error, draft.objectiveDetail);
+      return null;
+
+    case "saveObjective": {
+      if (draft.objectiveSave.status === "pending") return null;
+      draft.objectiveSave = { status: "pending", error: null };
+      const { key, content } = action;
+      return env
+        .putObjective(key, content)
+        .map((detail): TunerAction => ({ tag: "saveObjectiveOk", detail }))
+        .catch((e): TunerAction => ({ tag: "saveObjectiveFailed", error: String(e) }));
+    }
+    case "saveObjectiveOk":
+      draft.objectiveSave = { status: "done", error: null };
+      draft.openObjectiveKey = action.detail.key;
+      draft.objectiveDetail = toOk(action.detail, Date.now());
+      // Re-list so the manager and launch form reflect the change immediately.
+      return fetchObjectives(env);
+    case "saveObjectiveFailed":
+      draft.objectiveSave = { status: "error", error: action.error };
+      return null;
+
+    case "deleteObjective": {
+      if (draft.objectiveMutating) return null;
+      draft.objectiveMutating = action.key;
+      draft.objectiveMutateError = null;
+      return env
+        .deleteObjective(action.key)
+        .map((): TunerAction => ({ tag: "deleteObjectiveOk" }))
+        .catch((e): TunerAction => ({ tag: "deleteObjectiveFailed", error: String(e) }));
+    }
+    case "deleteObjectiveOk":
+      draft.objectiveMutating = null;
+      return fetchObjectives(env);
+    case "deleteObjectiveFailed":
+      draft.objectiveMutating = null;
+      draft.objectiveMutateError = action.error;
+      return null;
+
+    case "validateObjective": {
+      draft.objectiveValidation = toLoading(draft.objectiveValidation);
+      const { key, content } = action;
+      return env
+        .validateObjective(key, content)
+        .map((result): TunerAction => ({ tag: "validateObjectiveOk", result }))
+        .catch((e): TunerAction => ({ tag: "validateObjectiveFailed", error: String(e) }));
+    }
+    case "validateObjectiveOk":
+      draft.objectiveValidation = toOk(action.result, Date.now());
+      return null;
+    case "validateObjectiveFailed":
+      draft.objectiveValidation = toErr(action.error, draft.objectiveValidation);
       return null;
 
     case "journalTick": {

@@ -41,6 +41,30 @@ export interface TunerObjectiveFile {
   key: string;
   objective_id: string | null;
   game_kind: string | null;
+  /** Number of entries in the objective's opponent panel. */
+  opponent_count: number;
+  /** File mtime, RFC3339; null if the file's metadata could not be read. */
+  updated_at: string | null;
+  /** The same stem is also shipped in the read-only seed corpus. */
+  is_seed: boolean;
+}
+
+/** `GET /api/bench/tuner/objectives/{key}` — the objective JSON verbatim plus
+ * its metadata. */
+export interface TunerObjectiveDetail {
+  key: string;
+  content: JsonValue;
+  updated_at: string | null;
+  is_seed: boolean;
+}
+
+/** `POST /api/bench/tuner/objectives/{key}/validate` and the 400 body shape of
+ * a rejected `PUT` — mirrors the Rust `ObjectiveValidation`. */
+export interface ObjectiveValidationResult {
+  ok: boolean;
+  errors: string[];
+  objective_id?: string;
+  panel_fingerprint?: string;
 }
 
 /** Body of `POST /api/bench/tuner/runs`. The server resolves `game_kind` to

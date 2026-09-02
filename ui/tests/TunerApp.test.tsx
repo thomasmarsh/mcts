@@ -4,7 +4,7 @@
 // `BenchApp.test.tsx` / `GameShell.test.tsx`.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import { cleanup, fireEvent, render, screen, within } from "@solidjs/testing-library";
 import { Effect } from "@mcts/core";
 import { TunerApp } from "@mcts/bench";
 import { mockTunerEnv, runView } from "../packages/bench/tests/tuner/mock-tuner-env.js";
@@ -28,7 +28,16 @@ const kinds = [
     },
   },
 ];
-const objectives = [{ key: "nim-v1", objective_id: "nim-v1", game_kind: "nim" }];
+const objectives = [
+  {
+    key: "nim-v1",
+    objective_id: "nim-v1",
+    game_kind: "nim",
+    opponent_count: 2,
+    updated_at: null,
+    is_seed: false,
+  },
+];
 
 describe("TunerApp fleet", () => {
   it("renders the KPI row and a completed run from the projection", async () => {
@@ -193,6 +202,85 @@ function completedRunEnv() {
       }),
   });
 }
+
+describe("TunerApp objective manager", () => {
+  const objectiveRow = (key: string) => ({
+    key,
+    objective_id: `${key}-id`,
+    game_kind: "nim",
+    opponent_count: 2,
+    updated_at: "2026-09-02T00:00:00Z",
+    is_seed: false,
+  });
+
+  it("lists objectives and removes a row after a confirmed delete", async () => {
+    let corpus = [objectiveRow("nim-v1"), objectiveRow("nim-v2")];
+    const deleteObjective = vi.fn((_key: string) => Effect.send(undefined));
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send(corpus),
+          listRuns: () => Effect.send([]),
+          deleteObjective: (key) => {
+            corpus = corpus.filter((o) => o.key !== key);
+            return deleteObjective(key);
+          },
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-fleet")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Manage objectives" }));
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-manager")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("nim-v1")).toBeInTheDocument();
+    expect(screen.getByText("nim-v2")).toBeInTheDocument();
+
+    const firstRow = screen.getByText("nim-v1").closest("tr")!;
+    fireEvent.click(within(firstRow).getByRole("button", { name: "Delete" }));
+    fireEvent.click(within(firstRow).getByRole("button", { name: "Confirm delete" }));
+
+    await vi.waitFor(() => expect(deleteObjective).toHaveBeenCalledWith("nim-v1"));
+    await vi.waitFor(() => expect(screen.queryByText("nim-v1")).not.toBeInTheDocument());
+    expect(screen.getByText("nim-v2")).toBeInTheDocument();
+  });
+
+  it("opens the editor for an existing objective", async () => {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send([objectiveRow("nim-v1")]),
+          listRuns: () => Effect.send([]),
+          getObjective: () =>
+            Effect.send({
+              key: "nim-v1",
+              content: { schema_version: 1, objective_id: "nim-v1" },
+              updated_at: null,
+              is_seed: false,
+            }),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-fleet")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Manage objectives" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-manager")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("tuner-objective-editor")).toBeInTheDocument(),
+    );
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("objective-editor-raw")).toHaveTextContent("schema_version"),
+    );
+  });
+});
 
 describe("TunerApp run overview", () => {
   it("shows the ship verdict, validation ranking, and caveats for a completed run", async () => {

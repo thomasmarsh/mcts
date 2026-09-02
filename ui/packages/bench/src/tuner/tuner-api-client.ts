@@ -14,8 +14,10 @@ import type {
   ProjectionRunDetail,
   ProjectionRunListItem,
   ProjectionValidation,
+  ObjectiveValidationResult,
   TunerBudgetExtension,
   TunerLaunchRequest,
+  TunerObjectiveDetail,
   TunerObjectiveFile,
   TunerRunLog,
   TunerRunView,
@@ -26,6 +28,10 @@ export interface TunerApiClient {
   // Launch metadata.
   listKinds(): Promise<TunerGameInfo[]>;
   listObjectives(): Promise<TunerObjectiveFile[]>;
+  getObjective(key: string): Promise<TunerObjectiveDetail>;
+  putObjective(key: string, content: JsonValue): Promise<TunerObjectiveDetail>;
+  deleteObjective(key: string): Promise<void>;
+  validateObjective(key: string, content: JsonValue): Promise<ObjectiveValidationResult>;
   // Operational journal.
   listRuns(): Promise<TunerRunView[]>;
   getRun(runId: string): Promise<TunerRunView>;
@@ -81,7 +87,11 @@ async function fetchJson<T>(url: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-async function sendJson<T>(url: string, method: "POST", body?: unknown): Promise<T> {
+async function sendJson<T>(
+  url: string,
+  method: "POST" | "PUT",
+  body?: unknown,
+): Promise<T> {
   const r = await fetch(url, {
     method,
     headers: { "Content-Type": "application/json" },
@@ -89,6 +99,11 @@ async function sendJson<T>(url: string, method: "POST", body?: unknown): Promise
   });
   if (!r.ok) throw new TunerApiError(await errorMessage(r), r.status);
   return r.json() as Promise<T>;
+}
+
+async function sendNoContent(url: string, method: "DELETE"): Promise<void> {
+  const r = await fetch(url, { method });
+  if (!r.ok) throw new TunerApiError(await errorMessage(r), r.status);
 }
 
 function queryString(params: object): string {
@@ -108,9 +123,16 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     `/api/bench/tuner/runs/${encodeURIComponent(runId)}`;
   const projPath = (runId: string): string =>
     `/api/bench/tuner/projection/runs/${encodeURIComponent(runId)}`;
+  const objectivePath = (key: string): string =>
+    `/api/bench/tuner/objectives/${encodeURIComponent(key)}`;
   return {
     listKinds: () => fetchJson(url("/api/bench/tuner/kinds")),
     listObjectives: () => fetchJson(url("/api/bench/tuner/objectives")),
+    getObjective: (key) => fetchJson(url(objectivePath(key))),
+    putObjective: (key, content) => sendJson(url(objectivePath(key)), "PUT", content),
+    deleteObjective: (key) => sendNoContent(url(objectivePath(key)), "DELETE"),
+    validateObjective: (key, content) =>
+      sendJson(url(`${objectivePath(key)}/validate`), "POST", content),
     listRuns: () => fetchJson(url("/api/bench/tuner/runs")),
     getRun: (runId) => fetchJson(url(runPath(runId))),
     launchRun: (body) => sendJson(url("/api/bench/tuner/runs"), "POST", body),

@@ -218,6 +218,80 @@ describe("tunerReducer", () => {
   });
 });
 
+describe("tunerReducer objectives", () => {
+  const file = {
+    key: "nim-v1",
+    objective_id: "nim-v1",
+    game_kind: "nim",
+    opponent_count: 2,
+    updated_at: null,
+    is_seed: false,
+  };
+
+  it("opens an objective and loads its detail", () => {
+    const detail = { key: "nim-v1", content: { schema_version: 1 }, updated_at: null, is_seed: false };
+    const ts = store(mockTunerEnv({ getObjective: () => Effect.send(detail) }));
+    ts.send({ tag: "openObjective", key: "nim-v1" }, (s) => {
+      s.openObjectiveKey = "nim-v1";
+      s.objectiveDetail = { status: "loading" };
+    });
+    ts.receive({ tag: "objectiveDetailLoaded", key: "nim-v1", detail }, (s) => {
+      s.openObjectiveKey = "nim-v1";
+      s.objectiveDetail = ok(detail);
+    });
+  });
+
+  it("saves an objective and re-lists the corpus", () => {
+    const detail = { key: "nim-v1", content: { schema_version: 1 }, updated_at: null, is_seed: false };
+    const ts = store(
+      mockTunerEnv({
+        putObjective: () => Effect.send(detail),
+        listObjectives: () => Effect.send([file]),
+      }),
+    );
+    ts.send({ tag: "saveObjective", key: "nim-v1", content: { schema_version: 1 } }, (s) => {
+      s.objectiveSave = { status: "pending", error: null };
+    });
+    ts.receive({ tag: "saveObjectiveOk", detail }, (s) => {
+      s.objectiveSave = { status: "done", error: null };
+      s.openObjectiveKey = "nim-v1";
+      s.objectiveDetail = ok(detail);
+    });
+    ts.receive({ tag: "objectivesLoaded", objectives: [file] }, (s) => {
+      s.objectives = ok([file]);
+    });
+  });
+
+  it("deletes an objective and re-lists the corpus", () => {
+    const ts = store(
+      mockTunerEnv({
+        deleteObjective: () => Effect.send(undefined),
+        listObjectives: () => Effect.send([]),
+      }),
+    );
+    ts.send({ tag: "deleteObjective", key: "nim-v1" }, (s) => {
+      s.objectiveMutating = "nim-v1";
+    });
+    ts.receive({ tag: "deleteObjectiveOk" }, (s) => {
+      s.objectiveMutating = null;
+    });
+    ts.receive({ tag: "objectivesLoaded", objectives: [] }, (s) => {
+      s.objectives = ok([]);
+    });
+  });
+
+  it("runs a server-side validation dry run", () => {
+    const result = { ok: false, errors: ["exactly one default opponent is required"] };
+    const ts = store(mockTunerEnv({ validateObjective: () => Effect.send(result) }));
+    ts.send({ tag: "validateObjective", key: "nim-v1", content: { schema_version: 1 } }, (s) => {
+      s.objectiveValidation = { status: "loading" };
+    });
+    ts.receive({ tag: "validateObjectiveOk", result }, (s) => {
+      s.objectiveValidation = ok(result);
+    });
+  });
+});
+
 function launchRequest() {
   return {
     game_kind: "nim",
