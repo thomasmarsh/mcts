@@ -7,11 +7,15 @@ mod process;
 mod router;
 mod runs;
 mod traces;
+mod tuner_api;
 mod tuner_runs;
 mod types;
 
 pub use router::bench_router;
-pub use types::{signal_process_group, BenchState, ProcessGroupSignaller};
+pub use tuner_api::shell_refresh;
+pub use types::{
+    signal_process_group, BenchState, ProcessGroupSignaller, ProjectionRefresher,
+};
 
 pub(crate) use runs::*;
 pub(crate) use traces::*;

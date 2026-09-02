@@ -332,6 +332,11 @@ async fn main() {
     // harness communicate via JSONL files and the registry log instead.
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
     let bench_db_path = bench_runs_dir.join("bench.duckdb");
+    // Read-only SQLite projection of version-4 tuner runs. Defaults under the
+    // runs root; `MCTS_TUNER_PROJECTION_DB` overrides it.
+    let tuner_projection_db = std::env::var_os("MCTS_TUNER_PROJECTION_DB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bench_runs_dir.join("tuner-projection.sqlite"));
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
     let bench_state = Arc::new(bench::BenchState {
@@ -342,6 +347,8 @@ async fn main() {
         run_command_repository: bench_adapters.run_command_repository,
         bench_runs_dir,
         process_group_signaller: Arc::new(bench::signal_process_group),
+        tuner_projection_db,
+        tuner_projection_refresh: Arc::new(bench::shell_refresh),
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

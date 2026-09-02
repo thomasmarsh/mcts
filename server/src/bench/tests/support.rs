@@ -42,6 +42,14 @@ use tower::ServiceExt;
 
 pub(super) const DEFAULT_RUN_ID: &str = "rr-druid-20260101T000000-abc1234";
 
+/// The checked-in read-only tuner projection fixture (three runs: `version4`,
+/// `version4-active-halving`, and a garbage-manifest `broken` run). Rebuild it
+/// with `tests/fixtures/regenerate_tuner_projection_fixture.sh`.
+pub(super) fn tuner_projection_fixture() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/bench/tests/fixtures/tuner-projection.sqlite")
+}
+
 pub(super) static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -149,6 +157,11 @@ pub(super) fn seeded_app_with_state_and_signaller(
         run_command_repository: adapters.run_command_repository,
         bench_runs_dir,
         process_group_signaller,
+        tuner_projection_db: tuner_projection_fixture(),
+        // Stub: the endpoint test asserts the handler shapes these counts; the
+        // real projector shell-out is covered by `tuner_api`'s parser unit test
+        // and by code review (see the plan's `refresh_is_only_spawn` claim).
+        tuner_projection_refresh: Arc::new(|_, _| Ok([2, 1, 0, 0])),
     });
 
     (bench_router(state.clone()), tmp_dir, state)

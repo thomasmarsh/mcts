@@ -48,7 +48,20 @@ pub struct BenchState {
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
     pub process_group_signaller: ProcessGroupSignaller,
+    /// Read-only SQLite projection of version-4 tuner runs, served by the
+    /// `tuner_api` handlers. Built and refreshed by the `tuner-project` tool
+    /// (`POST /api/bench/tuner/projection/refresh`).
+    pub tuner_projection_db: PathBuf,
+    /// Runs the projector for `POST /api/bench/tuner/projection/refresh` and
+    /// returns `[projected, skipped, ingest_errors, pruned]`. Production uses
+    /// [`super::tuner_api::shell_refresh`]; tests inject a stub.
+    pub tuner_projection_refresh: ProjectionRefresher,
 }
+
+/// Refreshes the tuner projection out of band: `(bench_runs_dir, projection_db)
+/// -> [projected, skipped, ingest_errors, pruned]`.
+pub type ProjectionRefresher =
+    Arc<dyn Fn(&Path, &Path) -> std::io::Result<[i64; 4]> + Send + Sync>;
 
 #[cfg(test)]
 pub(crate) struct TestDatabase(Option<Arc<Mutex<duckdb::Connection>>>);

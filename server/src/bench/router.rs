@@ -30,6 +30,7 @@ use mcts_bench::supervised_launch::LaunchDescriptor;
 use super::{
     runs::*,
     traces::*,
+    tuner_api,
     tuner_runs::{
         extend_tuner_run, get_tuner_run, launch_tuner_run, list_tuner_runs, stop_tuner_run,
     },
@@ -77,6 +78,45 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route(
             "/api/bench/tuner/runs/{run_id}/extend",
             post(extend_tuner_run).layer(launch_timeout),
+        )
+        // Read-only projection API. The operational journal routes above
+        // answer "is it running / stop it"; these answer "what did it find",
+        // served entirely from the SQLite read model.
+        .route(
+            "/api/bench/tuner/projection/refresh",
+            post(tuner_api::refresh).layer(launch_timeout),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs",
+            get(tuner_api::list_runs),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}",
+            get(tuner_api::run_detail),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/cohorts",
+            get(tuner_api::cohorts),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/candidates",
+            get(tuner_api::candidates),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/candidates/{candidate_id}",
+            get(tuner_api::candidate),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/pairs",
+            get(tuner_api::pairs),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/validation",
+            get(tuner_api::validation),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/report",
+            get(tuner_api::report),
         )
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
