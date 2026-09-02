@@ -31,8 +31,24 @@ use serde::{Deserialize, Serialize};
 /// source of truth rather than duplicating it in Rust.
 #[derive(Clone, Debug, Deserialize)]
 pub struct TunerLaunchRequest {
+    /// Absolute path to the `game-<kind>` binary. The bench server resolves
+    /// this from a `game_kind` key so an API caller never handles a
+    /// filesystem path; a direct caller may still set it.
+    #[serde(default)]
     pub game_binary: PathBuf,
+    /// Absolute path to the frozen-objective JSON. Resolved by the bench
+    /// server from an `objective_key` for the same reason as `game_binary`.
+    #[serde(default)]
     pub objective_file: PathBuf,
+    /// Built-in `game-<kind>` key the bench server resolves into
+    /// `game_binary`. Ignored once `game_binary` is set.
+    #[serde(default)]
+    pub game_kind: Option<String>,
+    /// Objective-file stem the bench server resolves into `objective_file`
+    /// against its configured objectives directory. Ignored once
+    /// `objective_file` is set.
+    #[serde(default)]
+    pub objective_key: Option<String>,
     #[serde(skip_deserializing)]
     pub runs_root: PathBuf,
     pub run_id: String,
@@ -96,6 +112,18 @@ impl TunerLaunchRequest {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "run id must be one safe path segment",
+            ));
+        }
+        if self.game_binary.as_os_str().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "game binary could not be resolved (unknown game_kind?)",
+            ));
+        }
+        if self.objective_file.as_os_str().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "objective file could not be resolved (unknown objective_key?)",
             ));
         }
         for (iterations, time, name) in [
@@ -554,6 +582,8 @@ mod tests {
         TunerLaunchRequest {
             game_binary: "/games/druid".into(),
             objective_file: "/objectives/default.yaml".into(),
+            game_kind: None,
+            objective_key: None,
             runs_root: root.to_owned(),
             run_id: run_id.into(),
             task_seed: 7,

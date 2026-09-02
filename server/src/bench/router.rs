@@ -32,8 +32,8 @@ use super::{
     traces::*,
     tuner_api,
     tuner_runs::{
-        extend_tuner_run, get_tuner_run, get_tuner_run_log, launch_tuner_run, list_tuner_runs,
-        stop_tuner_run,
+        extend_tuner_run, get_tuner_run, get_tuner_run_log, launch_tuner_run,
+        list_tuner_objectives, list_tuner_runs, stop_tuner_run,
     },
     types::*,
 };
@@ -68,6 +68,7 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
 
     Router::new()
         .route("/api/bench/tuner/kinds", get(list_tuner_kinds))
+        .route("/api/bench/tuner/objectives", get(list_tuner_objectives))
         .route(
             "/api/bench/tuner/runs",
             post(launch_tuner_run)

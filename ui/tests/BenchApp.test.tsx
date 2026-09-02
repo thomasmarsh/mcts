@@ -1,5 +1,6 @@
 // tests/BenchApp.test.tsx — Component-level regression tests for the bench UI
-// (LaunchForm, RunList, RunDetailPanel).
+// (RunList, RunDetailPanel). The version-4 tuner UI has its own tests under
+// packages/bench/tests/tuner/ and tests/TunerApp.test.tsx.
 //
 // Uses `@solidjs/testing-library` + a real `createStore` (not `TestStore`)
 // against a mocked `BenchEnv` — the same pattern as `GameShell.test.tsx`.
@@ -16,12 +17,11 @@ import {
   initialBenchState,
   type BenchState,
   type BenchAction,
-  LaunchForm,
   RunList,
   RunDetailPanel,
 } from "@mcts/bench";
 import { createMockBenchEnv, FAKE_RUN_ID, FAKE_tuner_RUN_ID } from "./fixtures/fake-bench.js";
-import type { BenchEnv, RunSummary } from "@mcts/bench";
+import type { BenchEnv } from "@mcts/bench";
 
 /** Create a seeded test store with a mocked bench env. */
 function createTestStore(envOverrides?: Partial<BenchEnv>) {
@@ -35,21 +35,6 @@ function createTestStore(envOverrides?: Partial<BenchEnv>) {
 
 afterEach(() => {
   cleanup();
-});
-
-describe("LaunchForm", () => {
-  it("renders the tuning launch form", async () => {
-    const { store } = createTestStore();
-    render(() => <LaunchForm store={store} />);
-
-    // Should show "Launch New Run" heading
-    expect(screen.getByText("Launch New Run")).toBeInTheDocument();
-
-    // Should show the tuner game picker, auto-selecting the first tunable game.
-    const gameSelect = screen.getByLabelText("Game") as HTMLSelectElement;
-    expect(gameSelect).toBeInTheDocument();
-    expect(gameSelect.value).toBe("traffic-lights");
-  });
 });
 
 describe("RunList", () => {
@@ -83,33 +68,6 @@ describe("RunList", () => {
     await vi.waitFor(() => {
       expect(screen.getByText("Run Detail")).toBeInTheDocument();
     });
-  });
-
-  it("keeps a starting modern tuner attempt available without calling it legacy", async () => {
-    const modernAttempt: RunSummary = {
-      run_id: "tuner-modern-attempt",
-      kind: "tuner",
-      game: "nim",
-      project_id: null,
-      experiment_id: null,
-      label: null,
-      git_sha: "abc1234",
-      git_dirty: false,
-      host: "testhost",
-      pid: 42,
-      started_at: "2026-01-01T00:00:00Z",
-      ended_at: null,
-      status: "running",
-      match_count: 0,
-      trial_count: 0,
-      tuning_session_id: "session-modern",
-    };
-    const { store } = createTestStore({ listRuns: () => Effect.send([modernAttempt]) });
-    render(() => <RunList store={store} />);
-
-    await vi.waitFor(() => expect(store.getState()().runs.status).toBe("done"));
-    expect(screen.getByText("Tuning attempt")).toBeInTheDocument();
-    expect(screen.queryByText("Legacy tuner run")).not.toBeInTheDocument();
   });
 });
 
@@ -159,24 +117,14 @@ describe("RunDetailPanel", () => {
     expect(screen.queryByText("Run Detail")).not.toBeInTheDocument();
   });
 
-  it("keeps a modern tuner attempt focused on its logical session", async () => {
+  it("shows a historical tuner round-robin run in the plain run detail", async () => {
     const { store } = createTestStore();
-    const Spectator: Component<{ runId: string; game: string; kind: string; live: boolean }> = (
-      props,
-    ) => (
-      <div data-testid="spectator">
-        {props.runId}:{props.kind}
-      </div>
-    );
-    render(() => <RunDetailPanel store={store} Spectator={Spectator} />);
+    render(() => <RunDetailPanel store={store} />);
     store.dispatch({ tag: "openRun", runId: FAKE_tuner_RUN_ID });
 
     await vi.waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Tuning attempt" })).toBeInTheDocument(),
+      expect(screen.getByRole("heading", { name: "Run Detail" })).toBeInTheDocument(),
     );
-    expect(screen.queryByText("3 / 50 (6%) complete")).not.toBeInTheDocument();
-    expect(screen.queryByText("Browse games")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Open tuning session" }));
-    expect(store.getState()().tuningNavigation.selection.sessionId).toBe("session-traffic-lights");
+    expect(screen.getByText("traffic-lights")).toBeInTheDocument();
   });
 });

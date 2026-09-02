@@ -26,7 +26,6 @@ import {
   type JobSubmitResult,
 } from "@mcts/core";
 import type { BenchState } from "./state.js";
-import { tuningNavigationReducer, type TuningNavigationAction } from "./tuning-navigation.js";
 import {
   isTerminalStatus,
   type LaunchResponse,
@@ -39,15 +38,6 @@ import {
   type TrialRow,
   type GameTraceSummary,
   type GameMove,
-  type TuningSessionDetail,
-  type TuningSessionsResponse,
-  type TuningAnalysisOverview,
-  type TuningTrialDetail,
-  type TuningTrialPage,
-  type TuningTrialPageQuery,
-  type TuningSessionCommandRequest,
-  type TuningSessionBudgetRequest,
-  type TuningSessionCommandResponse,
 } from "./types.js";
 
 /** Every network operation the bench reducer may perform, lifted to
@@ -65,23 +55,6 @@ export interface BenchEnv {
   stopRun(runId: string): Effect<StopResponse>;
   /** Per-game tuner metadata for every tuner-tunable game. */
   getTunerKinds(): Effect<TunerGameInfo[]>;
-  listTuningSessions(): Effect<TuningSessionsResponse>;
-  getTuningSession(sessionId: string): Effect<TuningSessionDetail>;
-  getTuningAnalysisOverview(sessionId: string): Effect<TuningAnalysisOverview>;
-  getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Effect<TuningTrialPage>;
-  getTuningTrialDetail(sessionId: string, trialId: string): Effect<TuningTrialDetail>;
-  stopTuningSession(
-    sessionId: string,
-    body: TuningSessionCommandRequest,
-  ): Effect<TuningSessionCommandResponse>;
-  resumeTuningSession(
-    sessionId: string,
-    body: TuningSessionCommandRequest,
-  ): Effect<TuningSessionCommandResponse>;
-  addTuningSessionBudget(
-    sessionId: string,
-    body: TuningSessionBudgetRequest,
-  ): Effect<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
@@ -109,7 +82,6 @@ export type LaunchAction =
 
 export type BenchAction =
   | { tag: "runs"; action: RunsAction }
-  | { tag: "tuningNavigation"; action: TuningNavigationAction }
   /** Replace the run-list filters and refetch with them. */
   | {
       tag: "setRunFilters";
@@ -196,16 +168,9 @@ function startRunsFetch(draft: BenchState, env: BenchEnv): Effect<BenchAction> |
     : null;
 }
 
-/** Keep the logical-session navigator current whenever physical run rows refresh. */
+/** Refetch the physical run rows (the round-robin run list). */
 function refreshRunViews(draft: BenchState, env: BenchEnv): Effect<BenchAction> | null {
-  const runs = startRunsFetch(draft, env);
-  const sessions = tuningNavigationReducer(
-    draft.tuningNavigation,
-    { tag: "listRequest" },
-    env,
-  )?.map((action): BenchAction => ({ tag: "tuningNavigation", action }));
-  if (runs && sessions) return Effect.merge(runs, sessions);
-  return runs ?? sessions ?? null;
+  return startRunsFetch(draft, env);
 }
 
 export function benchReducer(
@@ -213,10 +178,6 @@ export function benchReducer(
   action: BenchAction,
   env: BenchEnv,
 ): Effect<BenchAction> | null {
-  if (action.tag === "tuningNavigation") {
-    const effect = tuningNavigationReducer(draft.tuningNavigation, action.action, env);
-    return effect?.map((next): BenchAction => ({ tag: "tuningNavigation", action: next })) ?? null;
-  }
   if (action.tag === "runs") {
     const ra = action.action;
     if (ra.tag === "request") return refreshRunViews(draft, env);
@@ -241,9 +202,6 @@ export function benchReducer(
   }
 
   if (action.tag === "openRun") {
-    if (draft.tuningNavigation.selection.sessionId) {
-      tuningNavigationReducer(draft.tuningNavigation, { tag: "clearSession" }, env);
-    }
     draft.showLaunchForm = false;
     draft.openGeneration += 1;
     draft.openRun = {

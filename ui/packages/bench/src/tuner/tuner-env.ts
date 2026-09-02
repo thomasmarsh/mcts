@@ -16,12 +16,15 @@ import type {
   ProjectionValidation,
   TunerBudgetExtension,
   TunerLaunchRequest,
+  TunerObjectiveFile,
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
-import type { JsonValue } from "../types.js";
+import type { JsonValue, TunerGameInfo } from "../types.js";
 
 export interface TunerEnv {
+  listKinds(): Effect<TunerGameInfo[]>;
+  listObjectives(): Effect<TunerObjectiveFile[]>;
   listRuns(): Effect<TunerRunView[]>;
   getRun(runId: string): Effect<TunerRunView>;
   launchRun(body: TunerLaunchRequest): Effect<TunerRunView>;
@@ -42,6 +45,8 @@ export interface TunerEnv {
 export function createTunerEnv(api: TunerApiClient): TunerEnv {
   const lift = <T>(thunk: () => Promise<T>): Effect<T> => Effect.fromPromise(thunk);
   return {
+    listKinds: () => lift(() => api.listKinds()),
+    listObjectives: () => lift(() => api.listObjectives()),
     listRuns: () => lift(() => api.listRuns()),
     getRun: (runId) => lift(() => api.getRun(runId)),
     launchRun: (body) => lift(() => api.launchRun(body)),

@@ -88,69 +88,6 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.url).toBe("/api/bench/tuner/kinds");
   });
 
-  it("uses the additive logical-session routes", async () => {
-    const calls = stubFetch({ schema_version: 1, sessions: [] });
-    const client = createBenchApiClient();
-
-    await client.listTuningSessions();
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions");
-
-    calls.length = 0;
-    await client.getTuningSession("session/a");
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa");
-
-    calls.length = 0;
-    await client.getTuningAnalysisOverview("session/a");
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/analysis");
-
-    calls.length = 0;
-    await client.getTuningTrialPage("session/a", {
-      state: "complete",
-      bracket: "unassigned",
-      q: "rave c",
-      sort: "score",
-      direction: "asc",
-      limit: 25,
-      cursor: "next/+",
-    });
-    expect(calls[0]!.url).toBe(
-      "/api/bench/tuner/sessions/session%2Fa/trials?state=complete&bracket=unassigned&q=rave+c&sort=score&direction=asc&limit=25&cursor=next%2F%2B",
-    );
-
-    calls.length = 0;
-    await client.getTuningTrialDetail("session/a", "trial/b");
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/trials/trial%2Fb");
-
-    calls.length = 0;
-    await client.stopTuningSession("session/a", { command_id: "stop-1", expected_version: 2 });
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/stop");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
-      command_id: "stop-1",
-      expected_version: 2,
-    });
-
-    calls.length = 0;
-    await client.resumeTuningSession("session/a", { command_id: "resume-1", expected_version: 3 });
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/resume");
-
-    calls.length = 0;
-    await client.addTuningSessionBudget("session/a", {
-      command_id: "budget-1",
-      expected_version: 4,
-      delta: 3,
-      start: true,
-      n_workers: 2,
-    });
-    expect(calls[0]!.url).toBe("/api/bench/tuner/sessions/session%2Fa/budget");
-    expect(JSON.parse(String(calls[0]!.init?.body))).toEqual({
-      command_id: "budget-1",
-      expected_version: 4,
-      delta: 3,
-      start: true,
-      n_workers: 2,
-    });
-  });
-
   it("getRunTrials passes an optional limit", async () => {
     const calls = stubFetch([]);
     const client = createBenchApiClient();

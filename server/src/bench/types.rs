@@ -47,6 +47,10 @@ pub struct BenchState {
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
+    /// Directory of frozen-objective JSON files a tuner run can be launched
+    /// against. The launch API takes an `objective_key` (a file stem) and
+    /// resolves it here, so no filesystem path crosses the API boundary.
+    pub tuner_objectives_dir: PathBuf,
     pub process_group_signaller: ProcessGroupSignaller,
     /// Read-only SQLite projection of version-4 tuner runs, served by the
     /// `tuner_api` handlers. Built and refreshed by the `tuner-project` tool

@@ -156,6 +156,7 @@ pub(super) fn seeded_app_with_state_and_signaller(
         run_repository: adapters.run_repository,
         run_command_repository: adapters.run_command_repository,
         bench_runs_dir,
+        tuner_objectives_dir: tmp_dir.join("objectives"),
         process_group_signaller,
         tuner_projection_db: tuner_projection_fixture(),
         // Stub: the endpoint test asserts the handler shapes these counts; the

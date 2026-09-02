@@ -1,5 +1,5 @@
 // remote-data.ts — a four-state wrapper for one asynchronously loaded
-// resource, used by every slice of `tuner-reducer.ts`. The reducer holds one
+// resource, used throughout `tuner-reducer.ts`. The reducer holds one
 // `RemoteData<T>` per endpoint; components read `.status` and dispatch, they
 // never fetch. Mirrors the `idle | loading | ok | err` shape the bench
 // reducer's job-poll sub-reducers already use, extracted here so the tuner

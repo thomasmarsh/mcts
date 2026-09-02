@@ -339,6 +339,11 @@ async fn main() {
         .unwrap_or_else(|| bench_runs_dir.join("tuner-projection.sqlite"));
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
+    // Frozen-objective JSON files the tuner launch form offers. Defaults to
+    // the checked-in `tuner/objectives`; `MCTS_TUNER_OBJECTIVES_DIR` overrides.
+    let tuner_objectives_dir = std::env::var_os("MCTS_TUNER_OBJECTIVES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tuner/objectives"));
     let bench_state = Arc::new(bench::BenchState {
         #[cfg(test)]
         db: bench::TestDatabase::unavailable(),
@@ -346,6 +351,7 @@ async fn main() {
         run_repository: bench_adapters.run_repository,
         run_command_repository: bench_adapters.run_command_repository,
         bench_runs_dir,
+        tuner_objectives_dir,
         process_group_signaller: Arc::new(bench::signal_process_group),
         tuner_projection_db,
         tuner_projection_refresh: Arc::new(bench::shell_refresh),

@@ -81,10 +81,6 @@ const terminalDetail = makeDetail({
   ended_at: "2026-01-01T01:00:00Z",
   exit_code: 0,
 });
-function loadingTuningSessions(state: ReturnType<typeof initialBenchState>): void {
-  state.tuningNavigation.list.status = "loading";
-  state.tuningNavigation.list.generation += 1;
-}
 
 const mockEnv: BenchEnv = {
   listRuns: () => Effect.none(),
@@ -94,14 +90,6 @@ const mockEnv: BenchEnv = {
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
   getTunerKinds: () => Effect.none(),
-  listTuningSessions: () => Effect.none(),
-  getTuningSession: () => Effect.none(),
-  getTuningAnalysisOverview: () => Effect.none(),
-  getTuningTrialPage: () => Effect.none(),
-  getTuningTrialDetail: () => Effect.none(),
-  stopTuningSession: () => Effect.none(),
-  resumeTuningSession: () => Effect.none(),
-  addTuningSessionBudget: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
@@ -124,7 +112,6 @@ describe("benchReducer / runs", () => {
 
     ts.send({ tag: "runs", action: { tag: "request" } }, (s) => {
       s.runs.status = "pending";
-      loadingTuningSessions(s);
     });
     ts.receive(
       {
@@ -155,7 +142,6 @@ describe("benchReducer / runs", () => {
     ts.send({ tag: "setRunFilters", status: "running", game: "druid" }, (s) => {
       s.runFilters = { status: "running", game: "druid" };
       s.runs.status = "pending";
-      loadingTuningSessions(s);
     });
     ts.receive(
       {
@@ -248,7 +234,6 @@ describe("benchReducer / log tail", () => {
         s.openRun!.detail = terminalDetail;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
-        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -331,7 +316,6 @@ describe("benchReducer / log tail", () => {
         // Terminal winds the loop down, including the backoff counter.
         s.openRun!.tail.idleAttempts = 0;
         s.runs.status = "pending";
-        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -451,7 +435,6 @@ describe("benchReducer / log tail", () => {
         s.openRun!.tail.offset = 7;
         s.openRun!.tail.active = false;
         s.runs.status = "pending";
-        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -591,7 +574,6 @@ describe("benchReducer / launch", () => {
         // The completed launch refreshes the runs list in the same
         // reduction, so the new run appears without a manual reload.
         s.runs.status = "pending";
-        loadingTuningSessions(s);
       },
     );
     ts.receive(
@@ -623,7 +605,6 @@ describe("benchReducer / stopRun", () => {
     ts.send({ tag: "stopRun", runId: summary.run_id });
     ts.receive({ tag: "stopFinished", runId: summary.run_id }, (s) => {
       s.runs.status = "pending";
-      loadingTuningSessions(s);
     });
     ts.receive(
       {

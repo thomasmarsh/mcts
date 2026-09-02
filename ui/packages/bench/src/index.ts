@@ -17,133 +17,12 @@ export type {
   LiveGameMove,
   BenchSpectatorProps,
   JsonValue,
-  TuningTrialCounts,
-  TuningCapabilities,
-  TuningSessionCommandKind,
-  TuningAllowedCommand,
-  TuningContinuation,
-  TuningSessionControl,
-  TuningSessionCommandRequest,
-  TuningSessionBudgetRequest,
-  TuningBudgetResult,
-  TuningSessionCommandResponse,
-  TuningAttempt,
-  TuningSessionSummary,
-  TuningSessionListItem,
-  TuningSessionsResponse,
-  TuningRating,
-  TuningResourcePolicy,
-  TuningRatingPolicy,
-  TuningSamplerPolicy,
-  TuningPruningPolicy,
-  TuningPolicy,
-  TuningReportDecision,
-  TuningTrialReport,
-  TuningStrategyMetrics,
-  TuningOpponent,
-  TuningGame,
-  TuningPair,
-  TuningTrial,
-  TuningSessionDetail,
-  TuningCursorBoundary,
-  TuningAnalysisObjective,
-  TuningAnalysisPairCoverage,
-  TuningAnalysisPointCoverage,
-  TuningAnalysisCoverage,
-  TuningBracketResourceAggregate,
-  TuningDecisionAggregate,
-  TuningAnalysisPoint,
-  TuningPoolAnchor,
-  TuningPoolRevision,
-  TuningAnalysisOverview,
-  TuningTrialPageQuery,
-  TuningTrialSummary,
-  TuningTrialPage,
-  TuningReplayReference,
-  TuningTrialDetailGame,
-  TuningTrialDetailPair,
-  TuningTrialDetailView,
-  TuningTrialDetail,
 } from "./types.js";
 export { isTerminalStatus } from "./types.js";
 export { formatProgress, formatObservedResult, formatTime, statusLabel } from "./result-format.js";
 
 export type { BenchState, OpenRunState, LogTailState } from "./state.js";
 export { initialBenchState } from "./state.js";
-export type {
-  TuningLoadState,
-  TuningSelection,
-  TuningNavigationState,
-  TuningNavigationAction,
-  TuningProgressMetric,
-  TuningProgressScale,
-} from "./tuning-navigation.js";
-export {
-  initialTuningNavigationState,
-  tuningNavigationReducer,
-  TUNING_DETAIL_REFRESH_MS,
-} from "./tuning-navigation.js";
-export {
-  UNASSIGNED_BRACKET,
-  analysisSampleMetadata,
-  bracketFacets,
-  resourceDomains,
-  exactPlotRows,
-  stateSymbol,
-  reasonSymbol,
-  decisionReasonDescription,
-  decisionGroupRows,
-  rungFunnelRows,
-  pruningFunnelRows,
-  trialTrajectories,
-  trialTrajectoriesFromRows,
-  trialPageSummary,
-  poolRevisionCoverage,
-  ladderAnchorRows,
-  candidateRatingTrajectory,
-  ladderMuDomain,
-  opponentDistances,
-  highlightSelectedTrial,
-} from "./tuning/analysis-models.js";
-export type {
-  AnalysisSampleMetadata,
-  BracketFacet,
-  ResourceDomains,
-  AnalysisPlotRow,
-  DecisionSymbol,
-  DecisionGroupRow,
-  RungFunnelRow,
-  PruningDecisionKey,
-  PruningFunnelRow,
-  TrialTrajectory,
-  WldSummary,
-  ComputeSummary,
-  TrialSummaryRow,
-  TrialPageSummary,
-  PoolRevisionCoverage,
-  LadderAnchorRow,
-  CandidateRatingPoint,
-  OpponentDistance,
-} from "./tuning/analysis-models.js";
-export {
-  safePresetId,
-  serializeRecordedParams,
-  serializePresetSpec,
-  buildPresetSpec,
-  candidatePresetSource,
-  opponentPresetSource,
-  copyPreset,
-} from "./tuning/preset-copy.js";
-export type {
-  JsonObject,
-  PresetBudgetSnapshot,
-  PresetSource,
-  PresetSpec,
-  PresetDisabledReason,
-  PresetBuildResult,
-  ClipboardWriter,
-  PresetCopyState,
-} from "./tuning/preset-copy.js";
 
 export type {
   BenchEnv,
@@ -163,8 +42,9 @@ export {
 export type { BenchApiClient } from "./api-client.js";
 export { createBenchApiClient, createBenchEnv } from "./api-client.js";
 
-export { LaunchForm } from "./LaunchForm.js";
-export { TunerLaunchFields } from "./TunerLaunchFields.js";
 export { RunList } from "./RunList.js";
 export { RunDetailPanel } from "./RunDetailPanel.js";
 export { BenchApp } from "./BenchApp.js";
+
+// Version-4 tuner UI (fleet dashboard, launch, live progress).
+export * from "./tuner/index.js";

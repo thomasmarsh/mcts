@@ -34,11 +34,23 @@ export interface TunerRunLog {
   err_lines: string[];
 }
 
-/** Body of `POST /api/bench/tuner/runs`. Optional fields fall back to the
- * tuner CLI's own defaults when omitted. */
+/** One frozen-objective file the server offers, keyed by its filename stem.
+ * `GET /api/bench/tuner/objectives`. The absolute path never crosses the
+ * API — a launch request carries the `key`. */
+export interface TunerObjectiveFile {
+  key: string;
+  objective_id: string | null;
+  game_kind: string | null;
+}
+
+/** Body of `POST /api/bench/tuner/runs`. The server resolves `game_kind` to
+ * a built-in `game-<kind>` binary and `objective_key` to a file in its
+ * configured objectives directory, so no filesystem path is part of the
+ * request. Optional fields fall back to the tuner CLI's own defaults when
+ * omitted. */
 export interface TunerLaunchRequest {
-  game_binary: string;
-  objective_file: string;
+  game_kind: string;
+  objective_key: string;
   run_id: string;
   task_seed: number;
   tuning_pair_budget: number;

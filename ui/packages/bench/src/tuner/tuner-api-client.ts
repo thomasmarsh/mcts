@@ -15,12 +15,16 @@ import type {
   ProjectionValidation,
   TunerBudgetExtension,
   TunerLaunchRequest,
+  TunerObjectiveFile,
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
-import type { JsonValue } from "../types.js";
+import type { JsonValue, TunerGameInfo } from "../types.js";
 
 export interface TunerApiClient {
+  // Launch metadata.
+  listKinds(): Promise<TunerGameInfo[]>;
+  listObjectives(): Promise<TunerObjectiveFile[]>;
   // Operational journal.
   listRuns(): Promise<TunerRunView[]>;
   getRun(runId: string): Promise<TunerRunView>;
@@ -103,6 +107,8 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
   const projPath = (runId: string): string =>
     `/api/bench/tuner/projection/runs/${encodeURIComponent(runId)}`;
   return {
+    listKinds: () => fetchJson(url("/api/bench/tuner/kinds")),
+    listObjectives: () => fetchJson(url("/api/bench/tuner/objectives")),
     listRuns: () => fetchJson(url("/api/bench/tuner/runs")),
     getRun: (runId) => fetchJson(url(runPath(runId))),
     launchRun: (body) => sendJson(url("/api/bench/tuner/runs"), "POST", body),

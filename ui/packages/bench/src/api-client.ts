@@ -23,15 +23,6 @@ import type {
   TrialRow,
   GameTraceSummary,
   GameMove,
-  TuningSessionDetail,
-  TuningSessionsResponse,
-  TuningAnalysisOverview,
-  TuningTrialDetail,
-  TuningTrialPage,
-  TuningTrialPageQuery,
-  TuningSessionCommandRequest,
-  TuningSessionBudgetRequest,
-  TuningSessionCommandResponse,
 } from "./types.js";
 
 export interface BenchApiClient {
@@ -51,25 +42,6 @@ export interface BenchApiClient {
   stopRun(runId: string): Promise<StopResponse>;
   /** Per-game tuner metadata for every game that supports tuner tuning. */
   getTunerKinds(): Promise<TunerGameInfo[]>;
-  /** Logical tuning-session navigator rows, newest activity first. */
-  listTuningSessions(): Promise<TuningSessionsResponse>;
-  /** Complete version-1 evidence snapshot for one logical tuning session. */
-  getTuningSession(sessionId: string): Promise<TuningSessionDetail>;
-  getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview>;
-  getTuningTrialPage(sessionId: string, query?: TuningTrialPageQuery): Promise<TuningTrialPage>;
-  getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail>;
-  stopTuningSession(
-    sessionId: string,
-    body: TuningSessionCommandRequest,
-  ): Promise<TuningSessionCommandResponse>;
-  resumeTuningSession(
-    sessionId: string,
-    body: TuningSessionCommandRequest,
-  ): Promise<TuningSessionCommandResponse>;
-  addTuningSessionBudget(
-    sessionId: string,
-    body: TuningSessionBudgetRequest,
-  ): Promise<TuningSessionCommandResponse>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
@@ -189,56 +161,6 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async getTunerKinds(): Promise<TunerGameInfo[]> {
       return fetchJson(url("/api/bench/tuner/kinds"));
     },
-    async listTuningSessions(): Promise<TuningSessionsResponse> {
-      return fetchJson(url("/api/bench/tuner/sessions"));
-    },
-    async getTuningSession(sessionId: string): Promise<TuningSessionDetail> {
-      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}`));
-    },
-    async getTuningAnalysisOverview(sessionId: string): Promise<TuningAnalysisOverview> {
-      return fetchJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/analysis`));
-    },
-    async getTuningTrialPage(
-      sessionId: string,
-      query: TuningTrialPageQuery = {},
-    ): Promise<TuningTrialPage> {
-      return fetchJson(
-        url(
-          `/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials${queryString(query)}`,
-        ),
-      );
-    },
-    async getTuningTrialDetail(sessionId: string, trialId: string): Promise<TuningTrialDetail> {
-      return fetchJson(
-        url(
-          `/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/trials/${encodeURIComponent(trialId)}`,
-        ),
-      );
-    },
-    async stopTuningSession(
-      sessionId: string,
-      body: TuningSessionCommandRequest,
-    ): Promise<TuningSessionCommandResponse> {
-      return postJson(url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/stop`), body);
-    },
-    async resumeTuningSession(
-      sessionId: string,
-      body: TuningSessionCommandRequest,
-    ): Promise<TuningSessionCommandResponse> {
-      return postJson(
-        url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/resume`),
-        body,
-      );
-    },
-    async addTuningSessionBudget(
-      sessionId: string,
-      body: TuningSessionBudgetRequest,
-    ): Promise<TuningSessionCommandResponse> {
-      return postJson(
-        url(`/api/bench/tuner/sessions/${encodeURIComponent(sessionId)}/budget`),
-        body,
-      );
-    },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
       return fetchJson(
         url(`/api/bench/runs/${encodeURIComponent(runId)}/trials${queryString({ limit })}`),
@@ -275,20 +197,6 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
       lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
     getTunerKinds: () => lift(() => api.getTunerKinds()),
-    listTuningSessions: () => lift(() => api.listTuningSessions()),
-    getTuningSession: (sessionId: string) => lift(() => api.getTuningSession(sessionId)),
-    getTuningAnalysisOverview: (sessionId: string) =>
-      lift(() => api.getTuningAnalysisOverview(sessionId)),
-    getTuningTrialPage: (sessionId: string, query?: TuningTrialPageQuery) =>
-      lift(() => api.getTuningTrialPage(sessionId, query)),
-    getTuningTrialDetail: (sessionId: string, trialId: string) =>
-      lift(() => api.getTuningTrialDetail(sessionId, trialId)),
-    stopTuningSession: (sessionId: string, body: TuningSessionCommandRequest) =>
-      lift(() => api.stopTuningSession(sessionId, body)),
-    resumeTuningSession: (sessionId: string, body: TuningSessionCommandRequest) =>
-      lift(() => api.resumeTuningSession(sessionId, body)),
-    addTuningSessionBudget: (sessionId: string, body: TuningSessionBudgetRequest) =>
-      lift(() => api.addTuningSessionBudget(sessionId, body)),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) =>
       lift(() => api.getRunGames(runId, limit, cellId)),

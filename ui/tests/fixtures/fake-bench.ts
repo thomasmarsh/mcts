@@ -81,7 +81,6 @@ export const fakeRunDetail: RunDetail = {
   match_count: 10,
   trial_count: 0,
   incumbent: null,
-  tuning_session_id: null,
 };
 
 export const fakeRunningDetail: RunDetail = {
@@ -106,7 +105,6 @@ export const fakePhysicalTunerRun: RunDetail = {
   },
   trial_count: 3,
   incumbent: { config: { family: "rave", c: 0.7 }, cost: 0.2 },
-  tuning_session_id: "session-traffic-lights",
 };
 
 // Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `family` is a
@@ -339,11 +337,6 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
     stopRun: (_runId: string): Effect<StopResponse> =>
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
     getTunerKinds: () => Effect.send(fakeTunerKinds),
-    listTuningSessions: () => Effect.send({ schema_version: 1, sessions: [] }),
-    getTuningSession: () => Effect.none(),
-    getTuningAnalysisOverview: () => Effect.none(),
-    getTuningTrialPage: () => Effect.none(),
-    getTuningTrialDetail: () => Effect.none(),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> =>
       Effect.send(fakeTrialRows),
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),

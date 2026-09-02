@@ -4,7 +4,6 @@
 // nothing here references game types.
 
 import { initialJobPollState, type JobPollState } from "@mcts/core";
-import { initialTuningNavigationState, type TuningNavigationState } from "./tuning-navigation.js";
 import type {
   LaunchResponse,
   RunDetail,
@@ -70,8 +69,6 @@ export interface BenchState {
    * — populates the tuner launch fields' game picker and the run-detail
    * baseline parameter comparison. */
   tunerKinds: JobPollState<TunerGameInfo[]>;
-  /** Logical tuning-session data and user-owned hierarchy navigation. */
-  tuningNavigation: TuningNavigationState;
 }
 
 export function initialBenchState(): BenchState {
@@ -85,6 +82,5 @@ export function initialBenchState(): BenchState {
     deleteError: null,
     showLaunchForm: false,
     tunerKinds: initialJobPollState<TunerGameInfo[]>(),
-    tuningNavigation: initialTuningNavigationState(),
   };
 }

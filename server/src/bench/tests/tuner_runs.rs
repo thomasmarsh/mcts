@@ -56,6 +56,43 @@ async fn list_returns_all_records_in_launch_order() {
 }
 
 #[tokio::test]
+async fn objectives_route_lists_configured_files_by_key() {
+    let (app, root, state) = super::support::seeded_app_with_state(default_seed);
+    std::fs::create_dir_all(&state.tuner_objectives_dir).unwrap();
+    std::fs::write(
+        state.tuner_objectives_dir.join("ttt-smoke-v1.json"),
+        r#"{"objective_id": "ttt-smoke-v1", "game_kind": "ttt"}"#,
+    )
+    .unwrap();
+    std::fs::write(state.tuner_objectives_dir.join("notes.txt"), "ignored").unwrap();
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/objectives").await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body_json(&body);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["key"], "ttt-smoke-v1");
+    assert_eq!(rows[0]["game_kind"], "ttt");
+
+    // An unknown key is a 400, not a path escape.
+    let (status, _) = http_post_json(
+        app,
+        "/api/bench/tuner/runs",
+        json!({
+            "game_kind": "ttt",
+            "objective_key": "../secret",
+            "run_id": "keytest",
+            "task_seed": 1,
+            "tuning_pair_budget": 4,
+            "validation_pair_budget": 4,
+            "production_validation_pairs": 4
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn launch_rejects_an_unsafe_run_id() {
     let (app, root) = seeded_app(default_seed);
     let (status, _) = http_post_json(

@@ -51,11 +51,90 @@ fn journal_error(error: std::io::Error) -> BenchError {
     }
 }
 
+/// One frozen-objective JSON file the tuner launch form can offer, keyed by
+/// its filename stem. The absolute path never leaves the server — a launch
+/// request carries the `key` and the handler resolves it.
+#[derive(Serialize)]
+pub(crate) struct ObjectiveFileInfo {
+    key: String,
+    objective_id: Option<String>,
+    game_kind: Option<String>,
+}
+
+fn read_objective_files(dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return vec![];
+    };
+    let mut files: Vec<ObjectiveFileInfo> = entries
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| {
+            let path = entry.path();
+            let key = path.file_stem()?.to_string_lossy().into_owned();
+            let parsed: Option<serde_json::Value> =
+                std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok());
+            let field = |name: &str| {
+                parsed
+                    .as_ref()
+                    .and_then(|value| value.get(name))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_owned)
+            };
+            Some(ObjectiveFileInfo {
+                key,
+                objective_id: field("objective_id"),
+                game_kind: field("game_kind"),
+            })
+        })
+        .collect();
+    files.sort_by(|a, b| a.key.cmp(&b.key));
+    files
+}
+
+/// `GET /api/bench/tuner/objectives`
+///
+/// The frozen-objective files a run can be launched against, from the
+/// server's configured objectives directory (`MCTS_TUNER_OBJECTIVES_DIR`).
+pub(crate) async fn list_tuner_objectives(
+    AxumState(state): AxumState<Arc<BenchState>>,
+) -> Json<Vec<ObjectiveFileInfo>> {
+    Json(read_objective_files(&state.tuner_objectives_dir))
+}
+
 pub(crate) async fn launch_tuner_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     Json(mut request): Json<TunerLaunchRequest>,
 ) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
     request.runs_root = state.bench_runs_dir.clone();
+    let bad_request = |message: String| BenchError {
+        status: StatusCode::BAD_REQUEST,
+        message,
+    };
+    // Resolve the caller-friendly keys to absolute paths so no filesystem
+    // path is ever part of the API contract.
+    if request.game_binary.as_os_str().is_empty() {
+        let kind = request
+            .game_kind
+            .as_deref()
+            .ok_or_else(|| bad_request("game_kind or game_binary is required".into()))?;
+        request.game_binary = mcts_bench::games::find_game_binary(kind).ok_or_else(|| {
+            bad_request(format!("no built-in game binary found for kind '{kind}'"))
+        })?;
+    }
+    if request.objective_file.as_os_str().is_empty() {
+        let key = request
+            .objective_key
+            .as_deref()
+            .ok_or_else(|| bad_request("objective_key or objective_file is required".into()))?;
+        if key.is_empty() || key.contains(['/', '\\']) || key.contains("..") {
+            return Err(bad_request(format!("invalid objective_key '{key}'")));
+        }
+        let candidate = state.tuner_objectives_dir.join(format!("{key}.json"));
+        if !candidate.is_file() {
+            return Err(bad_request(format!("unknown objective_key '{key}'")));
+        }
+        request.objective_file = candidate;
+    }
     let record = tuner_launch::launch(&request).map_err(|error| BenchError {
         status: match error.kind() {
             std::io::ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
