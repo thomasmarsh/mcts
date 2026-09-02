@@ -47,10 +47,18 @@ pub struct BenchState {
     pub run_repository: Arc<dyn RunRepository + Send + Sync>,
     pub run_command_repository: Arc<dyn RunCommandRepository + Send + Sync>,
     pub bench_runs_dir: PathBuf,
-    /// Directory of frozen-objective JSON files a tuner run can be launched
-    /// against. The launch API takes an `objective_key` (a file stem) and
-    /// resolves it here, so no filesystem path crosses the API boundary.
+    /// Writable directory of frozen-objective JSON files a tuner run can be
+    /// launched against, and which the objective editor manages. The launch
+    /// and objective APIs take an `objective_key` (a file stem) and resolve
+    /// it here, so no filesystem path crosses the API boundary.
     pub tuner_objectives_dir: PathBuf,
+    /// Read-only corpus of objective files shipped with the repo. On start-up
+    /// any stem not already present in `tuner_objectives_dir` is copied over;
+    /// user edits then live only in the writable dir.
+    pub tuner_seed_objectives_dir: PathBuf,
+    /// Validates an objective file out of band (production: shells out to
+    /// `python -m tuner_cli validate-objective`; tests inject a stub).
+    pub tuner_objective_validator: ObjectiveValidator,
     pub process_group_signaller: ProcessGroupSignaller,
     /// Read-only SQLite projection of version-4 tuner runs, served by the
     /// `tuner_api` handlers. Built and refreshed by the `tuner-project` tool
@@ -66,6 +74,25 @@ pub struct BenchState {
 /// -> [projected, skipped, ingest_errors, pruned]`.
 pub type ProjectionRefresher =
     Arc<dyn Fn(&Path, &Path) -> std::io::Result<[i64; 4]> + Send + Sync>;
+
+/// Validates an objective file for a game: `(game_kind, objective_file) ->
+/// ObjectiveValidation`. The production impl resolves the built-in game binary
+/// itself; a missing binary surfaces as `ok: false`, not an `Err`.
+pub type ObjectiveValidator =
+    Arc<dyn Fn(&str, &Path) -> std::io::Result<ObjectiveValidation> + Send + Sync>;
+
+/// Result of [`ObjectiveValidator`] — mirrors the JSON line emitted by
+/// `tuner_cli validate-objective`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObjectiveValidation {
+    pub ok: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_fingerprint: Option<String>,
+}
 
 #[cfg(test)]
 pub(crate) struct TestDatabase(Option<Arc<Mutex<duckdb::Connection>>>);

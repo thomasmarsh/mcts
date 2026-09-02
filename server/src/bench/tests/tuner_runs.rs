@@ -4,7 +4,24 @@ use axum::http::StatusCode;
 use mcts_bench::tuner_launch::{self, TerminalOutcome, TunerLaunchRecord};
 use serde_json::json;
 
-use super::support::{body_json, default_seed, http_get, http_post_json, seeded_app};
+use super::support::{
+    body_json, default_seed, http_delete, http_get, http_post_json, http_put_json, seeded_app,
+};
+
+fn objective_body(game_kind: &str) -> serde_json::Value {
+    json!({
+        "schema_version": 1,
+        "objective_id": format!("{game_kind}-editor-v1"),
+        "game_kind": game_kind,
+        "opponents": [
+            {"id": "schema-default", "label": "Schema default", "role": "default",
+             "weight": 1, "config": {"source": "schema_default"}},
+            {"id": "hist", "label": "Historical", "role": "historical_reference",
+             "weight": 2, "config": {"source": "inline", "value": {"c": 1.4}}}
+        ],
+        "start_distribution": {"kind": "default_only"}
+    })
+}
 
 fn record(runs_root: &std::path::Path, run_id: &str, pid: Option<u32>) {
     tuner_launch::append_launch(
@@ -169,6 +186,118 @@ async fn extend_validates_the_request_and_relaunches() {
     assert!(argv
         .windows(2)
         .any(|pair| pair == ["--extend-reason", "fund another cohort"]));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn seed_copy_never_overwrites_a_user_edit() {
+    let dir = std::env::temp_dir().join(format!("mcts_seed_test_{}", std::process::id()));
+    let seed = dir.join("seed");
+    let user = dir.join("user");
+    std::fs::create_dir_all(&seed).unwrap();
+    std::fs::create_dir_all(&user).unwrap();
+    std::fs::write(seed.join("a.json"), r#"{"objective_id":"a-seed"}"#).unwrap();
+    std::fs::write(seed.join("b.json"), r#"{"objective_id":"b-seed"}"#).unwrap();
+    std::fs::write(user.join("a.json"), r#"{"objective_id":"a-edited"}"#).unwrap();
+
+    crate::bench::seed_tuner_objectives(&seed, &user);
+
+    assert_eq!(
+        std::fs::read_to_string(user.join("a.json")).unwrap(),
+        r#"{"objective_id":"a-edited"}"#
+    );
+    assert_eq!(
+        std::fs::read_to_string(user.join("b.json")).unwrap(),
+        r#"{"objective_id":"b-seed"}"#
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[tokio::test]
+async fn objective_crud_round_trips_and_validates() {
+    let (app, root, state) = super::support::seeded_app_with_state(default_seed);
+    std::fs::create_dir_all(&state.tuner_objectives_dir).unwrap();
+
+    // PUT a valid objective, then GET it back.
+    let (status, _) =
+        http_put_json(app.clone(), "/api/bench/tuner/objectives/mine-v1", objective_body("ttt")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(state.tuner_objectives_dir.join("mine-v1.json").is_file());
+
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/objectives/mine-v1").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["content"]["game_kind"], "ttt");
+    assert_eq!(body_json(&body)["is_seed"], false);
+
+    // It shows up in the list with an opponent count.
+    let (_, body) = http_get(app.clone(), "/api/bench/tuner/objectives").await;
+    let rows = body_json(&body);
+    assert_eq!(rows[0]["key"], "mine-v1");
+    assert_eq!(rows[0]["opponent_count"], 2);
+
+    // The injected validator rejects `game_kind: "reject"`.
+    let (status, _) = http_put_json(
+        app.clone(),
+        "/api/bench/tuner/objectives/bad-v1",
+        objective_body("reject"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!state.tuner_objectives_dir.join("bad-v1.json").exists());
+
+    // schema_version must be 1 (pre-check, no validator call).
+    let (status, _) = http_put_json(
+        app.clone(),
+        "/api/bench/tuner/objectives/nope",
+        json!({"schema_version": 2, "game_kind": "ttt"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Path traversal is refused on every keyed route.
+    for uri in [
+        "/api/bench/tuner/objectives/..%2Fsecret",
+        "/api/bench/tuner/objectives/a.b%2Fc",
+    ] {
+        let (status, _) = http_get(app.clone(), uri).await;
+        assert!(status.is_client_error(), "{uri} -> {status}");
+    }
+
+    // DELETE removes it; a second delete is a 404.
+    let (status, _) = http_delete(app.clone(), "/api/bench/tuner/objectives/mine-v1").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = http_delete(app.clone(), "/api/bench/tuner/objectives/mine-v1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = http_get(app, "/api/bench/tuner/objectives/mine-v1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn objective_validate_route_is_a_dry_run() {
+    let (app, root, state) = super::support::seeded_app_with_state(default_seed);
+    std::fs::create_dir_all(&state.tuner_objectives_dir).unwrap();
+
+    let (status, body) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/objectives/scratch/validate",
+        objective_body("ttt"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["ok"], true);
+    // Nothing was written.
+    assert!(!state.tuner_objectives_dir.join("scratch.json").exists());
+
+    let (_, body) = http_post_json(
+        app,
+        "/api/bench/tuner/objectives/scratch/validate",
+        objective_body("reject"),
+    )
+    .await;
+    assert_eq!(body_json(&body)["ok"], false);
+
     std::fs::remove_dir_all(root).unwrap();
 }
 

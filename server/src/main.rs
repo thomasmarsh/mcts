@@ -339,11 +339,18 @@ async fn main() {
         .unwrap_or_else(|| bench_runs_dir.join("tuner-projection.sqlite"));
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
-    // Frozen-objective JSON files the tuner launch form offers. Defaults to
-    // the checked-in `tuner/objectives`; `MCTS_TUNER_OBJECTIVES_DIR` overrides.
-    let tuner_objectives_dir = std::env::var_os("MCTS_TUNER_OBJECTIVES_DIR")
+    // Frozen-objective JSON files. The checked-in `tuner/objectives` is the
+    // read-only seed corpus (`MCTS_TUNER_OBJECTIVES_DIR` overrides it); user
+    // edits live in the writable dir under the gitignored bench-runs tree
+    // (`MCTS_TUNER_USER_OBJECTIVES_DIR` overrides that). On start-up every
+    // seed stem not already present in the writable dir is copied over.
+    let tuner_seed_objectives_dir = std::env::var_os("MCTS_TUNER_OBJECTIVES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tuner/objectives"));
+    let tuner_objectives_dir = std::env::var_os("MCTS_TUNER_USER_OBJECTIVES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bench_runs_dir.join("tuner-objectives"));
+    bench::seed_tuner_objectives(&tuner_seed_objectives_dir, &tuner_objectives_dir);
     let bench_state = Arc::new(bench::BenchState {
         #[cfg(test)]
         db: bench::TestDatabase::unavailable(),
@@ -352,6 +359,8 @@ async fn main() {
         run_command_repository: bench_adapters.run_command_repository,
         bench_runs_dir,
         tuner_objectives_dir,
+        tuner_seed_objectives_dir,
+        tuner_objective_validator: Arc::new(bench::shell_validate_objective),
         process_group_signaller: Arc::new(bench::signal_process_group),
         tuner_projection_db,
         tuner_projection_refresh: Arc::new(bench::shell_refresh),

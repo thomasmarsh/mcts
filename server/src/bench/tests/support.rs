@@ -157,6 +157,20 @@ pub(super) fn seeded_app_with_state_and_signaller(
         run_command_repository: adapters.run_command_repository,
         bench_runs_dir,
         tuner_objectives_dir: tmp_dir.join("objectives"),
+        tuner_seed_objectives_dir: tmp_dir.join("seed-objectives"),
+        // Canned validator: any objective declaring `game_kind: "reject"` fails,
+        // everything else passes. A test can still write its own file directly.
+        tuner_objective_validator: Arc::new(|_binary, objective_file| {
+            let text = std::fs::read_to_string(objective_file).unwrap_or_default();
+            let ok = !text.contains("\"game_kind\": \"reject\"")
+                && !text.contains("\"game_kind\":\"reject\"");
+            Ok(super::super::ObjectiveValidation {
+                ok,
+                errors: if ok { vec![] } else { vec!["injected rejection".into()] },
+                objective_id: ok.then(|| "stub-objective".to_owned()),
+                panel_fingerprint: ok.then(|| "stub-fingerprint".to_owned()),
+            })
+        }),
         process_group_signaller,
         tuner_projection_db: tuner_projection_fixture(),
         // Stub: the endpoint test asserts the handler shapes these counts; the
@@ -264,6 +278,27 @@ pub(super) async fn http_post_json(
         .oneshot(
             Request::builder()
                 .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&json).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    (status, body)
+}
+
+pub(super) async fn http_put_json(
+    app: Router,
+    uri: &str,
+    json: Value,
+) -> (HttpStatusCode, axum::body::Bytes) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
                 .uri(uri)
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&json).unwrap()))

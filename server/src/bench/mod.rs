@@ -13,8 +13,10 @@ mod types;
 
 pub use router::bench_router;
 pub use tuner_api::shell_refresh;
+pub use tuner_runs::{seed_tuner_objectives, shell_validate_objective};
 pub use types::{
-    signal_process_group, BenchState, ProcessGroupSignaller, ProjectionRefresher,
+    signal_process_group, BenchState, ObjectiveValidation, ObjectiveValidator,
+    ProcessGroupSignaller, ProjectionRefresher,
 };
 
 pub(crate) use runs::*;

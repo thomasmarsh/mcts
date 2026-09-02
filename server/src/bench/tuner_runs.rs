@@ -59,9 +59,51 @@ pub(crate) struct ObjectiveFileInfo {
     key: String,
     objective_id: Option<String>,
     game_kind: Option<String>,
+    opponent_count: u32,
+    updated_at: Option<String>,
+    /// The same stem is also shipped in the read-only seed corpus.
+    is_seed: bool,
 }
 
-fn read_objective_files(dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
+/// The full objective JSON plus its metadata (`GET
+/// /api/bench/tuner/objectives/{key}`).
+#[derive(Serialize)]
+pub(crate) struct ObjectiveFileDetail {
+    key: String,
+    content: serde_json::Value,
+    updated_at: Option<String>,
+    is_seed: bool,
+}
+
+/// `key` must be a bare filename stem — no path separators or traversal.
+fn valid_objective_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 128
+        && !key.contains("..")
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn seed_stems(seed_dir: &std::path::Path) -> std::collections::HashSet<String> {
+    std::fs::read_dir(seed_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .collect()
+}
+
+fn file_updated_at(path: &std::path::Path) -> Option<String> {
+    std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .map(mcts_bench::launch::iso_timestamp_at)
+}
+
+fn read_objective_files(dir: &std::path::Path, seed_dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
+    let seeds = seed_stems(seed_dir);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
     };
@@ -80,10 +122,18 @@ fn read_objective_files(dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
                     .and_then(|value| value.as_str())
                     .map(str::to_owned)
             };
+            let opponent_count = parsed
+                .as_ref()
+                .and_then(|value| value.get("opponents"))
+                .and_then(|value| value.as_array())
+                .map_or(0, |list| list.len() as u32);
             Some(ObjectiveFileInfo {
+                is_seed: seeds.contains(&key),
                 key,
                 objective_id: field("objective_id"),
                 game_kind: field("game_kind"),
+                opponent_count,
+                updated_at: file_updated_at(&path),
             })
         })
         .collect();
@@ -91,14 +141,215 @@ fn read_objective_files(dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
     files
 }
 
+/// Copy every seed objective whose stem is not already a file in the writable
+/// dir. Never overwrites — a user's edits outlive a repo update to the seed.
+pub fn seed_tuner_objectives(seed_dir: &std::path::Path, user_dir: &std::path::Path) {
+    if std::fs::create_dir_all(user_dir).is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(seed_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            if let Some(name) = path.file_name() {
+                let target = user_dir.join(name);
+                if !target.exists() {
+                    let _ = std::fs::copy(&path, &target);
+                }
+            }
+        }
+    }
+}
+
+fn objective_path(state: &BenchState, key: &str) -> Result<std::path::PathBuf, BenchError> {
+    if !valid_objective_key(key) {
+        return Err(bad_request(format!("invalid objective key '{key}'")));
+    }
+    Ok(state.tuner_objectives_dir.join(format!("{key}.json")))
+}
+
+fn bad_request(message: String) -> BenchError {
+    BenchError {
+        status: StatusCode::BAD_REQUEST,
+        message,
+    }
+}
+
+fn not_found(message: String) -> BenchError {
+    BenchError {
+        status: StatusCode::NOT_FOUND,
+        message,
+    }
+}
+
 /// `GET /api/bench/tuner/objectives`
 ///
 /// The frozen-objective files a run can be launched against, from the
-/// server's configured objectives directory (`MCTS_TUNER_OBJECTIVES_DIR`).
+/// server's writable objectives directory.
 pub(crate) async fn list_tuner_objectives(
     AxumState(state): AxumState<Arc<BenchState>>,
 ) -> Json<Vec<ObjectiveFileInfo>> {
-    Json(read_objective_files(&state.tuner_objectives_dir))
+    Json(read_objective_files(
+        &state.tuner_objectives_dir,
+        &state.tuner_seed_objectives_dir,
+    ))
+}
+
+/// `GET /api/bench/tuner/objectives/{key}` — the objective's full JSON.
+pub(crate) async fn get_tuner_objective(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(key): AxumPath<String>,
+) -> Result<Json<ObjectiveFileDetail>, BenchError> {
+    let path = objective_path(&state, &key)?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|_| not_found(format!("unknown objective '{key}'")))?;
+    let content: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| bad_request(format!("objective '{key}' is not valid JSON: {error}")))?;
+    Ok(Json(ObjectiveFileDetail {
+        is_seed: seed_stems(&state.tuner_seed_objectives_dir).contains(&key),
+        updated_at: file_updated_at(&path),
+        key,
+        content,
+    }))
+}
+
+/// Cheap in-process pre-check before the (slower) validator: the body must be
+/// a JSON object declaring `schema_version: 1` and a non-empty `game_kind`.
+fn precheck_objective(body: &serde_json::Value) -> Result<String, BenchError> {
+    let object = body
+        .as_object()
+        .ok_or_else(|| bad_request("objective body must be a JSON object".into()))?;
+    if object.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err(bad_request("objective schema_version must be 1".into()));
+    }
+    object
+        .get("game_kind")
+        .and_then(serde_json::Value::as_str)
+        .filter(|kind| !kind.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| bad_request("objective game_kind is required".into()))
+}
+
+fn run_objective_validator(
+    state: &BenchState,
+    game_kind: &str,
+    body: &serde_json::Value,
+) -> Result<super::types::ObjectiveValidation, BenchError> {
+    let scratch = std::env::temp_dir().join(format!(
+        "tuner-objective-{}-{}.json",
+        std::process::id(),
+        SEED_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(
+        &scratch,
+        serde_json::to_vec(body).map_err(|error| bad_request(error.to_string()))?,
+    )?;
+    let result = (state.tuner_objective_validator)(game_kind, &scratch);
+    let _ = std::fs::remove_file(&scratch);
+    result.map_err(|error| BenchError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("objective validator failed: {error}"),
+    })
+}
+
+static SEED_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// `POST /api/bench/tuner/objectives/{key}/validate` — dry-run validation.
+pub(crate) async fn validate_tuner_objective(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(key): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<super::types::ObjectiveValidation>, BenchError> {
+    objective_path(&state, &key)?;
+    let game_kind = precheck_objective(&body)?;
+    Ok(Json(run_objective_validator(&state, &game_kind, &body)?))
+}
+
+/// `PUT /api/bench/tuner/objectives/{key}` — create or replace, validated.
+pub(crate) async fn put_tuner_objective(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(key): AxumPath<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ObjectiveFileDetail>, BenchError> {
+    let path = objective_path(&state, &key)?;
+    let game_kind = precheck_objective(&body)?;
+    let validation = run_objective_validator(&state, &game_kind, &body)?;
+    if !validation.ok {
+        let detail = if validation.errors.is_empty() {
+            "objective rejected".to_owned()
+        } else {
+            validation.errors.join("; ")
+        };
+        return Err(bad_request(detail));
+    }
+    std::fs::create_dir_all(&state.tuner_objectives_dir)?;
+    let pretty = serde_json::to_string_pretty(&body).map_err(|error| bad_request(error.to_string()))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, pretty.as_bytes())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(Json(ObjectiveFileDetail {
+        is_seed: seed_stems(&state.tuner_seed_objectives_dir).contains(&key),
+        updated_at: file_updated_at(&path),
+        key,
+        content: body,
+    }))
+}
+
+/// `DELETE /api/bench/tuner/objectives/{key}`.
+pub(crate) async fn delete_tuner_objective(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(key): AxumPath<String>,
+) -> Result<StatusCode, BenchError> {
+    let path = objective_path(&state, &key)?;
+    std::fs::remove_file(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => not_found(format!("unknown objective '{key}'")),
+        _ => BenchError::from(error),
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Production [`BenchState::tuner_objective_validator`]: resolves the built-in
+/// game binary and shells out to `python -m tuner_cli validate-objective` from
+/// the repo root. A game kind with no built-in binary is `ok: false`.
+pub fn shell_validate_objective(
+    game_kind: &str,
+    objective_file: &std::path::Path,
+) -> std::io::Result<super::types::ObjectiveValidation> {
+    let Some(game_binary) = mcts_bench::games::find_game_binary(game_kind) else {
+        return Ok(super::types::ObjectiveValidation {
+            ok: false,
+            errors: vec![format!("no built-in game binary for kind '{game_kind}'")],
+            objective_id: None,
+            panel_fingerprint: None,
+        });
+    };
+    let output = std::process::Command::new("uv")
+        .args([
+            "run",
+            "--project",
+            "tuner",
+            "python",
+            "-m",
+            "tuner_cli",
+            "validate-objective",
+            "--game-binary",
+        ])
+        .arg(game_binary)
+        .arg("--objective-file")
+        .arg(objective_file)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "validate-objective exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        std::io::Error::other(format!("validate-objective produced invalid JSON: {error}"))
+    })
 }
 
 pub(crate) async fn launch_tuner_run(
@@ -106,10 +357,6 @@ pub(crate) async fn launch_tuner_run(
     Json(mut request): Json<TunerLaunchRequest>,
 ) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
     request.runs_root = state.bench_runs_dir.clone();
-    let bad_request = |message: String| BenchError {
-        status: StatusCode::BAD_REQUEST,
-        message,
-    };
     // Resolve the caller-friendly keys to absolute paths so no filesystem
     // path is ever part of the API contract.
     if request.game_binary.as_os_str().is_empty() {
@@ -126,7 +373,7 @@ pub(crate) async fn launch_tuner_run(
             .objective_key
             .as_deref()
             .ok_or_else(|| bad_request("objective_key or objective_file is required".into()))?;
-        if key.is_empty() || key.contains(['/', '\\']) || key.contains("..") {
+        if !valid_objective_key(key) {
             return Err(bad_request(format!("invalid objective_key '{key}'")));
         }
         let candidate = state.tuner_objectives_dir.join(format!("{key}.json"));

@@ -262,7 +262,13 @@ pub fn generate_run_id(kind: &str, game: &str, build_info: BuildInfo<'_>) -> Str
 
 /// ISO-8601 UTC timestamp: `2026-08-08T12:00:00Z`.
 pub(crate) fn iso_timestamp() -> String {
-    let total_secs = unix_secs();
+    iso_timestamp_at(SystemTime::now())
+}
+
+/// ISO-8601 UTC timestamp for an arbitrary instant (e.g. a file's mtime).
+/// Instants before the Unix epoch clamp to the epoch.
+pub fn iso_timestamp_at(time: SystemTime) -> String {
+    let total_secs = time.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (y, m, d, hh, mm, ss) = secs_to_ymdhms(total_secs);
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
 }

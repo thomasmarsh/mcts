@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import sys
 from pathlib import Path
 
 from .domain import SearchEffort
@@ -107,8 +109,24 @@ def _options(args: argparse.Namespace) -> RunOptions:
     )
 
 
+def _validate_objective_main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="tuner validate-objective")
+    parser.add_argument("--game-binary", type=Path, required=True, metavar="PATH")
+    parser.add_argument("--objective-file", type=Path, required=True, metavar="PATH")
+    args = parser.parse_args(argv)
+    from .validate import validate_objective_file
+
+    print(json.dumps(validate_objective_file(args.game_binary, args.objective_file)))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    raw = list(sys.argv[1:] if argv is None else argv)
+    # A subcommand-free argv is the foreground `run` (kept as the default so
+    # `mcts_bench::tuner_launch` needs no change).
+    if raw and raw[0] == "validate-objective":
+        return _validate_objective_main(raw[1:])
+    args = build_parser().parse_args(raw)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
     try:
         run_foreground(_options(args))
