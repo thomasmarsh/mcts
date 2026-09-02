@@ -29,6 +29,7 @@ import { FleetDashboard } from "./views/FleetDashboard.js";
 import { LaunchForm } from "./views/LaunchForm.js";
 import { RunOverview } from "./views/RunOverview.js";
 import { RunScience } from "./views/RunScience.js";
+import { RunEvidence } from "./views/RunEvidence.js";
 import { CandidateDrawer } from "./views/CandidateDrawer.js";
 
 function currentHash(): string {
@@ -136,6 +137,9 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
                 </Match>
                 <Match when={r().tab === "science"}>
                   <RunScience store={store} runId={r().runId} navigate={navigate} />
+                </Match>
+                <Match when={r().tab === "evidence"}>
+                  <RunEvidence store={store} runId={r().runId} navigate={navigate} />
                 </Match>
               </Switch>
               <Show when={drawerCandidate()}>

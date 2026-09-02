@@ -356,6 +356,70 @@ const sciencePart2Report = {
   },
 };
 
+describe("TunerApp run evidence", () => {
+  it("lists candidates and pairs and opens the pair inspector with game summaries", async () => {
+    const getProjectionPairGames = vi.fn(() =>
+      Effect.send([
+        {
+          game_id: "game-a",
+          pair_id: "pair-777aaa",
+          candidate_side: "first",
+          outcome: "candidate_win",
+          plies: 9,
+          elapsed_ms: 1200,
+          candidate_iterations_total: 3000,
+          opponent_iterations_total: 2800,
+        },
+        {
+          game_id: "game-b",
+          pair_id: "pair-777aaa",
+          candidate_side: "second",
+          outcome: "draw",
+          plies: 11,
+          elapsed_ms: 1400,
+          candidate_iterations_total: 3100,
+          opponent_iterations_total: 2900,
+        },
+      ]),
+    );
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          ...completedRunEnv(),
+          getProjectionPairs: () =>
+            Effect.send([
+              {
+                pair_id: "pair-777aaa",
+                phase: "tuning",
+                candidate_id: "candidate-aaaa1111",
+                task_id: "task-1",
+                opponent_id: "schema-default",
+                pair_utility: 0.4,
+              },
+            ]),
+          getProjectionPairGames,
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("done-1")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("done-1"));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-overview")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Raw evidence →" }));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-evidence")).toBeInTheDocument());
+    expect(screen.getByTestId("evidence-candidates")).toHaveTextContent("smac_model");
+    expect(screen.getByTestId("evidence-pairs")).toHaveTextContent("schema-default");
+
+    fireEvent.click(screen.getByText("777aaa"));
+    await vi.waitFor(() => expect(getProjectionPairGames).toHaveBeenCalledWith("done-1", "pair-777aaa"));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("game-summary-strip")).toHaveTextContent("Candidate win"),
+    );
+    expect(screen.getByTestId("pair-kpis")).toHaveTextContent("1 / 1 / 0");
+  });
+});
+
 describe("TunerApp run science part 2", () => {
   it("renders elimination calibration, opponent response, diagnostic graph, and compute", async () => {
     render(() => (

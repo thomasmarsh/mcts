@@ -19,6 +19,8 @@ import { JOURNAL_POLL_MS, journalPollDelayMs } from "./tuner-poll.js";
 import type { TunerEnv } from "./tuner-env.js";
 import type {
   ProjectionCandidate,
+  ProjectionGameRow,
+  ProjectionPairRow,
   ProjectionRunDetail,
   ProjectionRunListItem,
   ProjectionValidation,
@@ -65,9 +67,17 @@ export interface TunerState {
   projectionDetail: RemoteData<ProjectionRunDetail>;
   validation: RemoteData<ProjectionValidation>;
   candidates: RemoteData<ProjectionCandidate[]>;
+  /** Evidence view: the open run's pair rows (server-capped; filtered
+   * client-side by the pairs table). */
+  pairs: RemoteData<ProjectionPairRow[]>;
   report: RemoteData<JsonValue>;
   /** `?candidate=<cid>` — the candidate drawer's subject, or null. */
   openCandidateId: string | null;
+  /** The pair whose inspector is open in the evidence view, or null. */
+  openPairId: string | null;
+  /** Seat-swapped game summaries for `openPairId`. */
+  pairGames: RemoteData<ProjectionGameRow[]>;
+  pairGamesGeneration: number;
   resourceGeneration: number;
   log: TunerLogTailState;
   stopError: string | null;
@@ -90,8 +100,12 @@ export function initialTunerState(): TunerState {
     projectionDetail: idle(),
     validation: idle(),
     candidates: idle(),
+    pairs: idle(),
     report: idle(),
     openCandidateId: null,
+    openPairId: null,
+    pairGames: idle(),
+    pairGamesGeneration: 0,
     resourceGeneration: 0,
     log: { lines: [], errLines: [], offset: 0, error: null, active: false },
     stopError: null,
@@ -129,6 +143,11 @@ export type TunerAction =
   | { tag: "validationFailed"; generation: number; error: string }
   | { tag: "candidatesLoaded"; generation: number; candidates: ProjectionCandidate[] }
   | { tag: "candidatesFailed"; generation: number; error: string }
+  | { tag: "pairsLoaded"; generation: number; pairs: ProjectionPairRow[] }
+  | { tag: "pairsFailed"; generation: number; error: string }
+  | { tag: "selectPair"; pairId: string | null }
+  | { tag: "pairGamesLoaded"; generation: number; games: ProjectionGameRow[] }
+  | { tag: "pairGamesFailed"; generation: number; error: string }
   | { tag: "reportLoaded"; generation: number; report: JsonValue }
   | { tag: "reportFailed"; generation: number; error: string }
   | { tag: "openCandidate"; candidateId: string }
@@ -205,6 +224,10 @@ function fetchRunResources(env: TunerEnv, runId: string, generation: number): Ef
       .map((candidates): TunerAction => ({ tag: "candidatesLoaded", generation, candidates }))
       .catch((e): TunerAction => ({ tag: "candidatesFailed", generation, error: String(e) })),
     env
+      .getProjectionPairs(runId)
+      .map((pairs): TunerAction => ({ tag: "pairsLoaded", generation, pairs }))
+      .catch((e): TunerAction => ({ tag: "pairsFailed", generation, error: String(e) })),
+    env
       .getProjectionReport(runId)
       .map((report): TunerAction => ({ tag: "reportLoaded", generation, report }))
       .catch((e): TunerAction => ({ tag: "reportFailed", generation, error: String(e) })),
@@ -216,6 +239,7 @@ function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Eff
   draft.projectionDetail = toLoading(draft.projectionDetail);
   draft.validation = toLoading(draft.validation);
   draft.candidates = toLoading(draft.candidates);
+  draft.pairs = toLoading(draft.pairs);
   draft.report = toLoading(draft.report);
   return fetchRunResources(env, runId, draft.resourceGeneration);
 }
@@ -225,8 +249,11 @@ function clearResources(draft: TunerState): void {
   draft.projectionDetail = idle();
   draft.validation = idle();
   draft.candidates = idle();
+  draft.pairs = idle();
   draft.report = idle();
   draft.openCandidateId = null;
+  draft.openPairId = null;
+  draft.pairGames = idle();
 }
 
 export function tunerReducer(
@@ -372,6 +399,8 @@ export function tunerReducer(
       });
       if (!changed) return logTick;
       draft.openCandidateId = null;
+      draft.openPairId = null;
+      draft.pairGames = idle();
       return Effect.merge(logTick, startResourceLoad(draft, env, action.runId));
     }
     case "closeRun":
@@ -407,6 +436,37 @@ export function tunerReducer(
     case "candidatesFailed":
       if (action.generation !== draft.resourceGeneration) return null;
       draft.candidates = toErr(action.error, draft.candidates);
+      return null;
+    case "pairsLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.pairs = toOk(action.pairs, Date.now());
+      return null;
+    case "pairsFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.pairs = toErr(action.error, draft.pairs);
+      return null;
+    case "selectPair": {
+      draft.openPairId = action.pairId;
+      draft.pairGamesGeneration += 1;
+      if (!action.pairId || !draft.openRunId) {
+        draft.pairGames = idle();
+        return null;
+      }
+      draft.pairGames = toLoading(draft.pairGames);
+      const generation = draft.pairGamesGeneration;
+      const runId = draft.openRunId;
+      return env
+        .getProjectionPairGames(runId, action.pairId)
+        .map((games): TunerAction => ({ tag: "pairGamesLoaded", generation, games }))
+        .catch((e): TunerAction => ({ tag: "pairGamesFailed", generation, error: String(e) }));
+    }
+    case "pairGamesLoaded":
+      if (action.generation !== draft.pairGamesGeneration) return null;
+      draft.pairGames = toOk(action.games, Date.now());
+      return null;
+    case "pairGamesFailed":
+      if (action.generation !== draft.pairGamesGeneration) return null;
+      draft.pairGames = toErr(action.error, draft.pairGames);
       return null;
     case "reportLoaded":
       if (action.generation !== draft.resourceGeneration) return null;

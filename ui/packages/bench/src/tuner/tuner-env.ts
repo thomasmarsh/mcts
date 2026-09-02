@@ -8,6 +8,7 @@ import type { TunerApiClient } from "./tuner-api-client.js";
 import type {
   ProjectionCandidate,
   ProjectionCohort,
+  ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
   ProjectionRefreshResult,
@@ -38,6 +39,7 @@ export interface TunerEnv {
   getProjectionCandidates(runId: string): Effect<ProjectionCandidate[]>;
   getProjectionCandidate(runId: string, candidateId: string): Effect<ProjectionCandidate>;
   getProjectionPairs(runId: string, query?: ProjectionPairQuery): Effect<ProjectionPairRow[]>;
+  getProjectionPairGames(runId: string, pairId: string): Effect<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Effect<ProjectionValidation>;
   getProjectionReport(runId: string): Effect<JsonValue>;
 }
@@ -61,6 +63,8 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     getProjectionCandidate: (runId, candidateId) =>
       lift(() => api.getProjectionCandidate(runId, candidateId)),
     getProjectionPairs: (runId, query) => lift(() => api.getProjectionPairs(runId, query)),
+    getProjectionPairGames: (runId, pairId) =>
+      lift(() => api.getProjectionPairGames(runId, pairId)),
     getProjectionValidation: (runId) => lift(() => api.getProjectionValidation(runId)),
     getProjectionReport: (runId) => lift(() => api.getProjectionReport(runId)),
   };

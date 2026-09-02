@@ -55,6 +55,7 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
         parent_candidate_id: null,
       }),
     getProjectionPairs: () => Effect.send([]),
+    getProjectionPairGames: () => Effect.send([]),
     getProjectionValidation: () => Effect.send({ rows: [], unresolved_ties: null }),
     getProjectionReport: () => Effect.send({}),
   };

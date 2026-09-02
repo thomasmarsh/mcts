@@ -206,6 +206,18 @@ pub(crate) struct PairRow {
 }
 
 #[derive(Serialize)]
+pub(crate) struct GameRow {
+    game_id: String,
+    pair_id: String,
+    candidate_side: String,
+    outcome: String,
+    plies: i64,
+    elapsed_ms: i64,
+    candidate_iterations_total: i64,
+    opponent_iterations_total: i64,
+}
+
+#[derive(Serialize)]
 pub(crate) struct ValidationRow {
     candidate_id: String,
     rank: i64,
@@ -567,6 +579,43 @@ pub(crate) async fn pairs(
                 })
             },
         )
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    Ok(Json(rows))
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/pairs/{pair_id}/games`
+///
+/// The two seat-swapped game summaries recorded for one pair. Per-ply move
+/// traces are not projected for v4 tuner runs (the tuner passes no
+/// `--trace-path` to `compare eval`); only these summaries are available.
+pub(crate) async fn pair_games(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath((run_id, pair_id)): AxumPath<(String, String)>,
+) -> Result<Json<Vec<GameRow>>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT game_id, pair_id, candidate_side, outcome, plies, elapsed_ms, \
+                    candidate_iterations_total, opponent_iterations_total \
+             FROM games WHERE run_id = ?1 AND pair_id = ?2 ORDER BY game_id",
+        )
+        .map_err(sql_error)?;
+    let rows = stmt
+        .query_map([&run_id, &pair_id], |row| {
+            Ok(GameRow {
+                game_id: row.get(0)?,
+                pair_id: row.get(1)?,
+                candidate_side: row.get(2)?,
+                outcome: row.get(3)?,
+                plies: row.get(4)?,
+                elapsed_ms: row.get(5)?,
+                candidate_iterations_total: row.get(6)?,
+                opponent_iterations_total: row.get(7)?,
+            })
+        })
         .map_err(sql_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)?;

@@ -159,6 +159,20 @@ export interface ProjectionPairRow {
   pair_utility: number;
 }
 
+/** One row of `GET .../projection/runs/{id}/pairs/{pair_id}/games` — a game
+ * *summary* (no per-ply trace; the v4 tuner emits none). */
+export interface ProjectionGameRow {
+  game_id: string;
+  pair_id: string;
+  /** which seat the candidate held in this game. */
+  candidate_side: string;
+  outcome: string;
+  plies: number;
+  elapsed_ms: number;
+  candidate_iterations_total: number;
+  opponent_iterations_total: number;
+}
+
 export interface ProjectionValidationRow {
   candidate_id: string;
   rank: number;

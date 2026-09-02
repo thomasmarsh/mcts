@@ -4696,3 +4696,102 @@ body.bench-active #analysis-panel {
   fill: #555;
   font-family: ui-monospace, monospace;
 }
+
+/* --- Tuner: Run Evidence (pairs table, pair inspector, raw drawers) --- */
+.tuner-run-evidence {
+  padding: calc(var(--topbar-h) + var(--subtabbar-h) + 24px) 24px 48px;
+}
+.tuner-evidence-section {
+  margin-top: 24px;
+}
+.tuner-evidence-section > h3 {
+  margin: 0 0 8px;
+}
+.tuner-evidence-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.tuner-pair-inspector {
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border, #d0d0d0);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+.tuner-game-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 12px;
+}
+.tuner-game-card {
+  flex: 1 1 180px;
+  border: 1px solid var(--border, #d0d0d0);
+  border-left: 3px solid var(--border, #d0d0d0);
+  border-radius: 5px;
+  padding: 8px 10px;
+  background: var(--surface-alt, #f7f7f7);
+}
+.tuner-game-card.tuner-game-win {
+  border-left-color: #3f9142;
+}
+.tuner-game-card.tuner-game-loss {
+  border-left-color: #c65b4e;
+}
+.tuner-game-card.tuner-game-draw {
+  border-left-color: #9a9a9a;
+}
+.tuner-game-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tuner-game-result {
+  font-weight: 600;
+  font-size: 12px;
+}
+.tuner-game-side {
+  font-size: 11px;
+  color: var(--muted, #777);
+}
+.tuner-game-card-meta {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 1px 10px;
+  margin: 0;
+  font-size: 11px;
+}
+.tuner-game-card-meta dt {
+  color: var(--muted, #777);
+}
+.tuner-game-card-meta dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.tuner-json-drawer {
+  margin: 8px 0;
+  border: 1px solid var(--border, #e0e0e0);
+  border-radius: 5px;
+  background: var(--surface-alt, #f5f5f5);
+}
+.tuner-json-drawer > summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.tuner-json-drawer-body {
+  margin: 0;
+  padding: 10px;
+  max-height: 420px;
+  overflow: auto;
+  font-size: 11px;
+  font-family: ui-monospace, monospace;
+  border-top: 1px solid var(--border, #e0e0e0);
+}

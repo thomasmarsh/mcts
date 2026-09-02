@@ -5,7 +5,9 @@ export { FleetDashboard } from "./views/FleetDashboard.js";
 export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
 export { RunOverview } from "./views/RunOverview.js";
 export { RunScience } from "./views/RunScience.js";
+export { RunEvidence } from "./views/RunEvidence.js";
 export { CandidateDrawer } from "./views/CandidateDrawer.js";
+export { PairInspector } from "./views/PairInspector.js";
 
 export { RunStatusBadge } from "./primitives/RunStatusBadge.js";
 export { ProgressRail } from "./primitives/ProgressRail.js";
@@ -24,6 +26,8 @@ export { RaceStrip, dispositionClass, type RaceStripRow } from "./primitives/Rac
 export { Heatmap, type HeatmapCell, type HeatmapRow } from "./primitives/Heatmap.js";
 export { CycleGraph, type CycleGraphNode, type CycleGraphEdge } from "./primitives/CycleGraph.js";
 export { Treemap, type TreemapGroup, type TreemapChild } from "./primitives/Treemap.js";
+export { GameSummaryStrip } from "./primitives/GameSummaryStrip.js";
+export { JsonDrawer } from "./primitives/JsonDrawer.js";
 
 export {
   deriveVerdict,
@@ -39,6 +43,12 @@ export {
   type ConfigDiffRow,
 } from "./models/config-diff-model.js";
 export { buildPreset, type PresetSpec, type PresetCopyResult } from "./models/preset-copy.js";
+export {
+  derivePairInspector,
+  type PairInspectorView,
+  type PairGameView,
+  type PairResult,
+} from "./models/pair-model.js";
 export { deriveProposalFunnel, type ProposalFunnel, type ProposalStage } from "./models/funnel-model.js";
 export {
   deriveCohortRace,

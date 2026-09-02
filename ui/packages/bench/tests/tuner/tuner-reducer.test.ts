@@ -132,6 +132,7 @@ describe("tunerReducer", () => {
       s.projectionDetail = { status: "loading" };
       s.validation = { status: "loading" };
       s.candidates = { status: "loading" };
+      s.pairs = { status: "loading" };
       s.report = { status: "loading" };
       s.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
     });
@@ -149,6 +150,9 @@ describe("tunerReducer", () => {
     );
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
+    });
+    ts.receive({ tag: "pairsLoaded", generation: 1, pairs: [] }, (s) => {
+      s.pairs = ok([]);
     });
     ts.receive({ tag: "reportLoaded", generation: 1, report: {} }, (s) => {
       s.report = ok({});
@@ -188,6 +192,7 @@ describe("tunerReducer", () => {
       s.projectionDetail = { status: "loading", previous: detail };
       s.validation = { status: "loading", previous: { rows: [], unresolved_ties: null } };
       s.candidates = { status: "loading", previous: [] };
+      s.pairs = { status: "loading", previous: [] };
       s.report = { status: "loading", previous: {} };
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
@@ -202,6 +207,9 @@ describe("tunerReducer", () => {
     );
     ts.receive({ tag: "candidatesLoaded", generation: 2, candidates: [] }, (s) => {
       s.candidates = ok([]);
+    });
+    ts.receive({ tag: "pairsLoaded", generation: 2, pairs: [] }, (s) => {
+      s.pairs = ok([]);
     });
     ts.receive({ tag: "reportLoaded", generation: 2, report: {} }, (s) => {
       s.report = ok({});

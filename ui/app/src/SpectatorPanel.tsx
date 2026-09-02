@@ -1,6 +1,5 @@
 // SpectatorPanel.tsx — Read-only playback for persisted game traces.
 
-import { Dynamic } from "solid-js/web";
 import {
   createEffect,
   createMemo,
@@ -21,6 +20,7 @@ import type {
 import type { GameKindModule, MoveStep, SearchReport } from "@mcts/game";
 import { SearchInspector, type SearchInspectorPoint } from "@mcts/search-inspector";
 import { GAME_MODULES } from "./games.js";
+import { BoardViewport } from "./BoardViewport.js";
 
 export interface TraceApi {
   getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
@@ -48,12 +48,6 @@ function defaultTraceEnvironment(): TraceEnvironment {
     api: createBenchApiClient(),
     eventSource: (url) => new EventSource(url),
   };
-}
-
-function readonlyView(state: unknown): unknown {
-  return state && typeof state === "object"
-    ? { ...(state as Record<string, unknown>), terminal: false, winner: null }
-    : { terminal: false, winner: null };
 }
 
 function mergeMoves(rows: GameMove[], row: GameMove): GameMove[] {
@@ -315,21 +309,11 @@ export const SpectatorPanel: Component<SpectatorPanelProps> = (props) => {
                     </div>
                   }
                 >
-                  <Show when={module()} fallback={<div class="log-empty">Loading board…</div>}>
-                    {(mod) => (
-                      <Dynamic
-                        component={mod().Renderer}
-                        state={row().state}
-                        view={readonlyView(row().state)}
-                        history={history()}
-                        legalMoves={[]}
-                        busy={true}
-                        onMove={() => undefined}
-                        hoveredMove={null}
-                        onHover={() => undefined}
-                      />
-                    )}
-                  </Show>
+                  <BoardViewport
+                    module={module() ?? null}
+                    state={row().state}
+                    history={history()}
+                  />
                 </Show>
                 <section class="spectator-search">
                   <SearchInspector

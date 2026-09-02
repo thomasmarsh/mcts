@@ -101,6 +101,31 @@ async fn cohorts_candidates_and_pairs_match_the_fixture() {
 }
 
 #[tokio::test]
+async fn pair_games_match_the_fixture() {
+    let (app, root) = seeded_app(default_seed);
+
+    let (_, body) = http_get(app.clone(), &format!("{V4}/pairs?candidate={CAND0}&limit=1")).await;
+    let pair_id = body_json(&body)[0]["pair_id"].as_str().unwrap().to_string();
+
+    let (status, body) = http_get(app.clone(), &format!("{V4}/pairs/{pair_id}/games")).await;
+    assert_eq!(status, StatusCode::OK);
+    let games = body_json(&body);
+    let rows = games.as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|g| g["pair_id"] == pair_id.as_str()));
+    assert!(rows.iter().any(|g| g["candidate_side"] == "first"));
+    assert!(rows.iter().any(|g| g["candidate_side"] == "second"));
+    assert!(rows[0]["plies"].is_number());
+
+    let (status, _) = http_get(app.clone(), &format!("{V4}/pairs/nope/games")).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = http_get(app, "/api/bench/tuner/projection/runs/nope/pairs/x/games").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn pairs_filtered() {
     let (app, root) = seeded_app(default_seed);
 

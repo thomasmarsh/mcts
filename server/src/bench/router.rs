@@ -114,6 +114,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             get(tuner_api::pairs),
         )
         .route(
+            "/api/bench/tuner/projection/runs/{run_id}/pairs/{pair_id}/games",
+            get(tuner_api::pair_games),
+        )
+        .route(
             "/api/bench/tuner/projection/runs/{run_id}/validation",
             get(tuner_api::validation),
         )

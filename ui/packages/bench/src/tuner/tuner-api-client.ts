@@ -7,6 +7,7 @@
 import type {
   ProjectionCandidate,
   ProjectionCohort,
+  ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
   ProjectionRefreshResult,
@@ -40,6 +41,7 @@ export interface TunerApiClient {
   getProjectionCandidates(runId: string): Promise<ProjectionCandidate[]>;
   getProjectionCandidate(runId: string, candidateId: string): Promise<ProjectionCandidate>;
   getProjectionPairs(runId: string, query?: ProjectionPairQuery): Promise<ProjectionPairRow[]>;
+  getProjectionPairGames(runId: string, pairId: string): Promise<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Promise<ProjectionValidation>;
   getProjectionReport(runId: string): Promise<JsonValue>;
 }
@@ -126,6 +128,8 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
       fetchJson(url(`${projPath(runId)}/candidates/${encodeURIComponent(candidateId)}`)),
     getProjectionPairs: (runId, query = {}) =>
       fetchJson(url(`${projPath(runId)}/pairs${queryString(query)}`)),
+    getProjectionPairGames: (runId, pairId) =>
+      fetchJson(url(`${projPath(runId)}/pairs/${encodeURIComponent(pairId)}/games`)),
     getProjectionValidation: (runId) => fetchJson(url(`${projPath(runId)}/validation`)),
     getProjectionReport: (runId) => fetchJson(url(`${projPath(runId)}/report`)),
   };
