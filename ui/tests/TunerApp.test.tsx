@@ -291,3 +291,93 @@ describe("TunerApp run science", () => {
     );
   });
 });
+
+const sciencePart2Report = {
+  validation_claim: { claim: "mechanics_smoke", missing_production_axes: [] },
+  limitations: [],
+  unresolved_ties: [],
+  proposal_search: { actual_source_attempts: { schema_default: 1 }, accepted: [{ source: "schema_default" }] },
+  shadow_elimination: {
+    policy: { policy_kind: "paired_bootstrap", policy_version: "pb-v1" },
+    summary: {
+      counterfactual_eliminations: 1,
+      top_set_false_eliminations: 0,
+      top_set_false_elimination_rate: 0.0,
+      trash_precision: null,
+      true_trash_eliminations: 0,
+      brier_score: 0.05,
+    },
+    scope: { completed_cohorts: 2, recorded_looks: 4, active_path_looks: 4, held_out_validation_used: false },
+    strata: [{ reversals: 0, elimination_reversals: 0 }],
+    calibration_bins: [
+      { lower: 0.8, upper: 1.0, mean_prediction: 0.95, observed_success_rate: 0.6, count: 5 },
+    ],
+    cohorts: [],
+  },
+  opponent_response_analysis: {
+    scope: { opponent_ids: ["schema-default", "historical"], interval_method: "hoeffding_pair_bound_v1" },
+    candidates: [
+      {
+        candidate_id: "candidate-aaaa1111",
+        opponent_responses: [
+          { opponent_id: "schema-default", mean: 0.7, interval: { lower: 0.4, upper: 0.9 } },
+          { opponent_id: "historical", mean: 0.4, interval: { lower: 0.1, upper: 0.7 } },
+        ],
+      },
+    ],
+    pairwise_interactions: [],
+  },
+  diagnostic_matchup_graph: {
+    scope: { pair_attempt_budget: 12, search_effort: { kind: "iterations", value: 3 } },
+    allocations: { count: 4 },
+    nodes: [
+      { candidate_id: "candidate-aaaa1111", objective_rank: 0 },
+      { candidate_id: "candidate-bbbb2222", objective_rank: 1 },
+    ],
+    edges: [
+      {
+        left_candidate_id: "candidate-aaaa1111",
+        right_candidate_id: "candidate-bbbb2222",
+        material_direction: "left",
+        estimate: 0.3,
+        interval: { lower: 0.1, upper: 0.5 },
+        pair_count: 4,
+      },
+    ],
+    material_cycle_components: [],
+    shortlist_effect: {},
+  },
+  compute: {
+    policy_version: "safe-boundary-pair-attempts-v1",
+    budget: { tuning_pair_attempts: 84, validation_pair_attempts: 4, diagnostic_pair_attempts: 12 },
+    tuning: { pair_attempts: 84, completed_pairs: 82, failed_attempts: 1, censored_attempts: 1, overrun_pair_attempts: 0, unspent_pair_attempts: 0, physical_games: 168, search_iterations: 336, wall_time_ms: 168 },
+    validation: { pair_attempts: 4, completed_pairs: 4, failed_attempts: 0, censored_attempts: 0, overrun_pair_attempts: 0, unspent_pair_attempts: 0, physical_games: 8, search_iterations: 16, wall_time_ms: 8 },
+    diagnostic: { pair_attempts: 12, completed_pairs: 12, failed_attempts: 0, censored_attempts: 0, overrun_pair_attempts: 0, unspent_pair_attempts: 0, physical_games: 24, search_iterations: 36, wall_time_ms: 24 },
+  },
+};
+
+describe("TunerApp run science part 2", () => {
+  it("renders elimination calibration, opponent response, diagnostic graph, and compute", async () => {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          ...completedRunEnv(),
+          getProjectionReport: () => Effect.send(sciencePart2Report),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("done-1")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("done-1"));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-overview")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Full science →" }));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-science")).toBeInTheDocument());
+
+    expect(screen.getByTestId("calibration-heatmap")).toBeInTheDocument();
+    expect(screen.getByTestId("elimination-kpis")).toHaveTextContent("Brier score");
+    expect(screen.getByTestId("opponent-heatmap")).toBeInTheDocument();
+    expect(screen.getByTestId("cycle-graph")).toBeInTheDocument();
+    expect(screen.getByTestId("treemap")).toBeInTheDocument();
+    expect(screen.getByTestId("compute-kpis")).toHaveTextContent("200");
+  });
+});

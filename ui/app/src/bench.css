@@ -4532,3 +4532,167 @@ body.bench-active #analysis-panel {
   opacity: 0.6;
   margin-top: 6px;
 }
+
+.tuner-science-warn {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border-left: 3px solid #c65b4e;
+  background: #fdecea;
+  font-size: 0.8rem;
+}
+.tuner-science-extensions {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 0.78rem;
+}
+
+/* Heatmap */
+.tuner-heatmap-wrap {
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.tuner-heatmap {
+  border-collapse: collapse;
+  font-size: 0.76rem;
+}
+.tuner-heatmap th {
+  font-weight: 500;
+  padding: 3px 8px;
+  opacity: 0.7;
+  text-align: center;
+}
+.tuner-heatmap-rowhead {
+  text-align: left;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+}
+.tuner-heatmap-rownote {
+  opacity: 0.5;
+}
+.tuner-heatmap-cell {
+  position: relative;
+  padding: 4px 10px;
+  text-align: center;
+  min-width: 44px;
+}
+.tuner-heatmap-fill {
+  position: absolute;
+  inset: 2px;
+  background: #14508c;
+  border-radius: 3px;
+}
+.tuner-heatmap-cell-flag {
+  outline: 2px solid #d98324;
+  outline-offset: -2px;
+}
+.tuner-heatmap-label {
+  position: relative;
+  font-family: ui-monospace, monospace;
+  mix-blend-mode: difference;
+  color: #fff;
+}
+
+/* Treemap */
+.tuner-treemap {
+  margin-top: 8px;
+}
+.tuner-treemap-group {
+  margin-bottom: 10px;
+}
+.tuner-treemap-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  margin-bottom: 2px;
+}
+.tuner-treemap-total {
+  font-family: ui-monospace, monospace;
+  opacity: 0.7;
+}
+.tuner-treemap-track {
+  display: flex;
+  height: 18px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #eee;
+}
+.tuner-treemap-seg {
+  height: 100%;
+}
+.tuner-treemap-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 3px;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+.tuner-treemap-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.tuner-treemap-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.tuner-treemap-seg-done,
+.tuner-treemap-swatch.tuner-treemap-seg-done {
+  background: #3f9d5a;
+}
+.tuner-treemap-seg-fail,
+.tuner-treemap-swatch.tuner-treemap-seg-fail {
+  background: #c65b4e;
+}
+.tuner-treemap-seg-censor,
+.tuner-treemap-swatch.tuner-treemap-seg-censor {
+  background: #d98324;
+}
+.tuner-treemap-seg-overrun,
+.tuner-treemap-swatch.tuner-treemap-seg-overrun {
+  background: #8a7fd0;
+}
+.tuner-treemap-seg-unspent,
+.tuner-treemap-swatch.tuner-treemap-seg-unspent {
+  background: #b8b8b8;
+}
+.tuner-treemap-seg-other,
+.tuner-treemap-swatch.tuner-treemap-seg-other {
+  background: #14508c;
+}
+
+/* Cycle graph */
+.tuner-cyclegraph {
+  color: #14508c;
+  max-width: 260px;
+  margin-top: 8px;
+}
+.tuner-cyclegraph-svg {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.tuner-cyclegraph-edge {
+  stroke-width: 1.4;
+  opacity: 0.7;
+}
+.tuner-cyclegraph-node circle {
+  fill: #e8eef5;
+  stroke: currentColor;
+  stroke-width: 1.4;
+}
+.tuner-cyclegraph-node-cycle circle {
+  fill: #fdecea;
+  stroke: #c65b4e;
+}
+.tuner-cyclegraph-badge {
+  font-size: 8px;
+  fill: #333;
+}
+.tuner-cyclegraph-label {
+  font-size: 7px;
+  fill: #555;
+  font-family: ui-monospace, monospace;
+}

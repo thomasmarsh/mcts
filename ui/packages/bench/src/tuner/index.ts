@@ -21,6 +21,9 @@ export { StepLine, type StepPoint } from "./primitives/StepLine.js";
 export { FunnelBars, type FunnelRow } from "./primitives/FunnelBars.js";
 export { KpiRow, type KpiItem } from "./primitives/KpiRow.js";
 export { RaceStrip, dispositionClass, type RaceStripRow } from "./primitives/RaceStrip.js";
+export { Heatmap, type HeatmapCell, type HeatmapRow } from "./primitives/Heatmap.js";
+export { CycleGraph, type CycleGraphNode, type CycleGraphEdge } from "./primitives/CycleGraph.js";
+export { Treemap, type TreemapGroup, type TreemapChild } from "./primitives/Treemap.js";
 
 export {
   deriveVerdict,
@@ -51,6 +54,24 @@ export {
   type Observations,
   type ObservationRow,
 } from "./models/science-models.js";
+export { deriveElimination, type EliminationView, type CalibrationBin } from "./models/elimination-model.js";
+export {
+  deriveOpponentResponse,
+  type OpponentResponseView,
+  type OpponentRow,
+  type OpponentCell,
+} from "./models/opponent-model.js";
+export {
+  deriveDiagnosticGraph,
+  type DiagnosticGraphView,
+  type DiagnosticNode,
+  type DiagnosticEdge,
+} from "./models/diagnostic-model.js";
+export {
+  deriveComputeLedger,
+  type ComputeLedgerView,
+  type PhaseLedger,
+} from "./models/compute-model.js";
 
 export {
   tunerReducer,

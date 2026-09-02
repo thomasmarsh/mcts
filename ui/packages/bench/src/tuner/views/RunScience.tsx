@@ -14,12 +14,19 @@ import type { TunerRoute } from "../tuner-routes.js";
 import { deriveProposalFunnel } from "../models/funnel-model.js";
 import { deriveCohortRace } from "../models/race-model.js";
 import { deriveConvergence, deriveObservations } from "../models/science-models.js";
+import { deriveElimination } from "../models/elimination-model.js";
+import { deriveOpponentResponse, type OpponentRow } from "../models/opponent-model.js";
+import { deriveDiagnosticGraph } from "../models/diagnostic-model.js";
+import { deriveComputeLedger } from "../models/compute-model.js";
 import { StepLine } from "../primitives/StepLine.js";
 import { FunnelBars } from "../primitives/FunnelBars.js";
 import { KpiRow } from "../primitives/KpiRow.js";
 import { RaceStrip } from "../primitives/RaceStrip.js";
 import { Forest } from "../primitives/Forest.js";
 import { DataTable } from "../primitives/DataTable.js";
+import { Heatmap } from "../primitives/Heatmap.js";
+import { CycleGraph } from "../primitives/CycleGraph.js";
+import { Treemap } from "../primitives/Treemap.js";
 
 const STORAGE_KEY = "tuner.science.collapsed";
 
@@ -88,6 +95,10 @@ export const RunScience: Component<{
   const race = createMemo(() => deriveCohortRace(report(), candidates()));
   const convergence = createMemo(() => deriveConvergence(report()));
   const observations = createMemo(() => deriveObservations(report()));
+  const elimination = createMemo(() => deriveElimination(report()));
+  const opponents = createMemo(() => deriveOpponentResponse(report()));
+  const diagnostic = createMemo(() => deriveDiagnosticGraph(report()));
+  const compute = createMemo(() => deriveComputeLedger(report()));
 
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>(loadCollapsed());
   const toggle = (id: string): void => {
@@ -293,6 +304,245 @@ export const RunScience: Component<{
                 onClick: () => openCandidate(r.candidateId),
               }))}
             />
+          </Show>
+        </Section>
+
+        <Section
+          id="elimination"
+          title={elimination().enforced ? "Active elimination" : "Shadow elimination"}
+          caption={
+            elimination().enforced
+              ? "Candidates were pruned mid-race; a randomized audit re-checks a fraction of the cuts, and a safety rule suspends pruning on an audited boundary reversal."
+              : "Elimination decisions were recorded but never enforced. Calibration compares each shadow decision's predicted promotion probability against what actually happened."
+          }
+          collapsed={collapsed()}
+          toggle={toggle}
+          numbers={
+            <DataTable
+              testid="calibration-numbers"
+              rows={elimination().calibrationBins}
+              rowKey={(b) => `${b.lower}-${b.upper}`}
+              empty="No calibration bins (active elimination records none)."
+              columns={[
+                { key: "band", header: "Predicted band", render: (b) => `${b.lower.toFixed(2)}–${b.upper.toFixed(2)}` },
+                { key: "pred", header: "Mean prediction", align: "right", render: (b) => b.meanPrediction.toFixed(3) },
+                { key: "obs", header: "Observed rate", align: "right", render: (b) => b.observedRate.toFixed(3) },
+                { key: "n", header: "Count", align: "right", render: (b) => b.count },
+              ]}
+            />
+          }
+        >
+          <Show
+            when={elimination().present}
+            fallback={<p class="tuner-fleet-empty">No elimination record in this report.</p>}
+          >
+            <Show when={elimination().suspended}>
+              <p class="tuner-science-warn">
+                Pruning suspended: {elimination().suspensionReason}
+              </p>
+            </Show>
+            <KpiRow items={elimination().kpis} testid="elimination-kpis" />
+            <Show when={elimination().calibrationBins.length > 0}>
+              <Heatmap
+                testid="calibration-heatmap"
+                columns={elimination().calibrationBins.map((b) => ({
+                  key: `${b.lower}-${b.upper}`,
+                  label: `${b.lower.toFixed(1)}–${b.upper.toFixed(1)}`,
+                  title: `${b.count} decisions`,
+                }))}
+                rows={[
+                  {
+                    key: "predicted",
+                    label: "predicted",
+                    cells: elimination().calibrationBins.map((b) => ({
+                      label: b.meanPrediction.toFixed(2),
+                      intensity: b.meanPrediction,
+                    })),
+                  },
+                  {
+                    key: "observed",
+                    label: "observed",
+                    cells: elimination().calibrationBins.map((b) => ({
+                      label: b.observedRate.toFixed(2),
+                      intensity: b.observedRate,
+                      flag: Math.abs(b.observedRate - b.meanPrediction) > 0.1,
+                    })),
+                  },
+                ]}
+              />
+            </Show>
+          </Show>
+        </Section>
+
+        <Section
+          id="opponent-response"
+          title="Opponent response"
+          caption="Each finalist's mean pair utility against every panel opponent. Flagged cells are where a pairwise interaction found a material (non-tie) contrast or a ranking reversal."
+          collapsed={collapsed()}
+          toggle={toggle}
+          numbers={
+            <DataTable
+              testid="opponent-numbers"
+              rows={opponents().rows}
+              rowKey={(r) => r.candidateId}
+              onRowClick={(r) => openCandidate(r.candidateId)}
+              columns={[
+                { key: "id", header: "Candidate", render: (r) => r.shortId },
+                { key: "mean", header: "Mean", align: "right", render: (r) => r.mean.toFixed(3) },
+                ...opponents().opponentIds.map((opp, i) => ({
+                  key: opp,
+                  header: opp,
+                  align: "right" as const,
+                  render: (r: OpponentRow) => {
+                    const cell = r.cells[i];
+                    return cell?.mean == null ? "—" : cell.mean.toFixed(3);
+                  },
+                })),
+              ]}
+            />
+          }
+        >
+          <Show
+            when={opponents().present}
+            fallback={<p class="tuner-fleet-empty">No opponent-response analysis in this report.</p>}
+          >
+            <Heatmap
+              testid="opponent-heatmap"
+              columns={opponents().opponentIds.map((opp) => ({ key: opp, label: opp }))}
+              rows={opponents().rows.map((r) => ({
+                key: r.candidateId,
+                label: r.shortId,
+                onClick: () => openCandidate(r.candidateId),
+                cells: r.cells.map((c) => ({
+                  label: c.mean == null ? "—" : c.mean.toFixed(2),
+                  title:
+                    c.mean == null
+                      ? "no games"
+                      : `${c.mean.toFixed(3)} [${(c.lower ?? 0).toFixed(2)}, ${(c.upper ?? 0).toFixed(2)}]`,
+                  intensity: c.mean ?? 0,
+                  flag: c.flagged,
+                })),
+              }))}
+            />
+            <KpiRow items={opponents().kpis} testid="opponent-kpis" />
+          </Show>
+        </Section>
+
+        <Section
+          id="diagnostic"
+          title="Diagnostic matchup graph"
+          caption="Direct candidate-vs-candidate games run to resolve the objective ranking. An arrow A → B means A beat B; highlighted nodes sit in a material preference cycle."
+          collapsed={collapsed()}
+          toggle={toggle}
+          numbers={
+            <DataTable
+              testid="diagnostic-numbers"
+              rows={diagnostic().edges}
+              rowKey={(e) => `${e.from}-${e.to}`}
+              empty="No direct diagnostic edges."
+              columns={[
+                { key: "from", header: "Winner", render: (e) => e.from.replace(/^candidate-/, "").slice(0, 12) },
+                { key: "to", header: "Loser", render: (e) => e.to.replace(/^candidate-/, "").slice(0, 12) },
+                { key: "est", header: "Estimate", align: "right", render: (e) => (e.estimate == null ? "—" : e.estimate.toFixed(3)) },
+                {
+                  key: "iv",
+                  header: "Interval",
+                  align: "right",
+                  render: (e) => (e.lower == null || e.upper == null ? "—" : `[${e.lower.toFixed(2)}, ${e.upper.toFixed(2)}]`),
+                },
+                { key: "pairs", header: "Pairs", align: "right", render: (e) => e.pairCount },
+              ]}
+            />
+          }
+        >
+          <Show
+            when={diagnostic().present}
+            fallback={<p class="tuner-fleet-empty">No diagnostic matchup graph in this report.</p>}
+          >
+            <Show
+              when={diagnostic().hasBudget}
+              fallback={
+                <p class="tuner-fleet-empty">
+                  No diagnostic budget was spent — the objective ranking was accepted directly.
+                </p>
+              }
+            >
+              <CycleGraph
+                nodes={diagnostic().nodes.map((n) => ({
+                  key: n.candidateId,
+                  label: n.shortId,
+                  badge: `#${n.rank}`,
+                  highlight: n.inCycle,
+                  onClick: () => openCandidate(n.candidateId),
+                }))}
+                edges={diagnostic().edges.map((e) => ({
+                  from: e.from,
+                  to: e.to,
+                  undirected: e.undirected,
+                  label: e.estimate == null ? undefined : e.estimate.toFixed(3),
+                }))}
+              />
+            </Show>
+            <Show when={diagnostic().cycles.length > 0}>
+              <p class="tuner-science-warn">
+                Material cycle:{" "}
+                {diagnostic()
+                  .cycles.map((c) => c.members.join(" ⇄ "))
+                  .join("; ")}
+              </p>
+            </Show>
+            <Show when={diagnostic().shortlist.reserveDisplaced}>
+              <p class="tuner-science-warn">
+                Cycle reserve displaced an objective pick:{" "}
+                {diagnostic().shortlist.displacedId?.replace(/^candidate-/, "").slice(0, 12)}
+              </p>
+            </Show>
+            <KpiRow items={diagnostic().kpis} testid="diagnostic-kpis" />
+          </Show>
+        </Section>
+
+        <Section
+          id="compute"
+          title="Compute ledger"
+          caption="Where the pair-attempt budget went, per phase: completed, failed, censored, overrun, and unspent."
+          collapsed={collapsed()}
+          toggle={toggle}
+          numbers={
+            <DataTable
+              testid="compute-numbers"
+              rows={compute().phases}
+              rowKey={(p) => p.phase}
+              columns={[
+                { key: "phase", header: "Phase", render: (p) => p.label },
+                { key: "budget", header: "Budget", align: "right", render: (p) => p.budget },
+                { key: "attempts", header: "Attempts", align: "right", render: (p) => p.pairAttempts },
+                { key: "done", header: "Completed", align: "right", render: (p) => p.completedPairs },
+                { key: "failed", header: "Failed", align: "right", render: (p) => p.failedAttempts },
+                { key: "censored", header: "Censored", align: "right", render: (p) => p.censoredAttempts },
+                { key: "overrun", header: "Overrun", align: "right", render: (p) => p.overrunPairAttempts },
+                { key: "unspent", header: "Unspent", align: "right", render: (p) => p.unspentPairAttempts },
+                { key: "games", header: "Games", align: "right", render: (p) => p.physicalGames },
+              ]}
+            />
+          }
+        >
+          <Show
+            when={compute().present}
+            fallback={<p class="tuner-fleet-empty">No compute ledger in this report.</p>}
+          >
+            <Treemap groups={compute().treemap} />
+            <KpiRow items={compute().kpis} testid="compute-kpis" />
+            <Show when={compute().extensions.length > 0}>
+              <ul class="tuner-science-extensions">
+                <For each={compute().extensions}>
+                  {(ext) => (
+                    <li>
+                      <strong>{ext.label}</strong> — {ext.detail}
+                    </li>
+                  )}
+                </For>
+              </ul>
+            </Show>
           </Show>
         </Section>
       </Show>
