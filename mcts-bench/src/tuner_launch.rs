@@ -726,9 +726,12 @@ mod tests {
         assert!(is_alive(pid));
 
         interrupt(pid).unwrap();
-        // The reaper thread records the terminal outcome asynchronously.
+        // The reaper thread records the terminal outcome asynchronously. A
+        // `sh` child inherits this process's SIGINT disposition, which under a
+        // non-interactive CI runner can be SIG_IGN -- so escalate to SIGKILL if
+        // the interrupt is swallowed. Either way the reaper must see a signal.
         let mut outcome = None;
-        for _ in 0..200 {
+        for i in 0..200 {
             if let Some(found) = records(&root)
                 .unwrap()
                 .into_iter()
@@ -737,6 +740,9 @@ mod tests {
             {
                 outcome = Some(found);
                 break;
+            }
+            if i == 20 && is_alive(pid) {
+                let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
