@@ -41,6 +41,14 @@ function optInt(raw: string): number | undefined {
   return Number.isFinite(n) ? Math.trunc(n) : undefined;
 }
 
+/** The three search-effort phases, each an either/or iterations-or-time pair
+ * on the Rust `TunerLaunchRequest`. */
+const EFFORT_PHASES = ["tuning", "validation", "production"] as const;
+type EffortPhase = (typeof EFFORT_PHASES)[number];
+type EffortUnit = "iterations" | "time_ms";
+
+const PROPOSER_POLICIES = ["smac_mixed", "random", "qmc", "irace_generational"] as const;
+
 function suggestRunId(kind: string, objectiveKey: string): string {
   const stamp = new Date()
     .toISOString()
@@ -73,7 +81,74 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   const [cohortSize, setCohortSize] = createSignal("");
   const [finalists, setFinalists] = createSignal("");
   const [evaluatorWorkers, setEvaluatorWorkers] = createSignal("");
+  const [proposerPolicy, setProposerPolicy] = createSignal("");
+  const [excludedFamilies, setExcludedFamilies] = createSignal<string[]>([]);
+  // Per-phase effort: a value string + a unit toggle for each phase.
+  const [effortValue, setEffortValue] = createSignal<Record<EffortPhase, string>>({
+    tuning: "",
+    validation: "",
+    production: "",
+  });
+  const [effortUnit, setEffortUnit] = createSignal<Record<EffortPhase, EffortUnit>>({
+    tuning: "iterations",
+    validation: "iterations",
+    production: "iterations",
+  });
   const [showAdvanced, setShowAdvanced] = createSignal(false);
+
+  // The tunable `family` categorical's choices for the picked game, sourced
+  // from the schema already shipped in `GET /api/bench/tuner/kinds`. Empty
+  // when the game has no `family` axis (nothing to exclude).
+  const familyChoices = createMemo(() => {
+    const info = kinds().find((k) => k.game === gameKind());
+    const param = info?.tuner.parameters.find((p) => p.name === "family");
+    return param?.choices ?? [];
+  });
+
+  // A different game has a different family list; drop stale exclusions.
+  createEffect(() => {
+    const choices = familyChoices();
+    setExcludedFamilies((prev) => prev.filter((f) => choices.includes(f)));
+  });
+
+  function toggleFamily(family: string, checked: boolean): void {
+    setExcludedFamilies((prev) =>
+      checked ? [...prev, family] : prev.filter((f) => f !== family),
+    );
+  }
+
+  function setPhaseValue(phase: EffortPhase, raw: string): void {
+    setEffortValue({ ...effortValue(), [phase]: raw });
+  }
+  function setPhaseUnit(phase: EffortPhase, unit: EffortUnit): void {
+    setEffortUnit({ ...effortUnit(), [phase]: unit });
+  }
+
+  /** A filled, positive effort for a phase, as `{ unit, value }`, else null. */
+  const phaseEffort = (phase: EffortPhase): { unit: EffortUnit; value: number } | null => {
+    const n = optInt(effortValue()[phase]);
+    if (n === undefined || n <= 0) return null;
+    return { unit: effortUnit()[phase], value: n };
+  };
+
+  // The one effort rule an operator can check locally: a filled tuning or
+  // validation effort of the *same unit* as a filled production effort must
+  // not exceed it. Mixed units or blanks are the server's problem.
+  const effortError = createMemo((): string | null => {
+    const prod = phaseEffort("production");
+    if (!prod) return null;
+    for (const phase of ["tuning", "validation"] as const) {
+      const e = phaseEffort(phase);
+      if (e && e.unit === prod.unit && e.value > prod.value) {
+        return `${phase} effort (${e.value}) cannot exceed production effort (${prod.value})`;
+      }
+    }
+    return null;
+  });
+
+  const excludesEveryFamily = createMemo(
+    () => familyChoices().length > 0 && excludedFamilies().length >= familyChoices().length,
+  );
 
   // Objectives whose `game_kind` matches the picked game come first; an
   // objective with no declared kind is always offered.
@@ -111,9 +186,16 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       optInt(taskSeed()) === undefined ||
       (optInt(tuningBudget()) ?? 0) <= 0 ||
       (optInt(validationBudget()) ?? 0) <= 0 ||
-      (optInt(productionPairs()) ?? 0) <= 0
+      (optInt(productionPairs()) ?? 0) <= 0 ||
+      effortError() !== null ||
+      excludesEveryFamily()
     ) {
       return null;
+    }
+    const effortFields: Record<string, number> = {};
+    for (const phase of EFFORT_PHASES) {
+      const e = phaseEffort(phase);
+      if (e) effortFields[`${phase}_max_${e.unit}`] = e.value;
     }
     return {
       game_kind: gameKind(),
@@ -130,6 +212,9 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       ...(optInt(evaluatorWorkers()) !== undefined
         ? { evaluator_workers: optInt(evaluatorWorkers()) }
         : {}),
+      ...(proposerPolicy() !== "" ? { proposer_policy: proposerPolicy() } : {}),
+      ...(excludedFamilies().length > 0 ? { exclude_family: excludedFamilies() } : {}),
+      ...effortFields,
     };
   };
 
@@ -190,6 +275,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       <label>
         Game
         <select
+          data-testid="game-kind"
           value={gameKind()}
           onInput={(e) => setGameKind(e.currentTarget.value)}
           disabled={busy()}
@@ -313,7 +399,73 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
               onInput={(e) => setEvaluatorWorkers(e.currentTarget.value)}
             />
           </label>
+          <label>
+            Proposer policy
+            <select
+              data-testid="proposer-policy"
+              value={proposerPolicy()}
+              onInput={(e) => setProposerPolicy(e.currentTarget.value)}
+            >
+              <option value="">default (smac_mixed)</option>
+              <For each={PROPOSER_POLICIES}>{(p) => <option value={p}>{p}</option>}</For>
+            </select>
+          </label>
         </div>
+
+        <fieldset class="tuner-launch-effort" data-testid="effort-rows">
+          <legend>Per-phase search effort</legend>
+          <For each={EFFORT_PHASES}>
+            {(phase) => (
+              <div class="tuner-launch-effort-row">
+                <span class="tuner-launch-effort-phase">{phase}</span>
+                <input
+                  type="number"
+                  data-testid={`effort-${phase}-value`}
+                  placeholder="CLI default"
+                  value={effortValue()[phase]}
+                  onInput={(e) => setPhaseValue(phase, e.currentTarget.value)}
+                />
+                <select
+                  data-testid={`effort-${phase}-unit`}
+                  value={effortUnit()[phase]}
+                  onInput={(e) => setPhaseUnit(phase, e.currentTarget.value as EffortUnit)}
+                >
+                  <option value="iterations">iterations</option>
+                  <option value="time_ms">time (ms)</option>
+                </select>
+              </div>
+            )}
+          </For>
+          <Show when={effortError()}>
+            <p class="launch-error" role="alert" data-testid="effort-error">
+              {effortError()}
+            </p>
+          </Show>
+        </fieldset>
+
+        <Show when={familyChoices().length > 0}>
+          <fieldset class="tuner-launch-families" data-testid="family-checklist">
+            <legend>Excluded families</legend>
+            <For each={familyChoices()}>
+              {(family) => (
+                <label class="tuner-launch-family">
+                  <input
+                    type="checkbox"
+                    data-testid={`exclude-family-${family}`}
+                    checked={excludedFamilies().includes(family)}
+                    onChange={(e) => toggleFamily(family, e.currentTarget.checked)}
+                  />
+                  {family}
+                </label>
+              )}
+            </For>
+            <Show when={excludesEveryFamily()}>
+              <p class="launch-error" role="alert" data-testid="exclude-all-error">
+                A run must leave at least one family available.
+              </p>
+            </Show>
+          </fieldset>
+        </Show>
       </Show>
 
       <button type="submit" id="tuner-launch-button" disabled={!canLaunch()}>

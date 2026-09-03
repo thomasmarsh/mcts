@@ -93,6 +93,15 @@ export interface TunerLaunchRequest {
   evaluator_workers?: number | null;
   proposer_policy?: string | null;
   exclude_family?: string[];
+  /** Per-phase search effort. Each phase accepts iterations *or* time, never
+   * both; omitting a pair falls back to the tuner CLI default. Names match
+   * the Rust `TunerLaunchRequest` serde fields verbatim. */
+  tuning_max_iterations?: number | null;
+  tuning_max_time_ms?: number | null;
+  validation_max_iterations?: number | null;
+  validation_max_time_ms?: number | null;
+  production_max_iterations?: number | null;
+  production_max_time_ms?: number | null;
 }
 
 /** Body of `POST /api/bench/tuner/runs/{id}/extend`. */

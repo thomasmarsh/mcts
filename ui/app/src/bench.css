@@ -4168,6 +4168,43 @@ body.bench-active #analysis-panel {
   color: #686a75;
 }
 
+.tuner-launch-effort,
+.tuner-launch-families {
+  border: 1px solid #33353f;
+  border-radius: 6px;
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tuner-launch-effort legend,
+.tuner-launch-families legend {
+  font-size: 12px;
+  color: #686a75;
+  padding: 0 4px;
+}
+
+.tuner-launch-effort-row {
+  display: grid;
+  grid-template-columns: 90px 1fr 120px;
+  align-items: center;
+  gap: 8px;
+}
+
+.tuner-launch-effort-phase {
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.tuner-launch-family {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
 #tuner-launch-button {
   align-self: flex-start;
   background: #4a6ee0;
