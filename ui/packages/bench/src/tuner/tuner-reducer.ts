@@ -3,19 +3,23 @@
 // (every network call is an `Effect` on the injected `TunerEnv`, per
 // AGENTS.md "mock the environment").
 //
-// Two self-scheduling poll loops, both built from `Effect.delay` and sized
+// Three self-scheduling poll loops, all built from `Effect.delay` and sized
 // by the pure cadence functions in `tuner-poll.ts`:
 //   - the fleet journal (`listRuns`): polls every `JOURNAL_POLL_MS` while
 //     any run reports `status: "live"`, and stops once every run has exited.
 //   - the open run's launch-log tail (`getRunLog`): polls while that run is
 //     still live in the journal, so the overview shows what the detached
 //     process is doing before the projection catches up.
+//   - the open run's projection auto-refresh: while the open run is live,
+//     re-runs the projector every `PROJECTION_REFRESH_MS` and silently
+//     reloads the per-run science, so the overview / science / evidence
+//     views fill in and keep updating without a manual "Refresh science".
 // Each loop carries the generation it was scheduled under; opening a
 // different run or re-initialising invalidates whatever is still in flight.
 
 import { Effect } from "@mcts/core";
 import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
-import { JOURNAL_POLL_MS, journalPollDelayMs } from "./tuner-poll.js";
+import { JOURNAL_POLL_MS, PROJECTION_REFRESH_MS, journalPollDelayMs } from "./tuner-poll.js";
 import type { TunerEnv } from "./tuner-env.js";
 import type {
   ProjectionCandidate,
@@ -110,6 +114,16 @@ export interface TunerState {
   refreshing: boolean;
   refreshError: string | null;
   lastProjectionRefreshAt: number | null;
+  /** true while an automatic (loop-driven) `projection/refresh` POST is in
+   * flight — kept separate from `refreshing` so the manual button's spinner
+   * doesn't flicker every cadence. */
+  autoRefreshing: boolean;
+  /** true while the projection auto-refresh loop is scheduled for the open
+   * live run. */
+  projectionRefreshActive: boolean;
+  /** Bumped whenever the auto-refresh loop starts or stops, so a stale
+   * `projectionRefreshTick` is dropped. */
+  projectionRefreshGeneration: number;
   journalGeneration: number;
   logGeneration: number;
 }
@@ -145,6 +159,9 @@ export function initialTunerState(): TunerState {
     refreshing: false,
     refreshError: null,
     lastProjectionRefreshAt: null,
+    autoRefreshing: false,
+    projectionRefreshActive: false,
+    projectionRefreshGeneration: 0,
     journalGeneration: 0,
     logGeneration: 0,
   };
@@ -177,6 +194,9 @@ export type TunerAction =
   | { tag: "refreshProjection" }
   | { tag: "refreshDone" }
   | { tag: "refreshFailed"; error: string }
+  | { tag: "projectionRefreshTick"; generation: number }
+  | { tag: "autoRefreshProjection" }
+  | { tag: "autoRefreshDone" }
   | { tag: "launch"; request: TunerLaunchRequest }
   | { tag: "launchOk"; run: TunerRunView }
   | { tag: "launchFailed"; error: string }
@@ -222,6 +242,27 @@ const isOpenRunLive = (draft: TunerState): boolean => {
   const runs = peek(draft.runs) ?? [];
   return runs.some((r) => r.run_id === draft.openRunId && r.status === "live");
 };
+
+/** Start or stop the projection auto-refresh loop to match whether the open
+ * run is currently live. Returns the first `projectionRefreshTick` when the
+ * loop needs starting, else `null` (bumping the generation so any loop still
+ * in flight winds itself down on its next tick). */
+function syncAutoRefresh(draft: TunerState): Effect<TunerAction> | null {
+  const live = isOpenRunLive(draft);
+  if (live && !draft.projectionRefreshActive) {
+    draft.projectionRefreshActive = true;
+    draft.projectionRefreshGeneration += 1;
+    return Effect.send<TunerAction>({
+      tag: "projectionRefreshTick",
+      generation: draft.projectionRefreshGeneration,
+    });
+  }
+  if (!live && draft.projectionRefreshActive) {
+    draft.projectionRefreshActive = false;
+    draft.projectionRefreshGeneration += 1;
+  }
+  return null;
+}
 
 /** Fetch the journal once, tagged with the loop generation. */
 function fetchJournal(env: TunerEnv): Effect<TunerAction> {
@@ -442,19 +483,26 @@ export function tunerReducer(
       draft.runs = toOk(action.runs, Date.now());
       const after = liveCount(action.runs);
       const delay = journalPollDelayMs(after);
-      const tick =
-        delay === null
-          ? null
-          : Effect.delay<TunerAction>(delay, {
-              tag: "journalTick",
-              generation: draft.journalGeneration,
-            });
+      const effects: Effect<TunerAction>[] = [];
+      if (delay !== null) {
+        effects.push(
+          Effect.delay<TunerAction>(delay, {
+            tag: "journalTick",
+            generation: draft.journalGeneration,
+          }),
+        );
+      }
       // A run just went terminal — pull a fresh projection so the completed
       // list gains its row without waiting for a manual refresh.
-      const refresh =
-        after < before ? Effect.send<TunerAction>({ tag: "refreshProjection" }) : null;
-      if (tick && refresh) return Effect.merge(tick, refresh);
-      return tick ?? refresh;
+      if (after < before) {
+        effects.push(Effect.send<TunerAction>({ tag: "refreshProjection" }));
+      }
+      // The open run's liveness may have changed with this poll — start or
+      // stop its projection auto-refresh loop to match.
+      const auto = syncAutoRefresh(draft);
+      if (auto) effects.push(auto);
+      if (effects.length === 0) return null;
+      return effects.length === 1 ? effects[0]! : Effect.merge(...effects);
     }
     case "runsFailed": {
       draft.runs = toErr(action.error, draft.runs);
@@ -493,6 +541,52 @@ export function tunerReducer(
       draft.refreshing = false;
       draft.refreshError = action.error;
       return null;
+
+    case "projectionRefreshTick": {
+      if (
+        action.generation !== draft.projectionRefreshGeneration ||
+        !draft.projectionRefreshActive
+      ) {
+        return null;
+      }
+      if (!isOpenRunLive(draft)) {
+        draft.projectionRefreshActive = false;
+        return null;
+      }
+      return Effect.merge(
+        Effect.send<TunerAction>({ tag: "autoRefreshProjection" }),
+        Effect.delay<TunerAction>(PROJECTION_REFRESH_MS, {
+          tag: "projectionRefreshTick",
+          generation: action.generation,
+        }),
+      );
+    }
+    case "autoRefreshProjection": {
+      // A manual refresh in flight already covers this cadence.
+      if (draft.refreshing || draft.autoRefreshing) return null;
+      draft.autoRefreshing = true;
+      return env
+        .refreshProjection()
+        .map((): TunerAction => ({ tag: "autoRefreshDone" }))
+        // A periodic refresh that fails is non-critical: the launch-log tail
+        // still shows progress and the next tick tries again. Don't raise
+        // `refreshError` — that banner is for the manual button.
+        .catch((): TunerAction => ({ tag: "autoRefreshDone" }));
+    }
+    case "autoRefreshDone": {
+      draft.autoRefreshing = false;
+      draft.lastProjectionRefreshAt = Date.now();
+      const list = fetchProjection(env);
+      if (!draft.openRunId) return list;
+      // Silent reload: bump the generation and refetch without flipping the
+      // per-run slots to `loading`, so the science already on screen stays
+      // put (no dim flash) while the fresher data loads underneath.
+      draft.resourceGeneration += 1;
+      return Effect.merge(
+        list,
+        fetchRunResources(env, draft.openRunId, draft.resourceGeneration),
+      );
+    }
 
     case "launch": {
       if (draft.launch.status === "pending") return null;
@@ -567,12 +661,19 @@ export function tunerReducer(
       draft.openCandidateId = null;
       draft.openPairId = null;
       draft.pairGames = idle();
-      return Effect.merge(logTick, startResourceLoad(draft, env, action.runId));
+      const effects = [logTick, startResourceLoad(draft, env, action.runId)];
+      // If the newly opened run is already live, start its projection
+      // auto-refresh loop now rather than waiting for the next journal poll.
+      const auto = syncAutoRefresh(draft);
+      if (auto) effects.push(auto);
+      return Effect.merge(...effects);
     }
     case "closeRun":
       draft.openRunId = null;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
       clearResources(draft);
+      // No open run — wind the auto-refresh loop down.
+      syncAutoRefresh(draft);
       return null;
 
     case "loadRunResources": {
