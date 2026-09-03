@@ -1,34 +1,37 @@
-//! Builds a runnable `Box<dyn Search<G>>` for a [`DirectFamily`] -- the
-//! `Direct` counterpart of `config_ir::build_search`. Every `Compose`
-//! family resolves through `config_ir`'s four-axis `SearchSpec`; a `Direct`
-//! family has no such representation (it's a standalone `Search` impl, not
-//! a `Compose<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>` `TreeSearch`),
+//! Builds a runnable `Box<dyn Search<G>>` for a non-MCTS [`AlgorithmSpec`] --
+//! the `random`/`flat_mc`/`negamax` counterpart of `config_ir::build_search`.
+//! Those three are standalone `Search` impls, not a
+//! `Compose<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>` `TreeSearch`,
 //! so this is the one place `G` is monomorphized against its concrete type
-//! instead.
+//! instead of erased through `config_ir`'s `Dyn*` axes.
 
 use mcts::evaluator::MaterialBlind;
 use mcts::game::Game;
 use mcts::algorithms::negamax::{Negamax, NegamaxOptions};
 use mcts::algorithms::{flat_mc::FlatMonteCarloStrategy, random::Random, Search};
 
-use crate::family_catalog::DirectFamily;
+use crate::dispatch::AlgorithmSpec;
 use crate::SearchBudget;
 
-/// Builds the concrete `Search` impl named by `direct`. `budget` is accepted
-/// for symmetry with `config_ir::build_search`'s call shape; `Random` and
-/// `FlatMc` ignore it (neither has a time/iteration/thread budget to apply --
-/// `flat_mc`'s own per-move effort is `samples_per_move`/`max_rollout_depth`,
-/// tunable fields rather than a run-level budget), but `Negamax` reads both
-/// `threads` (Lazy-SMP root splitting) and `max_time` (iterative-deepening
-/// cutoff) from it, the same as any `Compose` family's `SearchSettings`.
+/// Builds the concrete `Search` impl named by a non-MCTS `algorithm`.
+/// `budget` is accepted for symmetry with `config_ir::build_search`'s call
+/// shape; `Random` and `FlatMc` ignore it (neither has a
+/// time/iteration/thread budget to apply -- `flat_mc`'s own per-move effort
+/// is `samples_per_move`/`max_rollout_depth`, tunable fields rather than a
+/// run-level budget), but `Negamax` reads both `threads` (Lazy-SMP root
+/// splitting) and `max_time` (iterative-deepening cutoff) from it, the same
+/// as any MCTS configuration's `SearchSettings`.
+///
+/// [`AlgorithmSpec::Mcts`] is unreachable here: `make_candidate` routes it
+/// through `config_ir::build_search` before falling back to this function.
 pub(crate) fn build_direct<G: Game + 'static>(
-    direct: &DirectFamily,
+    algorithm: &AlgorithmSpec,
     seed: u64,
     budget: &SearchBudget,
 ) -> Box<dyn Search<G = G>> {
-    match direct {
-        DirectFamily::Random => Box::new(Random::<G>::new().with_seed(seed)),
-        DirectFamily::FlatMc {
+    match algorithm {
+        AlgorithmSpec::Random => Box::new(Random::<G>::new().with_seed(seed)),
+        AlgorithmSpec::FlatMc {
             samples_per_move,
             max_rollout_depth,
             ucb1,
@@ -39,7 +42,7 @@ pub(crate) fn build_direct<G: Game + 'static>(
                 .set_ucb1(*ucb1)
                 .with_seed(seed),
         ),
-        DirectFamily::Negamax {
+        AlgorithmSpec::Negamax {
             max_depth,
             table_bits,
             replacement,
@@ -68,6 +71,9 @@ pub(crate) fn build_direct<G: Game + 'static>(
                 MaterialBlind,
                 options,
             ))
+        }
+        AlgorithmSpec::Mcts(_) => {
+            unreachable!("build_direct is only called for a non-MCTS AlgorithmSpec")
         }
     }
 }

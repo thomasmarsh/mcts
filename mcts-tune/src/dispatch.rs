@@ -1,16 +1,24 @@
 //! Algorithm-native construction of a search configuration.
 //!
-//! Where `family_catalog.rs`'s `register_family!` table hard-codes one
-//! `(select, simulate, backprop, final_action)` tuple per named row, this
-//! module builds the same `config_ir::SearchSpec` directly from the four
-//! policy-axis categoricals plus their per-variant scalar parameters -- a
-//! `match` per axis instead of a row per composition. `family_catalog.rs`
-//! remains the source of truth until the schema (`tuner_info.rs`) and the
-//! candidate/opponent builders (`search.rs`) are rewired onto this path;
-//! `algorithm_native_specs_match_family_goldens` pins every axis assignment
-//! to the exact `SearchSpec` its pre-cutover `family` row produced.
+//! [`to_algorithm_spec`] resolves a params object -- the top-level
+//! `algorithm` categorical and, for `mcts`, the four policy-axis categoricals
+//! (`select`/`simulate`/`backprop`/`final_action`) plus each variant's own
+//! scalar parameters -- into an [`AlgorithmSpec`]: a `config_ir::SearchSpec`
+//! for `mcts`, or the parameter set one of the three standalone `Search`
+//! impls needs. It is a `match` per axis rather than a row per named
+//! composition; `search.rs` and `tuner_info.rs` are the callers.
+//!
+//! [`legacy_family_to_axes`] is the one backward-compatibility seam: it maps
+//! every pre-cutover `family` name onto its `algorithm` + axis categoricals
+//! so `evidence.jsonl` replay and older baseline/opponent configs still
+//! resolve. `algorithm_native_specs_match_family_goldens` pins every such
+//! mapping to the exact `SearchSpec` that `family` row produced before the
+//! catalog was retired.
+
+use std::str::FromStr;
 
 use game_host::HostError;
+use mcts::algorithms::mcts::node::QInit;
 use mcts::algorithms::negamax;
 use mcts::evaluator::Score;
 use mcts::select::{GpnBias, RaveSchedule, RaveUcb};
@@ -311,8 +319,8 @@ pub(crate) fn to_search_spec(cfg: &Value) -> Result<SearchSpec, HostError> {
 
 /// The two `SearchSettings` knobs the proof-number selects (Kowalski et al.
 /// 2023) populate and every other configuration leaves `None` -- read here
-/// off the same axis config so `search.rs` can thread them into
-/// `compose_settings` once it is rewired onto this path.
+/// off the axis config so `search.rs::mcts_settings` can thread them into
+/// `config_ir::SearchSettings`.
 pub(crate) fn mcts_engine_overrides(
     cfg: &Value,
 ) -> Result<(Option<u32>, Option<f64>), HostError> {
@@ -326,6 +334,15 @@ pub(crate) fn mcts_engine_overrides(
         }
     };
     Ok((solver_loss_threshold, contempt_factor))
+}
+
+/// Reads the `q_init` categorical off the axis config -- required for
+/// `algorithm == mcts` (every MCTS configuration needs a Q-value
+/// initialization rule), read by `search.rs` when it assembles
+/// `SearchSettings`.
+pub(crate) fn read_q_init(cfg: &Value) -> Result<QInit, HostError> {
+    let raw = req_str(cfg, "q_init")?;
+    QInit::from_str(raw).map_err(|_| HostError::bad_request(format!("invalid q_init: {raw}")))
 }
 
 /// Resolves the top-level `algorithm` categorical.

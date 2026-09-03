@@ -1,11 +1,11 @@
-use std::str::FromStr;
+use std::borrow::Cow;
 
 use game_host::{
     Analysis, AnalysisAction, HostError, SearchActionReport, SearchGraphMode, SearchReport,
     SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
 };
 use mcts::game::Game;
-use mcts::algorithms::mcts::{node::QInit, GraphSearch, GraphStats, TranspositionKeying};
+use mcts::algorithms::mcts::{GraphSearch, GraphStats, TranspositionKeying};
 use mcts::algorithms::{
     Search, SearchGraphMode as EngineSearchGraphMode, SearchReport as EngineSearchReport,
     SearchReportReason as EngineSearchReportReason, SearchReportStatus as EngineSearchReportStatus,
@@ -15,8 +15,8 @@ use serde_json::Value;
 
 use crate::{
     config_ir,
+    dispatch::{self, AlgorithmSpec},
     direct_search::build_direct,
-    family_catalog::{dispatch_family, ComposeSpec, FamilySpec, TrialParams},
 };
 
 pub(crate) const PLAYOUT_DEPTH: usize = 200;
@@ -192,9 +192,9 @@ fn wire_search_report<A>(
 /// for why its round-trip check doesn't live in this file's fast suite.
 pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 
-/// A candidate's search-effort ceiling -- orthogonal to `TrialParams`
-/// (which family/hyperparameters to run), this is *how much compute* that
-/// family gets to run for. Defaults to this harness's historical behavior
+/// A candidate's search-effort ceiling -- orthogonal to the params object
+/// (which algorithm/hyperparameters to run), this is *how much compute* that
+/// configuration gets to run for. Defaults to this harness's historical behavior
 /// (`MAX_ITER` iterations, single-threaded, uncapped wall time) -- the
 /// right shape for a `baseline_config`-backed opponent (self-play against a
 /// discovered config, including a `random`/`flat_mc` baseline), since both
@@ -212,7 +212,7 @@ pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// whatever named preset it's dispatching to in that case (see
 /// `games/druid/src/main.rs`'s `tune_eval`).
 ///
-/// `max_iterations` is deliberately **not** part of `TrialParams` -- it's a
+/// `max_iterations` is deliberately **not** a tunable param -- it's a
 /// per-*run* compute budget an operator sets once at launch (`--override
 /// target.max_iterations=N`, or the launch form's "Iteration budget"
 /// field), not a per-*trial* hyperparameter tuner gets to search over
@@ -251,46 +251,29 @@ impl SearchBudget {
     }
 }
 
-/// Converts one trial's `TrialParams` and its already-dispatched
-/// `ComposeSpec` into `config_ir`'s `SearchSpec`/`SearchSettings` -- the
-/// part of candidate construction common to every `FamilySpec::Compose`
-/// family (`q_init`, `mcgs`, the fixed `SearchSettings` knobs), factored out
-/// of `to_search_spec` so `make_candidate` can call it directly for a
-/// `Compose` family without re-dispatching `p.family`.
-fn compose_settings(
-    cs: ComposeSpec,
-    p: &TrialParams,
+/// Assembles the `SearchSettings` an `algorithm == mcts` configuration needs
+/// alongside its `config_ir::SearchSpec` -- the `q_init`/`mcgs`/engine-
+/// override knobs read straight off the axis config, plus this crate's fixed
+/// playout-depth/expand-threshold/solver constants and the per-run
+/// `SearchBudget`. The `SearchSpec` itself comes from
+/// `dispatch::to_algorithm_spec`.
+fn mcts_settings(
+    cfg: &Value,
     seed: u64,
     use_transpositions: bool,
     budget: &SearchBudget,
-) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
-    let q_init_str = p
-        .q_init
-        .as_deref()
-        .ok_or_else(|| HostError::bad_request("missing param: q_init".to_string()))?;
-    let q_init = QInit::from_str(q_init_str)
-        .map_err(|_| HostError::bad_request(format!("invalid q_init: {q_init_str}")))?;
-    let mcgs = p.mcgs.unwrap_or(false);
-    let state_only_keying = p.state_only_keying.unwrap_or(false);
+) -> Result<config_ir::SearchSettings, HostError> {
+    let q_init = dispatch::read_q_init(cfg)?;
+    let mcgs = cfg.get("mcgs").and_then(Value::as_bool).unwrap_or(false);
+    let state_only_keying = cfg
+        .get("state_only_keying")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let (use_transpositions, reuse_tree, graph_search, transposition_keying) =
         resolve_graph_search(mcgs, use_transpositions, state_only_keying)?;
+    let (solver_loss_threshold, contempt_factor) = dispatch::mcts_engine_overrides(cfg)?;
 
-    let ComposeSpec {
-        select,
-        simulate,
-        final_action,
-        backprop,
-        solver_loss_threshold: solver_loss_threshold_setting,
-        contempt_factor: contempt_factor_setting,
-    } = cs;
-
-    let spec = config_ir::SearchSpec {
-        select,
-        simulate,
-        backprop,
-        final_action,
-    };
-    let settings = config_ir::SearchSettings {
+    Ok(config_ir::SearchSettings {
         max_iterations: budget.iteration_limit(),
         max_playout_depth: PLAYOUT_DEPTH,
         expand_threshold: EXPAND_THRESHOLD,
@@ -305,44 +288,47 @@ fn compose_settings(
         max_time: budget.max_time,
         graph_search,
         transposition_keying,
-        solver_loss_threshold: solver_loss_threshold_setting,
-        contempt_factor: contempt_factor_setting,
-    };
-    Ok((spec, settings))
+        solver_loss_threshold,
+        contempt_factor,
+    })
 }
 
-/// Converts one trial's `TrialParams` into `config_ir`'s `SearchSpec`/
-/// `SearchSettings`, valid only for a family that resolves to
-/// `FamilySpec::Compose` (a `Direct` family, e.g. `"random"`, has no such
-/// representation; calling this with one returns the `Err` below). Per-family
-/// construction is `family_catalog::dispatch_family`'s `register_family!`
-/// table; `compose_settings` handles what's common to every `Compose` family.
-/// `make_candidate` builds its own `Box<dyn Search<G>>` straight from
-/// `compose_settings`/`build_direct` rather than through this function, so
-/// this is exercised only by `tests.rs`'s direct `SearchSpec`/
-/// `SearchSettings`-level assertions.
-#[cfg(test)]
-pub(crate) fn to_search_spec(
-    p: &TrialParams,
-    seed: u64,
-    use_transpositions: bool,
-    budget: &SearchBudget,
-) -> Result<(config_ir::SearchSpec, config_ir::SearchSettings), HostError> {
-    match dispatch_family(&p.family, p)? {
-        FamilySpec::Compose(cs) => compose_settings(cs, p, seed, use_transpositions, budget),
-        FamilySpec::Direct(_) => Err(HostError::bad_request(format!(
-            "family {:?} has no config_ir::SearchSpec representation",
-            p.family
-        ))),
+/// Rewrites a pre-cutover `{ "family": "..." }` params object with no
+/// `algorithm` key into its `algorithm` + axis categoricals (the family's
+/// own scalar params are left untouched), so `dispatch::to_algorithm_spec`
+/// can resolve it. New runs always carry `algorithm` and take the borrowed
+/// fast path. This is the sole remaining consumer of
+/// `dispatch::legacy_family_to_axes`, and exists only so baseline/opponent
+/// configs and on-disk `evidence.jsonl` records that still use the old
+/// `family` key keep resolving.
+fn resolve_axis_params(params: &Value) -> Result<Cow<'_, Value>, HostError> {
+    let Some(obj) = params.as_object() else {
+        return Ok(Cow::Borrowed(params));
+    };
+    if obj.contains_key("algorithm") {
+        return Ok(Cow::Borrowed(params));
     }
+    let Some(family) = obj.get("family").and_then(Value::as_str) else {
+        // Neither key: let `to_algorithm_spec` raise the missing-`algorithm`
+        // error itself.
+        return Ok(Cow::Borrowed(params));
+    };
+    let axes = dispatch::legacy_family_to_axes(family)
+        .ok_or_else(|| HostError::bad_request(format!("unknown family: {family}")))?;
+    let mut merged = obj.clone();
+    merged.remove("family");
+    for (key, value) in axes.as_object().expect("legacy_family_to_axes returns an object") {
+        merged.insert(key.clone(), value.clone());
+    }
+    Ok(Cow::Owned(Value::Object(merged)))
 }
 
 /// Derives `SearchSettings`'s `use_transpositions`/`reuse_tree`/
 /// `graph_search`/`transposition_keying` from a requested `mcgs` flag and
 /// whether the game supports transpositions at all -- the one place "`mcgs`
 /// implies `Dag(Both)`, turns off the plain transposition table and tree
-/// reuse, and requires a real zobrist hash" is decided. Both
-/// [`to_search_spec`] and [`presets::build_custom`] call this rather than
+/// reuse, and requires a real zobrist hash" is decided. Both [`mcts_settings`]
+/// and [`presets::build_custom`] call this rather than
 /// each re-deriving the same fields from `mcgs`, so that mapping can't drift
 /// into two different answers as either caller changes independently -- see
 /// this repo's `AGENTS.md` on why config axes like this one need to be
@@ -381,7 +367,7 @@ pub(crate) fn resolve_graph_search(
 }
 
 /// Builds a `Box<dyn Search<G>>` from a raw params JSON object, the same
-/// deserialize-then-dispatch path `strategy_tune_eval` uses for the
+/// [`make_candidate`] path `strategy_tune_eval` uses for the
 /// candidate side -- exposed so a caller can also build an *opponent* from
 /// an arbitrary discovered config, not just a named preset. See
 /// `game_host::GameAdapter::tune_eval`'s `baseline_config` parameter.
@@ -402,23 +388,30 @@ pub fn build_search<G: Game + 'static>(
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    let trial: TrialParams = serde_json::from_value(params.clone())
-        .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
-    make_candidate(&trial, seed, use_transpositions, budget)
+    make_candidate(params, seed, use_transpositions, budget)
 }
 
+/// Resolves a candidate/opponent params object -- the `algorithm` categorical
+/// plus, for `mcts`, its policy-axis categoricals and per-variant params --
+/// into a runnable `Box<dyn Search<G>>`. An `mcts` configuration goes through
+/// `config_ir::build_search` (the type-erased `Dyn*` axis path);
+/// `random`/`flat_mc`/`negamax` go through `direct_search::build_direct`.
+/// A pre-cutover `{ "family": "..." }` object is first rewritten by
+/// `resolve_axis_params`.
 pub(crate) fn make_candidate<G: Game + 'static>(
-    p: &TrialParams,
+    params: &Value,
     seed: u64,
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    match dispatch_family(&p.family, p)? {
-        FamilySpec::Direct(direct) => Ok(build_direct::<G>(&direct, seed, budget)),
-        FamilySpec::Compose(cs) => {
-            let (spec, settings) = compose_settings(cs, p, seed, use_transpositions, budget)?;
+    let params = resolve_axis_params(params)?;
+    let params: &Value = &params;
+    match dispatch::to_algorithm_spec(params)? {
+        AlgorithmSpec::Mcts(spec) => {
+            let settings = mcts_settings(params, seed, use_transpositions, budget)?;
             config_ir::validate_search_spec::<G>(&spec).map_err(HostError::bad_request)?;
             Ok(config_ir::build_search(&spec, &settings))
         }
+        other => Ok(build_direct::<G>(&other, seed, budget)),
     }
 }

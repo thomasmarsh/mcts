@@ -20,7 +20,7 @@ pub struct SearchSpec {
 }
 
 /// The non-strategy `SearchConfig` knobs a `SearchSpec` needs alongside
-/// itself -- this module's counterpart of `mcts-tune::to_search_spec`'s
+/// itself -- this module's counterpart of `mcts-tune::search::mcts_settings`'s
 /// generic settings (iteration/time budget, `q_init`, threading, ...), factored out
 /// because they're orthogonal to which axis families are chosen and don't
 /// belong inside any one `*Spec` enum.
@@ -111,10 +111,11 @@ where
 }
 
 /// Builds a runnable `Box<dyn Search<G = G>>` from a `SearchSpec` --
-/// `mcts-tune::make_candidate`'s dispatch for every family except
-/// `"random"`/`"flat_mc"`: convert `TrialParams` via `to_search_spec`, then
-/// call this, driven entirely by this file's registry-generated dispatch
-/// rather than a hand-written `match p.family.as_str()`. `select`, `simulate`,
+/// `mcts-tune::make_candidate`'s dispatch for every `algorithm == mcts`
+/// configuration (`random`/`flat_mc`/`negamax` go through
+/// `direct_search::build_direct` instead): `dispatch::to_search_spec` builds
+/// the `SearchSpec`, then this call resolves it, driven entirely by this
+/// file's registry-generated dispatch. `select`, `simulate`,
 /// and `final_action` are resolved up front into their `Dyn*<G>` forms;
 /// `backprop` is resolved last, through `BackpropStage`, since it's the only
 /// axis this function still dispatches by monomorphizing over the real

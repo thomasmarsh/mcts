@@ -1,10 +1,11 @@
 //! Runtime-loadable AI presets ("easy"/"strong"/...), independent of any
 //! particular game's own hardcoded preset list. A
 //! `PresetTable` is just a `Vec<PresetSpec>` parsed from JSON -- each entry
-//! names a `TrialParams`-shaped `params` object (the same JSON
-//! `family_catalog`'s families already accept) plus a time/iteration/thread
-//! budget, resolved to a runnable search via the existing [`build_search`]
-//! (this crate's own `TrialParams` -> `config_ir::SearchSpec` ->
+//! names a `params` object (the `algorithm` categorical plus its axis
+//! variants and their parameters -- or a pre-cutover `family` name, still
+//! resolved by `dispatch::legacy_family_to_axes`) plus a time/iteration/
+//! thread budget, resolved to a runnable search via the existing
+//! [`build_search`] (this crate's own params -> `config_ir::SearchSpec` ->
 //! `Box<dyn Search<G>>` pipeline) -- not a new mechanism, just a new
 //! *source* for the JSON `build_search` already accepts.
 //!
@@ -39,10 +40,11 @@ fn one() -> usize {
 
 /// One preset's wire shape: `id`/`label`/`description` mirror
 /// `game_host::AiPresetInfo` exactly (`to_info` just clones them into it);
-/// `params` is a `TrialParams`-shaped JSON object (`family` plus whatever
-/// fields that family needs, `q_init` as a string) -- the exact shape
-/// `build_search` already parses, so nothing new to validate here beyond
-/// what `build_search` itself already rejects at build time.
+/// `params` is a search-config JSON object (`algorithm` plus the axis
+/// variants and parameters it activates, `q_init` as a string -- or a
+/// legacy `family` name) -- the exact shape `build_search` already resolves,
+/// so nothing new to validate here beyond what `build_search` itself
+/// already rejects at build time.
 ///
 /// `Serialize`/`Deserialize` are hand-implemented below (routed through
 /// `serde_json::Value`, via the same `config_ir::codec` helpers the
@@ -227,7 +229,7 @@ impl PresetTable {
 }
 
 /// Non-strategy budget/threading defaults [`build_custom`] applies --
-/// mirrors `mcts-tune::to_search_spec`'s own constants (`PLAYOUT_DEPTH`/
+/// mirrors `mcts-tune::search`'s own constants (`PLAYOUT_DEPTH`/
 /// `EXPAND_THRESHOLD`), reused here rather than re-picked, so a "Custom"
 /// search behaves like every named-preset search along every axis it
 /// doesn't expose as a field.
@@ -238,11 +240,11 @@ const EXPAND_THRESHOLD: u32 = 1;
 /// shapes: [`Self::search`] is a full `config_ir::SearchSpec`, built through
 /// [`build_custom`] via `config_ir::build_search` directly -- true free
 /// composition of all four axes, not a named combination (unlike
-/// [`PresetSpec`]'s `params`, which is `TrialParams`-shaped and dispatched
-/// through `family_catalog`'s pre-composed family names). [`Self::params`]
-/// is that same `TrialParams`-shaped JSON instead, for naming an ordinary
-/// family (including a [`crate::family_catalog::DirectFamily`] one, e.g.
-/// `"random"`) inline rather than composing axes by hand -- `build_custom`
+/// [`PresetSpec`]'s `params`, which is resolved by `dispatch::to_algorithm_spec`
+/// from the `algorithm` categorical and its axis variants). [`Self::params`]
+/// is that same search-config JSON instead, for naming a configuration
+/// (including a non-MCTS `algorithm` such as `"random"`) inline rather than
+/// composing the four axes by hand -- `build_custom`
 /// resolves it through the exact same [`crate::build_search`] a
 /// [`PresetSpec`] already goes through. Exactly one of the two must be set.
 /// Field shape otherwise mirrors [`PresetSpec`] minus `id`/`label`/
@@ -263,19 +265,19 @@ pub struct CustomStrategySpec {
     pub threads: usize,
     pub use_transpositions: bool,
     /// `QInit`'s wire form is a name string (`"Parent"`/`"Win"`/`"Loss"`/
-    /// `"Draw"`/`"Infinity"`), matching `TrialParams::q_init` -- `QInit`
+    /// `"Draw"`/`"Infinity"`), matching the `q_init` param -- `QInit`
     /// itself has no `Serialize`/`Deserialize` derive to reuse directly.
     pub q_init: String,
-    /// Same wire name and semantics as `TrialParams::mcgs`
-    /// ([`crate::family_catalog`]/`to_search_spec`): `true` switches on Monte
+    /// Same wire name and semantics as the `mcgs` param
+    /// (`dispatch`/`search::mcts_settings`): `true` switches on Monte
     /// Carlo *graph* search (`GraphSearch::Dag(GraphStats::Both)`) in place
     /// of plain tree search, and requires `use_transpositions` also be `true`
     /// (rejected by [`build_custom`] otherwise) since graph search only
     /// makes sense against a game with a real zobrist hash. See
     /// `crate::resolve_graph_search`, the shared derivation both this and
-    /// `to_search_spec` call.
+    /// `search::mcts_settings` call.
     pub mcgs: bool,
-    /// Same wire name and semantics as `TrialParams::state_only_keying`:
+    /// Same wire name and semantics as the `state_only_keying` param:
     /// `true` selects `TranspositionKeying::StateOnly` over the default
     /// `PerPly`, and requires `mcgs` also be `true` (rejected by
     /// [`build_custom`] otherwise, via `crate::resolve_graph_search`). See
@@ -382,13 +384,12 @@ impl CustomStrategySpec {
 }
 
 /// Builds a runnable search straight from a [`CustomStrategySpec`] --
-/// either [`CustomStrategySpec::search`] (bypassing `TrialParams`/
-/// `family_catalog` entirely and calling `config_ir::build_search` directly,
-/// for a free per-axis composition no named family produces) or
-/// [`CustomStrategySpec::params`] (naming an ordinary family, resolved
+/// either [`CustomStrategySpec::search`] (a `config_ir::SearchSpec` given
+/// directly, built via `config_ir::build_search`) or
+/// [`CustomStrategySpec::params`] (a search-config object, resolved
 /// through the exact same [`build_search`] a [`PresetSpec`] already goes
-/// through -- "Custom" naming a family is the same code path as a preset
-/// naming one, not a parallel implementation).
+/// through -- "Custom" via `params` is the same code path as a preset,
+/// not a parallel implementation).
 pub fn build_custom<G: Game + 'static>(
     spec: &CustomStrategySpec,
     seed: u64,
@@ -508,11 +509,10 @@ mod tests {
     #[test]
     fn build_custom_resolves_a_free_axis_composition_not_reachable_via_any_family() {
         // `epsilon_greedy`-wrapped `ucb1` on the `select` axis, with a
-        // `final_action` independently chosen -- `family_catalog` has no
-        // single named family for this exact composition (its
-        // `EpsilonGreedy`-wrapped select rows are all fixed simulate-axis
-        // combos, e.g. `ucb1_mast`), so building it at all is the proof
-        // `build_custom` reaches `config_ir::build_search` directly.
+        // `final_action` independently chosen -- given as a `SearchSpec`
+        // directly rather than through the `params` axis categoricals, so
+        // building it at all is the proof `build_custom` reaches
+        // `config_ir::build_search` directly.
         let spec = sample_custom_spec();
         let mut ai = build_custom::<Nim>(&spec, 0).unwrap();
         let state = <Nim as Game>::S::default();
@@ -562,8 +562,8 @@ mod tests {
 
     #[test]
     fn build_custom_resolves_a_named_family_via_params() {
-        // `params` names an ordinary `family_catalog` family (including a
-        // `DirectFamily` one, e.g. `"random"`) rather than composing axes by
+        // `params` gives a search-config object (including a non-MCTS
+        // `algorithm` such as `"random"`) rather than a `SearchSpec` by
         // hand -- proof `build_custom` routes it through the same
         // `build_search` a `PresetSpec` already goes through.
         let spec = sample_custom_params_spec();
@@ -652,17 +652,16 @@ mod tests {
         assert_eq!(err.code, 404);
     }
 
-    /// `"random"`/`"flat_mc"`/`"negamax"` are non-composable families --
-    /// `family_catalog` rows that resolve to `FamilySpec::Direct`, built by
-    /// `direct_search::build_direct` rather than `config_ir::build_search`
-    /// (see `search.rs`'s `config_ir::build_search` comment) -- but
-    /// `PresetTable::build` is just `build_search` under a preset id, so a
-    /// game's `presets.json` can name any of them directly (e.g. a
-    /// "baseline"/"random" preset), same as any composable family. This is
-    /// the proof: nothing about the preset layer restricts `family` to
-    /// composable strategies. `negamax`'s `max_depth` is kept tight (see
-    /// `tests.rs`'s `test_family_negamax_round_trips`) since `Nim`'s
-    /// splittable heaps make its game tree deeper than a fixed-heap Nim.
+    /// `"random"`/`"flat_mc"`/`"negamax"` are non-MCTS algorithms --
+    /// resolved by `direct_search::build_direct` rather than
+    /// `config_ir::build_search` -- but `PresetTable::build` is just
+    /// `build_search` under a preset id, so a game's `presets.json` can name
+    /// any of them directly (e.g. a "baseline"/"random" preset), same as an
+    /// MCTS configuration. This is the proof: nothing about the preset layer
+    /// restricts the `algorithm` to `mcts`. `negamax`'s `max_depth` is kept
+    /// tight (see `tests.rs`'s `test_family_negamax_round_trips`) since
+    /// `Nim`'s splittable heaps make its game tree deeper than a fixed-heap
+    /// Nim.
     #[test]
     fn build_resolves_non_composable_direct_families() {
         let table = PresetTable::from_json(

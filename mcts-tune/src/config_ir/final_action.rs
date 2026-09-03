@@ -13,10 +13,10 @@ use serde_json::Value;
 
 /// The config-IR node for the `final_action` axis. It is deliberately a
 /// separate, smaller table from `SelectSpec`/`register_select!`: `final_action` only ever
-/// picks a root child once search ends, and `mcts-tune`'s existing
-/// `TrialParams::final_action` field only ever names one of
+/// picks a root child once search ends, and `mcts-tune`'s `final_action`
+/// axis categorical only ever names one of
 /// `RobustChild`/`MaxAvgScore`/`MaxRobustChild`/`SecureChild`
-/// (`to_final_action_spec` in `mcts-tune/src/lib.rs`), never an in-tree
+/// (`dispatch::to_final_action_spec`), never an in-tree
 /// exploration strategy like
 /// `Ucb1`/`Rave`/`UctPn`. None of the `select`-axis wrapper concerns
 /// (recursive `EpsilonGreedy`, unbounded monomorphization) apply here since

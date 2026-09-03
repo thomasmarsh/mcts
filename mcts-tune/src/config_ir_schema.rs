@@ -1,9 +1,10 @@
 //! A JSON description of `config_ir`'s four axes (`select`/`simulate`/
 //! `backprop`/`final_action`), for a generic client (the UI's interactive
 //! "Custom" strategy builder) to render a form without hand-coding any
-//! per-family knowledge of its own. Unlike `family_catalog.rs`'s
-//! `TunerParameter`/`TunerCondition` (a *flat* description of `TrialParams`'
-//! ~18 pre-composed family names), this describes `config_ir`'s actual
+//! per-family knowledge of its own. Unlike `tuner_info.rs`'s
+//! `TunerParameter`/`TunerCondition` (a *flat* description: the `algorithm`
+//! categorical plus each policy axis's variants as sibling parameters), this
+//! describes `config_ir`'s actual
 //! recursive shape: which axis variants exist, their fields, and which
 //! variants *wrap* an inner spec of some other (always non-recursive)
 //! variant set.
@@ -80,12 +81,12 @@ fn wrapping_variant(kind: &str, fields: Vec<Value>, wraps: &str) -> Value {
     json!({ "kind": kind, "fields": fields, "wraps": wraps })
 }
 
-// Shared leaf-field bounds/defaults, reused by name from
+// Shared leaf-field bounds/defaults, kept in sync by name with
 // `family_catalog.rs`'s `register_field!` table (see this module's doc
 // comment on why they're duplicated here rather than imported directly --
-// `register_field!` generates a `TrialParams` field/`TunerParameter`, not a
-// standalone constant this module could reuse without pulling in the whole
-// flat family-catalog machinery for one number).
+// `register_field!` builds a `TunerParameter` whose bounds live inside a
+// `serde_json::Value`, not a standalone constant this module could reuse
+// without re-parsing that JSON for one number).
 const C_BOUNDS: [f64; 2] = [0.0, 3.0];
 const C_DEFAULT: f64 = std::f64::consts::SQRT_2;
 const EPSILON_BOUNDS: [f64; 2] = [0.0, 1.0];

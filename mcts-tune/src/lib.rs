@@ -4,17 +4,19 @@
 //! that game has a real `zobrist_hash` is the only per-game glue. See
 //! `games/traffic-lights/src/main.rs` for the reference wiring.
 //!
-//! The tunable search space has two levels: a top-level categorical `family`
-//! axis chooses a `Strategy<G>` composition; within that family, the tuner
-//! searches its hyperparameters. `q_init` is orthogonal to the strategy and
-//! applies to every family. The `final_action` axis applies to every family
-//! whose named type does not already fix a different final action.
+//! The tunable search space describes a configuration directly: a top-level
+//! `algorithm` categorical (`random`/`flat_mc`/`mcts`/`negamax`) and, for
+//! `mcts`, the four policy-axis categoricals (`select`/`simulate`/`backprop`/
+//! `final_action`) plus each variant's own parameters and the orthogonal
+//! `q_init`/`mcgs` engine settings. `dispatch.rs` resolves a params object
+//! into a `config_ir::SearchSpec`; `tuner_info.rs` reports the same shape as
+//! the per-run schema.
 //!
-//! `strategy.rs`'s `QuasiBestFirst` is deliberately not in the catalog. Its
+//! `strategy.rs`'s `QuasiBestFirst` is deliberately not exposed. Its
 //! opening-book fallback runs a nested `TreeSearch::choose_action` during
 //! every outer-search descent when no book entry exists, while this harness
 //! uses a shared many-iteration outer budget. It is designed for an outer
-//! `max_iterations: 1`, unlike the families represented here.
+//! `max_iterations: 1`, unlike the configurations represented here.
 //!
 //! This crate deliberately depends only on `mcts` and `game-host`: building
 //! a candidate or baseline `Box<dyn Search<G>>` needs the concrete game at
@@ -24,11 +26,9 @@ pub mod config_ir;
 pub mod config_ir_schema;
 mod direct_search;
 // Algorithm-native construction of a `config_ir::SearchSpec` from the four
-// policy-axis categoricals, replacing `family_catalog`'s per-composition
-// table. `search.rs`/`tuner_info.rs` are rewired onto it in a later step; for
-// now only the golden test exercises it, so the unused-until-then builders
-// carry an explicit allow.
-#[allow(dead_code)]
+// policy-axis categoricals -- `search.rs`'s candidate/opponent builders and
+// `tuner_info.rs`'s schema both describe a configuration directly through
+// this module rather than a per-composition catalog table.
 mod dispatch;
 mod evaluation;
 mod family_catalog;
@@ -46,12 +46,12 @@ pub use tuner_info::{
     strategy_tuner_info_with_mcgs,
 };
 
-pub(crate) use search::{resolve_graph_search, META_MCTS_INNER_ITERATIONS};
+pub(crate) use search::resolve_graph_search;
 
 #[cfg(test)]
 pub(crate) use evaluation::cost_from_losses;
 #[cfg(test)]
-pub(crate) use search::{to_search_spec, EXPAND_THRESHOLD, MAX_ITER, PLAYOUT_DEPTH};
+pub(crate) use search::MAX_ITER;
 
 #[cfg(test)]
 mod tests;

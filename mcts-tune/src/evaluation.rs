@@ -6,9 +6,7 @@ use mcts::game::{Game, PlayerIndex};
 use mcts::algorithms::Search;
 use serde_json::{json, Value};
 
-use crate::{
-    build_search, family_catalog::TrialParams, presets, search::make_candidate, trace, SearchBudget,
-};
+use crate::{build_search, presets, search::make_candidate, trace, SearchBudget};
 
 type StateEncoder<'a, G> = dyn Fn(&<G as Game>::S) -> Value + 'a;
 type MoveEncoder<'a, G> = dyn Fn(&<G as Game>::S, &<G as Game>::A) -> Option<Value> + 'a;
@@ -67,12 +65,10 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     trace_game_sequence_start: Option<u64>,
     on_game: &mut dyn FnMut(ConfiguredMatchResult) -> Result<(), HostError>,
 ) -> Result<TuneEvalOutcome, HostError> {
-    let trial: TrialParams = serde_json::from_value(params.clone())
-        .map_err(|e| HostError::bad_request(format!("invalid tuning params: {e}")))?;
     let seed = seed.unwrap_or(0);
 
     if rounds == 0 {
-        let _ = make_candidate::<G>(&trial, seed, use_transpositions, &candidate_budget)?;
+        let _ = make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
         return Ok(TuneEvalOutcome {
             cost: 0.0,
             wins: 0,
@@ -101,7 +97,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     let mut seq = 0u64;
     for round in 1..=rounds {
-        let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
+        let mut candidate = make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
 
         seq += 1;
@@ -125,7 +121,7 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         on_game(result)?;
 
         // Swap move order so the candidate plays second half the time.
-        let mut candidate = make_candidate(&trial, seed, use_transpositions, &candidate_budget)?;
+        let mut candidate = make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
         seq += 1;
         let result = play_one(
