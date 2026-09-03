@@ -30,6 +30,7 @@ from tuner_cli.observations import comparable_prefix_observations
 from tuner_cli.replay import replay
 from tuner_cli.report import write_report
 from tuner_cli.run import RunOptions, run_foreground
+from tuner_cli.space_overrides import decode_space_overrides, encode_space_overrides
 from tuner_cli.target import PairExecutionError, _splitmix_seed
 
 
@@ -1055,3 +1056,39 @@ def test_worker_count_is_validated_before_creating_artifacts(
             replace(options, evaluator_workers=2), FakeTarget(), model_proposer=FakeModel()
         )
     assert not options.run_dir.exists()
+
+
+def _override_options(tmp_path: Path) -> RunOptions:
+    return replace(
+        _budgeted_options(tmp_path, 16, run_name="overrides"),
+        space_overrides=decode_space_overrides({"family": {"choices": ["a", "b", "c"]}}),
+    )
+
+
+def test_space_overrides_change_the_epoch_and_manifest(tmp_path: Path) -> None:
+    plain = _budgeted_options(tmp_path, 16, run_name="plain")
+    run_foreground(plain, FakeTarget(), model_proposer=FakeModel())
+    run_foreground(_override_options(tmp_path), FakeTarget(), model_proposer=FakeModel())
+
+    plain_manifest = read_manifest(plain.run_dir / "manifest.json")
+    constrained = read_manifest(tmp_path / "overrides" / "manifest.json")
+    assert plain_manifest.space_overrides == {}
+    assert encode_space_overrides(constrained.space_overrides) == {
+        "family": {"choices": ["a", "b", "c"]}
+    }
+    assert constrained.epoch.fingerprint != plain_manifest.epoch.fingerprint
+    raw = json.loads((tmp_path / "overrides" / "manifest.json").read_text())
+    assert raw["space_overrides"] == {"family": {"choices": ["a", "b", "c"]}}
+    assert "space_overrides" not in json.loads((plain.run_dir / "manifest.json").read_text())
+
+
+def test_resume_rejects_a_space_override_change(tmp_path: Path) -> None:
+    options = _override_options(tmp_path)
+    run_foreground(options, FakeTarget(), model_proposer=FakeModel())
+    widened = replace(
+        options,
+        resume=True,
+        space_overrides=decode_space_overrides({"family": {"choices": ["a", "b", "c", "d"]}}),
+    )
+    with pytest.raises(ValueError, match="differs from manifest"):
+        run_foreground(widened, FakeTarget(), model_proposer=FakeModel())

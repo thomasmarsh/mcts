@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -25,6 +25,12 @@ from .report import write_report
 from .schema import GameSpec, decode_game_spec
 from .smac_proposer import SmacProposer
 from .space import build_space, default_values
+from .space_overrides import (
+    SpaceOverrides,
+    constrained_schema,
+    no_space_overrides,
+    validate_space_overrides,
+)
 from .target import GameBinaryTarget, Target
 from .tasks import validate_cycle_endpoint
 
@@ -56,6 +62,7 @@ class RunOptions:
     shadow_halving_spare_margin: float = 0.0
     active_elimination_audit_probability: float | None = None
     excluded_families: tuple[str, ...] = ()
+    space_overrides: SpaceOverrides = field(default_factory=no_space_overrides)
     proposer_policy: ProposerPolicy = "smac_mixed"
     resume: bool = False
     extend_tuning_pairs: int = 0
@@ -82,8 +89,11 @@ def run_foreground(
     active_target = GameBinaryTarget(binary) if target is None else target
     spec = game_spec(active_target, binary)
     validate_family_exclusions(spec.tuning, options.excluded_families)
+    validate_space_overrides(spec.tuning, options.space_overrides)
     objective_default = schema_default(spec, options.seed)
-    proposal_default = schema_default(spec, options.seed, options.excluded_families)
+    proposal_default = schema_default(
+        spec, options.seed, options.excluded_families, options.space_overrides
+    )
     objective = resolve_objective(
         objective_path,
         spec.kind,
@@ -113,24 +123,21 @@ def run_foreground(
 
 
 def proposer_for(policy: ProposerPolicy, spec: GameSpec, manifest: Manifest) -> ModelProposer:
+    schema = constrained_schema(spec.tuning, manifest.space_overrides)
     if policy == "smac_mixed":
-        return SmacProposer(
-            build_space(spec.tuning, options_seed(manifest), manifest.excluded_families)
-        )
+        return SmacProposer(build_space(schema, options_seed(manifest), manifest.excluded_families))
     if policy == "qmc":
         from .proposer import derived_seed
         from .qmc_proposer import QmcProposer
 
-        return QmcProposer(
-            spec.tuning, derived_seed(manifest.seed, "qmc"), manifest.excluded_families
-        )
+        return QmcProposer(schema, derived_seed(manifest.seed, "qmc"), manifest.excluded_families)
     if policy == "irace_generational":
         from .irace_proposer import IraceProposer
 
-        return IraceProposer(spec.tuning, manifest.excluded_families)
+        return IraceProposer(schema, manifest.excluded_families)
     if policy == "random":
         # Random policy never asks an adapter.
-        return SmacProposer(build_space(spec.tuning, manifest.seed, manifest.excluded_families))
+        return SmacProposer(build_space(schema, manifest.seed, manifest.excluded_families))
     raise ValueError(f"unknown proposer policy {policy!r}")
 
 
@@ -296,8 +303,14 @@ def game_spec(target: Target, binary: Path) -> GameSpec:
     return decode_game_spec(target.describe(), binary, sha256_file(binary))
 
 
-def schema_default(spec: GameSpec, seed: int, excluded_families: tuple[str, ...] = ()) -> Candidate:
-    return candidate_from_config(default_values(build_space(spec.tuning, seed, excluded_families)))
+def schema_default(
+    spec: GameSpec,
+    seed: int,
+    excluded_families: tuple[str, ...] = (),
+    space_overrides: SpaceOverrides | None = None,
+) -> Candidate:
+    schema = constrained_schema(spec.tuning, space_overrides or {})
+    return candidate_from_config(default_values(build_space(schema, seed, excluded_families)))
 
 
 def validate_objective_options(options: RunOptions, objective: ResolvedObjective) -> None:
@@ -332,7 +345,9 @@ def open_run(
         manifest = read_manifest(directory / "manifest.json")
         assert_compatible(options, manifest, spec, objective)
         return manifest, EvidenceWriter.open(directory / "evidence.jsonl")
-    preflight_default(target, spec, objective, options.seed, options.excluded_families)
+    preflight_default(
+        target, spec, objective, options.seed, options.excluded_families, options.space_overrides
+    )
     manifest = manifest_for(options, directory, spec, objective)
     directory.mkdir(parents=True, exist_ok=True)
     write_manifest(directory / "manifest.json", manifest_json(manifest))
@@ -345,8 +360,9 @@ def preflight_default(
     objective: ResolvedObjective,
     seed: int,
     excluded_families: tuple[str, ...],
+    space_overrides: SpaceOverrides | None = None,
 ) -> None:
-    default = schema_default(spec, seed, excluded_families)
+    default = schema_default(spec, seed, excluded_families, space_overrides)
     failures = [
         opponent.opponent_id
         for opponent in objective.panel.opponents
@@ -384,6 +400,7 @@ def manifest_for(
         options.active_elimination_audit_probability,
         options.diagnostic_pair_budget,
         options.proposer_policy,
+        options.space_overrides,
     )
 
 

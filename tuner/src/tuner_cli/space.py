@@ -29,6 +29,13 @@ from .schema import ParameterSpec, TuningSchema
 def build_space(
     schema: TuningSchema, seed: int, excluded_families: tuple[str, ...] = ()
 ) -> ConfigurationSpace:
+    """Build the ConfigSpace for ``schema``.
+
+    Run-scoped tuning-space overrides are *not* an argument here: they are
+    applied by rewriting the schema (:func:`tuner_cli.space_overrides.constrained_schema`)
+    before it reaches this function, so every proposer -- ConfigSpace-backed or
+    not -- draws from the same constrained parameter set.
+    """
     validate_family_exclusions(schema, excluded_families)
     space = ConfigurationSpace(seed=seed)
     parameters = []
@@ -67,7 +74,13 @@ def build_space(
     for _child, child_atoms in atoms.items():
         space.add(child_atoms[0] if len(child_atoms) == 1 else OrConjunction(*child_atoms))
     for family in excluded_families:
-        space.add(ForbiddenEqualsClause(space["family"], family))
+        family_parameter = space["family"]
+        # A `fix` override on `family` (rewritten to a schema constant) collapses
+        # the parameter; the constant already constrains it, and a forbidden
+        # clause on a constant is rejected by ConfigSpace.
+        if isinstance(family_parameter, Constant):
+            continue
+        space.add(ForbiddenEqualsClause(family_parameter, family))
     return space
 
 

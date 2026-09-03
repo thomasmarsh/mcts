@@ -53,6 +53,12 @@ from .proposer import (
 )
 from .schema import GameSpec, decode_game_spec
 from .smac_proposer import ADAPTER_VERSION
+from .space_overrides import (
+    SpaceOverrides,
+    decode_space_overrides,
+    encode_space_overrides,
+    validate_space_overrides,
+)
 from .tasks import (
     build_corpus,
     selected_prefix,
@@ -309,6 +315,7 @@ class Manifest:
     candidate_failure_policy: CandidateFailurePolicySpecification
     active_elimination: ActiveEliminationSpecification | None
     diagnostic_policy: DiagnosticPolicySpecification
+    space_overrides: SpaceOverrides
 
     @property
     def seed(self) -> int:
@@ -457,8 +464,9 @@ def _epoch_payload(
     validation: TaskCorpus,
     production_effort: SearchEffort,
     game_config_fingerprint: str,
+    space_overrides: SpaceOverrides,
 ) -> JsonObject:
-    return {
+    payload: JsonObject = {
         "version": "objective-epoch-v1",
         "objective_id": objective_id,
         "objective_fingerprint": objective_fingerprint,
@@ -479,6 +487,11 @@ def _epoch_payload(
         "tie_rule_version": "paired_hoeffding_v1",
         "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
     }
+    # Unconstrained runs keep their historical epoch identity; a run-scoped
+    # override makes the run a distinct objective epoch.
+    if space_overrides:
+        payload["space_overrides"] = encode_space_overrides(space_overrides)
+    return payload
 
 
 def build_manifest(
@@ -506,8 +519,11 @@ def build_manifest(
     active_elimination_audit_probability: float | None = None,
     diagnostic_pair_budget: int = 0,
     proposer_policy: ProposerPolicy = "smac_mixed",
+    space_overrides: SpaceOverrides | None = None,
 ) -> Manifest:
     validate_family_exclusions(spec.tuning, excluded_families)
+    overrides = space_overrides or {}
+    validate_space_overrides(spec.tuning, overrides)
     proposer = proposer_specification(
         seed,
         task_seed,
@@ -572,6 +588,7 @@ def build_manifest(
             validation,
             efforts[2],
             game_config_fingerprint,
+            overrides,
         )
     )
     raw = _encode_manifest_object(
@@ -597,6 +614,7 @@ def build_manifest(
         candidate_failure_policy,
         active_elimination,
         DiagnosticPolicySpecification(),
+        overrides,
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -765,8 +783,9 @@ def _encode_manifest_object(
     candidate_failure_policy: CandidateFailurePolicySpecification,
     active_elimination: ActiveEliminationSpecification | None,
     diagnostic_policy: DiagnosticPolicySpecification,
+    space_overrides: SpaceOverrides,
 ) -> JsonObject:
-    return {
+    encoded: JsonObject = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "command_policy_version": POLICY_VERSION,
@@ -809,6 +828,11 @@ def _encode_manifest_object(
         **_STATISTICAL_POLICY,
         "limitations": list(_LIMITATIONS),
     }
+    # Emitted only when the run actually constrains the space, so an
+    # unconstrained run's manifest stays byte-identical to its historical form.
+    if space_overrides:
+        encoded["space_overrides"] = encode_space_overrides(space_overrides)
+    return encoded
 
 
 _FIELDS = {
@@ -1120,6 +1144,7 @@ def _check_epoch(
     tuning: TaskCorpus,
     validation: TaskCorpus,
     production_effort: SearchEffort,
+    space_overrides: SpaceOverrides,
 ) -> ObjectiveEpoch:
     epoch = objective_epoch(
         _epoch_payload(
@@ -1132,6 +1157,7 @@ def _check_epoch(
             validation,
             production_effort,
             game_config_fingerprint,
+            space_overrides,
         )
     )
     if raw["epoch"] != {"epoch_id": epoch.epoch_id, "fingerprint": epoch.fingerprint}:
@@ -1293,7 +1319,13 @@ def _decode_shadow_policy(value: object) -> ShadowPolicySpecification:
 
 
 def decode_manifest_object(value: object) -> Manifest:
-    raw = object_fields(value, _FIELDS, "manifest")
+    full = json_object(value, "manifest")
+    # `space_overrides` is present only for a run that constrains the space, so an
+    # unconstrained run's manifest matches its pre-13g field set exactly.
+    allowed: set[str] = set(_FIELDS)
+    if "space_overrides" in full:
+        allowed.add("space_overrides")
+    raw = object_fields(full, allowed, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
         raise ValueError("unsupported manifest schema version or command policy")
     stored = string(raw["fingerprint"], "manifest fingerprint")
@@ -1337,6 +1369,10 @@ def decode_manifest_object(value: object) -> Manifest:
     if compute_budget.tuning_pair_attempts < proposer.cohort_size * tuning_prefix.length:
         raise ValueError("tuning pair budget cannot fund initial cohort")
     efforts = _decode_fidelity(raw, validation, tuning_prefix, validation_prefix)
+    space_overrides = decode_space_overrides(raw.get("space_overrides"))
+    validate_space_overrides(spec.tuning, space_overrides)
+    if not space_overrides and "space_overrides" in raw:
+        raise ValueError("space_overrides is present but empty")
     epoch = _check_epoch(
         raw,
         spec,
@@ -1348,6 +1384,7 @@ def decode_manifest_object(value: object) -> Manifest:
         tuning,
         validation,
         efforts[2],
+        space_overrides,
     )
     _check_statistical_policy(raw)
     return Manifest(
@@ -1373,6 +1410,7 @@ def decode_manifest_object(value: object) -> Manifest:
         candidate_failure_policy,
         active_elimination,
         diagnostic_policy,
+        space_overrides,
     )
 
 
@@ -1406,5 +1444,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.candidate_failure_policy,
         manifest.active_elimination,
         manifest.diagnostic_policy,
+        manifest.space_overrides,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

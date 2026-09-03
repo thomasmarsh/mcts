@@ -327,6 +327,16 @@ def _value_in_domain(value: JsonValue, parameter: ParameterSpec) -> bool:
     return _same_scalar(value, parameter.constant_value)
 
 
+def value_in_domain(value: JsonValue, parameter: ParameterSpec) -> bool:
+    """Whether ``value`` lies in ``parameter``'s declared domain."""
+    return _value_in_domain(value, parameter)
+
+
+def same_scalar(left: JsonValue, right: JsonValue) -> bool:
+    """Compare two schema scalars without Python's bool/int numeric equivalence."""
+    return _same_scalar(left, right)
+
+
 def _validate_conditions(
     parameters: tuple[ParameterSpec, ...], conditions: tuple[ActivationCondition, ...]
 ) -> None:

@@ -163,3 +163,48 @@ def test_shadow_halving_spare_margin_defaults_zero_and_threads_through() -> None
         )
     )
     assert options.shadow_halving_spare_margin == 0.1
+
+
+def test_space_override_flags_assemble_into_the_overrides_map() -> None:
+    parser = build_parser()
+    base = [
+        "--game-binary",
+        "game",
+        "--objective-file",
+        "objective.json",
+        "--run-dir",
+        "run",
+        "--task-seed",
+        "9",
+        "--tuning-pair-budget",
+        "24",
+        "--validation-pair-budget",
+        "6",
+        "--production-validation-pairs",
+        "3",
+    ]
+    assert _options(parser.parse_args(base)).space_overrides == {}
+    options = _options(
+        parser.parse_args(
+            base
+            + [
+                "--fix",
+                "schedule=threshold",
+                "--param-range",
+                "c=1.2,1.8",
+                "--param-choices",
+                "q_init=Zero,Infinity",
+            ]
+        )
+    )
+    from tuner_cli.space_overrides import encode_space_overrides
+
+    assert encode_space_overrides(options.space_overrides) == {
+        "c": {"range": [1.2, 1.8]},
+        "q_init": {"choices": ["Zero", "Infinity"]},
+        "schedule": {"fix": "threshold"},
+    }
+    with pytest.raises(ValueError):
+        _options(parser.parse_args(base + ["--fix", "bogus"]))
+    with pytest.raises(ValueError):
+        _options(parser.parse_args(base + ["--fix", "c=1", "--param-range", "c=1,2"]))

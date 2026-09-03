@@ -133,6 +133,12 @@ pub struct TunerLaunchRequest {
     pub production_max_time_ms: Option<u64>,
     #[serde(default)]
     pub exclude_family: Vec<String>,
+    /// Run-scoped tuning-space overrides: a map from parameter name to one of
+    /// `{"fix": <value>}`, `{"range": [lo, hi]}`, or `{"choices": [<subset>]}`.
+    /// Serialised to `--fix` / `--param-range` / `--param-choices`; the Python
+    /// preflight is the authority on whether they are valid for the schema.
+    #[serde(default)]
+    pub space_overrides: Option<serde_json::Value>,
 }
 
 impl TunerLaunchRequest {
@@ -177,6 +183,49 @@ impl TunerLaunchRequest {
                     io::ErrorKind::InvalidInput,
                     format!("{name} effort accepts either iterations or time"),
                 ));
+            }
+        }
+        self.validate_space_overrides()?;
+        Ok(())
+    }
+
+    fn validate_space_overrides(&self) -> io::Result<()> {
+        let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, msg.to_string());
+        let Some(value) = &self.space_overrides else {
+            return Ok(());
+        };
+        let entries = value
+            .as_object()
+            .ok_or_else(|| invalid("space_overrides must be a JSON object"))?;
+        for (name, spec) in entries {
+            let spec = spec
+                .as_object()
+                .ok_or_else(|| invalid("each space override must be a JSON object"))?;
+            let keys: Vec<&str> = spec.keys().map(String::as_str).collect();
+            match keys.as_slice() {
+                ["fix"] => {}
+                ["range"] => {
+                    let bounds = spec["range"]
+                        .as_array()
+                        .filter(|values| values.len() == 2)
+                        .ok_or_else(|| invalid("a range override must be [low, high]"))?;
+                    let (Some(low), Some(high)) = (bounds[0].as_f64(), bounds[1].as_f64()) else {
+                        return Err(invalid("a range override needs two numeric bounds"));
+                    };
+                    if low >= high {
+                        return Err(invalid("a range override needs low < high"));
+                    }
+                }
+                ["choices"] => {
+                    if !spec["choices"].as_array().is_some_and(|c| !c.is_empty()) {
+                        return Err(invalid("a choices override needs a non-empty array"));
+                    }
+                }
+                _ => {
+                    return Err(invalid(&format!(
+                        "space override {name:?} needs exactly one of fix/range/choices"
+                    )));
+                }
             }
         }
         Ok(())
@@ -282,6 +331,25 @@ impl TunerLaunchRequest {
         for family in &self.exclude_family {
             argv.push("--exclude-family".into());
             argv.push(family.clone());
+        }
+        if let Some(serde_json::Value::Object(entries)) = &self.space_overrides {
+            for (name, spec) in entries {
+                if let Some(value) = spec.get("fix") {
+                    argv.push("--fix".into());
+                    argv.push(format!("{name}={value}"));
+                } else if let Some(serde_json::Value::Array(bounds)) = spec.get("range") {
+                    argv.push("--param-range".into());
+                    argv.push(format!("{name}={},{}", bounds[0], bounds[1]));
+                } else if let Some(serde_json::Value::Array(choices)) = spec.get("choices") {
+                    let joined = choices
+                        .iter()
+                        .map(render_override_token)
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    argv.push("--param-choices".into());
+                    argv.push(format!("{name}={joined}"));
+                }
+            }
         }
         argv
     }
@@ -404,6 +472,16 @@ pub fn extend(
     argv.push(crate::launch::iso_timestamp());
     let run_dir = record.run_dir.clone();
     spawn_and_journal(root, run_id, run_dir, argv, false)
+}
+
+/// Render one categorical-choice token for `--param-choices`: a bare string
+/// (the tuner CLI treats an unparseable token as a string), otherwise the JSON
+/// literal.
+fn render_override_token(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 pub fn safe_run_id(run_id: &str) -> bool {
@@ -731,6 +809,7 @@ mod tests {
             production_max_iterations: None,
             production_max_time_ms: None,
             exclude_family: vec![],
+            space_overrides: None,
         }
     }
 
@@ -788,6 +867,38 @@ mod tests {
             argv.iter().filter(|arg| *arg == "--exclude-family").count(),
             2
         );
+    }
+
+    #[test]
+    fn argv_space_overrides_serialise_to_the_matching_flags() {
+        let mut request = base_request(&PathBuf::from("runs"), "run_13g");
+        request.space_overrides = Some(serde_json::json!({
+            "q_init": {"fix": "Infinity"},
+            "c": {"range": [1.2, 1.8]},
+            "schedule": {"choices": ["threshold", "visit"]},
+        }));
+        request.validate().unwrap();
+        let argv = request.argv();
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--fix", "q_init=\"Infinity\""]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--param-range", "c=1.2,1.8"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--param-choices", "schedule=threshold,visit"]));
+    }
+
+    #[test]
+    fn validate_rejects_a_malformed_space_override() {
+        let mut request = base_request(&PathBuf::from("runs"), "run_13g");
+        request.space_overrides = Some(serde_json::json!({"c": {"range": [2.0, 1.0]}}));
+        assert!(request.validate().is_err());
+        request.space_overrides = Some(serde_json::json!({"c": {"fix": 1, "range": [1, 2]}}));
+        assert!(request.validate().is_err());
+        request.space_overrides = Some(serde_json::json!({"c": {"choices": []}}));
+        assert!(request.validate().is_err());
     }
 
     #[test]

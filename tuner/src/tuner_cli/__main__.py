@@ -8,9 +8,11 @@ import logging
 import sys
 from pathlib import Path
 
+from .codec import JsonValue, strict_json
 from .domain import SearchEffort
 from .family_exclusions import normalize_family_exclusions
 from .run import RunOptions, run_foreground
+from .space_overrides import SpaceOverrides, decode_space_overrides
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--shadow-halving-spare-margin", type=float, default=0.0)
     parser.add_argument("--active-elimination-audit-probability", type=float)
     parser.add_argument("--exclude-family", action="append", default=[], metavar="FAMILY")
+    _add_space_override_arguments(parser)
     parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
     extend = parser.add_argument_group(
         "budget extension", "raise a frozen run's pair budgets; valid only with --resume"
@@ -61,6 +64,49 @@ def build_parser() -> argparse.ArgumentParser:
     extend.add_argument("--extend-requested-at", default="", metavar="ISO8601")
     parser.add_argument("-v", "--verbose", action="store_true")
     return parser
+
+
+def _add_space_override_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group(
+        "tuning-space overrides", "constrain (never widen) the declared schema for this run"
+    )
+    group.add_argument("--fix", action="append", default=[], metavar="NAME=VALUE")
+    group.add_argument("--param-range", action="append", default=[], metavar="NAME=LO,HI")
+    group.add_argument("--param-choices", action="append", default=[], metavar="NAME=A,B,C")
+
+
+def _scalar_token(text: str) -> JsonValue:
+    """A CLI override token: a JSON literal when it parses, else a bare string."""
+    try:
+        return strict_json(text, "override value")
+    except ValueError:
+        return text
+
+
+def _split_once(item: str, flag: str) -> tuple[str, str]:
+    name, sep, payload = item.partition("=")
+    if not sep or not name:
+        raise ValueError(f"{flag} must be NAME=VALUE, got {item!r}")
+    return name, payload
+
+
+def _space_overrides(args: argparse.Namespace) -> SpaceOverrides:
+    raw: dict[str, JsonValue] = {}
+    for item in args.fix:
+        name, payload = _split_once(item, "--fix")
+        raw[name] = {"fix": _scalar_token(payload)}
+    for item in args.param_range:
+        name, payload = _split_once(item, "--param-range")
+        parts = payload.split(",")
+        if len(parts) != 2:
+            raise ValueError(f"--param-range must be NAME=LO,HI, got {item!r}")
+        raw[name] = {"range": [_scalar_token(parts[0]), _scalar_token(parts[1])]}
+    for item in args.param_choices:
+        name, payload = _split_once(item, "--param-choices")
+        raw[name] = {"choices": [_scalar_token(token) for token in payload.split(",")]}
+    if len(raw) != len(args.fix) + len(args.param_range) + len(args.param_choices):
+        raise ValueError("a parameter may carry only one space override")
+    return decode_space_overrides(raw)
 
 
 def _options(args: argparse.Namespace) -> RunOptions:
@@ -99,6 +145,7 @@ def _options(args: argparse.Namespace) -> RunOptions:
         shadow_halving_spare_margin=args.shadow_halving_spare_margin,
         active_elimination_audit_probability=args.active_elimination_audit_probability,
         excluded_families=normalize_family_exclusions(args.exclude_family),
+        space_overrides=_space_overrides(args),
         proposer_policy=args.proposer_policy,
         resume=args.resume,
         extend_tuning_pairs=args.extend_tuning_pairs,

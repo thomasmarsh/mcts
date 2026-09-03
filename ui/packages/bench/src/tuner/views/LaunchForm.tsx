@@ -17,7 +17,7 @@ import {
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
-import type { TunerLaunchRequest } from "../tuner-types.js";
+import type { SpaceOverride, TunerLaunchRequest } from "../tuner-types.js";
 
 // These mirror the tuner CLI's own defaults (cohort 8, finalists 3,
 // tuning_pairs 4). They satisfy every launch constraint for a panel whose
@@ -95,6 +95,10 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
     production: "iterations",
   });
   const [showAdvanced, setShowAdvanced] = createSignal(false);
+  // Run-scoped tuning-space overrides, authored as a JSON object
+  // `{ name: { fix | range | choices } }`. The server preflight is the real
+  // check; this only catches a syntactically broken object locally.
+  const [spaceOverridesText, setSpaceOverridesText] = createSignal("");
 
   // The tunable `family` categorical's choices for the picked game, sourced
   // from the schema already shipped in `GET /api/bench/tuner/kinds`. Empty
@@ -123,6 +127,54 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   function setPhaseUnit(phase: EffortPhase, unit: EffortUnit): void {
     setEffortUnit({ ...effortUnit(), [phase]: unit });
   }
+
+  /** Parse the space-overrides textarea: `{ overrides }` when valid (empty when
+   * blank), `{ error }` for a local syntax/shape problem. */
+  const spaceOverrides = createMemo(
+    (): { overrides?: Record<string, SpaceOverride>; error?: string } => {
+      const text = spaceOverridesText().trim();
+      if (text === "") return { overrides: {} };
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { error: "not valid JSON" };
+      }
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { error: "must be a JSON object of parameter overrides" };
+      }
+      const overrides: Record<string, SpaceOverride> = {};
+      for (const [name, spec] of Object.entries(parsed as Record<string, unknown>)) {
+        if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
+          return { error: `${name}: override must be an object` };
+        }
+        const keys = Object.keys(spec as object);
+        const key = keys[0];
+        if (keys.length !== 1 || key === undefined || !["fix", "range", "choices"].includes(key)) {
+          return { error: `${name}: use exactly one of fix / range / choices` };
+        }
+        const s = spec as Record<string, unknown>;
+        if (key === "range") {
+          const r = s.range;
+          if (
+            !Array.isArray(r) ||
+            r.length !== 2 ||
+            typeof r[0] !== "number" ||
+            typeof r[1] !== "number" ||
+            r[0] >= r[1]
+          ) {
+            return { error: `${name}: range must be [low, high] with low < high` };
+          }
+        }
+        if (key === "choices" && (!Array.isArray(s.choices) || s.choices.length === 0)) {
+          return { error: `${name}: choices must be a non-empty array` };
+        }
+        overrides[name] = s as SpaceOverride;
+      }
+      return { overrides };
+    },
+  );
+  const spaceOverridesError = createMemo(() => spaceOverrides().error ?? null);
 
   /** A filled, positive effort for a phase, as `{ unit, value }`, else null. */
   const phaseEffort = (phase: EffortPhase): { unit: EffortUnit; value: number } | null => {
@@ -188,6 +240,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       (optInt(validationBudget()) ?? 0) <= 0 ||
       (optInt(productionPairs()) ?? 0) <= 0 ||
       effortError() !== null ||
+      spaceOverridesError() !== null ||
       excludesEveryFamily()
     ) {
       return null;
@@ -214,6 +267,9 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
         : {}),
       ...(proposerPolicy() !== "" ? { proposer_policy: proposerPolicy() } : {}),
       ...(excludedFamilies().length > 0 ? { exclude_family: excludedFamilies() } : {}),
+      ...(Object.keys(spaceOverrides().overrides ?? {}).length > 0
+        ? { space_overrides: spaceOverrides().overrides }
+        : {}),
       ...effortFields,
     };
   };
@@ -466,6 +522,27 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
             </Show>
           </fieldset>
         </Show>
+
+        <fieldset class="tuner-launch-overrides" data-testid="space-overrides">
+          <legend>Constrain parameters</legend>
+          <p class="tuner-launch-hint">
+            JSON object, e.g.{" "}
+            <code>{`{ "c": { "range": [1.2, 1.8] }, "q_init": { "fix": "Infinity" } }`}</code>.
+            The launch preflight validates it against the game's schema.
+          </p>
+          <textarea
+            data-testid="space-overrides-input"
+            rows="4"
+            placeholder="{}"
+            value={spaceOverridesText()}
+            onInput={(e) => setSpaceOverridesText(e.currentTarget.value)}
+          />
+          <Show when={spaceOverridesError()}>
+            <p class="launch-error" role="alert" data-testid="space-overrides-error">
+              {spaceOverridesError()}
+            </p>
+          </Show>
+        </fieldset>
       </Show>
 
       <button type="submit" id="tuner-launch-button" disabled={!canLaunch()}>

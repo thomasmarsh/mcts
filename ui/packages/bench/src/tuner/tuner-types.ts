@@ -76,6 +76,11 @@ export interface ObjectiveValidationResult {
  * configured objectives directory, so no filesystem path is part of the
  * request. Optional fields fall back to the tuner CLI's own defaults when
  * omitted. */
+export type SpaceOverride =
+  | { fix: string | number | boolean }
+  | { range: [number, number] }
+  | { choices: Array<string | number | boolean> };
+
 export interface TunerLaunchRequest {
   game_kind: string;
   objective_key: string;
@@ -93,6 +98,11 @@ export interface TunerLaunchRequest {
   evaluator_workers?: number | null;
   proposer_policy?: string | null;
   exclude_family?: string[];
+  /** Run-scoped tuning-space overrides: a map from parameter name to one of
+   * `{ fix }`, `{ range: [lo, hi] }`, or `{ choices: [...] }`. Constrains, never
+   * widens, the game's declared schema. The server preflight is authoritative;
+   * the form only blocks obvious local errors. */
+  space_overrides?: Record<string, SpaceOverride> | null;
   /** Per-phase search effort. Each phase accepts iterations *or* time, never
    * both; omitting a pair falls back to the tuner CLI default. Names match
    * the Rust `TunerLaunchRequest` serde fields verbatim. */
