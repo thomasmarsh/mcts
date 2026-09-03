@@ -14,7 +14,6 @@ from test_run import FakeTarget, _fake_binary, _objective
 from tuner_cli.domain import SearchEffort
 from tuner_cli.plan import plan_launch
 from tuner_cli.run import RunOptions
-from tuner_cli.space_overrides import decode_space_overrides
 
 
 def _options(tmp_path: Path, **over: object) -> RunOptions:
@@ -53,16 +52,13 @@ def test_resolves_schema_default_opponent(tmp_path: Path) -> None:
 
 
 def test_space_reflects_constraints(tmp_path: Path) -> None:
-    options = _options(
-        tmp_path,
-        excluded_families=("d",),
-        space_overrides=decode_space_overrides({"family": {"choices": ["a", "b", "c", "d"]}}),
-    )
+    # `--exclude-family` folds against the resolved schema into a `choices`
+    # narrowing, which the plan then reports as the residual `family` domain.
+    options = _options(tmp_path, exclude_family=("d", "e", "f", "g", "h"))
     plan = plan_launch(options, target=FakeTarget())
-    # `space_overrides` narrows the declared choice set; `--exclude-family`
-    # then removes `d` from what is left.
     assert plan["space"]["families"] == ["a", "b", "c"]
-    assert plan["space"]["excluded_families"] == ["d"]
+    assert plan["space"]["residual_categoricals"]["family"] == ["a", "b", "c"]
+    assert plan["space"]["constraints"] == [{"set": {"family": {"choices": ["a", "b", "c"]}}}]
     family = next(p for p in plan["space"]["parameters"] if p["name"] == "family")
     assert family["choices"] == ["a", "b", "c"]
 

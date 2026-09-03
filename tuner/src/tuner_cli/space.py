@@ -31,14 +31,12 @@ from ConfigSpace.forbidden import ForbiddenClause
 from ConfigSpace.hyperparameters import Hyperparameter
 
 from .constraints import ChoicesOp, Constraints, FixOp, RangeOp, SetOp, dynamic_forbiddens
-from .family_exclusions import validate_family_exclusions
 from .schema import ParameterSpec, TuningSchema, same_scalar
 
 
 def build_space(
     schema: TuningSchema,
     seed: int,
-    excluded_families: tuple[str, ...] = (),
     constraints: Constraints = (),
 ) -> ConfigurationSpace:
     """Build the ConfigSpace for ``schema``.
@@ -51,7 +49,6 @@ def build_space(
     space is passed here as ``constraints`` and emitted as ConfigSpace forbidden
     clauses so ConfigSpace-backed proposals honour it directly.
     """
-    validate_family_exclusions(schema, excluded_families)
     space = ConfigurationSpace(seed=seed)
     parameters = []
     for spec in schema.parameters:
@@ -73,10 +70,7 @@ def build_space(
             )
         else:
             assert spec.choices is not None
-            default = spec.default
-            if spec.name == "family" and default in excluded_families:
-                default = next(choice for choice in spec.choices if choice not in excluded_families)
-            parameter = Categorical(spec.name, list(spec.choices), default=default)
+            parameter = Categorical(spec.name, list(spec.choices), default=spec.default)
         parameters.append(parameter)
     space.add(parameters)
     atoms: dict[str, list[EqualsCondition]] = {}
@@ -88,14 +82,6 @@ def build_space(
                 )
     for _child, child_atoms in atoms.items():
         space.add(child_atoms[0] if len(child_atoms) == 1 else OrConjunction(*child_atoms))
-    for family in excluded_families:
-        family_parameter = space["family"]
-        # A `fix` override on `family` (rewritten to a schema constant) collapses
-        # the parameter; the constant already constrains it, and a forbidden
-        # clause on a constant is rejected by ConfigSpace.
-        if isinstance(family_parameter, Constant):
-            continue
-        space.add(ForbiddenEqualsClause(family_parameter, family))
     _add_predicated_forbiddens(space, schema, constraints)
     return space
 

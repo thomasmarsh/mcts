@@ -9,6 +9,7 @@ import pytest
 
 from tuner_cli.artifacts import read_manifest
 from tuner_cli.cohort import current_active_candidates
+from tuner_cli.constraints import decode_constraints, encode_constraints
 from tuner_cli.domain import (
     GameResult,
     PairedBootstrapEvidence,
@@ -30,7 +31,6 @@ from tuner_cli.observations import comparable_prefix_observations
 from tuner_cli.replay import replay
 from tuner_cli.report import write_report
 from tuner_cli.run import RunOptions, run_foreground
-from tuner_cli.space_overrides import decode_space_overrides, encode_space_overrides
 from tuner_cli.target import PairExecutionError, _splitmix_seed
 
 
@@ -1058,37 +1058,53 @@ def test_worker_count_is_validated_before_creating_artifacts(
     assert not options.run_dir.exists()
 
 
-def _override_options(tmp_path: Path) -> RunOptions:
-    return replace(
-        _budgeted_options(tmp_path, 16, run_name="overrides"),
-        space_overrides=decode_space_overrides({"family": {"choices": ["a", "b", "c"]}}),
+_CONSTRAINT = {"family": {"choices": ["a", "b", "c", "d", "f", "g"]}}
+
+
+def _built_manifest(options: RunOptions) -> tuple[dict, object]:
+    """The manifest ``run_foreground`` would freeze for ``options`` -- built
+    through the same authorities but without playing a game."""
+    from tuner_cli.objective import resolve_objective
+    from tuner_cli.run import game_spec, manifest_for, schema_default
+
+    binary = options.game_binary.expanduser().resolve()
+    spec = game_spec(FakeTarget(), binary)
+    assert options.objective_file is not None
+    objective = resolve_objective(
+        options.objective_file,
+        spec.kind,
+        schema_default(spec, options.seed),
+        spec.game_config_schema,
+        spec.default_game_config,
     )
+    manifest = manifest_for(options, options.run_dir, spec, objective)
+    from tuner_cli.artifacts import manifest_json
+
+    return manifest_json(manifest), manifest
 
 
-def test_space_overrides_change_the_epoch_and_manifest(tmp_path: Path) -> None:
+def test_constraints_change_the_epoch_and_manifest(tmp_path: Path) -> None:
     plain = _budgeted_options(tmp_path, 16, run_name="plain")
-    run_foreground(plain, FakeTarget(), model_proposer=FakeModel())
-    run_foreground(_override_options(tmp_path), FakeTarget(), model_proposer=FakeModel())
-
-    plain_manifest = read_manifest(plain.run_dir / "manifest.json")
-    constrained = read_manifest(tmp_path / "overrides" / "manifest.json")
-    assert plain_manifest.space_overrides == {}
-    assert encode_space_overrides(constrained.space_overrides) == {
-        "family": {"choices": ["a", "b", "c"]}
-    }
-    assert constrained.epoch.fingerprint != plain_manifest.epoch.fingerprint
-    raw = json.loads((tmp_path / "overrides" / "manifest.json").read_text())
-    assert raw["space_overrides"] == {"family": {"choices": ["a", "b", "c"]}}
-    assert "space_overrides" not in json.loads((plain.run_dir / "manifest.json").read_text())
-
-
-def test_resume_rejects_a_space_override_change(tmp_path: Path) -> None:
-    options = _override_options(tmp_path)
-    run_foreground(options, FakeTarget(), model_proposer=FakeModel())
-    widened = replace(
-        options,
-        resume=True,
-        space_overrides=decode_space_overrides({"family": {"choices": ["a", "b", "c", "d"]}}),
+    constrained = replace(
+        _budgeted_options(tmp_path, 16, run_name="constrained"),
+        constraints=decode_constraints(_CONSTRAINT),
     )
-    with pytest.raises(ValueError, match="differs from manifest"):
-        run_foreground(widened, FakeTarget(), model_proposer=FakeModel())
+    plain_json, plain_manifest = _built_manifest(plain)
+    constrained_json, constrained_manifest = _built_manifest(constrained)
+
+    assert plain_manifest.constraints == ()
+    assert encode_constraints(constrained_manifest.constraints) == [{"set": _CONSTRAINT}]
+    assert constrained_manifest.epoch.fingerprint != plain_manifest.epoch.fingerprint
+    assert constrained_json["constraints"] == [{"set": _CONSTRAINT}]
+    assert "constraints" not in plain_json
+
+
+def test_resume_rejects_a_constraint_change(tmp_path: Path) -> None:
+    options = replace(
+        _budgeted_options(tmp_path, 16, run_name="constrained"),
+        constraints=decode_constraints(_CONSTRAINT),
+    )
+    frozen, _ = _built_manifest(options)
+    widened = replace(options, constraints=decode_constraints({"family": {"choices": ["a", "b"]}}))
+    rebuilt, _ = _built_manifest(widened)
+    assert frozen["fingerprint"] != rebuilt["fingerprint"]

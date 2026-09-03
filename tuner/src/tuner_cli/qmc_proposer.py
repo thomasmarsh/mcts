@@ -15,10 +15,8 @@ ADAPTER_VERSION = "scipy-sobol-scrambled-v1"
 class QmcProposer:
     adapter_version = ADAPTER_VERSION
 
-    def __init__(
-        self, schema: TuningSchema, stream_seed: int, excluded_families: tuple[str, ...]
-    ) -> None:
-        self._schema, self._excluded = schema, excluded_families
+    def __init__(self, schema: TuningSchema, stream_seed: int) -> None:
+        self._schema = schema
         self._parameters = nonconstant_parameters(schema)
         self._engine = qmc.Sobol(d=len(self._parameters), scramble=True, rng=stream_seed)
         self._points: list[list[float]] = []
@@ -40,11 +38,7 @@ class QmcProposer:
                 values[parameter.name] = min(high, low + int(coordinate * (high - low + 1)))
             else:
                 assert parameter.choices is not None
-                choices = tuple(
-                    item
-                    for item in parameter.choices
-                    if parameter.name != "family" or item not in self._excluded
-                )
+                choices = parameter.choices
                 values[parameter.name] = param_value(
                     choices[min(len(choices) - 1, int(coordinate * len(choices)))],
                     parameter.name,

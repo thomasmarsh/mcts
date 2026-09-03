@@ -165,28 +165,32 @@ def test_shadow_halving_spare_margin_defaults_zero_and_threads_through() -> None
     assert options.shadow_halving_spare_margin == 0.1
 
 
-def test_space_override_flags_assemble_into_the_overrides_map() -> None:
+_CLI_BASE = [
+    "--game-binary",
+    "game",
+    "--objective-file",
+    "objective.json",
+    "--run-dir",
+    "run",
+    "--task-seed",
+    "9",
+    "--tuning-pair-budget",
+    "24",
+    "--validation-pair-budget",
+    "6",
+    "--production-validation-pairs",
+    "3",
+]
+
+
+def test_space_control_flags_assemble_into_constraints() -> None:
     parser = build_parser()
-    base = [
-        "--game-binary",
-        "game",
-        "--objective-file",
-        "objective.json",
-        "--run-dir",
-        "run",
-        "--task-seed",
-        "9",
-        "--tuning-pair-budget",
-        "24",
-        "--validation-pair-budget",
-        "6",
-        "--production-validation-pairs",
-        "3",
-    ]
-    assert _options(parser.parse_args(base)).space_overrides == {}
+    from tuner_cli.constraints import encode_constraints
+
+    assert _options(parser.parse_args(_CLI_BASE)).constraints == ()
     options = _options(
         parser.parse_args(
-            base
+            _CLI_BASE
             + [
                 "--fix",
                 "schedule=threshold",
@@ -197,42 +201,28 @@ def test_space_override_flags_assemble_into_the_overrides_map() -> None:
             ]
         )
     )
-    from tuner_cli.space_overrides import encode_space_overrides
-
-    assert encode_space_overrides(options.space_overrides) == {
-        "c": {"range": [1.2, 1.8]},
-        "q_init": {"choices": ["Zero", "Infinity"]},
-        "schedule": {"fix": "threshold"},
-    }
-    with pytest.raises(ValueError):
-        _options(parser.parse_args(base + ["--fix", "bogus"]))
-    with pytest.raises(ValueError):
-        _options(parser.parse_args(base + ["--fix", "c=1", "--param-range", "c=1,2"]))
-
-
-def test_constraint_flag_lowers_onto_the_space_overrides_map() -> None:
-    parser = build_parser()
-    base = [
-        "--game-binary",
-        "game",
-        "--objective-file",
-        "objective.json",
-        "--run-dir",
-        "run",
-        "--task-seed",
-        "9",
-        "--tuning-pair-budget",
-        "24",
-        "--validation-pair-budget",
-        "6",
-        "--production-validation-pairs",
-        "3",
+    assert encode_constraints(options.constraints) == [
+        {
+            "set": {
+                "c": {"range": [1.2, 1.8]},
+                "q_init": {"choices": ["Zero", "Infinity"]},
+                "schedule": {"fix": "threshold"},
+            }
+        }
     ]
-    from tuner_cli.space_overrides import encode_space_overrides
+    with pytest.raises(ValueError):
+        _options(parser.parse_args(_CLI_BASE + ["--fix", "bogus"]))
+    with pytest.raises(ValueError):
+        _options(parser.parse_args(_CLI_BASE + ["--fix", "c=1", "--param-range", "c=1,2"]))
+
+
+def test_constraint_flag_carries_the_full_wire_form() -> None:
+    parser = build_parser()
+    from tuner_cli.constraints import encode_constraints
 
     options = _options(
         parser.parse_args(
-            base
+            _CLI_BASE
             + [
                 "--constraint",
                 '{"set": {"c": {"range": [1.2, 1.8]}}}',
@@ -241,22 +231,18 @@ def test_constraint_flag_lowers_onto_the_space_overrides_map() -> None:
             ]
         )
     )
-    assert encode_space_overrides(options.space_overrides) == {
-        "c": {"range": [1.2, 1.8]},
-        "select": {"choices": ["ucb1", "rave"]},
-    }
-    # A `when`-predicated constraint is rejected until the full cutover wires it.
-    with pytest.raises(ValueError):
-        _options(
-            parser.parse_args(
-                base
-                + ["--constraint", '{"when": {"select": ["ucb1"]}, "set": {"c": {"fix": 1.4}}}']
-            )
+    assert encode_constraints(options.constraints) == [
+        {"set": {"c": {"range": [1.2, 1.8]}}},
+        {"set": {"select": {"choices": ["ucb1", "rave"]}}},
+    ]
+    # A `when`-predicated constraint now flows through end to end.
+    predicated = _options(
+        parser.parse_args(
+            _CLI_BASE
+            + ["--constraint", '{"when": {"select": ["ucb1"]}, "set": {"c": {"fix": 1.4}}}']
         )
-    # The same parameter cannot be constrained twice across the two surfaces.
-    with pytest.raises(ValueError):
-        _options(
-            parser.parse_args(
-                base + ["--param-range", "c=1,2", "--constraint", '{"set": {"c": {"fix": 1.5}}}']
-            )
-        )
+    )
+    assert predicated.constraints[0].when == (("select", ("ucb1",)),)
+    # `--exclude-family` is threaded raw for schema-time folding.
+    excluded = _options(parser.parse_args(_CLI_BASE + ["--exclude-family", "rave"]))
+    assert excluded.exclude_family == ("rave",)

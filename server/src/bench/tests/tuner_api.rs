@@ -74,7 +74,7 @@ async fn run_detail() {
     assert_eq!(detail["manifest"]["cohort_size"], 4);
     assert_eq!(detail["manifest"]["finalists"], 2);
     assert_eq!(detail["manifest"]["active_elimination"], false);
-    assert_eq!(detail["report"]["schema_version"], 4);
+    assert_eq!(detail["report"]["schema_version"], 5);
     assert_eq!(detail["report"]["status"], "complete");
     let phases: Vec<&str> = detail["compute"]
         .as_array()
@@ -186,7 +186,7 @@ async fn report_verbatim() {
     let (status, body) = http_get(app, &format!("{V4}/report")).await;
     assert_eq!(status, StatusCode::OK);
     let report: Value = body_json(&body);
-    assert_eq!(report["schema_version"], 4);
+    assert_eq!(report["schema_version"], 5);
     assert_eq!(report["status"], "complete");
     assert!(report["validation_order"].is_array());
     std::fs::remove_dir_all(root).unwrap();

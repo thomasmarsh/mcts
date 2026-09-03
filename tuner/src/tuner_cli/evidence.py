@@ -1,4 +1,4 @@
-"""Strict version-4 append-only evidence records and atomic file publishing."""
+"""Strict versioned append-only evidence records and atomic file publishing."""
 
 from __future__ import annotations
 

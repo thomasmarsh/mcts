@@ -258,7 +258,7 @@ def build_report(run_dir: Path) -> JsonObject:
         build_shadow_audit(manifest, state, events) if manifest.active_elimination is None else None
     )
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "status": "complete",
         "manifest_fingerprint": manifest.fingerprint,
         "validation_claim": {"claim": claim, "missing_production_axes": list(missing)},
@@ -370,10 +370,8 @@ def _proposal_search(manifest: Manifest, state: ReplayState) -> JsonObject:
             "random_reserve": reserve_slots,
             "cohorts": completed_cohorts,
             "retained_elites": manifest.finalists,
-            "family_exclusion_policy_version": manifest.proposer.encoded()[
-                "family_exclusion_policy_version"
-            ],
-            "excluded_families": list(manifest.excluded_families),
+            "constraint_policy_version": manifest.proposer.encoded()["constraint_policy_version"],
+            "constraints": manifest.proposer.encoded()["constraints"],
         },
         "accepted": _array(accepted),
         "rejections_by_source": rejected_json,

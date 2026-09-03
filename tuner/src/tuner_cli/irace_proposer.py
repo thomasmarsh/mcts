@@ -16,8 +16,8 @@ ADAPTER_VERSION = "irace-elite-generational-v1"
 class IraceProposer:
     adapter_version = ADAPTER_VERSION
 
-    def __init__(self, schema: TuningSchema, excluded_families: tuple[str, ...]) -> None:
-        self._schema, self._excluded = schema, excluded_families
+    def __init__(self, schema: TuningSchema) -> None:
+        self._schema = schema
         self._parameters = nonconstant_parameters(schema)
 
     def ask(self, request: ProposalRequest) -> ProposedConfiguration:
@@ -48,9 +48,7 @@ class IraceProposer:
             else:
                 assert parameter.choices is not None
                 choices = tuple(
-                    param_value(item, f"{parameter.name} choice")
-                    for item in parameter.choices
-                    if parameter.name != "family" or item not in self._excluded
+                    param_value(item, f"{parameter.name} choice") for item in parameter.choices
                 )
                 values[parameter.name] = _categorical(rng, choices, inherited, g, v)
         return ProposedConfiguration(

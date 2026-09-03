@@ -46,7 +46,7 @@ def test_tail_events_withholds_a_torn_last_line(tmp_path: Path) -> None:
     path = tmp_path / "evidence.jsonl"
     _write_log(path, 2)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write('{"schema_version":4,"sequence":3,"type":"run_inter')
+        handle.write('{"schema_version":5,"sequence":3,"type":"run_inter')
     events, max_seq = tail_events(path, since_seq=0)
     assert [event.sequence for event in events] == [1, 2]
     assert max_seq == 2

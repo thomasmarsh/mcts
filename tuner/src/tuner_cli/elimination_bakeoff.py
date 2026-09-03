@@ -358,7 +358,7 @@ def _options(spec: EliminationBakeoffSpec, cell: EliminationCell) -> RunOptions:
         shadow_policy=shadow_policy,
         shadow_halving_spare_margin=spare,
         active_elimination_audit_probability=audit,
-        excluded_families=shared.excluded_families,
+        exclude_family=shared.excluded_families,
         proposer_policy=shared.proposer_policy,
         resume=cell.run_dir.exists(),
     )

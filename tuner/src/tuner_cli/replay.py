@@ -23,6 +23,7 @@ from .cohort import (
     latest_completed_cohort,
 )
 from .compute import LedgerBuilder
+from .constraints import require_candidate_allowed
 from .diagnostic_graph import build_diagnostic_graph
 from .domain import (
     ApplyElimination,
@@ -73,7 +74,6 @@ from .event_payloads import (
     ShadowRaceDecidedPayload,
 )
 from .evidence import EvidenceEvent, decode_pair_payload
-from .family_exclusions import require_candidate_family_allowed
 from .identity import candidate_from_canonical_config
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, empty_frontier, tuning_frontier
@@ -262,7 +262,7 @@ def _apply_proposal_created(state: _Replay, payload: ProposalCreatedPayload) -> 
     if state.proposals and state.proposals[-1].proposal_index not in state.dispositions:
         raise ValueError("proposal follows an undisposed proposal")
     proposal = _proposal(state, payload)
-    require_candidate_family_allowed(proposal.candidate, state.manifest.excluded_families)
+    require_candidate_allowed(proposal.candidate, state.manifest.constraints)
     cohort_index = len(state.completed_cohorts)
     slot = len(accepted_proposal_candidates_for_cohort(state.state(), cohort_index))
     from .cohort import proposal_source

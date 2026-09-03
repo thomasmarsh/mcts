@@ -3,7 +3,7 @@
 Where :mod:`tuner_cli.preflight` answers *"is this launch legal?"*, this
 answers *"what exactly would this launch do?"* -- the resolved opponent panel
 (schema-default opponents expanded to their actual config), the tuning space
-the proposer will explore after ``--exclude-family`` and ``space_overrides``,
+the proposer will explore after the run-scoped ``constraints``,
 the three phase efforts and pair budgets with the counts they buy, the
 effective ``game_config``, and the objective-epoch fingerprint the run will
 carry.
@@ -20,6 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .codec import JsonObject, JsonValue, strict_json
+from .constraints import Constraints, constrained_schema, encode_constraints
 from .effort import encode_effort
 from .identity import canonical_json
 from .objective import resolve_objective
@@ -28,11 +29,11 @@ from .run import (
     RunOptions,
     game_spec,
     manifest_for,
+    resolved_constraints,
     schema_default,
     validate_options,
 )
 from .schema import ActivationCondition, GameSpec, ParameterSpec, TuningSchema
-from .space_overrides import constrained_schema
 from .target import GameBinaryTarget, Target
 
 _PLAN_RUN_ID = "plan-preview"
@@ -91,7 +92,11 @@ def plan_launch(options: RunOptions, target: Target | None = None) -> JsonObject
         for opponent in objective.panel.opponents
     ]
     result["panel_fingerprint"] = objective.panel.fingerprint
-    result["space"] = _space_summary(spec.tuning, options)
+    try:
+        constraints = resolved_constraints(spec, options)
+    except (ValueError, RuntimeError):
+        constraints = ()
+    result["space"] = _space_summary(spec.tuning, constraints)
 
     try:
         manifest = manifest_for(options, _plan_dir(options), spec, objective)
@@ -138,35 +143,44 @@ def _budgets(options: RunOptions) -> JsonObject:
     }
 
 
-def _space_summary(schema: TuningSchema, options: RunOptions) -> JsonObject:
-    constrained = constrained_schema(schema, options.space_overrides)
+def _space_summary(schema: TuningSchema, constraints: Constraints) -> JsonObject:
+    constrained = constrained_schema(schema, constraints)
     conditioned = {
         child: condition for condition in constrained.conditions for child in condition.children
     }
     parameters: list[JsonValue] = [
-        _parameter_summary(parameter, conditioned.get(parameter.name), options.excluded_families)
+        _parameter_summary(parameter, conditioned.get(parameter.name))
         for parameter in constrained.parameters
     ]
     return {
         "schema_id": constrained.id,
-        "families": _effective_families(constrained, options.excluded_families),
-        "excluded_families": list(options.excluded_families),
+        "algorithms": _residual_domain(constrained, "algorithm"),
+        "families": _residual_domain(constrained, "family"),
+        "residual_categoricals": {
+            parameter.name: _domain_of(parameter)
+            for parameter in constrained.parameters
+            if parameter.kind in ("categorical", "bool", "constant")
+        },
+        "constraints": encode_constraints(constraints),
         "parameters": parameters,
     }
+
+
+def _domain_of(parameter: ParameterSpec) -> list[JsonValue]:
+    if parameter.kind == "constant":
+        return [parameter.constant_value]
+    return list(parameter.choices) if parameter.choices is not None else []
+
+
+def _residual_domain(schema: TuningSchema, name: str) -> list[JsonValue]:
+    parameter = next((p for p in schema.parameters if p.name == name), None)
+    return _domain_of(parameter) if parameter is not None else []
 
 
 def _parameter_summary(
     parameter: ParameterSpec,
     condition: ActivationCondition | None,
-    excluded_families: tuple[str, ...],
 ) -> JsonObject:
-    choices: list[JsonValue] | None = None
-    if parameter.choices is not None:
-        choices = [
-            choice
-            for choice in parameter.choices
-            if not (parameter.name == "family" and choice in excluded_families)
-        ]
     active_when = (
         f"{condition.parent} in {list(condition.values)}" if condition is not None else None
     )
@@ -174,21 +188,8 @@ def _parameter_summary(
         "name": parameter.name,
         "kind": parameter.kind,
         "bounds": list(parameter.bounds) if parameter.bounds is not None else None,
-        "choices": choices,
+        "choices": list(parameter.choices) if parameter.choices is not None else None,
         "default": parameter.default,
         "constant_value": parameter.constant_value,
         "active_when": active_when,
     }
-
-
-def _effective_families(
-    schema: TuningSchema, excluded_families: tuple[str, ...]
-) -> list[JsonValue]:
-    for parameter in schema.parameters:
-        if parameter.name != "family":
-            continue
-        if parameter.kind == "constant":
-            return [parameter.constant_value]
-        if parameter.choices is not None:
-            return [c for c in parameter.choices if c not in excluded_families]
-    return []

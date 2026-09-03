@@ -14,7 +14,7 @@ def _check_game(
     binary: Path,
     objective: Path,
     evaluator_workers: int = 1,
-    excluded_family: str | None = None,
+    excluded_algorithm: str | None = None,
     time_only: bool = False,
 ) -> None:
     description = subprocess.run(
@@ -93,8 +93,13 @@ def _check_game(
             ]
         )
         command.extend(effort_flags)
-        if excluded_family is not None:
-            command.extend(["--exclude-family", excluded_family])
+        excluded_constraint = (
+            {"set": {"algorithm": {"choices": ["mcts", "flat_mc", "random"]}}}
+            if excluded_algorithm == "negamax"
+            else None
+        )
+        if excluded_constraint is not None:
+            command.extend(["--constraint", json.dumps(excluded_constraint)])
         completed = subprocess.run(command, check=False, capture_output=True, text=True)
         assert completed.returncode == 0, completed.stderr
         manifest = json.loads((run_dir / "manifest.json").read_text())
@@ -105,19 +110,18 @@ def _check_game(
         completed_pairs = [
             event["payload"] for event in events if event["type"] == "pair_completed"
         ]
-        assert manifest["schema_version"] == 4
+        assert manifest["schema_version"] == 5
         expected_effort = {"kind": "time_ms", "value": 5} if time_only else None
         if expected_effort is not None:
             assert all(
                 item["search_effort"] == expected_effort for item in manifest["fidelity"].values()
             )
             assert all(item["search_effort"] == expected_effort for item in completed_pairs)
-        assert manifest["proposer"]["excluded_families"] == (
-            [] if excluded_family is None else [excluded_family]
-        )
+        expected_constraints = [] if excluded_constraint is None else [excluded_constraint]
+        assert manifest["proposer"]["constraints"] == expected_constraints
         assert (
-            report["proposal_search"]["configured"]["excluded_families"]
-            == manifest["proposer"]["excluded_families"]
+            report["proposal_search"]["configured"]["constraints"]
+            == manifest["proposer"]["constraints"]
         )
         assert manifest["kind"] == expected_kind
         analysis = report["opponent_response_analysis"]
@@ -152,7 +156,8 @@ def _check_game(
             for event in events
             if event["type"] == "proposal_created"
         ]
-        assert all(config.get("family") != excluded_family for config in proposal_configs)
+        if excluded_algorithm is not None:
+            assert all(config.get("algorithm") != excluded_algorithm for config in proposal_configs)
         assert accepted_sources == [
             *manifest["proposer"]["source_schedule"],
             *manifest["proposer"]["challenger_source_schedule"],
@@ -294,7 +299,7 @@ def main() -> None:
     # The weighted-six tic-tac-toe panel drives the full state machine -- three
     # cohorts, retained elites, a twelve-pair shadow race per cohort, and an
     # exact report rebuild on resume -- on the cheapest available game.
-    _check_game(ttt, ttt_objective, workers, "meta_mcts")
+    _check_game(ttt, ttt_objective, workers, "negamax")
     # Time-mode run whose validation reaches the whole production corpus.
     _check_game(ttt, ttt_objective, time_only=True)
     # Druid's own tuning path is exercised by its dedicated evidence gate; here

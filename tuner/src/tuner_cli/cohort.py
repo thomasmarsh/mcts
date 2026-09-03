@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import asdict
 
 from .artifacts import Manifest
+from .constraints import constrained_schema, require_candidate_allowed
 from .domain import (
     Candidate,
     CohortRecord,
@@ -28,7 +29,6 @@ from .event_payloads import (
     ProposalIdentity,
     ProposalRejectedPayload,
 )
-from .family_exclusions import require_candidate_family_allowed
 from .identity import candidate_from_config, canonical_json
 from .observations import comparable_prefix_observations
 from .proposer import (
@@ -174,7 +174,7 @@ def create_proposal(
     source = proposal_source(manifest, cohort_index, slot)
     attempt = _source_attempt(state, source)
     proposed = _candidate_for_source(manifest, state, default, spec, model, source, attempt)
-    require_candidate_family_allowed(proposed.candidate, manifest.excluded_families)
+    require_candidate_allowed(proposed.candidate, manifest.constraints)
     frontier = _frontier(manifest, state, slot)
     version = (
         getattr(model, "adapter_version", "smac-2.4-public-ask-v1")
@@ -222,8 +222,9 @@ def _random_candidate(manifest: Manifest, spec: GameSpec, source: str, attempt: 
         "random_reserve": "reserve",
         "random_search": "random_search",
     }[source]
+    schema = constrained_schema(spec.tuning, manifest.constraints)
     space = build_space(
-        spec.tuning, derived_seed(manifest.seed, namespace, attempt - 1), manifest.excluded_families
+        schema, derived_seed(manifest.seed, namespace, attempt - 1), manifest.constraints
     )
     return candidate_from_config(random_values(space))
 

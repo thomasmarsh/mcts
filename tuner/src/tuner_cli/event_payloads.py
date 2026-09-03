@@ -1,4 +1,4 @@
-"""Closed tagged union of immutable version-4 evidence event payloads.
+"""Closed tagged union of immutable versioned evidence event payloads.
 
 Each event type owns one frozen payload value with a focused decoder and an
 encoder that reproduces exactly the fields the producers wrote before this

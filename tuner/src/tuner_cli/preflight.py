@@ -20,8 +20,8 @@ from .run import (
     RunOptions,
     game_spec,
     preflight_default,
+    resolved_constraints,
     schema_default,
-    validate_family_exclusions,
     validate_objective_options,
     validate_options,
 )
@@ -45,7 +45,7 @@ def preflight_launch(options: RunOptions, target: Target | None = None) -> JsonO
     resolved_target = target or GameBinaryTarget(binary)
     try:
         spec = game_spec(resolved_target, binary)
-        validate_family_exclusions(spec.tuning, options.excluded_families)
+        constraints = resolved_constraints(spec, options)
         objective = resolve_objective(
             objective_path,
             spec.kind,
@@ -54,7 +54,7 @@ def preflight_launch(options: RunOptions, target: Target | None = None) -> JsonO
             spec.default_game_config,
         )
         validate_objective_options(options, objective)
-        preflight_default(resolved_target, spec, objective, options.seed, options.excluded_families)
+        preflight_default(resolved_target, spec, objective, options.seed, constraints)
     except (OSError, RuntimeError, ValueError) as error:
         errors.append(str(error))
 

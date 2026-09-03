@@ -79,6 +79,32 @@ def no_constraints() -> Constraints:
     return ()
 
 
+def family_exclusion_constraint(
+    schema: TuningSchema, excluded_families: tuple[str, ...]
+) -> Constraint | None:
+    """Lower a legacy ``--exclude-family`` list to a ``choices`` narrowing.
+
+    "Exclude family X" is a pre-taxonomy launch surface (the UI now emits the
+    residual choice set directly). It maps to a ``choices`` narrowing of the
+    ``family`` categorical keeping every value not named -- ``None`` when the
+    list is empty.
+    """
+    if not excluded_families:
+        return None
+    family = next((p for p in schema.parameters if p.name == "family"), None)
+    if family is None or family.kind != "categorical" or family.choices is None:
+        raise ValueError("--exclude-family needs a categorical 'family' parameter")
+    unknown = sorted(set(excluded_families) - {str(c) for c in family.choices})
+    if unknown:
+        raise ValueError(f"unknown excluded family: {unknown[0]}")
+    kept = tuple(
+        _param_scalar(c, "family choice") for c in family.choices if c not in excluded_families
+    )
+    if not kept:
+        raise ValueError("family exclusions cannot exclude every family")
+    return Constraint(when=(), sets=(("family", ChoicesOp(kept)),))
+
+
 # --- decoding -------------------------------------------------------------------
 
 
@@ -192,9 +218,9 @@ def _encode_set_op(op: SetOp) -> JsonValue:
     return {"choices": list(op.choices)}
 
 
-def encode_constraints(constraints: Constraints) -> list[JsonObject]:
+def encode_constraints(constraints: Constraints) -> list[JsonValue]:
     """Canonical (key-sorted list) wire form for the manifest and epoch fingerprint."""
-    encoded: list[JsonObject] = []
+    encoded: list[JsonValue] = []
     for constraint in constraints:
         entry: JsonObject = {}
         if constraint.when:

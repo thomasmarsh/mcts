@@ -177,7 +177,7 @@ def test_watch_shape_reuses_one_store_over_a_growing_run(tmp_path: Path) -> None
         evidence = root / "version4" / "evidence.jsonl"
         with evidence.open("a", encoding="utf-8") as handle:
             handle.write(
-                '{"schema_version":4,"sequence":999,"type":"run_interrupted",'
+                '{"schema_version":5,"sequence":999,"type":"run_interrupted",'
                 '"payload":{"stage":"s","pair_id":null}}\n'
             )
         stat = evidence.stat()

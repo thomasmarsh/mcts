@@ -17,6 +17,13 @@ from .codec import (
     strict_json,
     string,
 )
+from .constraints import (
+    CONSTRAINT_POLICY_VERSION,
+    Constraints,
+    decode_constraints,
+    encode_constraints,
+    validate_constraints,
+)
 from .domain import (
     ComputeBudget,
     ObjectiveEpoch,
@@ -32,7 +39,6 @@ from .domain import (
     TaskPrefix,
 )
 from .effort import decode_effort, encode_effort, exceeds_same_kind
-from .family_exclusions import FAMILY_EXCLUSION_POLICY_VERSION, validate_family_exclusions
 from .identity import (
     canonical_json,
     fingerprint,
@@ -53,12 +59,6 @@ from .proposer import (
 )
 from .schema import GameSpec, decode_game_spec
 from .smac_proposer import ADAPTER_VERSION
-from .space_overrides import (
-    SpaceOverrides,
-    decode_space_overrides,
-    encode_space_overrides,
-    validate_space_overrides,
-)
 from .tasks import (
     build_corpus,
     selected_prefix,
@@ -67,7 +67,7 @@ from .tasks import (
     verify_weighted_corpus,
 )
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 CANDIDATE_FAILURE_POLICY_VERSION = "terminal-candidate-refill-v1"
 MINIMUM_ELIGIBLE_PREFIX_PAIRS = 12
 _OPPONENT_ROLES: tuple[OpponentRole, OpponentRole] = ("default", "historical_reference")
@@ -107,7 +107,7 @@ class ProposerSpecification:
     bootstrap_seed: int
     reserve_seed: int
     runtime_versions: tuple[tuple[str, str], ...]
-    excluded_families: tuple[str, ...]
+    constraints: Constraints
 
     @property
     def model_candidates(self) -> int:
@@ -130,8 +130,8 @@ class ProposerSpecification:
                 "qmc": "qmc_search",
                 "irace_generational": "irace_model",
             }[self.policy],
-            "family_exclusion_policy_version": FAMILY_EXCLUSION_POLICY_VERSION,
-            "excluded_families": list(self.excluded_families),
+            "constraint_policy_version": CONSTRAINT_POLICY_VERSION,
+            "constraints": encode_constraints(self.constraints),
             "proposal_seed": self.proposal_seed,
             "task_seed": self.task_seed,
             "cohort_size": self.cohort_size,
@@ -267,7 +267,7 @@ def proposer_specification(
     finalists: int,
     bootstrap_candidates: int,
     random_reserve_candidates: int,
-    excluded_families: tuple[str, ...] = (),
+    constraints: Constraints = (),
     versions: dict[str, str] | None = None,
     policy: ProposerPolicy = "smac_mixed",
 ) -> ProposerSpecification:
@@ -287,7 +287,7 @@ def proposer_specification(
         derived_seed(proposal_seed, "bootstrap"),
         derived_seed(proposal_seed, "reserve"),
         tuple(sorted((runtime_versions() if versions is None else versions).items())),
-        excluded_families,
+        constraints,
     )
 
 
@@ -315,7 +315,7 @@ class Manifest:
     candidate_failure_policy: CandidateFailurePolicySpecification
     active_elimination: ActiveEliminationSpecification | None
     diagnostic_policy: DiagnosticPolicySpecification
-    space_overrides: SpaceOverrides
+    constraints: Constraints
 
     @property
     def seed(self) -> int:
@@ -344,10 +344,6 @@ class Manifest:
     @property
     def random_reserve_candidates(self) -> int:
         return self.proposer_spec.random_reserve_candidates
-
-    @property
-    def excluded_families(self) -> tuple[str, ...]:
-        return self.proposer_spec.excluded_families
 
     @property
     def source_schedule(self) -> tuple[ProposalSource, ...]:
@@ -464,7 +460,7 @@ def _epoch_payload(
     validation: TaskCorpus,
     production_effort: SearchEffort,
     game_config_fingerprint: str,
-    space_overrides: SpaceOverrides,
+    constraints: Constraints,
 ) -> JsonObject:
     payload: JsonObject = {
         "version": "objective-epoch-v1",
@@ -488,9 +484,9 @@ def _epoch_payload(
         "selection_rule_version": "tuning_point_estimate_fingerprint_v1",
     }
     # Unconstrained runs keep their historical epoch identity; a run-scoped
-    # override makes the run a distinct objective epoch.
-    if space_overrides:
-        payload["space_overrides"] = encode_space_overrides(space_overrides)
+    # constraint makes the run a distinct objective epoch.
+    if constraints:
+        payload["constraints"] = encode_constraints(constraints)
     return payload
 
 
@@ -515,15 +511,12 @@ def build_manifest(
     shadow_elimination_threshold: float = 0.05,
     shadow_policy_kind: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap",
     shadow_halving_spare_margin: float = 0.0,
-    excluded_families: tuple[str, ...] = (),
     active_elimination_audit_probability: float | None = None,
     diagnostic_pair_budget: int = 0,
     proposer_policy: ProposerPolicy = "smac_mixed",
-    space_overrides: SpaceOverrides | None = None,
+    constraints: Constraints = (),
 ) -> Manifest:
-    validate_family_exclusions(spec.tuning, excluded_families)
-    overrides = space_overrides or {}
-    validate_space_overrides(spec.tuning, overrides)
+    validate_constraints(spec.tuning, constraints)
     proposer = proposer_specification(
         seed,
         task_seed,
@@ -531,7 +524,7 @@ def build_manifest(
         finalists,
         bootstrap_candidates,
         random_reserve_candidates,
-        excluded_families,
+        constraints,
         policy=proposer_policy,
     )
     if (
@@ -588,7 +581,7 @@ def build_manifest(
             validation,
             efforts[2],
             game_config_fingerprint,
-            overrides,
+            constraints,
         )
     )
     raw = _encode_manifest_object(
@@ -614,7 +607,7 @@ def build_manifest(
         candidate_failure_policy,
         active_elimination,
         DiagnosticPolicySpecification(),
-        overrides,
+        constraints,
     )
     return decode_manifest_object({**raw, "fingerprint": fingerprint(raw)})
 
@@ -783,7 +776,7 @@ def _encode_manifest_object(
     candidate_failure_policy: CandidateFailurePolicySpecification,
     active_elimination: ActiveEliminationSpecification | None,
     diagnostic_policy: DiagnosticPolicySpecification,
-    space_overrides: SpaceOverrides,
+    constraints: Constraints,
 ) -> JsonObject:
     encoded: JsonObject = {
         "schema_version": SCHEMA_VERSION,
@@ -829,9 +822,9 @@ def _encode_manifest_object(
         "limitations": list(_LIMITATIONS),
     }
     # Emitted only when the run actually constrains the space, so an
-    # unconstrained run's manifest stays byte-identical to its historical form.
-    if space_overrides:
-        encoded["space_overrides"] = encode_space_overrides(space_overrides)
+    # unconstrained run's manifest carries no constraint block.
+    if constraints:
+        encoded["constraints"] = encode_constraints(constraints)
     return encoded
 
 
@@ -960,8 +953,8 @@ def _decode_proposer(value: object) -> ProposerSpecification:
         "policy_version",
         "policy",
         "guided_source",
-        "family_exclusion_policy_version",
-        "excluded_families",
+        "constraint_policy_version",
+        "constraints",
         "proposal_seed",
         "task_seed",
         "cohort_size",
@@ -989,14 +982,9 @@ def _decode_proposer(value: object) -> ProposerSpecification:
     )
     if not all(isinstance(item, str) and item for item in versions.values()):
         raise ValueError("runtime versions must be nonempty strings")
-    excluded = raw["excluded_families"]
-    if raw["family_exclusion_policy_version"] != FAMILY_EXCLUSION_POLICY_VERSION:
-        raise ValueError("unsupported family exclusion policy")
-    if not isinstance(excluded, list):
-        raise ValueError("excluded families must be strings")
-    excluded_families = tuple(string(item, "excluded family", nonempty=True) for item in excluded)
-    if tuple(sorted(set(excluded_families))) != excluded_families:
-        raise ValueError("excluded families must be sorted and duplicate-free")
+    if raw["constraint_policy_version"] != CONSTRAINT_POLICY_VERSION:
+        raise ValueError("run predates the taxonomy cutover -- replay with the v5 CLI")
+    constraints = decode_constraints(raw["constraints"])
     policy: ProposerPolicy = literal(raw["policy"], POLICIES, "proposer policy")
     specification = proposer_specification(
         integer(raw["proposal_seed"], "proposal seed", positive=True),
@@ -1005,7 +993,7 @@ def _decode_proposer(value: object) -> ProposerSpecification:
         integer(raw["finalists"], "finalists", positive=True),
         integer(raw["bootstrap_candidates"], "bootstrap candidates", positive=True),
         integer(raw["random_reserve_candidates"], "random reserve candidates", positive=True),
-        excluded_families,
+        constraints,
         {
             key: string(item, f"runtime version {key}", nonempty=True)
             for key, item in versions.items()
@@ -1144,7 +1132,7 @@ def _check_epoch(
     tuning: TaskCorpus,
     validation: TaskCorpus,
     production_effort: SearchEffort,
-    space_overrides: SpaceOverrides,
+    constraints: Constraints,
 ) -> ObjectiveEpoch:
     epoch = objective_epoch(
         _epoch_payload(
@@ -1157,7 +1145,7 @@ def _check_epoch(
             validation,
             production_effort,
             game_config_fingerprint,
-            space_overrides,
+            constraints,
         )
     )
     if raw["epoch"] != {"epoch_id": epoch.epoch_id, "fingerprint": epoch.fingerprint}:
@@ -1318,13 +1306,25 @@ def _decode_shadow_policy(value: object) -> ShadowPolicySpecification:
     return shadow_policy
 
 
+def _decode_constraints_block(
+    raw: JsonObject, spec: GameSpec, proposer: ProposerSpecification
+) -> Constraints:
+    constraints = decode_constraints(raw.get("constraints"))
+    validate_constraints(spec.tuning, constraints)
+    if not constraints and "constraints" in raw:
+        raise ValueError("constraints block is present but empty")
+    if constraints != proposer.constraints:
+        raise ValueError("manifest constraints disagree with the proposer block")
+    return constraints
+
+
 def decode_manifest_object(value: object) -> Manifest:
     full = json_object(value, "manifest")
-    # `space_overrides` is present only for a run that constrains the space, so an
-    # unconstrained run's manifest matches its pre-13g field set exactly.
+    # The `constraints` block is present only for a run that constrains the
+    # space, so an unconstrained run's manifest carries the base field set.
     allowed: set[str] = set(_FIELDS)
-    if "space_overrides" in full:
-        allowed.add("space_overrides")
+    if "constraints" in full:
+        allowed.add("constraints")
     raw = object_fields(full, allowed, "manifest")
     if raw["schema_version"] != SCHEMA_VERSION or raw["command_policy_version"] != POLICY_VERSION:
         raise ValueError("unsupported manifest schema version or command policy")
@@ -1333,7 +1333,7 @@ def decode_manifest_object(value: object) -> Manifest:
         raise ValueError("manifest fingerprint does not match content")
     spec, game_config, game_config_fingerprint = _decode_game_identity(raw)
     proposer = _decode_proposer(raw["proposer"])
-    validate_family_exclusions(spec.tuning, proposer.excluded_families)
+    validate_constraints(spec.tuning, proposer.constraints)
     budget_raw = object_fields(
         raw["compute_budget"],
         {
@@ -1369,10 +1369,7 @@ def decode_manifest_object(value: object) -> Manifest:
     if compute_budget.tuning_pair_attempts < proposer.cohort_size * tuning_prefix.length:
         raise ValueError("tuning pair budget cannot fund initial cohort")
     efforts = _decode_fidelity(raw, validation, tuning_prefix, validation_prefix)
-    space_overrides = decode_space_overrides(raw.get("space_overrides"))
-    validate_space_overrides(spec.tuning, space_overrides)
-    if not space_overrides and "space_overrides" in raw:
-        raise ValueError("space_overrides is present but empty")
+    constraints = _decode_constraints_block(raw, spec, proposer)
     epoch = _check_epoch(
         raw,
         spec,
@@ -1384,7 +1381,7 @@ def decode_manifest_object(value: object) -> Manifest:
         tuning,
         validation,
         efforts[2],
-        space_overrides,
+        constraints,
     )
     _check_statistical_policy(raw)
     return Manifest(
@@ -1410,7 +1407,7 @@ def decode_manifest_object(value: object) -> Manifest:
         candidate_failure_policy,
         active_elimination,
         diagnostic_policy,
-        space_overrides,
+        constraints,
     )
 
 
@@ -1444,6 +1441,6 @@ def manifest_json(manifest: Manifest) -> JsonObject:
         manifest.candidate_failure_policy,
         manifest.active_elimination,
         manifest.diagnostic_policy,
-        manifest.space_overrides,
+        manifest.constraints,
     )
     return {**encoded, "fingerprint": manifest.fingerprint}

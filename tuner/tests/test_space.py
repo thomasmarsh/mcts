@@ -23,7 +23,9 @@ def test_configspace_preserves_zero_defaults_and_active_values() -> None:
     assert values == {"family": "a", "zero": 0.0, "enabled": False, "fixed": "yes"}
 
 
-def test_excluded_default_uses_first_allowed_family_and_active_children() -> None:
+def test_constrained_default_uses_first_allowed_family_and_active_children() -> None:
+    from tuner_cli.constraints import constrained_schema, decode_constraints
+
     schema = TuningSchema(
         "strategy",
         (),
@@ -35,7 +37,8 @@ def test_excluded_default_uses_first_allowed_family_and_active_children() -> Non
         (ActivationCondition("family", ("b",), ("depth",)),),
         "{}",
     )
-    assert default_values(build_space(schema, 5, ("a",))) == {"family": "b", "depth": 2}
+    narrowed = constrained_schema(schema, decode_constraints({"family": {"choices": ["b", "c"]}}))
+    assert default_values(build_space(narrowed, 5)) == {"family": "b", "depth": 2}
 
 
 def test_transitively_conditioned_parameter_builds_a_valid_space() -> None:
