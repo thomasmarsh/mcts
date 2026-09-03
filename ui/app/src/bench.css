@@ -4137,7 +4137,7 @@ body.bench-active #analysis-panel {
   color: #b7b8c2;
 }
 
-.tuner-launch-form input,
+.tuner-launch-form input:not([type="checkbox"]),
 .tuner-launch-form select {
   background: #101116;
   border: 1px solid #2a2b33;
@@ -4197,12 +4197,21 @@ body.bench-active #analysis-panel {
   text-transform: capitalize;
 }
 
-.tuner-launch-family {
-  display: flex;
+.tuner-launch-family-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 4px 12px;
+}
+
+.tuner-launch-form label.tuner-launch-family {
   flex-direction: row;
   align-items: center;
   gap: 6px;
   font-size: 13px;
+}
+
+.tuner-launch-family input {
+  flex: none;
 }
 
 #tuner-launch-button {

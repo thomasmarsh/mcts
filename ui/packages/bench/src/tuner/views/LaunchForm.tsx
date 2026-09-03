@@ -511,19 +511,21 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
         <Show when={familyChoices().length > 0}>
           <fieldset class="tuner-launch-families" data-testid="family-checklist">
             <legend>Excluded families</legend>
-            <For each={familyChoices()}>
-              {(family) => (
-                <label class="tuner-launch-family">
-                  <input
-                    type="checkbox"
-                    data-testid={`exclude-family-${family}`}
-                    checked={excludedFamilies().includes(family)}
-                    onChange={(e) => toggleFamily(family, e.currentTarget.checked)}
-                  />
-                  {family}
-                </label>
-              )}
-            </For>
+            <div class="tuner-launch-family-list">
+              <For each={familyChoices()}>
+                {(family) => (
+                  <label class="tuner-launch-family">
+                    <input
+                      type="checkbox"
+                      data-testid={`exclude-family-${family}`}
+                      checked={excludedFamilies().includes(family)}
+                      onChange={(e) => toggleFamily(family, e.currentTarget.checked)}
+                    />
+                    {family}
+                  </label>
+                )}
+              </For>
+            </div>
             <Show when={excludesEveryFamily()}>
               <p class="launch-error" role="alert" data-testid="exclude-all-error">
                 A run must leave at least one family available.
