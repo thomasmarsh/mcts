@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tuner_projection.build import project_runs
+from tuner_projection.build import project_pass, project_runs
 from tuner_projection.store import open_store
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -165,6 +165,28 @@ def test_a_manifest_written_later_supersedes_the_startup_failure_row(tmp_path: P
     finally:
         store.close()
     assert second.pruned == 0
+
+
+def test_watch_shape_reuses_one_store_over_a_growing_run(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    store = open_store(db_path)
+    try:
+        first = project_pass(root, store, rebuild=False)
+        assert (first.projected, first.skipped) == (2, 0)
+        evidence = root / "version4" / "evidence.jsonl"
+        with evidence.open("a", encoding="utf-8") as handle:
+            handle.write(
+                '{"schema_version":4,"sequence":999,"type":"run_interrupted",'
+                '"payload":{"stage":"s","pair_id":null}}\n'
+            )
+        stat = evidence.stat()
+        os.utime(evidence, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        second = project_pass(root, store, rebuild=False)
+        assert (second.projected, second.skipped) == (1, 1)
+        assert sorted(store.projected_run_ids()) == ["version4", "version4-active-halving"]
+    finally:
+        store.close()
 
 
 def test_prunes_removed_runs(tmp_path: Path) -> None:

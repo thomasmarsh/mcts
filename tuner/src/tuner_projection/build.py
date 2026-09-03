@@ -156,40 +156,50 @@ def _prune(store: Store, discovered: set[str]) -> int:
     return len(stale)
 
 
+def project_pass(runs_root: Path, store: Store, *, rebuild: bool) -> ProjectionSummary:
+    """One projection pass against an already-open store.
+
+    Split out of :func:`project_runs` so watch mode can hold a single store
+    connection (and its warm interpreter) open across many passes instead of
+    paying ``open_store`` per tick.
+    """
+    projected = skipped = errors = 0
+    run_dirs = _discover(runs_root)
+    discovered = {directory.name for directory in run_dirs}
+    for run_dir in run_dirs:
+        run_id = run_dir.name
+        fingerprint = _fingerprint(run_dir)
+        if not rebuild and store.fingerprint(run_id) == fingerprint:
+            skipped += 1
+            continue
+        projection = _project_run(run_dir, run_id, fingerprint)
+        store.replace_run(projection)
+        projected += 1
+        errors += 1 if projection.run.ingest_error is not None else 0
+    # Runs the launcher started that died before writing a manifest never
+    # reach `_discover`; surface them here so the fleet can show the
+    # failure instead of the run just vanishing.
+    startup_fingerprint = ChangeFingerprint(-1, -1, "")
+    for run_id, detail in _orphan_launch_failures(runs_root).items():
+        if run_id in discovered:
+            continue
+        discovered.add(run_id)
+        if not rebuild and store.fingerprint(run_id) == startup_fingerprint:
+            skipped += 1
+            continue
+        store.replace_run(_error_projection(run_id, startup_fingerprint, detail))
+        projected += 1
+        errors += 1
+    pruned = _prune(store, discovered)
+    store.vacuum()
+    return ProjectionSummary(projected, skipped, errors, pruned)
+
+
 def project_runs(runs_root: Path, db_path: Path, *, rebuild: bool) -> ProjectionSummary:
     if rebuild and db_path.exists():
         db_path.unlink()
     store = open_store(db_path)
-    projected = skipped = errors = 0
     try:
-        run_dirs = _discover(runs_root)
-        discovered = {directory.name for directory in run_dirs}
-        for run_dir in run_dirs:
-            run_id = run_dir.name
-            fingerprint = _fingerprint(run_dir)
-            if not rebuild and store.fingerprint(run_id) == fingerprint:
-                skipped += 1
-                continue
-            projection = _project_run(run_dir, run_id, fingerprint)
-            store.replace_run(projection)
-            projected += 1
-            errors += 1 if projection.run.ingest_error is not None else 0
-        # Runs the launcher started that died before writing a manifest never
-        # reach `_discover`; surface them here so the fleet can show the
-        # failure instead of the run just vanishing.
-        startup_fingerprint = ChangeFingerprint(-1, -1, "")
-        for run_id, detail in _orphan_launch_failures(runs_root).items():
-            if run_id in discovered:
-                continue
-            discovered.add(run_id)
-            if not rebuild and store.fingerprint(run_id) == startup_fingerprint:
-                skipped += 1
-                continue
-            store.replace_run(_error_projection(run_id, startup_fingerprint, detail))
-            projected += 1
-            errors += 1
-        pruned = _prune(store, discovered)
-        store.vacuum()
-        return ProjectionSummary(projected, skipped, errors, pruned)
+        return project_pass(runs_root, store, rebuild=rebuild)
     finally:
         store.close()
