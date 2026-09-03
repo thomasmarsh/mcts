@@ -9,7 +9,7 @@ from pathlib import Path
 
 from test_run import FakeTarget, _fake_binary, _objective
 
-from tuner_cli.domain import SearchEffort
+from tuner_cli.domain import SearchEffort, ValidationResult
 from tuner_cli.preflight import preflight_launch
 from tuner_cli.run import RunOptions
 
@@ -56,6 +56,19 @@ def test_validation_budget_relationship_failure_is_reported(tmp_path: Path) -> N
     )
     assert result["ok"] is False
     assert "cannot exceed production validation pairs" in result["errors"][0]
+
+
+def test_panel_opponent_rejected_by_binary_is_reported(tmp_path: Path) -> None:
+    # A historical-reference config the binary's `compare validate` rejects
+    # (e.g. a half-specified family config) must fail preflight, not launch --
+    # this is the `preflight_default` stage.
+    class RejectingTarget(FakeTarget):  # type: ignore[misc,valid-type]
+        def validate(self, candidates, opponent, game_config):  # type: ignore[no-untyped-def]
+            return ValidationResult(False, ())
+
+    result = preflight_launch(_options(tmp_path), target=RejectingTarget())
+    assert result["ok"] is False
+    assert "schema default failed panel preflight" in result["errors"][0]
 
 
 def test_validation_budget_must_divide_finalists(tmp_path: Path) -> None:

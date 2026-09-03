@@ -2,8 +2,9 @@
 
 Runs exactly the checks `run_foreground` performs *before* it creates the run
 directory or starts any search -- argument coherence (`validate_options`), the
-game-spec / family-exclusion checks, objective resolution, and the
-option-vs-panel cross-checks (`validate_objective_options`) -- and reports what
+game-spec / family-exclusion checks, objective resolution, the
+option-vs-panel cross-checks (`validate_objective_options`), and the
+schema-default-vs-panel binary check (`preflight_default`) -- and reports what
 fails as a JSON line. The bench server's launch form calls this so a launch
 can never be started for a reason that was knowable up front.
 
@@ -18,6 +19,7 @@ from .objective import resolve_objective
 from .run import (
     RunOptions,
     game_spec,
+    preflight_default,
     schema_default,
     validate_family_exclusions,
     validate_objective_options,
@@ -40,8 +42,9 @@ def preflight_launch(options: RunOptions, target: Target | None = None) -> JsonO
     except (OSError, ValueError) as error:
         return {"ok": False, "errors": [str(error)]}
 
+    resolved_target = target or GameBinaryTarget(binary)
     try:
-        spec = game_spec(target or GameBinaryTarget(binary), binary)
+        spec = game_spec(resolved_target, binary)
         validate_family_exclusions(spec.tuning, options.excluded_families)
         objective = resolve_objective(
             objective_path,
@@ -51,6 +54,7 @@ def preflight_launch(options: RunOptions, target: Target | None = None) -> JsonO
             spec.default_game_config,
         )
         validate_objective_options(options, objective)
+        preflight_default(resolved_target, spec, objective, options.seed, options.excluded_families)
     except (OSError, RuntimeError, ValueError) as error:
         errors.append(str(error))
 

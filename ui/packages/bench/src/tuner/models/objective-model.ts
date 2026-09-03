@@ -394,6 +394,18 @@ export function validateDraft(draft: ObjectiveDraft, schema?: TunerInfo | null):
           errors.push(`Opponent ${i + 1}: unknown parameter "${key}" for ${draft.gameKind}.`);
         }
       }
+      // The binary's `compare validate` rejects a partial config: every
+      // parameter active for the chosen family must be present (it fills no
+      // defaults). Mirror that here so a half-specified opponent fails in the
+      // editor rather than at launch.
+      const missing = [...activeParamNames(schema, obj)].filter((name) => !(name in obj));
+      if (missing.length) {
+        errors.push(
+          `Opponent ${i + 1}: missing required parameter${missing.length > 1 ? "s" : ""} ${missing
+            .map((name) => `"${name}"`)
+            .join(", ")} for this family.`,
+        );
+      }
     }
   });
   for (const count of seen.values()) {

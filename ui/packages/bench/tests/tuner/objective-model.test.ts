@@ -189,6 +189,34 @@ describe("validateDraft", () => {
     };
     expect(validateDraft(d, schema).some((e) => /unknown parameter "bogus"/.test(e))).toBe(true);
   });
+
+  it("flags a family config missing a parameter the binary would require", () => {
+    const d = good();
+    d.opponents[1]!.configText = '{"family":"ucb1","q_init":"Parent"}';
+    const schema: TunerInfo = {
+      id: "s",
+      baselines: [],
+      eval_rounds: 1,
+      parameters: [
+        { name: "family", type: "categorical", choices: ["ucb1"], default: "ucb1" },
+        { name: "q_init", type: "categorical", choices: ["Parent", "Infinity"], default: "Infinity" },
+        { name: "c", type: "float", bounds: [0, 3], default: 1.4 },
+        {
+          name: "final_action",
+          type: "categorical",
+          choices: ["robust_child"],
+          default: "robust_child",
+        },
+      ],
+      conditions: [
+        { if: { family: "ucb1" }, then: ["c"] },
+        { if: { family: "ucb1" }, then: ["final_action"] },
+      ],
+      game_config: {},
+    };
+    const errors = validateDraft(d, schema);
+    expect(errors.some((e) => /missing required parameters .*"c".*"final_action"/.test(e))).toBe(true);
+  });
 });
 
 describe("activeParamNames", () => {

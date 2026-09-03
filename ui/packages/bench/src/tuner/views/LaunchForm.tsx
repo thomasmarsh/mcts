@@ -19,11 +19,18 @@ import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import type { TunerLaunchRequest } from "../tuner-types.js";
 
+// These mirror the tuner CLI's own defaults (cohort 8, finalists 3,
+// tuning_pairs 4). They satisfy every launch constraint for a panel whose
+// opponent weights are all 1 (total weight 1 or 2): tuning_pair_budget covers
+// one initial cohort (8 x 4), validation_pair_budget is a multiple of
+// finalists, and validation_pair_budget / finalists is both <= the production
+// count and a multiple of the panel weight. A panel with larger opponent
+// weights needs all three scaled up to stay divisible by that weight.
 const DEFAULTS = {
   task_seed: 1,
-  tuning_pair_budget: 240,
-  validation_pair_budget: 240,
-  production_validation_pairs: 60,
+  tuning_pair_budget: 32,
+  validation_pair_budget: 24,
+  production_validation_pairs: 8,
 };
 
 /** `1` → `1`, `""` → undefined, junk → undefined. */
