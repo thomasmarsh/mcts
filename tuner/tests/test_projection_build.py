@@ -217,6 +217,80 @@ def test_prunes_removed_runs(tmp_path: Path) -> None:
         store.close()
 
 
+def test_forget_run_scoped(tmp_path: Path) -> None:
+    """`delete_run` removes exactly the target run's rows and leaves siblings
+    intact."""
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    project_runs(root, db_path, rebuild=False)
+    store = open_store(db_path)
+    try:
+        assert sorted(store.projected_run_ids()) == ["version4", "version4-active-halving"]
+        store.delete_run("version4-active-halving")
+        assert store.projected_run_ids() == ["version4"]
+        connection = store._connection  # noqa: SLF001
+        for table in ("run_manifest", "cohorts", "candidates", "pairs", "ingest_state"):
+            gone = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE run_id = 'version4-active-halving'"
+            ).fetchone()[0]
+            assert gone == 0, table
+            kept = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE run_id = 'version4'"
+            ).fetchone()[0]
+            assert kept > 0, table
+    finally:
+        store.close()
+
+
+def test_forget_cli_removes_one_run(tmp_path: Path) -> None:
+    from tuner_projection.__main__ import main
+
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    project_runs(root, db_path, rebuild=False)
+
+    assert main(["--db", str(db_path), "--forget", "version4-active-halving"]) == 0
+
+    store = open_store(db_path)
+    try:
+        assert store.projected_run_ids() == ["version4"]
+    finally:
+        store.close()
+
+
+def test_deleted_run_is_not_resurrected_as_a_startup_failure(tmp_path: Path) -> None:
+    """A tombstoned run whose directory has been removed must not reappear as
+    an orphan launch failure on the next pass."""
+    import json
+
+    root = tmp_path / "runs"
+    run_dir = root / "doomed"
+    run_dir.mkdir(parents=True)
+    (run_dir / "launch.err").write_text("boom\n", encoding="utf-8")
+    _journal(root, "doomed", run_dir)
+    db_path = tmp_path / "p.sqlite"
+    first = project_runs(root, db_path, rebuild=True)
+    assert first.ingest_errors == 1
+
+    # The bench server tombstones the run and removes its directory.
+    with (root / "launches.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {"event": "run_deleted", "run_id": "doomed", "deleted_at": "2026-01-01T00:00:00Z"}
+            )
+            + "\n"
+        )
+    shutil.rmtree(run_dir)
+
+    second = project_runs(root, db_path, rebuild=False)
+    assert second.pruned == 1
+    store = open_store(db_path)
+    try:
+        assert store.projected_run_ids() == []
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("rebuild", [True, False])
 def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
     db_path = tmp_path / "p.sqlite"

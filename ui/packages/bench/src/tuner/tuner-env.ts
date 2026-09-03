@@ -46,6 +46,7 @@ export interface TunerEnv {
   preflightRun(body: TunerLaunchRequest): Effect<LaunchPreflightResult>;
   stopRun(runId: string): Effect<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Effect<TunerRunView>;
+  deleteRun(runId: string): Effect<void>;
   getRunLog(runId: string, since: number): Effect<TunerRunLog>;
   getRunEvidence(runId: string, sinceSeq: number): Effect<EvidenceTailResponse>;
   /** A long-lived effect: pushes `{kind:"events"}` messages as the run's
@@ -87,6 +88,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     preflightRun: (body) => lift(() => api.preflightRun(body)),
     stopRun: (runId) => lift(() => api.stopRun(runId)),
     extendRun: (runId, body) => lift(() => api.extendRun(runId, body)),
+    deleteRun: (runId) => lift(() => api.deleteRun(runId)),
     getRunLog: (runId, since) => lift(() => api.getRunLog(runId, since)),
     getRunEvidence: (runId, sinceSeq) => lift(() => api.getRunEvidence(runId, sinceSeq)),
     openEvidenceStream: (runId, sinceSeq) =>

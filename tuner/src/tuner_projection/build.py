@@ -124,6 +124,7 @@ def _orphan_launch_failures(runs_root: Path) -> dict[str, str]:
         return {}
     run_dirs: dict[str, Path] = {}
     terminated: set[str] = set()
+    deleted: set[str] = set()
     for line in lines:
         stripped = line.strip()
         if not stripped:
@@ -142,8 +143,12 @@ def _orphan_launch_failures(runs_root: Path) -> dict[str, str]:
             run_id = event.get("run_id")
             if isinstance(run_id, str):
                 terminated.add(run_id)
+        elif event.get("event") == "run_deleted":
+            run_id = event.get("run_id")
+            if isinstance(run_id, str):
+                deleted.add(run_id)
     failures: dict[str, str] = {}
-    for run_id in terminated:
+    for run_id in terminated - deleted:
         run_dir = run_dirs.get(run_id, runs_root / run_id)
         if not (run_dir / "manifest.json").exists():
             failures[run_id] = _launch_err_tail(run_dir)

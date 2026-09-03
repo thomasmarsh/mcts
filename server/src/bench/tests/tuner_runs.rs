@@ -368,6 +368,51 @@ async fn stop_is_idempotent_on_an_already_exited_run() {
 }
 
 #[tokio::test]
+async fn delete_route_removes_a_terminal_run() {
+    let (app, root) = seeded_app(default_seed);
+    let runs_root = root.join("bench-runs");
+    record(&runs_root, "gone", None);
+    std::fs::write(runs_root.join("gone/manifest.json"), "{}").unwrap();
+    tuner_launch::append_terminal(&runs_root, "gone", TerminalOutcome::Exited).unwrap();
+
+    // Unknown run -> 404.
+    let (status, _) = http_delete(app.clone(), "/api/bench/tuner/runs/missing").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Terminal run -> 204, journal tombstoned, directory gone.
+    let (status, _) = http_delete(app.clone(), "/api/bench/tuner/runs/gone").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(!runs_root.join("gone").exists());
+    assert!(tuner_launch::records(&runs_root)
+        .unwrap()
+        .iter()
+        .all(|r| r.run_id != "gone"));
+
+    // The now-forgotten run 404s on GET and on a second delete.
+    let (status, _) = http_get(app.clone(), "/api/bench/tuner/runs/gone").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = http_delete(app, "/api/bench/tuner/runs/gone").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn delete_route_rejects_a_live_run() {
+    let (app, root) = seeded_app(default_seed);
+    let runs_root = root.join("bench-runs");
+    record(&runs_root, "busy", Some(999_999_999));
+
+    let (status, _) = http_delete(app, "/api/bench/tuner/runs/busy").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(runs_root.join("busy").exists());
+    assert!(tuner_launch::records(&runs_root)
+        .unwrap()
+        .iter()
+        .any(|r| r.run_id == "busy"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn stop_route_dead_pid() {
     let (app, root) = seeded_app(default_seed);
     let runs_root = root.join("bench-runs");

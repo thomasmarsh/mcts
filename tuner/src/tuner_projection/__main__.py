@@ -49,8 +49,14 @@ def main(argv: list[str] | None = None) -> int:
         prog="tuner-project",
         description="Build a rebuildable read-only SQLite projection of version-4 tuner runs.",
     )
-    parser.add_argument("--runs-root", required=True, type=Path, help="directory of run subdirs")
+    parser.add_argument("--runs-root", type=Path, help="directory of run subdirs")
     parser.add_argument("--db", required=True, type=Path, help="SQLite projection file to write")
+    parser.add_argument(
+        "--forget",
+        metavar="RUN_ID",
+        help="delete exactly one run's rows from the projection and exit "
+        "(the run directory itself is removed by the bench server)",
+    )
     parser.add_argument(
         "--rebuild",
         action="store_true",
@@ -68,9 +74,21 @@ def main(argv: list[str] | None = None) -> int:
         help="seconds between passes in --watch mode (default 4)",
     )
     args = parser.parse_args(argv)
-    runs_root: Path = args.runs_root
     db_path: Path = args.db
     rebuild: bool = args.rebuild
+
+    if args.forget is not None:
+        store = open_store(db_path)
+        try:
+            store.delete_run(args.forget)
+        finally:
+            store.close()
+        print(f"forgot run {args.forget}")
+        return 0
+
+    if args.runs_root is None:
+        parser.error("--runs-root is required unless --forget is given")
+    runs_root: Path = args.runs_root
     if not runs_root.is_dir():
         parser.error(f"runs root is not a directory: {runs_root}")
     if args.watch:

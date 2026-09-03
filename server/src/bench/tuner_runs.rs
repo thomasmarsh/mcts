@@ -613,6 +613,37 @@ pub(crate) async fn stop_tuner_run(
     get_tuner_run(AxumState(state), AxumPath(run_id)).await
 }
 
+/// `DELETE /api/bench/tuner/runs/{run_id}`
+///
+/// Permanently remove a **terminal** tuner run: [`tuner_launch::delete`]
+/// appends a `run_deleted` tombstone to the journal and removes the run
+/// directory, then the SQLite projection is refreshed so its rows for the
+/// now-vanished run are pruned. A `live` run is rejected with `409` — stop it
+/// first. Returns `204`.
+pub(crate) async fn delete_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<StatusCode, BenchError> {
+    tuner_launch::delete(&state.bench_runs_dir, &run_id).map_err(|error| BenchError {
+        status: match error.kind() {
+            std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            std::io::ErrorKind::InvalidInput => StatusCode::CONFLICT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+        message: format!("failed to delete tuner run '{run_id}': {error}"),
+    })?;
+    // Drop the run's projection rows. The run directory is already gone, so a
+    // projection pass prunes it; a failure here is logged, not surfaced -- the
+    // authoritative delete (journal tombstone + directory) has already
+    // happened, and the follower's next pass prunes the run regardless.
+    if let Err(error) =
+        (state.tuner_projection_refresh)(&state.bench_runs_dir, &state.tuner_projection_db)
+    {
+        eprintln!("tuner run delete: projection refresh failed for '{run_id}': {error}");
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[derive(serde::Deserialize)]
 pub(crate) struct TunerLogParams {
     #[serde(default)]

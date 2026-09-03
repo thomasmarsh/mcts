@@ -33,8 +33,8 @@ use super::{
     tuner_api,
     tuner_evidence::{evidence_stream, evidence_tail},
     tuner_runs::{
-        delete_tuner_objective, extend_tuner_run, get_tuner_objective, get_tuner_run,
-        get_tuner_run_log, launch_tuner_run, list_tuner_objectives, list_tuner_runs,
+        delete_tuner_objective, delete_tuner_run, extend_tuner_run, get_tuner_objective,
+        get_tuner_run, get_tuner_run_log, launch_tuner_run, list_tuner_objectives, list_tuner_runs,
         preflight_tuner_run, put_tuner_objective, stop_tuner_run, validate_tuner_objective,
     },
     types::*,
@@ -91,7 +91,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             "/api/bench/tuner/runs/preflight",
             post(preflight_tuner_run).layer(launch_timeout),
         )
-        .route("/api/bench/tuner/runs/{run_id}", get(get_tuner_run))
+        .route(
+            "/api/bench/tuner/runs/{run_id}",
+            get(get_tuner_run).delete(delete_tuner_run),
+        )
         .route("/api/bench/tuner/runs/{run_id}/stop", post(stop_tuner_run))
         .route("/api/bench/tuner/runs/{run_id}/log", get(get_tuner_run_log))
         .route(

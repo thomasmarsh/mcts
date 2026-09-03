@@ -21,8 +21,12 @@ export interface RunCardProps {
    * click target so long multi-line messages stay readable. */
   failureReason?: string | null;
   highlight?: boolean;
+  /** true while this run's `DELETE` is in flight. */
+  deleting?: boolean;
   onOpen: () => void;
   onStop?: () => void;
+  /** Present on terminal cards: permanently remove the run. */
+  onDelete?: () => void;
 }
 
 export const RunCard: Component<RunCardProps> = (props) => {
@@ -68,6 +72,16 @@ export const RunCard: Component<RunCardProps> = (props) => {
       <Show when={props.status === "live" && props.onStop}>
         <button class="tuner-run-card-stop" onClick={() => props.onStop?.()}>
           Stop
+        </button>
+      </Show>
+      <Show when={props.status !== "live" && props.onDelete}>
+        <button
+          class="tuner-run-card-delete"
+          data-testid="run-card-delete"
+          disabled={props.deleting}
+          onClick={() => props.onDelete?.()}
+        >
+          {props.deleting ? "Deleting…" : "Delete"}
         </button>
       </Show>
     </div>

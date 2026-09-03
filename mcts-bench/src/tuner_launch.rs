@@ -444,6 +444,10 @@ enum JournalEvent {
         run_id: String,
         outcome: TerminalOutcome,
     },
+    RunDeleted {
+        run_id: String,
+        deleted_at: String,
+    },
 }
 
 pub fn launch(request: &TunerLaunchRequest) -> io::Result<TunerLaunchRecord> {
@@ -615,12 +619,46 @@ pub fn records(root: &Path) -> io::Result<Vec<TunerLaunchRecord>> {
                     record.terminal_outcome = Some(outcome);
                 }
             }
+            JournalEvent::RunDeleted { run_id, .. } => {
+                by_id.remove(&run_id);
+                order.retain(|id| id != &run_id);
+            }
         }
     }
     Ok(order
         .into_iter()
         .filter_map(|id| by_id.remove(&id))
         .collect())
+}
+
+/// Permanently remove a **terminal** tuner run: append a `run_deleted`
+/// tombstone to the journal (so [`records`] and every downstream list forget
+/// it), then best-effort remove the run directory. Errors `NotFound` if no
+/// record exists for `run_id`, and `InvalidInput` if the run is still live
+/// (stop it first).
+pub fn delete(root: &Path, run_id: &str) -> io::Result<()> {
+    let record = records(root)?
+        .into_iter()
+        .find(|record| record.run_id == run_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such tuner run"))?;
+    if record.terminal_outcome.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "run is still live -- stop it before deleting",
+        ));
+    }
+    append(
+        root,
+        &JournalEvent::RunDeleted {
+            run_id: run_id.into(),
+            deleted_at: crate::launch::iso_timestamp(),
+        },
+    )?;
+    match fs::remove_dir_all(&record.run_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 pub fn is_alive(pid: u32) -> bool {
@@ -807,6 +845,70 @@ mod tests {
             Some(TerminalOutcome::Exited)
         );
         assert!(append_terminal(&root, "run_12a", TerminalOutcome::Signalled).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_terminal_run_tombstones_and_removes_the_dir() {
+        let root = scratch("delete-terminal");
+        let run_dir = root.join("gone");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join("manifest.json"), "{}").unwrap();
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "gone".into(),
+                argv: vec![],
+                run_dir: run_dir.clone(),
+                pid: Some(1),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: None,
+            },
+        )
+        .unwrap();
+        append_terminal(&root, "gone", TerminalOutcome::Exited).unwrap();
+
+        delete(&root, "gone").unwrap();
+
+        assert!(!run_dir.exists());
+        assert!(records(&root).unwrap().iter().all(|r| r.run_id != "gone"));
+        // A second delete now sees no record.
+        assert_eq!(delete(&root, "gone").unwrap_err().kind(), io::ErrorKind::NotFound);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_live_run_rejected() {
+        let root = scratch("delete-live");
+        let run_dir = root.join("busy");
+        fs::create_dir_all(&run_dir).unwrap();
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "busy".into(),
+                argv: vec![],
+                run_dir: run_dir.clone(),
+                pid: Some(1),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: None,
+            },
+        )
+        .unwrap();
+
+        let err = delete(&root, "busy").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(run_dir.exists());
+        assert!(records(&root).unwrap().iter().any(|r| r.run_id == "busy"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_unknown_run_is_not_found() {
+        let root = scratch("delete-unknown");
+        assert_eq!(
+            delete(&root, "nope").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

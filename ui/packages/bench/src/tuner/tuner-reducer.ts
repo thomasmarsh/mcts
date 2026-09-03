@@ -151,6 +151,10 @@ export interface TunerState {
   evidenceGeneration: number;
   log: TunerLogTailState;
   stopError: string | null;
+  /** run id currently being deleted via `DELETE .../runs/{id}`, or null. */
+  deletingRunId: string | null;
+  /** Inline error from the last delete attempt (e.g. `409` for a live run). */
+  deleteError: string | null;
   /** Inline error from the last `POST .../extend` — the server's rejection
    * (corpus ceiling, `finalists` divisibility) shown verbatim below the
    * "Extend budget" form. */
@@ -220,6 +224,8 @@ export function initialTunerState(): TunerState {
     evidenceGeneration: 0,
     log: { lines: [], errLines: [], offset: 0, error: null, active: false },
     stopError: null,
+    deletingRunId: null,
+    deleteError: null,
     extendError: null,
     extendBusy: false,
     extendSeq: 0,
@@ -319,7 +325,10 @@ export type TunerAction =
   | { tag: "stopFailed"; error: string }
   | { tag: "extendRun"; runId: string; extension: TunerBudgetExtension }
   | { tag: "extendOk" }
-  | { tag: "extendFailed"; error: string };
+  | { tag: "extendFailed"; error: string }
+  | { tag: "deleteRun"; runId: string }
+  | { tag: "deleteRunOk"; runId: string }
+  | { tag: "deleteRunFailed"; error: string };
 
 const liveCount = (runs: TunerRunView[] | undefined): number =>
   (runs ?? []).filter((r) => r.status === "live").length;
@@ -1178,6 +1187,42 @@ export function tunerReducer(
     case "extendFailed":
       draft.extendError = action.error;
       draft.extendBusy = false;
+      return null;
+
+    case "deleteRun": {
+      if (draft.deletingRunId) return null;
+      draft.deletingRunId = action.runId;
+      draft.deleteError = null;
+      const { runId } = action;
+      return env
+        .deleteRun(runId)
+        .map((): TunerAction => ({ tag: "deleteRunOk", runId }))
+        .catch((e): TunerAction => ({ tag: "deleteRunFailed", error: String(e) }));
+    }
+    case "deleteRunOk": {
+      draft.deletingRunId = null;
+      draft.deleteError = null;
+      // Drop the run from the fleet immediately, then reconcile from the server.
+      const current = peek(draft.runs) ?? [];
+      draft.runs = toOk(
+        current.filter((r) => r.run_id !== action.runId),
+        Date.now(),
+      );
+      const effects: Effect<TunerAction>[] = [fetchJournal(env), fetchProjection(env)];
+      // If the deleted run was the one on screen, route back to the fleet.
+      if (draft.openRunId === action.runId) {
+        draft.openRunId = null;
+        draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
+        clearResources(draft);
+        draft.evidence = { seq: 0, ring: [] };
+        syncAutoRefresh(draft);
+        syncEvidenceStream(draft, env);
+      }
+      return Effect.merge(...effects);
+    }
+    case "deleteRunFailed":
+      draft.deletingRunId = null;
+      draft.deleteError = action.error;
       return null;
   }
 }

@@ -17,6 +17,16 @@ export const FleetDashboard: Component<{
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
 
+  const deleteRun = (runId: string): void => {
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`Permanently delete tuner run "${runId}"? This cannot be undone.`)
+    ) {
+      return;
+    }
+    dispatch({ tag: "deleteRun", runId });
+  };
+
   const runs = createMemo(() => peek(state().runs) ?? []);
   const projection = createMemo(() => peek(state().projectionRuns) ?? []);
 
@@ -141,9 +151,11 @@ export const FleetDashboard: Component<{
                 game={run.game}
                 objective={run.objective}
                 failureReason={run.reason}
+                deleting={state().deletingRunId === run.runId}
                 onOpen={() =>
                   props.navigate({ view: "run", runId: run.runId, tab: "overview" })
                 }
+                onDelete={() => deleteRun(run.runId)}
               />
             )}
           </For>
@@ -167,12 +179,19 @@ export const FleetDashboard: Component<{
                 validationClaim={run.validation_claim}
                 ingestError={run.ingest_error}
                 totalPairs={run.total_pair_attempts}
+                deleting={state().deletingRunId === run.run_id}
                 onOpen={() =>
                   props.navigate({ view: "run", runId: run.run_id, tab: "overview" })
                 }
+                onDelete={() => deleteRun(run.run_id)}
               />
             )}
           </For>
+        </Show>
+        <Show when={state().deleteError}>
+          <div class="launch-error" role="alert">
+            {state().deleteError}
+          </div>
         </Show>
       </section>
     </div>

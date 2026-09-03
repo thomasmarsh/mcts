@@ -63,6 +63,8 @@ export interface TunerApiClient {
   preflightRun(body: TunerLaunchRequest): Promise<LaunchPreflightResult>;
   stopRun(runId: string): Promise<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Promise<TunerRunView>;
+  /** Permanently remove a terminal run. `409` if the run is still live. */
+  deleteRun(runId: string): Promise<void>;
   getRunLog(runId: string, since?: number): Promise<TunerRunLog>;
   getRunEvidence(runId: string, sinceSeq: number): Promise<EvidenceTailResponse>;
   /** Subscribe to the run's evidence SSE stream from `sinceSeq`. Returns a
@@ -179,6 +181,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     preflightRun: (body) => sendJson(url("/api/bench/tuner/runs/preflight"), "POST", body),
     stopRun: (runId) => sendJson(url(`${runPath(runId)}/stop`), "POST"),
     extendRun: (runId, body) => sendJson(url(`${runPath(runId)}/extend`), "POST", body),
+    deleteRun: (runId) => sendNoContent(url(runPath(runId)), "DELETE"),
     getRunLog: (runId, since) =>
       fetchJson(url(`${runPath(runId)}/log${queryString({ since })}`)),
     getRunEvidence: (runId, sinceSeq) =>
