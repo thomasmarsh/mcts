@@ -1628,57 +1628,71 @@ fn test_build_search_builds_negamax_family() {
 }
 
 #[test]
-fn test_strategy_tuner_info_includes_every_family_choice() {
+fn test_strategy_tuner_info_lists_algorithm_and_axis_choices() {
     let tuner = strategy_tuner_info(&["strong"], 1);
-    let family = tuner
-        .parameters
-        .iter()
-        .find(|p| p.name == "family")
-        .expect("family param must exist");
-    let choices = family.spec["choices"]
-        .as_array()
-        .expect("family choices must be an array")
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect::<Vec<_>>();
-    for name in family_choices() {
+    let choices = |name: &str| -> Vec<String> {
+        tuner
+            .parameters
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} param must exist"))
+            .spec["choices"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{name} choices must be an array"))
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        choices("algorithm"),
+        ["random", "flat_mc", "mcts", "negamax"]
+    );
+    for want in ["ucb1", "rave", "ments", "bayes_uct1", "gpn"] {
         assert!(
-            choices.contains(&name),
-            "family {name:?} must be a tuner-searchable choice: {choices:?}"
+            choices("select").iter().any(|c| c == want),
+            "select must offer {want:?}: {:?}",
+            choices("select")
         );
     }
+    for want in ["uniform", "decisive_move_nst", "meta_mcts"] {
+        assert!(
+            choices("simulate").iter().any(|c| c == want),
+            "simulate must offer {want:?}: {:?}",
+            choices("simulate")
+        );
+    }
+    // The select<->backprop couplings pin the Bayes/softmax backprops, so
+    // they are never independently selectable.
+    assert_eq!(choices("backprop"), ["classic", "power_mean", "td"]);
 }
 
-/// A `Direct` family (`random`, `flat_mc`, `negamax`) never reads `q_init`,
-/// so Optuna shouldn't waste trials sampling it across `q_init`'s five
-/// otherwise-equivalent values for that family -- `active_params` (the same
-/// fixed-point evaluation
-/// `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
-/// uses) must not mark `q_init` active for any of them, but must for an
-/// ordinary `Compose` family.
+/// `random`/`flat_mc`/`negamax` have no policy axes and no Q-values, so a
+/// tuner shouldn't waste trials sampling `q_init` or any `select`/`simulate`
+/// variant for them -- `active_params` (the same fixed-point evaluation
+/// `test_tuner_info_conditions_cover_every_axis_native_param_dispatch_needs`
+/// uses) must not mark those active unless `algorithm == mcts`.
 #[test]
-fn test_tuner_info_gates_q_init_off_for_direct_families_only() {
+fn test_tuner_info_gates_axes_and_q_init_to_mcts_only() {
     let tuner = strategy_tuner_info(&["strong"], 1);
-    let random_active = active_params(&tuner, &json!({"family": "random"}));
-    assert!(
-        !random_active.contains("q_init"),
-        "q_init must not be active for a Direct family: {random_active:?}"
+    for algo in ["random", "flat_mc", "negamax"] {
+        let active = active_params(&tuner, &json!({"algorithm": algo}));
+        for gated in ["q_init", "select", "simulate", "final_action"] {
+            assert!(
+                !active.contains(gated),
+                "{algo}: {gated:?} must not be active: {active:?}"
+            );
+        }
+    }
+    let mcts = active_params(
+        &tuner,
+        &json!({"algorithm": "mcts", "select": "ucb1", "simulate": "uniform"}),
     );
-    let flat_mc_active = active_params(&tuner, &json!({"family": "flat_mc"}));
-    assert!(
-        !flat_mc_active.contains("q_init"),
-        "q_init must not be active for a Direct family: {flat_mc_active:?}"
-    );
-    let negamax_active = active_params(&tuner, &json!({"family": "negamax"}));
-    assert!(
-        !negamax_active.contains("q_init"),
-        "q_init must not be active for a Direct family: {negamax_active:?}"
-    );
-    let ucb1_active = active_params(&tuner, &json!({"family": "ucb1"}));
-    assert!(
-        ucb1_active.contains("q_init"),
-        "q_init must be active for a Compose family: {ucb1_active:?}"
-    );
+    for want in ["q_init", "select", "simulate", "final_action"] {
+        assert!(
+            mcts.contains(want),
+            "mcts: {want:?} must be active: {mcts:?}"
+        );
+    }
 }
 
 #[test]
@@ -1940,9 +1954,9 @@ fn test_family_required_params_covers_every_registered_family() {
     // The gap `family_required_params()`'s own doc comment identifies:
     // a family added to `register_family!` without a matching fixture
     // here wouldn't fail anything, it would just silently skip that
-    // family in `test_tuner_info_conditions_cover_every_family_param_make_candidate_needs`
-    // below. Comparing the two name sets closes that gap without
-    // needing `family_required_params()` to become generated data.
+    // family in the golden and conditions-coverage checks below.
+    // Comparing the two name sets closes that gap without needing
+    // `family_required_params()` to become generated data.
     let registered: std::collections::HashSet<&str> = family_choices().into_iter().collect();
     let covered: std::collections::HashSet<&str> = family_required_params()
         .iter()
@@ -2046,16 +2060,16 @@ fn algorithm_native_backprop_couplings_are_enforced() {
 /// The fixed point of "active" parameter names implied by
 /// `TunerInfo.conditions` for one fully-assigned trial config -- the
 /// same any-of/if-then evaluation a tuner `ConfigSpace` performs,
-/// chasing multi-level conditions (e.g. `family: rave` activates
+/// chasing multi-level conditions (e.g. `select: rave` activates
 /// `schedule`, whose own sampled value in turn activates one of
-/// `rave`/`k`/`bias`). `family` is the only unconditional root -- `q_init`
-/// is itself gated on `family` naming a `Compose` row (see
-/// `strategy_tuner_info_with_mcgs`), so it has to reach "active" through
-/// the same condition-chasing loop below, not be seeded here.
+/// `rave`/`k`/`bias`). `algorithm` is the only unconditional root -- the
+/// policy axes and `q_init` are themselves gated on `algorithm == mcts`,
+/// so they reach "active" through the same condition-chasing loop below,
+/// not by being seeded here.
 fn active_params(tuner: &TunerInfo, chosen: &Value) -> std::collections::HashSet<String> {
     let chosen = chosen.as_object().expect("params must be an object");
     let mut active: std::collections::HashSet<String> =
-        ["family"].iter().map(|s| s.to_string()).collect();
+        ["algorithm"].iter().map(|s| s.to_string()).collect();
     loop {
         let mut added = false;
         for cond in &tuner.conditions {
@@ -2090,26 +2104,96 @@ fn active_params(tuner: &TunerInfo, chosen: &Value) -> std::collections::HashSet
 }
 
 #[test]
-fn test_tuner_info_conditions_cover_every_family_param_make_candidate_needs() {
-    // Regression coverage for a real bug: `make_candidate`'s `rave` arm
-    // always required `epsilon`, but `strategy_tuner_info`'s conditions
-    // never activated `epsilon` for `family: rave` -- so a real tuner
-    // search built from this metadata could (and did) sample seemingly
-    // valid `rave` configs the binary then rejected as missing a param.
-    // For every family, every key its own round-trip fixture supplies
-    // must be reachable as "active" from `strategy_tuner_info`'s
-    // declared conditions given that exact assignment, catching any
-    // future family where a hand-written fixture and the declared
-    // schema's activation drift apart the same way.
+fn test_tuner_info_conditions_cover_every_axis_native_param_dispatch_needs() {
+    // Regression coverage for a real bug class: `make_candidate`'s `rave`
+    // arm always required `epsilon`, but the tuner schema's conditions
+    // never activated `epsilon` for that config -- so a real tuner search
+    // built from this metadata could (and did) sample seemingly valid
+    // configs the binary then rejected as missing a param. Each
+    // pre-cutover family's round-trip fixture, translated into its
+    // `algorithm` + axis assignment by `legacy_family_to_axes`, must have
+    // every key it supplies reachable as "active" from
+    // `strategy_tuner_info`'s declared conditions given that exact
+    // assignment.
     let tuner = strategy_tuner_info(&["strong"], 1);
-    for (family, params) in family_required_params() {
+    for (name, mut params) in family_required_params() {
+        let axes = crate::dispatch::legacy_family_to_axes(name)
+            .unwrap_or_else(|| panic!("no legacy_family_to_axes mapping for {name}"));
+        let obj = params.as_object_mut().unwrap();
+        obj.remove("family");
+        for (key, value) in axes.as_object().unwrap() {
+            obj.insert(key.clone(), value.clone());
+        }
         let active = active_params(&tuner, &params);
         for key in params.as_object().unwrap().keys() {
             assert!(
                 active.contains(key),
-                "family {family:?}: param {key:?} is required by make_candidate but \
+                "{name}: param {key:?} is supplied by the axis-native fixture but \
                      strategy_tuner_info's conditions never mark it active for this config"
             );
         }
     }
+}
+
+/// AN-2 checkpoint: every parameter the `algorithm` + policy-axis schema
+/// declares is reachable as "active" from some assignment, and every
+/// condition refers only to declared parameters (no orphan `if`/`then`).
+#[test]
+fn tuner_info_schema_has_no_unreachable_params_or_orphan_conditions() {
+    let tuner = strategy_tuner_info_with_mcgs(&["strong"], 1, true);
+    let declared: std::collections::HashSet<&str> =
+        tuner.parameters.iter().map(|p| p.name.as_str()).collect();
+
+    for cond in &tuner.conditions {
+        let (parent, _) = cond
+            .if_
+            .as_object()
+            .and_then(|m| m.iter().next())
+            .expect("condition `if` is a single-entry object");
+        assert!(
+            declared.contains(parent.as_str()),
+            "condition gates on undeclared parameter {parent:?}"
+        );
+        for then in &cond.then {
+            assert!(
+                declared.contains(then.as_str()),
+                "condition activates undeclared parameter {then:?}"
+            );
+        }
+    }
+
+    // One representative full assignment per schema branch; their combined
+    // active sets must cover every declared parameter.
+    let configs = [
+        json!({"algorithm": "random"}),
+        json!({"algorithm": "flat_mc", "flat_mc_selection": "ucb1"}),
+        json!({"algorithm": "negamax", "negamax_aspiration": "on"}),
+        json!({"algorithm": "mcts", "select": "ucb1", "select_epsilon_greedy": true,
+               "simulate": "decisive_move_nst", "simulate_epsilon_greedy": true,
+               "backprop": "power_mean", "final_action": "secure_child", "mcgs": true}),
+        json!({"algorithm": "mcts", "select": "ments", "simulate": "uniform"}),
+        json!({"algorithm": "mcts", "select": "bayes_uct2", "simulate": "mast"}),
+        json!({"algorithm": "mcts", "select": "gpn", "simulate": "nst", "contempt": "on"}),
+        json!({"algorithm": "mcts", "select": "score_bounded_uct", "simulate": "decisive_move_mast"}),
+        json!({"algorithm": "mcts", "select": "amaf", "simulate": "uniform", "backprop": "td"}),
+        json!({"algorithm": "mcts", "select": "progressive_history", "simulate": "uniform"}),
+        json!({"algorithm": "mcts", "select": "uct_pn", "simulate": "uniform"}),
+        json!({"algorithm": "mcts", "select": "rave", "simulate": "decisive_move",
+               "schedule": "hand_selected", "rave_ucb": "ucb1"}),
+        json!({"algorithm": "mcts", "select": "rave", "simulate": "uniform", "schedule": "min_mse", "rave_ucb": "none"}),
+        json!({"algorithm": "mcts", "select": "rave", "simulate": "uniform", "schedule": "threshold", "rave_ucb": "none"}),
+    ];
+    let mut reachable: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for cfg in &configs {
+        reachable.extend(active_params(&tuner, cfg));
+    }
+    let unreachable: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|p| !reachable.contains(*p))
+        .collect();
+    assert!(
+        unreachable.is_empty(),
+        "parameters no assignment activates: {unreachable:?}"
+    );
 }

@@ -1027,24 +1027,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ttt_strategy_families_lists_family_choices() {
+    async fn test_ttt_strategy_families_lists_algorithm_and_axis_choices() {
         let (status, body) = http_get(test_app(), "/api/games/ttt/strategy-families").await;
         assert_eq!(status, HttpStatusCode::OK);
         let body = body_json(&body);
-        let family_choices = body["parameters"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|p| p["name"] == "family")
-            .expect("tuner info has a family parameter")["choices"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| c.as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert!(family_choices.contains(&"ucb1"));
-        assert!(family_choices.contains(&"random"));
-        assert!(family_choices.contains(&"negamax"));
+        let choices = |name: &str| -> Vec<String> {
+            body["parameters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["name"] == name)
+                .unwrap_or_else(|| panic!("tuner info has a {name} parameter"))["choices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c.as_str().unwrap().to_string())
+                .collect()
+        };
+        assert!(choices("algorithm").iter().any(|c| c == "random"));
+        assert!(choices("algorithm").iter().any(|c| c == "negamax"));
+        assert!(choices("algorithm").iter().any(|c| c == "mcts"));
+        assert!(choices("select").iter().any(|c| c == "ucb1"));
     }
 
     #[tokio::test]

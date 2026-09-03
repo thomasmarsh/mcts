@@ -1,19 +1,14 @@
 //! A `register_field!` table generating `TrialParams`'s per-family-tunable
-//! fields and `strategy_tuner_info`'s matching `TunerParameter` entries from
-//! one source, instead of the same field list being hand-declared twice.
+//! fields, plus `tunable_field_parameters()`, which `tuner_info.rs` still
+//! reuses as the single source for each variant parameter's JSON-schema
+//! bounds and default even though the schema's own shape (the `algorithm`
+//! categorical and the four policy axes) is now described there directly.
 //!
-//! Four fields stay hand-declared on `TrialParams` and hand-reported by
-//! `strategy_tuner_info_with_mcgs` instead of living in this table: `family`
-//! is unconditionally active regardless of which family a trial names
-//! (nothing in `conditions` gates it); `q_init` is meaningless to a `Direct`
-//! family (no `select`/backprop Q-values for it to initialize -- see
-//! `DirectFamily`'s doc comment), so it's gated on `family` naming a
-//! `Compose` row via a `conditions` entry built from `direct_family_names()`,
-//! the same way `mcgs`/`state_only_keying` are reported only when a game's
-//! own `supports_mcgs` flag is set (`state_only_keying` additionally gated
-//! on `mcgs`'s own sampled value, since it's meaningless without graph
-//! search on) -- none of the four is "a field some family's `conditions`
-//! entry activates", which is what this table exists to cover.
+//! `family`/`q_init`/`mcgs`/`state_only_keying` stay hand-declared on
+//! `TrialParams` (and hand-reported by `tuner_info.rs`): each is either
+//! unconditionally present or gated on something other than a single
+//! `register_field!` row's presence, which is all this table's generated
+//! `conditions` used to cover.
 
 use crate::config_ir::codec::{field, field_opt};
 use crate::config_ir::{BackpropSpec, BaseSimulateSpec, FinalActionSpec, SelectSpec, SimulateSpec};
@@ -27,8 +22,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 
 /// Builds one `TunerParameter` from a name and its JSON-schema spec --
-/// shared by both this table's generated entries and the hand-declared
-/// `family`/`q_init`/`mcgs` ones in `lib.rs`.
+/// shared by this table's `tunable_field_parameters()` and the
+/// `algorithm`/axis rows `tuner_info.rs` declares by hand.
 pub(crate) fn param(name: &str, spec: Value) -> TunerParameter {
     TunerParameter {
         name: name.into(),
@@ -36,12 +31,10 @@ pub(crate) fn param(name: &str, spec: Value) -> TunerParameter {
     }
 }
 
-/// Builds one `TunerCondition` from an `if_` predicate and the field names
-/// it activates -- shared by `family_conditions()` below and the
-/// hand-written conditions `strategy_tuner_info_with_mcgs` appends for
-/// child-value-gated fields (`final_action`'s own `a`, RAVE's
-/// schedule/`rave_ucb`-gated fields) that don't fit `register_family!`'s
-/// per-family shape.
+/// Builds one `TunerCondition` from an `if_` predicate (a single-entry
+/// object `{parent: value | [values]}`) and the parameter names it
+/// activates -- used throughout `tuner_info.rs` to gate each axis variant's
+/// parameters on the axis categorical's sampled value.
 pub(crate) fn condition(if_: Value, then: &[&str]) -> TunerCondition {
     TunerCondition {
         if_,
@@ -418,17 +411,11 @@ fn negamax_aspiration_window(p: &TrialParams) -> Result<Option<Score>, HostError
 ///
 /// Each row also names the subset of table 1's fields that family's own
 /// `$ctor` actually reads (including `final_action` for every family whose
-/// own named type leaves it configurable) -- this is what generates
-/// `family_choices()`'s `family` categorical and `family_conditions()`'s
-/// per-(family, field) `TunerCondition` rows, replacing the hand-maintained
-/// `C_FAMILIES`/`EPSILON_FAMILIES`/`FINAL_ACTION_FAMILIES`/`PN_FAMILIES`
-/// grouping constants that used to describe the same thing. Fields gated by
-/// another *field's own value* rather than by `family` directly (`a` under
-/// `final_action: secure_child`, RAVE's schedule/`rave_ucb`-gated fields,
-/// `contempt_factor` under `contempt: on`) are not listed here -- those stay
-/// hand-written extra conditions in `strategy_tuner_info_with_mcgs`, since
-/// they're a different kind of condition than "this family always needs
-/// this field".
+/// own named type leaves it configurable). The per-run tuner schema no
+/// longer derives from these lists -- `tuner_info.rs` describes the policy
+/// axes directly -- but `dispatch_family` and `family_choices()` remain the
+/// live construction path and its test roster until `register_family!` is
+/// retired.
 ///
 /// A row's `$ctor` returns `FamilySpec`, not `ComposeSpec` directly -- most
 /// rows wrap their result in `FamilySpec::Compose(...)`, but a family with
@@ -454,23 +441,14 @@ macro_rules! register_family {
             }
         }
 
-        /// The `family` categorical's `choices` list -- every row's name, in
-        /// declaration order.
+        /// Every row's name, in declaration order. The tuner schema is now
+        /// built from the policy axes directly (`tuner_info.rs`), so this
+        /// survives only as test scaffolding pinning the axis-native path
+        /// against every pre-cutover family until `register_family!` is
+        /// deleted.
+        #[cfg(test)]
         pub(crate) fn family_choices() -> Vec<&'static str> {
             vec![$( $name ),+]
-        }
-
-        /// One `TunerCondition` per (family, field) pair a row's `$ctor`
-        /// reads -- the generated replacement for the hand-written grouped
-        /// conditions this macro's doc comment describes.
-        pub(crate) fn family_conditions() -> Vec<TunerCondition> {
-            let mut conditions = Vec::new();
-            $(
-                $(
-                    conditions.push(condition(json!({"family": $name}), &[stringify!($field)]));
-                )*
-            )+
-            conditions
         }
     };
 }
@@ -939,16 +917,4 @@ register_family! {
             .countermove_heuristic
             .ok_or_else(|| missing("countermove_heuristic"))?,
     })),
-}
-
-/// Family names whose `register_family!` row resolves to `FamilySpec::Direct`
-/// -- one entry per `DirectFamily` variant. Hand-maintained rather than
-/// generated: unlike a row's field list (read directly off the macro table
-/// by `family_conditions()`), whether a row's `$ctor` returns `Compose` or
-/// `Direct` is a runtime fact about its closure body, not something the
-/// macro can inspect to generate this list itself. Used by
-/// `strategy_tuner_info_with_mcgs` to gate `q_init`'s activation on `family`
-/// naming a `Compose` row -- see this module's doc comment.
-pub(crate) fn direct_family_names() -> &'static [&'static str] {
-    &["random", "flat_mc", "negamax"]
 }
