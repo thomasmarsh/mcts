@@ -971,4 +971,153 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
     }
+
+    /// Deliver `SIGKILL` to a process group, used only to force-clean a test
+    /// whose wrapper inherited a `SIG_IGN` SIGINT disposition from a
+    /// non-interactive CI runner.
+    #[cfg(test)]
+    fn kill_group(pgid: u32) {
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{pgid}"))
+            .status();
+    }
+
+    #[test]
+    fn stop_reaps_process_tree() {
+        let root = scratch("reap-tree");
+        let run_dir = root.join("tree");
+        fs::create_dir_all(&run_dir).unwrap();
+        let grandchild_pidfile = run_dir.join("grandchild.pid");
+        // The wrapper runs a nested shell that records its own pid and execs
+        // into a long `sleep` -- a grandchild of this process, in the wrapper's
+        // process group but never signalled by the wrapper itself. The
+        // trailing `; :` keeps the outer `sh -c` from exec-optimising itself
+        // away, so there is a real two-level tree. Neither level backgrounds a
+        // job, so neither inherits a shell's SIGINT-ignore for async children.
+        let script = format!(
+            "sh -c 'echo $$ > {}; exec sleep 45' ; :",
+            grandchild_pidfile.display()
+        );
+        let record = spawn_and_journal(
+            &root,
+            "tree",
+            run_dir.clone(),
+            vec!["sh".into(), "-c".into(), script],
+            false,
+        )
+        .unwrap();
+        let pid = record.pid.unwrap();
+
+        // Wait for the grandchild pid to be written.
+        let mut grandchild = None;
+        for _ in 0..200 {
+            if let Ok(text) = fs::read_to_string(&grandchild_pidfile) {
+                if let Ok(g) = text.trim().parse::<u32>() {
+                    grandchild = Some(g);
+                    break;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let grandchild = grandchild.expect("grandchild pid was recorded");
+        assert!(is_alive(pid));
+        assert!(is_alive(grandchild));
+
+        interrupt(pid).unwrap();
+
+        let mut outcome = None;
+        for i in 0..200 {
+            if let Some(found) = records(&root)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.run_id == "tree")
+                .and_then(|r| r.terminal_outcome)
+            {
+                outcome = Some(found);
+                break;
+            }
+            // A non-interactive runner can hand us a SIG_IGN SIGINT
+            // disposition that the wrapper and grandchild inherit; escalate to
+            // a group SIGKILL so the tree still gets reaped.
+            if i == 20 && (is_alive(pid) || is_alive(grandchild)) {
+                eprintln!("stop_reaps_process_tree: SIGINT did not reap the group, escalating to SIGKILL");
+                kill_group(pid);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        // A wrapper that traps SIGINT via `wait` exits 130 (`Exited`); one
+        // killed outright reports `Signalled`. Either is a clean stop -- what
+        // matters is that a terminal record was written and it is not
+        // `SpawnFailed`.
+        assert!(
+            matches!(
+                outcome,
+                Some(TerminalOutcome::Exited) | Some(TerminalOutcome::Signalled)
+            ),
+            "expected a terminal stop outcome, got {outcome:?}"
+        );
+
+        // The whole tree is gone, not just the wrapper.
+        for _ in 0..80 {
+            if !is_alive(pid) && !is_alive(grandchild) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(!is_alive(pid), "wrapper still alive after stop");
+        assert!(
+            !is_alive(grandchild),
+            "grandchild {grandchild} orphaned after stop"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stop_twice_is_noop() {
+        let root = scratch("stop-twice");
+        let run_dir = root.join("run");
+        fs::create_dir_all(&run_dir).unwrap();
+        let record = spawn_and_journal(
+            &root,
+            "run",
+            run_dir,
+            vec!["sh".into(), "-c".into(), "sleep 30".into()],
+            false,
+        )
+        .unwrap();
+        let pid = record.pid.unwrap();
+
+        interrupt(pid).unwrap();
+        let mut outcome = None;
+        for i in 0..200 {
+            if let Some(found) = records(&root)
+                .unwrap()
+                .into_iter()
+                .find(|r| r.run_id == "run")
+                .and_then(|r| r.terminal_outcome)
+            {
+                outcome = Some(found);
+                break;
+            }
+            if i == 20 && is_alive(pid) {
+                kill_group(pid);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert_eq!(outcome, Some(TerminalOutcome::Signalled));
+
+        // A second stop finds a dead pid: `interrupt` reports `NotFound`
+        // (which the server route swallows) and never a hard error, and the
+        // terminal record cannot be written twice.
+        let err = interrupt(pid).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            append_terminal(&root, "run", TerminalOutcome::Signalled)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -366,3 +366,21 @@ async fn stop_is_idempotent_on_an_already_exited_run() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn stop_route_dead_pid() {
+    let (app, root) = seeded_app(default_seed);
+    let runs_root = root.join("bench-runs");
+    // A non-terminal record whose recorded pid is long gone: the route signals
+    // it, `interrupt` reports `NotFound`, and the route must swallow that and
+    // return the (still non-terminal) record rather than 500.
+    record(&runs_root, "stale", Some(999_999_999));
+
+    let (status, body) =
+        http_post_json(app, "/api/bench/tuner/runs/stale/stop", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    // No terminal outcome was written by the route; the run reads back as it
+    // did before (no manifest yet -> "unknown").
+    assert_eq!(body_json(&body)["status"], "unknown");
+    std::fs::remove_dir_all(root).unwrap();
+}

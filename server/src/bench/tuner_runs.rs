@@ -584,10 +584,27 @@ pub(crate) async fn stop_tuner_run(
         })?;
     if record.terminal_outcome.is_none() {
         if let Some(pid) = record.pid {
-            match tuner_launch::interrupt(pid) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            let signalled = match tuner_launch::interrupt(pid) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                 Err(error) => return Err(journal_error(error)),
+            };
+            // Give a fast SIGINT-to-exit a brief window to land in the journal
+            // so the response can already show the run terminal. A slower exit
+            // still returns `live` with no error; the tuner's reaper writes the
+            // terminal record whenever it happens.
+            if signalled {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let terminal = tuner_launch::records(&state.bench_runs_dir)
+                        .map_err(journal_error)?
+                        .into_iter()
+                        .any(|r| r.run_id == run_id && r.terminal_outcome.is_some());
+                    if terminal {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
             }
         }
     }
