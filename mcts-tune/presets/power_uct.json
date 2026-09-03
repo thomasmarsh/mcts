@@ -1,0 +1,9 @@
+{
+  "id": "power_uct",
+  "description": "UCB1 selection with a power-mean value backup (Power-UCT).",
+  "params": {
+    "select": "ucb1",
+    "simulate": "uniform",
+    "backprop": "power_mean"
+  }
+}

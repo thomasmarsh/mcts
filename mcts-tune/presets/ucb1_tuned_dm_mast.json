@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_tuned_dm_mast",
+  "description": "UCB1-Tuned selection with a decisive-move MAST playout.",
+  "params": {
+    "select": "ucb1_tuned",
+    "simulate": "decisive_move_mast",
+    "decisive_move_mode": "win"
+  }
+}

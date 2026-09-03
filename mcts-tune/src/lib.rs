@@ -32,6 +32,9 @@ mod direct_search;
 mod dispatch;
 mod evaluation;
 mod family_catalog;
+// Named partial configurations (`rave`, `power_uct`, ...) that replace the
+// pre-cutover `family` rows whose shape was more than a single axis swap.
+pub mod preset_catalog;
 pub mod presets;
 mod search;
 pub mod trace;

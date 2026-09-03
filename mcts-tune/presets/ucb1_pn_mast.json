@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_pn_mast",
+  "description": "UCT with proof-number bias selection, plus an epsilon-greedy MAST playout.",
+  "params": {
+    "select": "uct_pn",
+    "simulate": "mast",
+    "simulate_epsilon_greedy": true
+  }
+}

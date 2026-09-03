@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_nst",
+  "description": "UCB1 selection with an epsilon-greedy N-gram selection technique (NST) playout.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "nst",
+    "simulate_epsilon_greedy": true
+  }
+}

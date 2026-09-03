@@ -1259,6 +1259,94 @@ fn algorithm_native_specs_match_family_goldens() {
     );
 }
 
+/// Builds a fully-defaulted params object from `strategy_tuner_info`'s
+/// declared parameter defaults -- the base a preset overlay is applied to
+/// before dispatch.
+fn schema_default_params() -> serde_json::Map<String, Value> {
+    let tuner = strategy_tuner_info_with_mcgs(&["strong"], 1, true);
+    let mut base = serde_json::Map::new();
+    for p in &tuner.parameters {
+        if let Some(default) = p.spec.get("default") {
+            base.insert(p.name.clone(), default.clone());
+        }
+    }
+    base.insert("algorithm".into(), json!("mcts"));
+    base
+}
+
+/// Every `preset_catalog` entry: parses, carries only axis/mode categoricals
+/// (never a scalar hyperparameter), transcribes exactly the
+/// `legacy_family_to_axes` mapping for the same-named pre-cutover family
+/// (which `algorithm_native_specs_match_family_goldens` pins to a golden
+/// `SearchSpec`), reaches "active" in the tuner schema, and resolves to a
+/// legal `AlgorithmSpec` once merged over the schema defaults.
+#[test]
+fn every_preset_matches_its_legacy_family_axes_and_resolves() {
+    let tuner = strategy_tuner_info_with_mcgs(&["strong"], 1, true);
+    let declared: std::collections::HashSet<&str> =
+        tuner.parameters.iter().map(|p| p.name.as_str()).collect();
+    let base = schema_default_params();
+
+    let presets = crate::preset_catalog::load().expect("preset catalog parses");
+    assert!(!presets.is_empty(), "the preset catalog must not be empty");
+
+    for preset in &presets {
+        assert!(
+            !preset.params.is_empty(),
+            "{}: a preset must pin at least one axis",
+            preset.id
+        );
+
+        // Presets pin axes, not hyperparameters: every overlaid value is a
+        // categorical or a boolean toggle.
+        for (key, value) in &preset.params {
+            assert!(
+                value.is_string() || value.is_boolean(),
+                "{}: param {key:?} is {value} -- a preset overlays axis \
+                 categoricals only, not scalar hyperparameters",
+                preset.id
+            );
+            assert!(
+                declared.contains(key.as_str()),
+                "{}: param {key:?} is not a declared tuner parameter",
+                preset.id
+            );
+        }
+
+        // Exact parity with the pre-cutover family this preset replaces.
+        let mut legacy = crate::dispatch::legacy_family_to_axes(&preset.id)
+            .unwrap_or_else(|| panic!("{}: no legacy_family_to_axes mapping", preset.id));
+        legacy.as_object_mut().unwrap().remove("algorithm");
+        assert_eq!(
+            Value::Object(preset.params.clone()),
+            legacy,
+            "{}: preset params must match legacy_family_to_axes",
+            preset.id
+        );
+
+        // Merged over the defaults, it is a legal, fully-active config.
+        let mut merged = base.clone();
+        preset.overlay(&mut merged);
+        let merged = Value::Object(merged);
+
+        let active = active_params(&tuner, &merged);
+        for key in preset.params.keys() {
+            assert!(
+                active.contains(key),
+                "{}: param {key:?} is never marked active for this assignment",
+                preset.id
+            );
+        }
+
+        match crate::dispatch::to_algorithm_spec(&merged)
+            .unwrap_or_else(|e| panic!("{}: {}", preset.id, e.message))
+        {
+            crate::dispatch::AlgorithmSpec::Mcts(_) => {}
+            _ => panic!("{}: every preset resolves to an mcts configuration", preset.id),
+        }
+    }
+}
+
 /// The couplings `to_backprop_spec` enforces: a `bayes_*`/`ments` select
 /// pins its backprop regardless of the `backprop` categorical, and a
 /// `bayes_*` backprop is rejected without a matching select.

@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_dm_nst",
+  "description": "UCB1 selection with a decisive-move NST playout (the historical Druid \"strong\"/\"master\" shape).",
+  "params": {
+    "select": "ucb1",
+    "simulate": "decisive_move_nst",
+    "decisive_move_mode": "win"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_tuned_dm",
+  "description": "UCB1-Tuned selection with a decisive-move playout.",
+  "params": {
+    "select": "ucb1_tuned",
+    "simulate": "decisive_move",
+    "decisive_move_mode": "win"
+  }
+}

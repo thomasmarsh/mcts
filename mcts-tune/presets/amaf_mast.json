@@ -1,0 +1,9 @@
+{
+  "id": "amaf_mast",
+  "description": "AMAF selection with an epsilon-greedy MAST playout.",
+  "params": {
+    "select": "amaf",
+    "simulate": "mast",
+    "simulate_epsilon_greedy": true
+  }
+}

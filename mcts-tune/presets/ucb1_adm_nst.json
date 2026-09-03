@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_adm_nst",
+  "description": "UCB1 selection with an anti-decisive-move NST playout.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "decisive_move_nst",
+    "decisive_move_mode": "anti_decisive"
+  }
+}

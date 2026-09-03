@@ -1,0 +1,9 @@
+{
+  "id": "rave",
+  "description": "RAVE selection with a decisive-move MAST playout over winning and losing moves.",
+  "params": {
+    "select": "rave",
+    "simulate": "decisive_move_mast",
+    "decisive_move_mode": "win_loss"
+  }
+}

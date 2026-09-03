@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_lgr2_mast",
+  "description": "UCB1 selection with an epsilon-greedy last-good-reply (order 2) playout that falls back to MAST.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "lgr2_mast",
+    "simulate_epsilon_greedy": true
+  }
+}

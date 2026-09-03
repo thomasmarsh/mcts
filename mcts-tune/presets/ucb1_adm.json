@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_adm",
+  "description": "UCB1 selection with an anti-decisive-move playout (avoids replies that hand the opponent an immediate win).",
+  "params": {
+    "select": "ucb1",
+    "simulate": "decisive_move",
+    "decisive_move_mode": "anti_decisive"
+  }
+}

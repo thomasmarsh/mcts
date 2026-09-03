@@ -1,0 +1,9 @@
+{
+  "id": "meta_mcts",
+  "description": "Nested MCTS playouts (meta-MCTS), choosing the final move by highest mean value.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "meta_mcts",
+    "final_action": "max_avg"
+  }
+}

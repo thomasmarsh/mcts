@@ -1,0 +1,8 @@
+{
+  "id": "ucb1_tuned_mast",
+  "description": "UCB1-Tuned selection with a MAST playout.",
+  "params": {
+    "select": "ucb1_tuned",
+    "simulate": "mast"
+  }
+}

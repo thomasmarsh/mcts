@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_lgr2",
+  "description": "UCB1 selection with an epsilon-greedy last-good-reply (order 2) playout.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "lgr2",
+    "simulate_epsilon_greedy": true
+  }
+}

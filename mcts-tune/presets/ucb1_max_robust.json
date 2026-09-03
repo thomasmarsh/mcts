@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_max_robust",
+  "description": "Plain UCB1 selection and uniform playout, choosing the final move by max-robust child.",
+  "params": {
+    "select": "ucb1",
+    "simulate": "uniform",
+    "final_action": "max_robust_child"
+  }
+}

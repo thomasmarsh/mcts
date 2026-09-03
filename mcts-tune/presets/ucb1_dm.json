@@ -1,0 +1,9 @@
+{
+  "id": "ucb1_dm",
+  "description": "UCB1 selection with a decisive-move playout (takes an immediately winning move when one is available).",
+  "params": {
+    "select": "ucb1",
+    "simulate": "decisive_move",
+    "decisive_move_mode": "win"
+  }
+}

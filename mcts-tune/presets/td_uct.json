@@ -1,0 +1,9 @@
+{
+  "id": "td_uct",
+  "description": "UCB1 selection with a TD(lambda) value backup (Sarsa-UCT(lambda)).",
+  "params": {
+    "select": "ucb1",
+    "simulate": "uniform",
+    "backprop": "td"
+  }
+}
