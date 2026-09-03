@@ -11,9 +11,9 @@
 //! Exit status is non-zero if any case fails.
 
 use game_nim::Nim;
-use mcts::game::Game;
 use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use serde_json::json;
 
 /// Bounded the same way `mcts-tune`'s own unit-test `baseline()` is:
@@ -27,17 +27,26 @@ fn baseline() -> Box<dyn Search<G = Nim>> {
 /// `meta_mcts`'s inner nested search (`MetaMcts::select_move` runs a full
 /// `TreeSearch::choose_action` on every outer simulate step, not just once
 /// per leaf) makes even a single candidate-vs-baseline `Nim` game noticeably
-/// slower than every other catalog family -- several real seconds, versus
-/// the sub-second every other family's round-trip test in `src/lib.rs` runs
-/// in. Correct (proven here), just not fast enough for the unit-test suite.
+/// slower than every other axis composition -- several real seconds, versus
+/// the sub-second every other simulate variant's round-trip test in
+/// `src/lib.rs` runs in. Correct (proven here), just not fast enough for the
+/// unit-test suite.
 fn main() {
-    family_meta_mcts_round_trips();
+    meta_mcts_round_trips();
     eprintln!("mcts-tune stress: all cases passed");
 }
 
-fn family_meta_mcts_round_trips() {
+fn meta_mcts_round_trips() {
+    // Algorithm-native param shape: the `algorithm` categorical plus the
+    // `mcts` policy-axis categoricals, not a `family` name. The legacy
+    // `meta_mcts` row pinned its final action to `max_avg`.
     let params = json!({
-        "family": "meta_mcts", "c": 1.4, "q_init": "Infinity",
+        "algorithm": "mcts",
+        "select": "ucb1",
+        "simulate": "meta_mcts",
+        "final_action": "max_avg",
+        "c": 1.4,
+        "q_init": "Infinity",
     });
     let outcome = mcts_tune::strategy_tune_eval::<Nim>(
         &params,
