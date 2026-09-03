@@ -81,6 +81,16 @@ export type SpaceOverride =
   | { range: [number, number] }
   | { choices: Array<string | number | boolean> };
 
+/** One entry of the unified `constraints` wire form: a `set` of per-parameter
+ * narrowings, optionally guarded by a `when` predicate over categorical
+ * parameters. The bare `Record<string, SpaceOverride>` map is also accepted as
+ * sugar for a single un-predicated entry. Only un-predicated entries are wired
+ * end to end today. */
+export interface Constraint {
+  when?: Record<string, Array<string | number | boolean>>;
+  set: Record<string, SpaceOverride>;
+}
+
 export interface TunerLaunchRequest {
   game_kind: string;
   objective_key: string;
@@ -103,6 +113,11 @@ export interface TunerLaunchRequest {
    * widens, the game's declared schema. The server preflight is authoritative;
    * the form only blocks obvious local errors. */
   space_overrides?: Record<string, SpaceOverride> | null;
+  /** Unified run-scoped tuning-space constraints — an array of {@link Constraint}
+   * entries or the bare `{ name: SpaceOverride }` map as sugar. Serialised to a
+   * single `--constraint <json>`. Supersedes `exclude_family` + `space_overrides`,
+   * both still accepted until the constraint editor lands. */
+  constraints?: Constraint[] | Record<string, SpaceOverride> | null;
   /** Per-phase search effort. Each phase accepts iterations *or* time, never
    * both; omitting a pair falls back to the tuner CLI default. Names match
    * the Rust `TunerLaunchRequest` serde fields verbatim. */

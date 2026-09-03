@@ -208,3 +208,55 @@ def test_space_override_flags_assemble_into_the_overrides_map() -> None:
         _options(parser.parse_args(base + ["--fix", "bogus"]))
     with pytest.raises(ValueError):
         _options(parser.parse_args(base + ["--fix", "c=1", "--param-range", "c=1,2"]))
+
+
+def test_constraint_flag_lowers_onto_the_space_overrides_map() -> None:
+    parser = build_parser()
+    base = [
+        "--game-binary",
+        "game",
+        "--objective-file",
+        "objective.json",
+        "--run-dir",
+        "run",
+        "--task-seed",
+        "9",
+        "--tuning-pair-budget",
+        "24",
+        "--validation-pair-budget",
+        "6",
+        "--production-validation-pairs",
+        "3",
+    ]
+    from tuner_cli.space_overrides import encode_space_overrides
+
+    options = _options(
+        parser.parse_args(
+            base
+            + [
+                "--constraint",
+                '{"set": {"c": {"range": [1.2, 1.8]}}}',
+                "--constraint",
+                '{"select": {"choices": ["ucb1", "rave"]}}',
+            ]
+        )
+    )
+    assert encode_space_overrides(options.space_overrides) == {
+        "c": {"range": [1.2, 1.8]},
+        "select": {"choices": ["ucb1", "rave"]},
+    }
+    # A `when`-predicated constraint is rejected until the full cutover wires it.
+    with pytest.raises(ValueError):
+        _options(
+            parser.parse_args(
+                base
+                + ["--constraint", '{"when": {"select": ["ucb1"]}, "set": {"c": {"fix": 1.4}}}']
+            )
+        )
+    # The same parameter cannot be constrained twice across the two surfaces.
+    with pytest.raises(ValueError):
+        _options(
+            parser.parse_args(
+                base + ["--param-range", "c=1,2", "--constraint", '{"set": {"c": {"fix": 1.5}}}']
+            )
+        )

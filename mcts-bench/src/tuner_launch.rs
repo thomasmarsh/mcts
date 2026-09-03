@@ -137,8 +137,18 @@ pub struct TunerLaunchRequest {
     /// `{"fix": <value>}`, `{"range": [lo, hi]}`, or `{"choices": [<subset>]}`.
     /// Serialised to `--fix` / `--param-range` / `--param-choices`; the Python
     /// preflight is the authority on whether they are valid for the schema.
+    ///
+    /// A pre-taxonomy field, still accepted from the UI until the constraint
+    /// editor lands; new callers use `constraints`.
     #[serde(default)]
     pub space_overrides: Option<serde_json::Value>,
+    /// Unified run-scoped tuning-space constraints: a JSON array of
+    /// `{"when"?: {...}, "set": {...}}` entries, or the bare
+    /// `{name: {fix|range|choices}}` map as sugar for one un-predicated entry.
+    /// Serialised to a single `--constraint <json>`; the Python preflight is
+    /// the authority on whether the narrowings are valid for the schema.
+    #[serde(default)]
+    pub constraints: Option<serde_json::Value>,
 }
 
 impl TunerLaunchRequest {
@@ -186,6 +196,7 @@ impl TunerLaunchRequest {
             }
         }
         self.validate_space_overrides()?;
+        self.validate_constraints()?;
         Ok(())
     }
 
@@ -198,34 +209,52 @@ impl TunerLaunchRequest {
             .as_object()
             .ok_or_else(|| invalid("space_overrides must be a JSON object"))?;
         for (name, spec) in entries {
-            let spec = spec
+            validate_narrowing_spec(name, spec)?;
+        }
+        Ok(())
+    }
+
+    /// Structural check of the unified `constraints` wire form. The Python
+    /// preflight remains the authority on whether a narrowing is valid against
+    /// the resolved schema; this only rejects a shape `tuner_cli` could never
+    /// parse, so a launch never `202`s for something knowable here.
+    fn validate_constraints(&self) -> io::Result<()> {
+        let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, msg.to_string());
+        let Some(value) = &self.constraints else {
+            return Ok(());
+        };
+        let entries: Vec<&serde_json::Value> = match value {
+            serde_json::Value::Array(items) => items.iter().collect(),
+            serde_json::Value::Object(_) => vec![value],
+            _ => return Err(invalid("constraints must be a JSON array or object")),
+        };
+        for entry in entries {
+            let object = entry
                 .as_object()
-                .ok_or_else(|| invalid("each space override must be a JSON object"))?;
-            let keys: Vec<&str> = spec.keys().map(String::as_str).collect();
-            match keys.as_slice() {
-                ["fix"] => {}
-                ["range"] => {
-                    let bounds = spec["range"]
-                        .as_array()
-                        .filter(|values| values.len() == 2)
-                        .ok_or_else(|| invalid("a range override must be [low, high]"))?;
-                    let (Some(low), Some(high)) = (bounds[0].as_f64(), bounds[1].as_f64()) else {
-                        return Err(invalid("a range override needs two numeric bounds"));
-                    };
-                    if low >= high {
-                        return Err(invalid("a range override needs low < high"));
+                .ok_or_else(|| invalid("each constraint must be a JSON object"))?;
+            let predicated = object.contains_key("set") || object.contains_key("when");
+            let sets = if predicated {
+                if let Some(when) = object.get("when") {
+                    let when = when
+                        .as_object()
+                        .ok_or_else(|| invalid("a constraint 'when' must be a JSON object"))?;
+                    for values in when.values() {
+                        if !values.as_array().is_some_and(|items| !items.is_empty()) {
+                            return Err(invalid(
+                                "each constraint 'when' entry must be a non-empty array",
+                            ));
+                        }
                     }
                 }
-                ["choices"] => {
-                    if !spec["choices"].as_array().is_some_and(|c| !c.is_empty()) {
-                        return Err(invalid("a choices override needs a non-empty array"));
-                    }
-                }
-                _ => {
-                    return Err(invalid(&format!(
-                        "space override {name:?} needs exactly one of fix/range/choices"
-                    )));
-                }
+                object
+                    .get("set")
+                    .and_then(serde_json::Value::as_object)
+                    .ok_or_else(|| invalid("a constraint needs a 'set' object"))?
+            } else {
+                object
+            };
+            for (name, spec) in sets {
+                validate_narrowing_spec(name, spec)?;
             }
         }
         Ok(())
@@ -350,6 +379,10 @@ impl TunerLaunchRequest {
                     argv.push(format!("{name}={joined}"));
                 }
             }
+        }
+        if let Some(value) = &self.constraints {
+            argv.push("--constraint".into());
+            argv.push(value.to_string());
         }
         argv
     }
@@ -484,6 +517,43 @@ pub fn extend(
     argv.push(crate::launch::iso_timestamp());
     let run_dir = record.run_dir.clone();
     spawn_and_journal(root, run_id, run_dir, argv, false)
+}
+
+/// Reject a per-parameter narrowing (`{"fix": v}` / `{"range": [lo, hi]}` /
+/// `{"choices": [..]}`) whose shape `tuner_cli` could not parse. Shared by the
+/// legacy `space_overrides` map and the unified `constraints` `set` blocks.
+fn validate_narrowing_spec(name: &str, spec: &serde_json::Value) -> io::Result<()> {
+    let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, msg.to_string());
+    let spec = spec
+        .as_object()
+        .ok_or_else(|| invalid("each narrowing must be a JSON object"))?;
+    let keys: Vec<&str> = spec.keys().map(String::as_str).collect();
+    match keys.as_slice() {
+        ["fix"] => Ok(()),
+        ["range"] => {
+            let bounds = spec["range"]
+                .as_array()
+                .filter(|values| values.len() == 2)
+                .ok_or_else(|| invalid("a range narrowing must be [low, high]"))?;
+            let (Some(low), Some(high)) = (bounds[0].as_f64(), bounds[1].as_f64()) else {
+                return Err(invalid("a range narrowing needs two numeric bounds"));
+            };
+            if low >= high {
+                return Err(invalid("a range narrowing needs low < high"));
+            }
+            Ok(())
+        }
+        ["choices"] => {
+            if spec["choices"].as_array().is_some_and(|c| !c.is_empty()) {
+                Ok(())
+            } else {
+                Err(invalid("a choices narrowing needs a non-empty array"))
+            }
+        }
+        _ => Err(invalid(&format!(
+            "narrowing {name:?} needs exactly one of fix/range/choices"
+        ))),
+    }
 }
 
 /// Render one categorical-choice token for `--param-choices`: a bare string
@@ -822,6 +892,7 @@ mod tests {
             production_max_time_ms: None,
             exclude_family: vec![],
             space_overrides: None,
+            constraints: None,
         }
     }
 
@@ -900,6 +971,34 @@ mod tests {
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--param-choices", "schedule=threshold,visit"]));
+    }
+
+    #[test]
+    fn argv_constraints_serialise_to_one_flag_with_the_json_value() {
+        let mut request = base_request(&PathBuf::from("runs"), "run_wp3");
+        request.constraints = Some(serde_json::json!([
+            { "set": { "select": { "choices": ["ucb1", "rave"] } } },
+            { "when": { "select": ["ucb1"] }, "set": { "c": { "range": [1.2, 1.8] } } },
+        ]));
+        request.validate().unwrap();
+        let argv = request.argv();
+        let position = argv.iter().position(|arg| arg == "--constraint").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&argv[position + 1]).unwrap();
+        assert_eq!(value, request.constraints.unwrap());
+        assert_eq!(argv.iter().filter(|arg| *arg == "--constraint").count(), 1);
+    }
+
+    #[test]
+    fn validate_rejects_a_malformed_constraint() {
+        let mut request = base_request(&PathBuf::from("runs"), "run_wp3");
+        request.constraints = Some(serde_json::json!("nope"));
+        assert!(request.validate().is_err());
+        request.constraints = Some(serde_json::json!([{ "set": { "c": { "range": [2.0, 1.0] } } }]));
+        assert!(request.validate().is_err());
+        request.constraints = Some(serde_json::json!([{ "when": { "select": [] }, "set": { "c": { "fix": 1 } } }]));
+        assert!(request.validate().is_err());
+        request.constraints = Some(serde_json::json!([{ "select": { "choices": [] } }]));
+        assert!(request.validate().is_err());
     }
 
     #[test]

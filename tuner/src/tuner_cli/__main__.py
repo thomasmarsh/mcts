@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from .codec import JsonValue, strict_json
+from .constraints import ChoicesOp, FixOp, RangeOp, SetOp, decode_constraints
 from .domain import SearchEffort
 from .family_exclusions import normalize_family_exclusions
 from .run import RunOptions, run_foreground
@@ -53,6 +54,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--active-elimination-audit-probability", type=float)
     parser.add_argument("--exclude-family", action="append", default=[], metavar="FAMILY")
     _add_space_override_arguments(parser)
+    parser.add_argument(
+        "--constraint",
+        action="append",
+        default=[],
+        metavar="JSON",
+        help=(
+            "unified run-scoped tuning-space constraint as JSON -- an array of "
+            '{"when"?: {...}, "set": {...}} entries or the bare '
+            "{name: {fix|range|choices}} map; repeatable. Unconditional "
+            "narrowings only for now (a 'when' predicate is not yet wired "
+            "end to end)."
+        ),
+    )
     parser.add_argument("--resume", action="store_true", help="continue a frozen version-4 run")
     extend = parser.add_argument_group(
         "budget extension", "raise a frozen run's pair budgets; valid only with --resume"
@@ -104,9 +118,34 @@ def _space_overrides(args: argparse.Namespace) -> SpaceOverrides:
     for item in args.param_choices:
         name, payload = _split_once(item, "--param-choices")
         raw[name] = {"choices": [_scalar_token(token) for token in payload.split(",")]}
-    if len(raw) != len(args.fix) + len(args.param_range) + len(args.param_choices):
-        raise ValueError("a parameter may carry only one space override")
+    flag_entries = len(args.fix) + len(args.param_range) + len(args.param_choices)
+    for text in args.constraint:
+        value = strict_json(text, "--constraint value")
+        if isinstance(value, dict) and ("set" in value or "when" in value):
+            value = [value]
+        for constraint in decode_constraints(value):
+            if constraint.when:
+                raise ValueError(
+                    "a 'when'-predicated --constraint is not yet wired end to end; "
+                    "express unconditional fix/range/choices narrowings for now"
+                )
+            for name, op in constraint.sets:
+                raw[name] = _set_op_wire(op)
+                flag_entries += 1
+    if len(raw) != flag_entries:
+        raise ValueError("a parameter may carry only one space override or constraint")
     return decode_space_overrides(raw)
+
+
+def _set_op_wire(op: SetOp) -> JsonValue:
+    """The `{fix|range|choices: ...}` wire form of a decoded constraint op,
+    so `--constraint` narrowings flow through the same space-override path."""
+    if isinstance(op, FixOp):
+        return {"fix": op.value}
+    if isinstance(op, RangeOp):
+        return {"range": [op.low, op.high]}
+    assert isinstance(op, ChoicesOp)
+    return {"choices": list(op.choices)}
 
 
 def _options(args: argparse.Namespace) -> RunOptions:
