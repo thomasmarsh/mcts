@@ -1954,6 +1954,95 @@ fn test_family_required_params_covers_every_registered_family() {
         );
 }
 
+/// AN-1: the algorithm-native `dispatch::to_search_spec` path, fed the axis
+/// categoricals `legacy_family_to_axes` maps each pre-cutover `family` name
+/// onto (merged over that family's own scalar-param fixture), must reproduce
+/// the exact `SearchSpec` -- and the two PN-only `SearchSettings` knobs --
+/// captured in `family_goldens.json` before `register_family!` is deleted.
+/// This also exercises `legacy_family_to_axes` itself for every composable
+/// family.
+#[test]
+fn algorithm_native_specs_match_family_goldens() {
+    let goldens: serde_json::Map<String, Value> =
+        serde_json::from_str(include_str!("testdata/family_goldens.json")).unwrap();
+    let mut checked = std::collections::HashSet::new();
+    for (name, mut params) in family_required_params() {
+        let Some(golden) = goldens.get(name) else {
+            continue;
+        };
+        let axes = crate::dispatch::legacy_family_to_axes(name)
+            .unwrap_or_else(|| panic!("no legacy_family_to_axes mapping for {name}"));
+        let obj = params.as_object_mut().unwrap();
+        obj.remove("family");
+        for (key, value) in axes.as_object().unwrap() {
+            obj.insert(key.clone(), value.clone());
+        }
+        let spec = crate::dispatch::to_search_spec(&params)
+            .unwrap_or_else(|e| panic!("{name}: {}", e.message));
+        assert_eq!(
+            serde_json::to_value(&spec).unwrap(),
+            golden["spec"],
+            "family {name}: axis-native SearchSpec must match its pre-cutover golden"
+        );
+        let (solver_loss_threshold, contempt_factor) =
+            crate::dispatch::mcts_engine_overrides(&params).unwrap();
+        assert_eq!(
+            json!(solver_loss_threshold),
+            golden["solver_loss_threshold"],
+            "family {name}: solver_loss_threshold"
+        );
+        assert_eq!(
+            json!(contempt_factor),
+            golden["contempt_factor"],
+            "family {name}: contempt_factor"
+        );
+        checked.insert(name);
+    }
+    let golden_names: std::collections::HashSet<&str> =
+        goldens.keys().map(String::as_str).collect();
+    assert_eq!(
+        checked, golden_names,
+        "every composable family in family_goldens.json must be checked against the axis-native path"
+    );
+}
+
+/// The couplings `to_backprop_spec` enforces: a `bayes_*`/`ments` select
+/// pins its backprop regardless of the `backprop` categorical, and a
+/// `bayes_*` backprop is rejected without a matching select.
+#[test]
+fn algorithm_native_backprop_couplings_are_enforced() {
+    use crate::dispatch::to_backprop_spec;
+
+    // `bayes_uct1` forces `bayes_gaussian` even if the categorical disagrees.
+    let forced = to_backprop_spec(&json!({
+        "select": "bayes_uct1", "backprop": "classic",
+        "prior_variance": 1.0, "obs_variance": 1.0,
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&forced).unwrap(),
+        json!({"kind": "bayes_gaussian", "prior_variance": 1.0, "obs_variance": 1.0})
+    );
+
+    // `ments` forces `softmax`, sharing `tau`.
+    let ments = to_backprop_spec(&json!({"select": "ments", "tau": 0.5})).unwrap();
+    assert_eq!(
+        serde_json::to_value(&ments).unwrap(),
+        json!({"kind": "softmax", "tau": 0.5})
+    );
+
+    // A Bayes backprop without a Bayes select is rejected.
+    let err = to_backprop_spec(&json!({"select": "ucb1", "backprop": "bayes_numeric"}))
+        .expect_err("bare-UCB1 + Bayes backprop must be rejected");
+    assert!(err.message.contains("bayes_uct*"), "{}", err.message);
+
+    // `power_mean`/`td` stay free to pair with a plain select.
+    assert!(to_backprop_spec(&json!({
+        "select": "ucb1", "backprop": "power_mean", "p": 2.0, "alpha": 0.0,
+    }))
+    .is_ok());
+}
+
 /// The fixed point of "active" parameter names implied by
 /// `TunerInfo.conditions` for one fully-assigned trial config -- the
 /// same any-of/if-then evaluation a tuner `ConfigSpace` performs,

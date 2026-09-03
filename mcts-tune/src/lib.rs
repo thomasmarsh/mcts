@@ -23,6 +23,13 @@
 pub mod config_ir;
 pub mod config_ir_schema;
 mod direct_search;
+// Algorithm-native construction of a `config_ir::SearchSpec` from the four
+// policy-axis categoricals, replacing `family_catalog`'s per-composition
+// table. `search.rs`/`tuner_info.rs` are rewired onto it in a later step; for
+// now only the golden test exercises it, so the unused-until-then builders
+// carry an explicit allow.
+#[allow(dead_code)]
+mod dispatch;
 mod evaluation;
 mod family_catalog;
 pub mod presets;
