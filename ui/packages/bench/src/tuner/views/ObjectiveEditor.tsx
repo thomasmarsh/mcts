@@ -173,16 +173,19 @@ export const ObjectiveEditor: Component<{
     dispatch({ tag: "validateObjective", key: effectiveKey(), content: draftToContent(draft()) });
   }
 
+  // `current` is an accessor, not a snapshot: the field must be built once and
+  // stay mounted while its value changes, or every keystroke tears down the
+  // <input> and drops focus.
   const renderField = (
     p: TunerParameter,
-    current: JsonValue | undefined,
+    current: () => JsonValue | undefined,
     onChange: (value: JsonValue | undefined) => void,
   ) => {
     const def = paramDefault(p);
     if (p.type === "categorical") {
       return (
         <select
-          value={current === undefined ? "" : String(current)}
+          value={current() === undefined ? "" : String(current())}
           onInput={(e) => onChange(e.currentTarget.value === "" ? undefined : e.currentTarget.value)}
         >
           <option value="">(default{def !== undefined ? `: ${String(def)}` : ""})</option>
@@ -194,7 +197,7 @@ export const ObjectiveEditor: Component<{
       return (
         <input
           type="checkbox"
-          checked={current === true || (current === undefined && def === true)}
+          checked={current() === true || (current() === undefined && def === true)}
           onInput={(e) => onChange(e.currentTarget.checked)}
         />
       );
@@ -210,7 +213,7 @@ export const ObjectiveEditor: Component<{
         min={p.bounds?.[0]}
         max={p.bounds?.[1]}
         placeholder={def === undefined ? "" : String(def)}
-        value={current === undefined ? "" : String(current)}
+        value={current() === undefined ? "" : String(current())}
         onInput={(e) => {
           const raw = e.currentTarget.value;
           if (raw === "") return onChange(undefined);
@@ -237,7 +240,7 @@ export const ObjectiveEditor: Component<{
           {(p) => (
             <label class="tuner-objective-param">
               <span>{p.name}</span>
-              {renderField(p, opponent.config[p.name], (v) => setParam(index, p.name, v))}
+              {renderField(p, () => opponent.config[p.name], (v) => setParam(index, p.name, v))}
             </label>
           )}
         </For>
@@ -357,7 +360,7 @@ export const ObjectiveEditor: Component<{
                 {(p) => (
                   <label class="tuner-objective-param">
                     <span>{p.name}</span>
-                    {renderField(p, draft().gameConfig[p.name], (v) => setGameParam(p.name, v))}
+                    {renderField(p, () => draft().gameConfig[p.name], (v) => setGameParam(p.name, v))}
                   </label>
                 )}
               </For>

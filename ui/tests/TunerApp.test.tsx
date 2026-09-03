@@ -454,6 +454,25 @@ describe("TunerApp objective editor — game setup", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
+  it("keeps the size field mounted across keystrokes", async () => {
+    await openNewEditor();
+    fireEvent.input(screen.getByRole("combobox"), { target: { value: "atarigo" } });
+
+    const section = screen.getByTestId("objective-game-config");
+    const before = within(section).getByRole("spinbutton");
+    fireEvent.input(before, { target: { value: "9" } });
+    const after = within(screen.getByTestId("objective-game-config")).getByRole("spinbutton");
+    expect(after).toBe(before);
+  });
+
+  it("keeps the objective-id field mounted across keystrokes", async () => {
+    await openNewEditor();
+    fireEvent.input(screen.getByRole("combobox"), { target: { value: "atarigo" } });
+    const before = screen.getByTestId("objective-id-input");
+    fireEvent.input(before, { target: { value: "foo" } });
+    expect(screen.getByTestId("objective-id-input")).toBe(before);
+  });
+
   it("threads game_config into the validated body", async () => {
     const validateObjective = vi.fn((_key: string, _content: unknown) =>
       Effect.send({ ok: true, errors: [] }),
