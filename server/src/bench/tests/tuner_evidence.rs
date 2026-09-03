@@ -134,6 +134,7 @@ async fn pump_streams_appended_lines_then_ends_when_the_run_stops() {
     let timing = StreamTiming {
         poll: Duration::from_millis(10),
         quiet_close: Duration::from_millis(30),
+        projection_notice: Duration::from_secs(3600),
     };
     let pump = tokio::spawn(pump_evidence(path.clone(), 0, is_live, tx, timing));
 
@@ -161,5 +162,85 @@ async fn pump_streams_appended_lines_then_ends_when_the_run_stops() {
         .await
         .expect("pump task should finish once the run is no longer live")
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Count frames until the channel goes quiet for `quiet`.
+async fn drain_quiet(
+    rx: &mut tokio::sync::mpsc::Receiver<axum::response::sse::Event>,
+    quiet: Duration,
+) -> usize {
+    let mut count = 0;
+    while (tokio::time::timeout(quiet, rx.recv()).await).is_ok_and(|frame| frame.is_some()) {
+        count += 1;
+    }
+    count
+}
+
+#[tokio::test]
+async fn pump_emits_a_debounced_projection_updated_frame_as_evidence_grows() {
+    let dir = std::env::temp_dir().join(format!("mcts_ev_proj_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("evidence.jsonl");
+    std::fs::write(&path, format!("{}\n", line(1, "pair_started"))).unwrap();
+
+    let is_live: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let timing = StreamTiming {
+        poll: Duration::from_millis(10),
+        quiet_close: Duration::from_secs(3600),
+        projection_notice: Duration::from_millis(200),
+    };
+    let pump = tokio::spawn(pump_evidence(path.clone(), 0, is_live, tx, timing));
+
+    let _ = rx.recv().await.expect("catch-up frame for seq 1");
+    let quiet = Duration::from_millis(60);
+
+    // Two appended lines -> two envelopes + exactly one projection-updated
+    // frame (the first growth is eligible immediately).
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed"),
+            line(3, "cohort_completed"),
+        ),
+    )
+    .unwrap();
+    assert_eq!(drain_quiet(&mut rx, quiet).await, 3);
+
+    // A third line inside the debounce window streams its envelope but does
+    // *not* fire a second projection-updated frame.
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed"),
+            line(3, "cohort_completed"),
+            line(4, "pair_completed"),
+        ),
+    )
+    .unwrap();
+    assert_eq!(drain_quiet(&mut rx, quiet).await, 1);
+
+    // Once the gate reopens, the next append nudges again.
+    tokio::time::sleep(Duration::from_millis(240)).await;
+    std::fs::write(
+        &path,
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed"),
+            line(3, "cohort_completed"),
+            line(4, "pair_completed"),
+            line(5, "pair_completed"),
+        ),
+    )
+    .unwrap();
+    assert_eq!(drain_quiet(&mut rx, quiet).await, 2);
+
+    pump.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -17,6 +17,7 @@ import type {
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
+  ProjectionMeta,
   ProjectionRefreshResult,
   ProjectionRunDetail,
   ProjectionRunListItem,
@@ -53,6 +54,7 @@ export interface TunerEnv {
    * one (the UI only ever follows one run at a time). */
   openEvidenceStream(runId: string, sinceSeq: number): Effect<EvidenceStreamMessage>;
   refreshProjection(): Effect<ProjectionRefreshResult>;
+  getProjectionMeta(): Effect<ProjectionMeta>;
   listProjectionRuns(): Effect<ProjectionRunListItem[]>;
   getProjectionRun(runId: string): Effect<ProjectionRunDetail>;
   getProjectionCohorts(runId: string): Effect<ProjectionCohort[]>;
@@ -92,6 +94,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
         activeStream?.close();
         activeStream = api.openEvidenceStream(runId, sinceSeq, {
           onEvents: (events) => send({ kind: "events", events }),
+          onProjectionUpdated: () => send({ kind: "projectionUpdated" }),
           onEnd: () => {
             activeStream = null;
             send({ kind: "ended" });
@@ -105,6 +108,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
         });
       }),
     refreshProjection: () => lift(() => api.refreshProjection()),
+    getProjectionMeta: () => lift(() => api.getProjectionMeta()),
     listProjectionRuns: () => lift(() => api.listProjectionRuns()),
     getProjectionRun: (runId) => lift(() => api.getProjectionRun(runId)),
     getProjectionCohorts: (runId) => lift(() => api.getProjectionCohorts(runId)),

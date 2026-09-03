@@ -66,9 +66,13 @@ export const FleetDashboard: Component<{
   const failedCount = createMemo(() => failedRuns().length);
 
   const freshness = createMemo(() => {
-    const at = state().lastProjectionRefreshAt;
-    if (!at) return "not yet refreshed";
-    const secs = Math.round((Date.now() - at) / 1000);
+    // This tab's own last refresh, else the server follower's last pass (so a
+    // cold open on an unattended run still shows a real age).
+    const at =
+      state().lastProjectionRefreshAt ??
+      (state().projectionLastPassAt ? Date.parse(state().projectionLastPassAt!) : NaN);
+    if (!at || Number.isNaN(at)) return "not yet refreshed";
+    const secs = Math.max(0, Math.round((Date.now() - at) / 1000));
     return `refreshed ${secs}s ago`;
   });
 

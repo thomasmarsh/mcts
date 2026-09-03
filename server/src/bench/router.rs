@@ -114,6 +114,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             post(tuner_api::refresh).layer(launch_timeout),
         )
         .route(
+            "/api/bench/tuner/projection/meta",
+            get(tuner_api::projection_meta),
+        )
+        .route(
             "/api/bench/tuner/projection/runs",
             get(tuner_api::list_runs),
         )

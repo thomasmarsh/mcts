@@ -192,6 +192,7 @@ pub(super) fn seeded_app_with_state_and_signaller(
                 },
             })
         }),
+        projection_follower: None,
     });
 
     (bench_router(state.clone()), tmp_dir, state)

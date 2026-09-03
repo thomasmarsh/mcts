@@ -73,6 +73,11 @@ pub struct BenchState {
     /// preflight`; tests inject a stub). The launch form calls this so a
     /// launch is never started for a knowable reason.
     pub tuner_launch_preflight: LaunchPreflighter,
+    /// Server-owned headless projection follower. `Some` in production; `None`
+    /// in tests that never exercise the follower. A launch handler calls
+    /// [`super::ProjectionFollower::tick`] on it so a fresh run's projection
+    /// starts advancing immediately.
+    pub projection_follower: Option<Arc<super::ProjectionFollower>>,
 }
 
 /// Dry-runs a resolved launch request: `&TunerLaunchRequest ->

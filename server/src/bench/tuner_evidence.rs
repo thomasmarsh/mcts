@@ -142,6 +142,10 @@ pub(crate) struct EvidenceStreamParams {
 pub(crate) struct StreamTiming {
     pub poll: Duration,
     pub quiet_close: Duration,
+    /// Minimum gap between `projection-updated` frames. The headless follower
+    /// reprojects roughly this often, so a tighter cadence would only tell
+    /// the client to re-fetch rows the projector has not rebuilt yet.
+    pub projection_notice: Duration,
 }
 
 impl Default for StreamTiming {
@@ -149,6 +153,7 @@ impl Default for StreamTiming {
         Self {
             poll: Duration::from_millis(500),
             quiet_close: Duration::from_secs(3),
+            projection_notice: Duration::from_secs(4),
         }
     }
 }
@@ -176,6 +181,15 @@ pub(crate) async fn pump_evidence(
     let mut offset: u64 = 0;
     let mut last_seq = since_seq;
     let mut last_line_at = Instant::now();
+    // `projection-updated` debounce: the sequence we last nudged the client to
+    // re-fetch at, and when. A frame goes out only once the evidence log has
+    // actually grown past that point and the cadence gate has elapsed.
+    let mut notified_seq = since_seq;
+    // Start eligible so the first evidence growth notifies promptly; the gate
+    // only spaces out the ones after it.
+    let mut last_notice_at = Instant::now()
+        .checked_sub(timing.projection_notice)
+        .unwrap_or_else(Instant::now);
 
     // Catch-up pass: everything already past `since_seq`, then park the byte
     // cursor at the end of the last complete line.
@@ -221,6 +235,21 @@ pub(crate) async fn pump_evidence(
 
         if sent_any {
             last_line_at = Instant::now();
+            // Nudge the client to re-pull its projection slices -- the
+            // headless follower will have reprojected this delta -- without
+            // asking it to trigger any projection work of its own. Debounced
+            // to the follower's own cadence.
+            if last_seq > notified_seq && last_notice_at.elapsed() >= timing.projection_notice {
+                notified_seq = last_seq;
+                last_notice_at = Instant::now();
+                if tx
+                    .send(Event::default().event("projection-updated").data(""))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
         } else if !is_live() && last_line_at.elapsed() >= timing.quiet_close {
             let _ = tx.send(Event::default().event("end").data("")).await;
             return;

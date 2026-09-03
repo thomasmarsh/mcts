@@ -290,6 +290,14 @@ pub(crate) struct Validation {
 }
 
 #[derive(Serialize)]
+pub(crate) struct ProjectionMeta {
+    /// ISO-8601 wall-clock time the projector last committed a pass (the
+    /// headless follower's cadence while a run is live), or `null` before the
+    /// projection has ever been built.
+    last_pass_at: Option<String>,
+}
+
+#[derive(Serialize)]
 pub(crate) struct RefreshResult {
     projected: i64,
     skipped: i64,
@@ -300,6 +308,27 @@ pub(crate) struct RefreshResult {
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+/// `GET /api/bench/tuner/projection/meta`
+///
+/// Projection-wide freshness for the fleet's "refreshed N s ago" indicator.
+/// A missing projection file or missing stamp is `last_pass_at: null`, not an
+/// error -- the fleet renders "never" rather than failing.
+pub(crate) async fn projection_meta(
+    AxumState(state): AxumState<Arc<BenchState>>,
+) -> Json<ProjectionMeta> {
+    let last_pass_at = open(&state).ok().and_then(|conn| {
+        conn.query_row(
+            "SELECT value FROM projection_meta WHERE key = 'last_pass_at'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    });
+    Json(ProjectionMeta { last_pass_at })
+}
 
 /// `GET /api/bench/tuner/projection/runs`
 pub(crate) async fn list_runs(
@@ -900,6 +929,20 @@ pub(crate) async fn report(
 pub(crate) async fn refresh(
     AxumState(state): AxumState<Arc<BenchState>>,
 ) -> Result<Json<RefreshResult>, BenchError> {
+    // Fast path: the headless follower is already reprojecting a live run on
+    // its own loop, so a caller-triggered out-of-band shell-out would only
+    // duplicate work. `exited` runs still fall through to the real refresh --
+    // the follower reaps itself once nothing is live.
+    if let Some(follower) = &state.projection_follower {
+        if follower.reprojected_recently() {
+            return Ok(Json(RefreshResult {
+                projected: 0,
+                skipped: 0,
+                ingest_errors: 0,
+                pruned: 0,
+            }));
+        }
+    }
     let [projected, skipped, ingest_errors, pruned] =
         (state.tuner_projection_refresh)(&state.bench_runs_dir, &state.tuner_projection_db)
             .map_err(|error| BenchError {

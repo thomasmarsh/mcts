@@ -31,16 +31,19 @@ export function journalPollDelayMs(liveRunCount: number): number | null {
 
 export type OpenRunLiveness = "live" | "exited" | "unknown" | "none";
 
-/** Milliseconds until the next automatic projection refresh for the open
- * run, or `null` when the UI should fall back to a manual refresh button
- * (no run open, or the open run has finished). `scienceStale` shortens the
- * next cycle to `SCIENCE_STALE_REFRESH_MS` after a new scientific evidence
- * event has landed since the last refresh. */
+/** Milliseconds until the next automatic (client-driven) projection refresh
+ * for the open run, or `null` when the UI should not run that loop: no run
+ * open, the open run has finished, or -- the common case -- the evidence SSE
+ * stream is healthy, in which case the server's headless follower keeps the
+ * projection fresh and the client only re-fetches on a `projection-updated`
+ * frame. `scienceStale` shortens the next cycle to `SCIENCE_STALE_REFRESH_MS`
+ * after a new scientific evidence event has landed since the last refresh. */
 export function projectionRefreshDelayMs(
   open: OpenRunLiveness,
   scienceStale = false,
+  streamOk = false,
 ): number | null {
-  if (open !== "live") return null;
+  if (open !== "live" || streamOk) return null;
   return scienceStale ? SCIENCE_STALE_REFRESH_MS : PROJECTION_REFRESH_MS;
 }
 

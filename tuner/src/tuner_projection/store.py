@@ -137,6 +137,27 @@ class Store:
     def vacuum(self) -> None:
         self._connection.execute("VACUUM")
 
+    def record_pass(self, timestamp: str) -> None:
+        """Stamp the wall-clock time this projection pass committed.
+
+        Read by the fleet API so "projection refreshed N s ago" reflects the
+        headless follower's last pass, not the last time a browser tab was
+        open. Deliberately excluded from :meth:`canonical_dump` -- it is
+        machine- and clock-specific, like ``ingest_state``.
+        """
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO projection_meta VALUES ('last_pass_at', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (timestamp,),
+            )
+
+    def last_pass_at(self) -> str | None:
+        row = self._connection.execute(
+            "SELECT value FROM projection_meta WHERE key = 'last_pass_at'"
+        ).fetchone()
+        return None if row is None else str(row[0])
+
     def canonical_dump(self) -> str:
         lines: list[str] = []
         for table in CONTENT_TABLES:
@@ -144,6 +165,10 @@ class Store:
             order = ", ".join(str(index + 1) for index in range(len(columns)))
             cursor = self._connection.execute(f"SELECT * FROM {table} ORDER BY {order}")
             for row in cursor.fetchall():
+                # The follower's last-pass stamp is wall-clock state, not
+                # projected content -- keep it out of the golden dump.
+                if table == "projection_meta" and row and row[0] == "last_pass_at":
+                    continue
                 rendered = ", ".join(_render(value) for value in row)
                 lines.append(f"{table}({', '.join(columns)}): {rendered}")
         return "\n".join(lines) + "\n"

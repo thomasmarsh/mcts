@@ -18,6 +18,7 @@ import type {
   ProjectionPairRow,
   ProjectionRefreshResult,
   ProjectionRunDetail,
+  ProjectionMeta,
   ProjectionRunListItem,
   LaunchPreflightResult,
   ProjectionValidation,
@@ -34,6 +35,10 @@ import type {
  * at most once and are terminal. */
 export interface EvidenceStreamHandlers {
   onEvents(events: EvidenceEnvelope[]): void;
+  /** The server's headless follower reprojected this run's newest evidence.
+   * The UI should re-fetch its projection slices — it must not POST a
+   * refresh of its own while the stream is healthy. */
+  onProjectionUpdated(): void;
   onEnd(): void;
   onError(message: string): void;
 }
@@ -69,6 +74,7 @@ export interface TunerApiClient {
   ): EvidenceSubscription;
   // Projection.
   refreshProjection(): Promise<ProjectionRefreshResult>;
+  getProjectionMeta(): Promise<ProjectionMeta>;
   listProjectionRuns(): Promise<ProjectionRunListItem[]>;
   getProjectionRun(runId: string): Promise<ProjectionRunDetail>;
   getProjectionCohorts(runId: string): Promise<ProjectionCohort[]>;
@@ -196,6 +202,9 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
           handlers.onError(`invalid evidence event: ${String(error)}`);
         }
       };
+      source.addEventListener("projection-updated", () => {
+        handlers.onProjectionUpdated();
+      });
       // The server names its final frame `event: end`.
       source.addEventListener("end", () => {
         close();
@@ -213,6 +222,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     },
     refreshProjection: () =>
       sendJson(url("/api/bench/tuner/projection/refresh"), "POST"),
+    getProjectionMeta: () => fetchJson(url("/api/bench/tuner/projection/meta")),
     listProjectionRuns: () => fetchJson(url("/api/bench/tuner/projection/runs")),
     getProjectionRun: (runId) => fetchJson(url(projPath(runId))),
     getProjectionCohorts: (runId) => fetchJson(url(`${projPath(runId)}/cohorts`)),

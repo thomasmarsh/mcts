@@ -34,6 +34,7 @@ import type {
   ProjectionGameRow,
   ProjectionObservation,
   ProjectionPairRow,
+  ProjectionMeta,
   ProjectionProposal,
   ProjectionRunDetail,
   ProjectionRunListItem,
@@ -153,6 +154,10 @@ export interface TunerState {
   refreshing: boolean;
   refreshError: string | null;
   lastProjectionRefreshAt: number | null;
+  /** `projection_meta.last_pass_at` from the server — the headless follower's
+   * last pass. Used for the fleet freshness indicator on a cold open, before
+   * this tab has ever driven a refresh of its own. */
+  projectionLastPassAt: string | null;
   /** true while an automatic (loop-driven) `projection/refresh` POST is in
    * flight — kept separate from `refreshing` so the manual button's spinner
    * doesn't flicker every cadence. */
@@ -207,6 +212,7 @@ export function initialTunerState(): TunerState {
     refreshing: false,
     refreshError: null,
     lastProjectionRefreshAt: null,
+    projectionLastPassAt: null,
     autoRefreshing: false,
     projectionRefreshActive: false,
     projectionRefreshGeneration: 0,
@@ -239,6 +245,8 @@ export type TunerAction =
   | { tag: "runsFailed"; error: string }
   | { tag: "projectionLoaded"; runs: ProjectionRunListItem[] }
   | { tag: "projectionFailed"; error: string }
+  | { tag: "projectionMetaLoaded"; meta: ProjectionMeta }
+  | { tag: "projectionUpdatedPush"; generation: number }
   | { tag: "refreshProjection" }
   | { tag: "refreshDone" }
   | { tag: "refreshFailed"; error: string }
@@ -304,12 +312,16 @@ const isOpenRunLive = (draft: TunerState): boolean => {
   return runs.some((r) => r.run_id === draft.openRunId && r.status === "live");
 };
 
-/** Start or stop the projection auto-refresh loop to match whether the open
- * run is currently live. Returns the first `projectionRefreshTick` when the
- * loop needs starting, else `null` (bumping the generation so any loop still
- * in flight winds itself down on its next tick). */
+/** Start or stop the client-side projection auto-refresh loop. This loop is
+ * the **degraded-mode fallback** only: while the evidence SSE stream is
+ * healthy the server's headless follower keeps the projection fresh and the
+ * `projection-updated` frame tells this tab when to re-fetch, so the client
+ * never POSTs a refresh of its own. The loop runs only when the open run is
+ * live *and* its stream has failed. Returns the first `projectionRefreshTick`
+ * when the loop needs starting, else `null` (bumping the generation so any
+ * loop still in flight winds itself down on its next tick). */
 function syncAutoRefresh(draft: TunerState): Effect<TunerAction> | null {
-  const live = isOpenRunLive(draft);
+  const live = isOpenRunLive(draft) && !draft.evidenceStreamOk;
   if (live && !draft.projectionRefreshActive) {
     draft.projectionRefreshActive = true;
     draft.projectionRefreshGeneration += 1;
@@ -369,6 +381,8 @@ function evidenceStreamEffect(
     switch (message.kind) {
       case "events":
         return { tag: "evidenceEvents", generation, events: message.events };
+      case "projectionUpdated":
+        return { tag: "projectionUpdatedPush", generation };
       case "ended":
         return { tag: "evidenceStreamEnded", generation };
       case "error":
@@ -421,6 +435,16 @@ function fetchProjection(env: TunerEnv): Effect<TunerAction> {
     .listProjectionRuns()
     .map((runs): TunerAction => ({ tag: "projectionLoaded", runs }))
     .catch((e): TunerAction => ({ tag: "projectionFailed", error: String(e) }));
+}
+
+/** Projection-wide freshness: the headless follower's last pass, so a cold
+ * open on an unattended run shows a real age instead of "not yet refreshed".
+ * Fired alongside the initial load and after each `projectionLoaded`. */
+function fetchProjectionMeta(env: TunerEnv): Effect<TunerAction> {
+  return env
+    .getProjectionMeta()
+    .map((meta): TunerAction => ({ tag: "projectionMetaLoaded", meta }))
+    .catch((): TunerAction => ({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } }));
 }
 
 function fetchLog(
@@ -681,10 +705,31 @@ export function tunerReducer(
 
     case "projectionLoaded":
       draft.projectionRuns = toOk(action.runs, Date.now());
-      return null;
+      return fetchProjectionMeta(env);
     case "projectionFailed":
       draft.projectionRuns = toErr(action.error, draft.projectionRuns);
       return null;
+    case "projectionMetaLoaded":
+      draft.projectionLastPassAt = action.meta.last_pass_at;
+      return null;
+
+    case "projectionUpdatedPush": {
+      // The follower committed a pass covering this run's newest evidence.
+      // Pull the fresh rows straight down -- no `projection/refresh` POST
+      // while the stream is healthy.
+      if (action.generation !== draft.evidenceGeneration) return null;
+      draft.scienceStale = false;
+      draft.lastProjectionRefreshAt = Date.now();
+      const list = fetchProjection(env);
+      if (!draft.openRunId) return list;
+      // Silent reload: refetch under a bumped generation without flipping the
+      // per-run slots to `loading`, so the science on screen doesn't flash.
+      draft.resourceGeneration += 1;
+      return Effect.merge(
+        list,
+        fetchRunResources(env, draft.openRunId, draft.resourceGeneration),
+      );
+    }
 
     case "refreshProjection": {
       if (draft.refreshing) return null;
@@ -716,11 +761,14 @@ export function tunerReducer(
       ) {
         return null;
       }
-      if (!isOpenRunLive(draft)) {
+      // The stream recovered: the follower + `projection-updated` frame have
+      // this covered again, so wind the fallback loop down.
+      if (!isOpenRunLive(draft) || draft.evidenceStreamOk) {
         draft.projectionRefreshActive = false;
         return null;
       }
-      const delay = projectionRefreshDelayMs("live", draft.scienceStale) ?? 6_000;
+      const delay =
+        projectionRefreshDelayMs("live", draft.scienceStale, draft.evidenceStreamOk) ?? 6_000;
       return Effect.merge(
         Effect.send<TunerAction>({ tag: "autoRefreshProjection" }),
         Effect.delay<TunerAction>(delay, {
@@ -1010,19 +1058,29 @@ export function tunerReducer(
     case "evidenceStreamFailed": {
       if (action.generation !== draft.evidenceGeneration) return null;
       draft.evidenceStreamOk = false;
-      // The push channel is gone; fall back to polling the tail while the run
-      // is still live.
+      // The push channel is gone; fall back to polling the tail *and* to the
+      // client-driven projection refresh loop while the run is still live.
       if (!isOpenRunLive(draft)) {
         draft.evidenceStreamActive = false;
         return null;
       }
+      const effects: Effect<TunerAction>[] = [];
+      const auto = syncAutoRefresh(draft);
+      if (auto) effects.push(auto);
       const delay = evidencePollDelayMs(false, "live");
-      return delay === null
-        ? null
-        : Effect.delay<TunerAction>(delay, {
+      if (delay !== null) {
+        effects.push(
+          Effect.delay<TunerAction>(delay, {
             tag: "evidencePollTick",
             generation: action.generation,
-          });
+          }),
+        );
+      }
+      return effects.length === 0
+        ? null
+        : effects.length === 1
+          ? effects[0]!
+          : Effect.merge(...effects);
     }
     case "evidencePollTick": {
       if (action.generation !== draft.evidenceGeneration || !draft.evidenceStreamActive) {

@@ -510,6 +510,11 @@ pub(crate) async fn launch_tuner_run(
         },
         message: format!("failed to launch tuner run: {error}"),
     })?;
+    // Kick the headless follower so this run's projection starts advancing
+    // now, not on the supervisor's next timer tick.
+    if let Some(follower) = &state.projection_follower {
+        follower.tick();
+    }
     Ok((StatusCode::ACCEPTED, Json(view(record))))
 }
 

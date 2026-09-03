@@ -37,6 +37,14 @@ describe("tuner-poll", () => {
     expect(projectionRefreshDelayMs("none")).toBeNull();
   });
 
+  it("does not run the client loop while the evidence stream is healthy", () => {
+    // The headless follower + `projection-updated` frame own freshness then.
+    expect(projectionRefreshDelayMs("live", false, true)).toBeNull();
+    expect(projectionRefreshDelayMs("live", true, true)).toBeNull();
+    // Stream down while live -> the fallback loop runs.
+    expect(projectionRefreshDelayMs("live", false, false)).toBe(PROJECTION_REFRESH_MS);
+  });
+
   it("does not poll evidence while the SSE stream is healthy", () => {
     expect(evidencePollDelayMs(true, "live")).toBeNull();
   });

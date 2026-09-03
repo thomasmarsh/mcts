@@ -337,6 +337,14 @@ async fn main() {
     let tuner_projection_db = std::env::var_os("MCTS_TUNER_PROJECTION_DB")
         .map(PathBuf::from)
         .unwrap_or_else(|| bench_runs_dir.join("tuner-projection.sqlite"));
+    // Headless projection follower: keeps the SQLite projection fresh for any
+    // live run with zero open tabs, and pays the `uv` start-up cost once per
+    // live period rather than once per viewer per refresh tick.
+    let projection_follower = bench::ProjectionFollower::production(
+        bench_runs_dir.clone(),
+        tuner_projection_db.clone(),
+        4.0,
+    );
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
     // Frozen-objective JSON files. The checked-in `tuner/objectives` is the
@@ -365,7 +373,9 @@ async fn main() {
         tuner_projection_db,
         tuner_projection_refresh: Arc::new(bench::shell_refresh),
         tuner_launch_preflight: Arc::new(bench::shell_preflight_launch),
+        projection_follower: Some(projection_follower.clone()),
     });
+    bench::spawn_supervisor(projection_follower);
 
     // Start the background ingest loop.  Every 5 seconds it reads
     // registry.log and running runs' log.jsonl files, upserts into the

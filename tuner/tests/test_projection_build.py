@@ -189,6 +189,20 @@ def test_watch_shape_reuses_one_store_over_a_growing_run(tmp_path: Path) -> None
         store.close()
 
 
+def test_records_a_last_pass_stamp_kept_out_of_the_golden_dump(tmp_path: Path) -> None:
+    db_path = tmp_path / "p.sqlite"
+    project_runs(PROJECTION_ROOT, db_path, rebuild=True)
+    store = open_store(db_path)
+    try:
+        assert store.last_pass_at() is not None
+        # The stamp is wall-clock state; the canonical dump must not carry it,
+        # so the golden fixture stays byte-stable across passes.
+        assert "last_pass_at" not in store.canonical_dump()
+    finally:
+        store.close()
+    assert _dump(db_path) == GOLDEN.read_text(encoding="utf-8")
+
+
 def test_prunes_removed_runs(tmp_path: Path) -> None:
     root = _copy_root(tmp_path)
     db_path = tmp_path / "p.sqlite"

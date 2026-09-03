@@ -43,6 +43,7 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
     openEvidenceStream: () => Effect.stream((_send, done) => done()),
     refreshProjection: () =>
       Effect.send({ projected: 0, skipped: 0, ingest_errors: 0, pruned: 0 }),
+    getProjectionMeta: () => Effect.send({ last_pass_at: null }),
     listProjectionRuns: () => Effect.send([]),
     getProjectionRun: () =>
       Effect.send({

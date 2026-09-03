@@ -155,8 +155,16 @@ export interface EvidenceTailResponse {
  * terminal `ended` or `error`. */
 export type EvidenceStreamMessage =
   | { kind: "events"; events: EvidenceEnvelope[] }
+  /** The headless follower committed a projection pass covering this run's
+   * newest evidence — re-fetch the science slices, no client refresh POST. */
+  | { kind: "projectionUpdated" }
   | { kind: "ended" }
   | { kind: "error"; error: string };
+
+/** `GET /api/bench/tuner/projection/meta` — projection-wide freshness. */
+export interface ProjectionMeta {
+  last_pass_at: string | null;
+}
 
 /** One rendered line in the `<EventTicker>`. */
 export interface TickerLine {

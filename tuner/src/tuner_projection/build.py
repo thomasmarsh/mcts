@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tuner_cli.artifacts import read_manifest
@@ -191,6 +192,7 @@ def project_pass(runs_root: Path, store: Store, *, rebuild: bool) -> ProjectionS
         projected += 1
         errors += 1
     pruned = _prune(store, discovered)
+    store.record_pass(datetime.now(timezone.utc).isoformat())
     store.vacuum()
     return ProjectionSummary(projected, skipped, errors, pruned)
 

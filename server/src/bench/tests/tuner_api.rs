@@ -11,6 +11,17 @@ const V4: &str = "/api/bench/tuner/projection/runs/version4";
 const CAND0: &str = "candidate-130051c1c73a2aa1f25731bb5f9bf9fad38bd5f2852406cef837c5b14cc8fd90";
 
 #[tokio::test]
+async fn projection_meta_exposes_the_last_pass_stamp() {
+    let (app, _root) = seeded_app(default_seed);
+    let (status, body) = http_get(app, "/api/bench/tuner/projection/meta").await;
+    assert_eq!(status, StatusCode::OK);
+    // The key is always present; its value is a string once the projector has
+    // stamped a pass, or null for a projection built before that stamp existed.
+    let meta = body_json(&body);
+    assert!(meta.as_object().unwrap().contains_key("last_pass_at"));
+}
+
+#[tokio::test]
 async fn lists_runs() {
     let (app, root) = seeded_app(default_seed);
     let (status, body) = http_get(app, "/api/bench/tuner/projection/runs").await;

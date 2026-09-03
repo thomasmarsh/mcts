@@ -59,6 +59,7 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "projectionLoaded", runs: [] }, (s) => {
       s.projectionRuns = ok([]);
     });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
   });
 
   it("keeps polling the journal while a run is live, then stops and refreshes", () => {
@@ -82,6 +83,7 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "projectionLoaded", runs: [] }, (s) => {
       s.projectionRuns = ok([]);
     });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
 
     ts.advance(JOURNAL_POLL_MS);
     ts.receive({ tag: "journalTick", generation: 1 });
@@ -96,10 +98,17 @@ describe("tunerReducer", () => {
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
   });
 
-  it("auto-refreshes the open run's projection while it is live, silently, and stops on exit", () => {
+  it("does not run its own projection-refresh loop while the evidence stream is healthy", () => {
     let refreshes = 0;
+    const s0 = initialTunerState();
+    s0.openRunId = "r1";
+    s0.runs = { status: "ok", value: [runView({ run_id: "r1", status: "live" })], fetchedAt: 0 };
+    s0.evidenceStreamActive = true;
+    s0.evidenceStreamOk = true;
+    s0.evidenceGeneration = 1;
     const detail = {
       run_id: "r1",
       terminal_status: null,
@@ -109,9 +118,6 @@ describe("tunerReducer", () => {
       report: null,
       compute: [],
     };
-    const s0 = initialTunerState();
-    s0.openRunId = "r1";
-    s0.runs = { status: "ok", value: [runView({ run_id: "r1", status: "live" })], fetchedAt: 0 };
     const ts = createTestStore<TunerState, TunerAction, TunerEnv>(
       tunerReducer,
       mockTunerEnv({
@@ -120,28 +126,20 @@ describe("tunerReducer", () => {
           refreshes += 1;
           return Effect.send({ projected: 1, skipped: 0, ingest_errors: 0, pruned: 0 });
         },
-        getProjectionRun: () => Effect.send(detail),
       }),
       s0,
     );
 
-    // A journal poll still shows the open run live — the auto-refresh loop starts.
+    // A journal poll shows the run still live: the headless follower owns the
+    // projection, so no client auto-refresh loop starts (it only schedules the
+    // cheap journal poll).
     ts.send({ tag: "runsLoaded", runs: [runView({ run_id: "r1", status: "live" })] }, (s) => {
       s.runs = ok([runView({ run_id: "r1", status: "live" })]);
-      s.projectionRefreshActive = true;
-      s.projectionRefreshGeneration = 1;
-      s.evidenceStreamActive = true;
-      s.evidenceGeneration = 1;
     });
-    ts.receive({ tag: "projectionRefreshTick", generation: 1 });
-    // The tick re-armed itself alongside the journal poll.
-    expect(ts.scheduler.pendingCount).toBe(2);
-    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
-      s.autoRefreshing = true;
-    });
-    // The per-run science reloads WITHOUT flipping to `loading` (no dim flash).
-    ts.receive({ tag: "autoRefreshDone" }, (s) => {
-      s.autoRefreshing = false;
+
+    // The stream's `projection-updated` frame pulls fresh rows directly — a
+    // silent science reload, and crucially *no* `refreshProjection` POST.
+    ts.send({ tag: "projectionUpdatedPush", generation: 1 }, (s) => {
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
       s.resourceGeneration = 1;
     });
@@ -178,17 +176,20 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "activeEliminationsLoaded", generation: 1, rows: [] }, (s) => {
       s.activeEliminations = ok([]);
     });
-    expect(refreshes).toBe(1);
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
 
-    // The next journal poll reports the run exited — the loop deactivates.
-    ts.send({ tag: "runsLoaded", runs: [runView({ run_id: "r1", status: "exited" })] }, (s) => {
+    // No client refresh POST happened while the stream was healthy.
+    expect(refreshes).toBe(0);
+
+    // Wind the journal poll down: the next poll sees the run exited, which
+    // deactivates the loop (and fires the one terminal-transition refresh).
+    ts.advance(JOURNAL_POLL_MS);
+    ts.receive({ tag: "journalTick", generation: 0 });
+    ts.receive({ tag: "runsLoaded", runs: [runView({ run_id: "r1", status: "exited" })] }, (s) => {
       s.runs = ok([runView({ run_id: "r1", status: "exited" })]);
-      s.projectionRefreshActive = false;
-      s.projectionRefreshGeneration = 2;
       s.evidenceStreamActive = false;
       s.evidenceGeneration = 2;
     });
-    // A run going terminal still triggers one (manual-path) refresh + reload.
     ts.receive({ tag: "refreshProjection" }, (s) => {
       s.refreshing = true;
     });
@@ -237,17 +238,114 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "activeEliminationsLoaded", generation: 2, rows: [] }, (s) => {
       s.activeEliminations = ok([]);
     });
-    expect(refreshes).toBe(2);
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
+    expect(refreshes).toBe(1);
+  });
 
-    // Drain the still-sleeping journal poll and the stale auto-refresh tick;
-    // the tick's generation is now behind, so it fires inert.
-    ts.advance(PROJECTION_REFRESH_MS);
-    ts.receive({ tag: "journalTick", generation: 0 });
-    ts.receive({ tag: "projectionRefreshTick", generation: 1 });
-    ts.receive({ tag: "runsLoaded", runs: [runView({ run_id: "r1", status: "exited" })] }, (s) => {
-      s.runs = ok([runView({ run_id: "r1", status: "exited" })]);
+  it("falls back to the client refresh loop once the evidence stream fails", () => {
+    let refreshes = 0;
+    const s0 = initialTunerState();
+    s0.openRunId = "r1";
+    s0.runs = { status: "ok", value: [runView({ run_id: "r1", status: "live" })], fetchedAt: 0 };
+    s0.evidenceStreamActive = true;
+    s0.evidenceStreamOk = true;
+    s0.evidenceGeneration = 3;
+    const ts = createTestStore<TunerState, TunerAction, TunerEnv>(
+      tunerReducer,
+      mockTunerEnv({
+        refreshProjection: () => {
+          refreshes += 1;
+          return Effect.send({ projected: 1, skipped: 0, ingest_errors: 0, pruned: 0 });
+        },
+      }),
+      s0,
+    );
+
+    ts.send({ tag: "evidenceStreamFailed", generation: 3, error: "connection lost" }, (s) => {
+      s.evidenceStreamOk = false;
+      s.projectionRefreshActive = true;
+      s.projectionRefreshGeneration = 1;
     });
-    expect(refreshes).toBe(2);
+    // The degraded loop's first tick fires a real `refreshProjection` POST.
+    ts.receive({ tag: "projectionRefreshTick", generation: 1 });
+    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
+      s.autoRefreshing = true;
+    });
+    expect(refreshes).toBe(1);
+
+    ts.receive({ tag: "autoRefreshDone" }, (s) => {
+      s.autoRefreshing = false;
+      s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
+      s.resourceGeneration = 1;
+    });
+    ts.receive({ tag: "projectionLoaded", runs: [] }, (s) => {
+      s.projectionRuns = ok([]);
+    });
+    const detail = {
+      run_id: "r1",
+      terminal_status: null,
+      report_available: false,
+      ingest_error: null,
+      manifest: null,
+      report: null,
+      compute: [],
+    };
+    ts.receive({ tag: "detailLoaded", generation: 1, detail }, (s) => {
+      s.projectionDetail = ok(detail);
+    });
+    ts.receive(
+      { tag: "validationLoaded", generation: 1, validation: { rows: [], unresolved_ties: null } },
+      (s) => {
+        s.validation = ok({ rows: [], unresolved_ties: null });
+      },
+    );
+    ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
+      s.candidates = ok([]);
+    });
+    ts.receive({ tag: "pairsLoaded", generation: 1, pairs: [] }, (s) => {
+      s.pairs = ok([]);
+    });
+    ts.receive({ tag: "reportLoaded", generation: 1, report: {} }, (s) => {
+      s.report = ok({});
+    });
+    ts.receive({ tag: "proposalsLoaded", generation: 1, proposals: [] }, (s) => {
+      s.proposals = ok([]);
+    });
+    ts.receive({ tag: "observationsLoaded", generation: 1, observations: [] }, (s) => {
+      s.observations = ok([]);
+    });
+    ts.receive({ tag: "shadowDecisionsLoaded", generation: 1, rows: [] }, (s) => {
+      s.shadowDecisions = ok([]);
+    });
+    ts.receive({ tag: "activeEliminationsLoaded", generation: 1, rows: [] }, (s) => {
+      s.activeEliminations = ok([]);
+    });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
+
+    // Closing the run winds the fallback loop and evidence poll down.
+    ts.send({ tag: "closeRun" }, (s) => {
+      s.openRunId = null;
+      s.projectionRefreshActive = false;
+      s.projectionRefreshGeneration = 2;
+      s.evidenceStreamActive = false;
+      s.evidenceGeneration = 4;
+      s.resourceGeneration = 2;
+      s.projectionDetail = { status: "idle" };
+      s.validation = { status: "idle" };
+      s.candidates = { status: "idle" };
+      s.pairs = { status: "idle" };
+      s.proposals = { status: "idle" };
+      s.observations = { status: "idle" };
+      s.shadowDecisions = { status: "idle" };
+      s.activeEliminations = { status: "idle" };
+      s.report = { status: "idle" };
+    });
+
+    // Both stale ticks fire inert (their generations are now behind).
+    ts.advance(PROJECTION_REFRESH_MS);
+    ts.receive({ tag: "evidencePollTick", generation: 3 });
+    ts.receive({ tag: "projectionRefreshTick", generation: 1 });
+    expect(refreshes).toBe(1);
   });
 
   it("optimistically inserts and opens a launched run, then tails its log", () => {
@@ -402,6 +500,7 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "activeEliminationsLoaded", generation: 2, rows: [] }, (s) => {
       s.activeEliminations = ok([]);
     });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
     expect(LOG_TAIL_MS).toBe(3000);
   });
 
@@ -455,6 +554,7 @@ describe("tunerReducer", () => {
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
+    ts.receive({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } });
   });
 
   it("blocks the launch when preflight reports the config is invalid", () => {
