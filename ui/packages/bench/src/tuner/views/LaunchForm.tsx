@@ -18,6 +18,9 @@ import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import type { SpaceOverride, TunerLaunchRequest } from "../tuner-types.js";
+import { summarizeRunPlan } from "../models/run-plan-model.js";
+import { OpponentPanelTable } from "../primitives/OpponentPanelTable.js";
+import { KpiRow } from "../primitives/KpiRow.js";
 
 // These mirror the tuner CLI's own defaults (cohort 8, finalists 3,
 // tuning_pairs 4). They satisfy every launch constraint for a panel whose
@@ -227,6 +230,8 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   const busy = () => state().launch.status === "pending";
   const launchError = () => (state().launch.status === "error" ? state().launch.error : null);
   const preflight = createMemo(() => state().preflight);
+  const runPlan = createMemo(() => summarizeRunPlan(peek(state().runPlan)));
+  const planPending = createMemo(() => state().runPlan.status === "loading");
 
   /** The launch request for the current form values, or `null` if a required
    * field is missing / not a positive integer. */
@@ -292,9 +297,13 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
     clearTimeout(debounce);
     if (!request) {
       dispatch({ tag: "resetPreflight" });
+      dispatch({ tag: "resetPlan" });
       return;
     }
-    debounce = setTimeout(() => dispatch({ tag: "preflight", request }), 350);
+    debounce = setTimeout(() => {
+      dispatch({ tag: "preflight", request });
+      dispatch({ tag: "planRun", request });
+    }, 350);
   });
 
   function onSubmit(e: Event): void {
@@ -544,6 +553,68 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
           </Show>
         </fieldset>
       </Show>
+
+      <section class="tuner-run-plan" data-testid="run-plan">
+        <h4>Run plan{planPending() ? " (resolving…)" : ""}</h4>
+        <Show
+          when={runPlan().resolved}
+          fallback={
+            <p class="tuner-launch-hint">
+              {runPlan().errors.length > 0
+                ? "Resolve the errors above to see the resolved run plan."
+                : "Fill in the required fields to see what this run will do."}
+            </p>
+          }
+        >
+          <p class="tuner-launch-hint">
+            {runPlan().gameKind} · objective <code>{runPlan().objectiveId}</code>
+            <Show when={runPlan().epochFingerprint}>
+              {" "}
+              · epoch <code class="tuner-mono">{runPlan().epochFingerprint!.slice(0, 12)}</code>
+            </Show>
+          </p>
+
+          <h5>Opponent panel</h5>
+          <OpponentPanelTable opponents={runPlan().opponents} testid="run-plan-opponents" />
+
+          <h5>Tuning space</h5>
+          <p class="tuner-launch-hint" data-testid="run-plan-families">
+            families: {runPlan().families.join(", ") || "—"}
+            <Show when={runPlan().excludedFamilies.length > 0}>
+              {" "}
+              (excluded: {runPlan().excludedFamilies.join(", ")})
+            </Show>
+          </p>
+          <ul class="tuner-run-plan-params">
+            <For each={runPlan().parameters}>
+              {(p) => (
+                <li>
+                  <code>{p.name}</code> — {p.kind}
+                  <Show when={p.bounds}>
+                    {" "}
+                    [{p.bounds![0]}, {p.bounds![1]}]
+                  </Show>
+                  <Show when={p.choices}> {`{${p.choices!.join(", ")}}`}</Show>
+                  <Show when={p.active_when}>
+                    {" "}
+                    <span class="tuner-launch-hint">when {p.active_when}</span>
+                  </Show>
+                </li>
+              )}
+            </For>
+          </ul>
+
+          <h5>Effort &amp; budget</h5>
+          <KpiRow items={runPlan().effortKpis} testid="run-plan-efforts" />
+          <KpiRow items={runPlan().budgetKpis} testid="run-plan-budgets" />
+
+          <Show when={runPlan().gameConfigIsOverride}>
+            <p class="tuner-launch-hint">
+              game_config override: <code class="tuner-mono">{runPlan().gameConfig}</code>
+            </p>
+          </Show>
+        </Show>
+      </section>
 
       <button type="submit" id="tuner-launch-button" disabled={!canLaunch()}>
         {busy()

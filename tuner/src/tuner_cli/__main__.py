@@ -178,6 +178,18 @@ def _preflight_main(argv: list[str]) -> int:
     return 0
 
 
+def _plan_main(argv: list[str]) -> int:
+    """`tuner plan <same args as a run>` — emit, as one JSON line, the fully
+    resolved shape of the run these options would start (opponent panel,
+    tuning space, efforts, budgets, game_config, epoch) plus the preflight
+    `ok`/`errors`. Creates no run dir and plays no game."""
+    from .plan import plan_launch
+
+    args = build_parser().parse_args(argv)
+    print(json.dumps(plan_launch(_options(args))))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # A subcommand-free argv is the foreground `run` (kept as the default so
@@ -186,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
         return _validate_objective_main(raw[1:])
     if raw and raw[0] == "preflight":
         return _preflight_main(raw[1:])
+    if raw and raw[0] == "plan":
+        return _plan_main(raw[1:])
     args = build_parser().parse_args(raw)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
     try:

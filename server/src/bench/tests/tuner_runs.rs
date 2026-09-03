@@ -171,6 +171,36 @@ async fn preflight_reports_launch_problems_and_gates_the_launch() {
 }
 
 #[tokio::test]
+async fn plan_route_returns_the_resolved_summary_and_surfaces_preflight_errors() {
+    let (app, root) = seeded_app(default_seed);
+    let good = json!({
+        "game_binary": "/games/nim", "objective_file": "/objectives/nim.yaml",
+        "run_id": "plan-ok", "task_seed": 1,
+        "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4
+    });
+    let bad = json!({
+        "game_binary": "/games/nim", "objective_file": "/objectives/nim.yaml",
+        "run_id": "plan-badcfg", "task_seed": 1,
+        "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4
+    });
+
+    let (status, body) = http_post_json(app.clone(), "/api/bench/tuner/runs/plan", good).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["ok"], true);
+    assert_eq!(body_json(&body)["opponents"][0]["role"], "default");
+    assert_eq!(body_json(&body)["budgets"]["cohort_size"], 8);
+
+    let (status, body) = http_post_json(app, "/api/bench/tuner/runs/plan", bad).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["ok"], false);
+    assert!(body_json(&body)["errors"][0]
+        .as_str()
+        .unwrap()
+        .contains("cannot exceed production"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn launch_rejects_a_malformed_space_override() {
     let (app, root) = seeded_app(default_seed);
     let (status, body) = http_post_json(

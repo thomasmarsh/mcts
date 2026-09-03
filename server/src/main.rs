@@ -373,6 +373,7 @@ async fn main() {
         tuner_projection_db,
         tuner_projection_refresh: Arc::new(bench::shell_refresh),
         tuner_launch_preflight: Arc::new(bench::shell_preflight_launch),
+        tuner_launch_plan: Arc::new(bench::shell_plan_launch),
         projection_follower: Some(projection_follower.clone()),
     });
     bench::spawn_supervisor(projection_follower);

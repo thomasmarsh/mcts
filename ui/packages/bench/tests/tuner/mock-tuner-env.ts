@@ -33,6 +33,7 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
     getRun: () => Effect.send(runView()),
     launchRun: () => Effect.send(runView()),
     preflightRun: () => Effect.send({ ok: true, errors: [] }),
+    planRun: () => Effect.send({ ok: true, errors: [] }),
     stopRun: () => Effect.send(runView({ status: "exited" })),
     extendRun: () => Effect.send(runView()),
     deleteRun: () => Effect.send(undefined),

@@ -192,6 +192,31 @@ pub(super) fn seeded_app_with_state_and_signaller(
                 },
             })
         }),
+        // Canned plan: mirrors the stub preflight's verdict and returns a
+        // minimal resolved shape (one opponent, one budget field) so the
+        // route test can assert the summary passes through. Real resolution
+        // is covered by the tuner's `test_plan.py`.
+        tuner_launch_plan: Arc::new(|request| {
+            let ok = !request.run_id.contains("badcfg");
+            let mut resolved = serde_json::Map::new();
+            resolved.insert(
+                "opponents".into(),
+                serde_json::json!([{
+                    "id": "schema-default", "role": "default", "weight": 1,
+                    "source": "schema_default", "config": "{\"family\":\"a\"}"
+                }]),
+            );
+            resolved.insert("budgets".into(), serde_json::json!({"cohort_size": 8}));
+            Ok(super::super::RunPlan {
+                ok,
+                errors: if ok {
+                    vec![]
+                } else {
+                    vec!["validation pairs cannot exceed production validation pairs".into()]
+                },
+                resolved,
+            })
+        }),
         projection_follower: None,
     });
 

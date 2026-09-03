@@ -479,6 +479,41 @@ pub fn shell_preflight_launch(
     })
 }
 
+/// `POST /api/bench/tuner/runs/plan` — resolve a launch request to its
+/// concrete shape (opponent panel with expanded configs, tuning space after
+/// exclusions/overrides, phase efforts, pair budgets, `game_config`, epoch)
+/// plus the embedded preflight `ok`/`errors`. Creates no run and plays no
+/// game; the launch form renders this as its read-only "Run plan" panel.
+pub(crate) async fn plan_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Json(mut request): Json<TunerLaunchRequest>,
+) -> Result<Json<super::types::RunPlan>, BenchError> {
+    resolve_launch_request(&state, &mut request)?;
+    let result = (state.tuner_launch_plan)(&request).map_err(|error| BenchError {
+        status: StatusCode::BAD_GATEWAY,
+        message: format!("could not resolve the launch plan: {error}"),
+    })?;
+    Ok(Json(result))
+}
+
+/// Production [`BenchState::tuner_launch_plan`]: shells
+/// `python -m tuner_cli plan` with the request's resolved argv.
+pub fn shell_plan_launch(request: &TunerLaunchRequest) -> std::io::Result<super::types::RunPlan> {
+    let argv = request.plan_argv();
+    let output = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "plan exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| std::io::Error::other(format!("plan produced invalid JSON: {error}")))
+}
+
 pub(crate) async fn launch_tuner_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     Json(mut request): Json<TunerLaunchRequest>,

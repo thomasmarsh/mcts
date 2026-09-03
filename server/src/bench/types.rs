@@ -73,6 +73,10 @@ pub struct BenchState {
     /// preflight`; tests inject a stub). The launch form calls this so a
     /// launch is never started for a knowable reason.
     pub tuner_launch_preflight: LaunchPreflighter,
+    /// Resolves a launch request to its concrete shape for the launch form's
+    /// "Run plan" panel (production: shells `python -m tuner_cli plan`; tests
+    /// inject a stub). Read-only: it creates no run and plays no game.
+    pub tuner_launch_plan: LaunchPlanner,
     /// Server-owned headless projection follower. `Some` in production; `None`
     /// in tests that never exercise the follower. A launch handler calls
     /// [`super::ProjectionFollower::tick`] on it so a fresh run's projection
@@ -96,6 +100,28 @@ pub struct LaunchPreflight {
     pub ok: bool,
     #[serde(default)]
     pub errors: Vec<String>,
+}
+
+/// Resolves a launch request to its concrete shape: `&TunerLaunchRequest ->
+/// RunPlan`. Production shells `tuner_cli plan`; like the preflighter it sees
+/// a request whose `game_binary` / `objective_file` are already absolute.
+pub type LaunchPlanner = Arc<
+    dyn Fn(&mcts_bench::tuner_launch::TunerLaunchRequest) -> std::io::Result<RunPlan>
+        + Send
+        + Sync,
+>;
+
+/// Result of [`LaunchPlanner`] — the JSON line from `tuner_cli plan`. `ok` /
+/// `errors` mirror the embedded preflight; `resolved` carries the resolved
+/// opponent panel, tuning space, efforts, budgets, `game_config` and epoch
+/// verbatim for the launch form to render (it is not re-derived in Rust).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunPlan {
+    pub ok: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(flatten)]
+    pub resolved: serde_json::Map<String, Value>,
 }
 
 /// Refreshes the tuner projection out of band: `(bench_runs_dir, projection_db)

@@ -130,6 +130,74 @@ export interface LaunchPreflightResult {
   errors: string[];
 }
 
+/** One opponent in a resolved plan's panel — the schema-default source is
+ * expanded to its actual `config`, so a hidden `rave` opponent is visible. */
+export interface RunPlanOpponent {
+  id: string;
+  label?: string;
+  role: string;
+  weight: number;
+  source: string;
+  /** Canonical JSON of the resolved config. */
+  config: string;
+  fingerprint?: string;
+}
+
+/** One parameter in a resolved plan's tuning space, after `--exclude-family`
+ * and `space_overrides` have been applied. */
+export interface RunPlanParameter {
+  name: string;
+  kind: string;
+  bounds: [number, number] | null;
+  choices: (string | number | boolean | null)[] | null;
+  default: string | number | boolean | null;
+  constant_value: string | number | boolean | null;
+  /** Human-readable activation condition, e.g. `family in ['rave']`. */
+  active_when: string | null;
+}
+
+export interface RunPlanSpace {
+  schema_id: string;
+  families: (string | number | boolean | null)[];
+  excluded_families: string[];
+  parameters: RunPlanParameter[];
+}
+
+/** `POST /api/bench/tuner/runs/plan` — the fully resolved shape of the run a
+ * launch request would start. `ok`/`errors` mirror the embedded preflight;
+ * the rest is present only when resolution got far enough. */
+export interface RunPlan {
+  ok: boolean;
+  errors: string[];
+  game_kind?: string;
+  objective_id?: string;
+  objective_fingerprint?: string;
+  game_config?: string;
+  game_config_is_override?: boolean;
+  opponents?: RunPlanOpponent[];
+  panel_fingerprint?: string;
+  space?: RunPlanSpace;
+  efforts?: Record<"tuning" | "validation" | "production", { kind: string; value: number }>;
+  budgets?: {
+    cohort_size: number;
+    finalists: number;
+    bootstrap_candidates: number;
+    random_reserve_candidates: number;
+    tuning_pairs: number;
+    tuning_pair_budget: number;
+    validation_pair_budget: number;
+    diagnostic_pair_budget: number;
+    production_validation_pairs: number;
+    proposer_policy: string;
+    derived: {
+      initial_cohort_pairs: number;
+      validation_pairs_per_finalist: number;
+      production_pairs: number;
+    };
+  };
+  epoch?: { epoch_id: string; fingerprint: string };
+}
+
 // --- Live evidence journal --------------------------------------------
 
 /** The evidence event types the tuner emits (mirrors `event_payloads.py`'s

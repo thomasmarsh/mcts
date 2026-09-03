@@ -26,6 +26,7 @@ import type {
   TunerBudgetExtension,
   TunerLaunchRequest,
   LaunchPreflightResult,
+  RunPlan,
   TunerObjectiveDetail,
   TunerObjectiveFile,
   TunerRunLog,
@@ -44,6 +45,7 @@ export interface TunerEnv {
   getRun(runId: string): Effect<TunerRunView>;
   launchRun(body: TunerLaunchRequest): Effect<TunerRunView>;
   preflightRun(body: TunerLaunchRequest): Effect<LaunchPreflightResult>;
+  planRun(body: TunerLaunchRequest): Effect<RunPlan>;
   stopRun(runId: string): Effect<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Effect<TunerRunView>;
   deleteRun(runId: string): Effect<void>;
@@ -86,6 +88,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     getRun: (runId) => lift(() => api.getRun(runId)),
     launchRun: (body) => lift(() => api.launchRun(body)),
     preflightRun: (body) => lift(() => api.preflightRun(body)),
+    planRun: (body) => lift(() => api.planRun(body)),
     stopRun: (runId) => lift(() => api.stopRun(runId)),
     extendRun: (runId, body) => lift(() => api.extendRun(runId, body)),
     deleteRun: (runId) => lift(() => api.deleteRun(runId)),

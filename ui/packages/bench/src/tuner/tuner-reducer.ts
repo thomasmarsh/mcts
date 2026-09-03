@@ -42,6 +42,7 @@ import type {
   ProjectionValidation,
   ObjectiveValidationResult,
   LaunchPreflightResult,
+  RunPlan,
   TunerBudgetExtension,
   TunerLaunchRequest,
   TunerObjectiveDetail,
@@ -104,6 +105,13 @@ export interface TunerState {
   preflight: TunerPreflightState;
   /** Bumped on every preflight request so a stale response is dropped. */
   preflightGeneration: number;
+  /** The fully resolved shape of the run the launch form would start —
+   * opponent panel, tuning space, efforts, budgets, epoch. Debounced
+   * alongside the preflight; rendered as the form's read-only Run plan
+   * panel. */
+  runPlan: RemoteData<RunPlan>;
+  /** Bumped on every plan request so a stale response is dropped. */
+  runPlanGeneration: number;
   /** null → fleet dashboard; a run id → that run's overview. */
   openRunId: string | null;
   /** Per-run projection resources for the open run's overview / drawer.
@@ -202,6 +210,8 @@ export function initialTunerState(): TunerState {
     launch: { status: "idle", error: null, lastRunId: null },
     preflight: { status: "idle", errors: [], error: null },
     preflightGeneration: 0,
+    runPlan: idle(),
+    runPlanGeneration: 0,
     openRunId: null,
     projectionDetail: idle(),
     validation: idle(),
@@ -280,6 +290,10 @@ export type TunerAction =
   | { tag: "preflightChecked"; generation: number; result: LaunchPreflightResult }
   | { tag: "preflightErrored"; generation: number; error: string }
   | { tag: "resetPreflight" }
+  | { tag: "planRun"; request: TunerLaunchRequest }
+  | { tag: "planResolved"; generation: number; plan: RunPlan }
+  | { tag: "planErrored"; generation: number; error: string }
+  | { tag: "resetPlan" }
   | { tag: "openRun"; runId: string }
   | { tag: "closeRun" }
   | { tag: "loadRunResources"; runId: string }
@@ -892,6 +906,28 @@ export function tunerReducer(
     case "resetPreflight":
       draft.preflightGeneration += 1;
       draft.preflight = { status: "idle", errors: [], error: null };
+      return null;
+
+    case "planRun": {
+      draft.runPlanGeneration += 1;
+      draft.runPlan = toLoading(draft.runPlan);
+      const generation = draft.runPlanGeneration;
+      return env
+        .planRun(action.request)
+        .map((plan): TunerAction => ({ tag: "planResolved", generation, plan }))
+        .catch((e): TunerAction => ({ tag: "planErrored", generation, error: String(e) }));
+    }
+    case "planResolved":
+      if (action.generation !== draft.runPlanGeneration) return null;
+      draft.runPlan = toOk(action.plan, Date.now());
+      return null;
+    case "planErrored":
+      if (action.generation !== draft.runPlanGeneration) return null;
+      draft.runPlan = toErr(action.error, draft.runPlan);
+      return null;
+    case "resetPlan":
+      draft.runPlanGeneration += 1;
+      draft.runPlan = idle();
       return null;
 
     case "openRun": {

@@ -366,6 +366,18 @@ impl TunerLaunchRequest {
         argv.insert(7, "preflight".into());
         argv
     }
+
+    /// The same argv as [`argv`](Self::argv), but for the `plan` subcommand:
+    /// it resolves the launch (opponent panel, tuning space, efforts, budgets,
+    /// `game_config`, epoch) without creating a run dir or playing a game and
+    /// prints the structured summary plus the preflight `ok`/`errors`. Reuses
+    /// the `run` argument set verbatim so the preview can't drift from a real
+    /// launch.
+    pub fn plan_argv(&self) -> Vec<String> {
+        let mut argv = self.argv();
+        argv.insert(7, "plan".into());
+        argv
+    }
 }
 
 /// A request to raise one or more of a frozen run's pair budgets and resume it.
@@ -912,6 +924,11 @@ mod tests {
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--tuning-pair-budget", "10"]));
+        let plan = base_request(&PathBuf::from("runs"), "run_12a").plan_argv();
+        assert_eq!(
+            &plan[..8],
+            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli", "plan"]
+        );
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--run-dir", "runs/run_12a"]));

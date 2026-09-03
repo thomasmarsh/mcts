@@ -21,6 +21,7 @@ import type {
   ProjectionMeta,
   ProjectionRunListItem,
   LaunchPreflightResult,
+  RunPlan,
   ProjectionValidation,
   ObjectiveValidationResult,
   TunerBudgetExtension,
@@ -61,6 +62,7 @@ export interface TunerApiClient {
   getRun(runId: string): Promise<TunerRunView>;
   launchRun(body: TunerLaunchRequest): Promise<TunerRunView>;
   preflightRun(body: TunerLaunchRequest): Promise<LaunchPreflightResult>;
+  planRun(body: TunerLaunchRequest): Promise<RunPlan>;
   stopRun(runId: string): Promise<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Promise<TunerRunView>;
   /** Permanently remove a terminal run. `409` if the run is still live. */
@@ -179,6 +181,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     getRun: (runId) => fetchJson(url(runPath(runId))),
     launchRun: (body) => sendJson(url("/api/bench/tuner/runs"), "POST", body),
     preflightRun: (body) => sendJson(url("/api/bench/tuner/runs/preflight"), "POST", body),
+    planRun: (body) => sendJson(url("/api/bench/tuner/runs/plan"), "POST", body),
     stopRun: (runId) => sendJson(url(`${runPath(runId)}/stop`), "POST"),
     extendRun: (runId, body) => sendJson(url(`${runPath(runId)}/extend`), "POST", body),
     deleteRun: (runId) => sendNoContent(url(runPath(runId)), "DELETE"),
