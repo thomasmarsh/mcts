@@ -120,12 +120,25 @@ def _validate_objective_main(argv: list[str]) -> int:
     return 0
 
 
+def _preflight_main(argv: list[str]) -> int:
+    """`tuner preflight <same args as a run>` — report, as one JSON line,
+    every launch problem knowable before the run dir is created or a game is
+    played. Reuses the `run` parser verbatim so the two can't drift."""
+    from .preflight import preflight_launch
+
+    args = build_parser().parse_args(argv)
+    print(json.dumps(preflight_launch(_options(args))))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # A subcommand-free argv is the foreground `run` (kept as the default so
     # `mcts_bench::tuner_launch` needs no change).
     if raw and raw[0] == "validate-objective":
         return _validate_objective_main(raw[1:])
+    if raw and raw[0] == "preflight":
+        return _preflight_main(raw[1:])
     args = build_parser().parse_args(raw)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
     try:

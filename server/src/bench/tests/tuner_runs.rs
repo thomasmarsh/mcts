@@ -133,6 +133,44 @@ async fn launch_rejects_an_unsafe_run_id() {
 }
 
 #[tokio::test]
+async fn preflight_reports_launch_problems_and_gates_the_launch() {
+    let (app, root) = seeded_app(default_seed);
+    let good = json!({
+        "game_binary": "/games/nim", "objective_file": "/objectives/nim.yaml",
+        "run_id": "pf-ok", "task_seed": 1,
+        "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4
+    });
+    let bad = json!({
+        "game_binary": "/games/nim", "objective_file": "/objectives/nim.yaml",
+        "run_id": "pf-badcfg", "task_seed": 1,
+        "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4
+    });
+
+    let (status, body) =
+        http_post_json(app.clone(), "/api/bench/tuner/runs/preflight", good).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["ok"], true);
+
+    let (status, body) =
+        http_post_json(app.clone(), "/api/bench/tuner/runs/preflight", bad.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body)["ok"], false);
+    assert!(body_json(&body)["errors"][0]
+        .as_str()
+        .unwrap()
+        .contains("cannot exceed production"));
+
+    // The same failing request is refused by the launch route itself.
+    let (status, body) = http_post_json(app, "/api/bench/tuner/runs", bad).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("cannot exceed production"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn extend_validates_the_request_and_relaunches() {
     let (app, root) = seeded_app(default_seed);
     let runs_root = root.join("bench-runs");

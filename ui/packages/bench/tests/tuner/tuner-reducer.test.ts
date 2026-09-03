@@ -268,6 +268,59 @@ describe("tunerReducer", () => {
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
   });
+
+  it("blocks the launch when preflight reports the config is invalid", () => {
+    const ts = store(
+      mockTunerEnv({
+        preflightRun: () =>
+          Effect.send({
+            ok: false,
+            errors: ["validation pairs cannot exceed production validation pairs"],
+          }),
+      }),
+    );
+
+    ts.send({ tag: "preflight", request: launchRequest() }, (s) => {
+      s.preflightGeneration = 1;
+      s.preflight = { status: "checking", errors: [], error: null };
+    });
+    ts.receive(
+      {
+        tag: "preflightChecked",
+        generation: 1,
+        result: {
+          ok: false,
+          errors: ["validation pairs cannot exceed production validation pairs"],
+        },
+      },
+      (s) => {
+        s.preflight = {
+          status: "invalid",
+          errors: ["validation pairs cannot exceed production validation pairs"],
+          error: null,
+        };
+      },
+    );
+  });
+
+  it("drops a stale preflight response", () => {
+    const ts = store(mockTunerEnv());
+    ts.send({ tag: "preflight", request: launchRequest() }, (s) => {
+      s.preflightGeneration = 1;
+      s.preflight = { status: "checking", errors: [], error: null };
+    });
+    // A second edit supersedes the first before its response lands.
+    ts.send({ tag: "preflight", request: launchRequest() }, (s) => {
+      s.preflightGeneration = 2;
+    });
+    // The generation-1 response lands first and is ignored.
+    ts.receive({ tag: "preflightChecked", generation: 1, result: { ok: true, errors: [] } });
+    expect(ts.getState().preflight.status).toBe("checking");
+    // The current generation-2 response takes effect.
+    ts.receive({ tag: "preflightChecked", generation: 2, result: { ok: true, errors: [] } }, (s) => {
+      s.preflight = { status: "ok", errors: [], error: null };
+    });
+  });
 });
 
 describe("tunerReducer objectives", () => {

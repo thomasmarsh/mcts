@@ -160,6 +160,15 @@
   margin-bottom: 10px;
 }
 
+.launch-error ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.launch-error li {
+  margin: 2px 0;
+}
+
 .launch-empty,
 .loading-bench {
   padding: 20px;
@@ -3909,11 +3918,13 @@ body.bench-active #analysis-panel {
 .tuner-run-card {
   display: flex;
   align-items: stretch;
+  flex-wrap: wrap;
   gap: 8px;
   border: 1px solid #2a2b33;
   border-radius: 8px;
   margin-bottom: 8px;
   background: #1a1b22;
+  overflow: hidden;
 }
 
 .tuner-run-card-highlight {
@@ -3963,18 +3974,34 @@ body.bench-active #analysis-panel {
   color: #e07a7a;
 }
 
-.tuner-run-card-error-detail {
-  margin: 4px 0 0;
-  padding: 6px 8px;
-  max-height: 8.5em;
+.tuner-run-card-failure {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 8px 14px 10px;
+  border-top: 1px solid #4a2f2f;
+  background: #201a1a;
+}
+
+.tuner-run-card-failure-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #e07a7a;
+}
+
+.tuner-run-card-failure-body {
+  margin: 0;
+  max-height: 12em;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
-  line-height: 1.4;
-  background: #201a1a;
-  border: 1px solid #4a2f2f;
-  border-radius: 4px;
+  line-height: 1.45;
+  color: #d8c3c3;
 }
 
 .tuner-run-card-compute {

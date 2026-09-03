@@ -5,7 +5,15 @@
 // launch request carries a `game_kind` + `objective_key`, never a
 // filesystem path.
 
-import { createEffect, createMemo, createSignal, For, Show, type Component } from "solid-js";
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  Show,
+  type Component,
+} from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
@@ -84,23 +92,23 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
 
   const busy = () => state().launch.status === "pending";
   const launchError = () => (state().launch.status === "error" ? state().launch.error : null);
+  const preflight = createMemo(() => state().preflight);
 
-  const canLaunch = createMemo(
-    () =>
-      !busy() &&
-      gameKind() !== "" &&
-      objectiveKey() !== "" &&
-      runId().trim() !== "" &&
-      optInt(taskSeed()) !== undefined &&
-      (optInt(tuningBudget()) ?? 0) > 0 &&
-      (optInt(validationBudget()) ?? 0) > 0 &&
-      (optInt(productionPairs()) ?? 0) > 0,
-  );
-
-  function onSubmit(e: Event): void {
-    e.preventDefault();
-    if (!canLaunch()) return;
-    const request: TunerLaunchRequest = {
+  /** The launch request for the current form values, or `null` if a required
+   * field is missing / not a positive integer. */
+  const buildRequest = (): TunerLaunchRequest | null => {
+    if (
+      gameKind() === "" ||
+      objectiveKey() === "" ||
+      runId().trim() === "" ||
+      optInt(taskSeed()) === undefined ||
+      (optInt(tuningBudget()) ?? 0) <= 0 ||
+      (optInt(validationBudget()) ?? 0) <= 0 ||
+      (optInt(productionPairs()) ?? 0) <= 0
+    ) {
+      return null;
+    }
+    return {
       game_kind: gameKind(),
       objective_key: objectiveKey(),
       run_id: runId().trim(),
@@ -116,6 +124,35 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
         ? { evaluator_workers: optInt(evaluatorWorkers()) }
         : {}),
     };
+  };
+
+  const canLaunch = createMemo(
+    () =>
+      !busy() &&
+      buildRequest() !== null &&
+      preflight().status !== "checking" &&
+      preflight().status !== "invalid",
+  );
+
+  // Dry-run the launch against the server whenever the form settles, so the
+  // operator sees "validation pairs cannot exceed production validation
+  // pairs" here instead of a dead run in the fleet.
+  let debounce: ReturnType<typeof setTimeout> | undefined;
+  onCleanup(() => clearTimeout(debounce));
+  createEffect(() => {
+    const request = buildRequest();
+    clearTimeout(debounce);
+    if (!request) {
+      dispatch({ tag: "resetPreflight" });
+      return;
+    }
+    debounce = setTimeout(() => dispatch({ tag: "preflight", request }), 350);
+  });
+
+  function onSubmit(e: Event): void {
+    e.preventDefault();
+    const request = buildRequest();
+    if (!request || !canLaunch()) return;
     dispatch({ tag: "launch", request });
   }
 
@@ -126,6 +163,20 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       <Show when={launchError()}>
         <div class="launch-error" role="alert">
           {launchError()}
+        </div>
+      </Show>
+
+      <Show when={preflight().status === "invalid"}>
+        <div class="launch-error" role="alert" data-testid="preflight-errors">
+          <strong>This launch would fail:</strong>
+          <ul>
+            <For each={preflight().errors}>{(msg) => <li>{msg}</li>}</For>
+          </ul>
+        </div>
+      </Show>
+      <Show when={preflight().status === "error"}>
+        <div class="tuner-launch-hint" role="status">
+          Could not pre-check this launch ({preflight().error}). The server will still validate it.
         </div>
       </Show>
 
@@ -259,7 +310,11 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       </Show>
 
       <button type="submit" id="tuner-launch-button" disabled={!canLaunch()}>
-        {busy() ? "Launching…" : "Launch"}
+        {busy()
+          ? "Launching…"
+          : preflight().status === "checking"
+            ? "Checking…"
+            : "Launch"}
       </button>
     </form>
   );

@@ -364,6 +364,7 @@ async fn main() {
         process_group_signaller: Arc::new(bench::signal_process_group),
         tuner_projection_db,
         tuner_projection_refresh: Arc::new(bench::shell_refresh),
+        tuner_launch_preflight: Arc::new(bench::shell_preflight_launch),
     });
 
     // Start the background ingest loop.  Every 5 seconds it reads

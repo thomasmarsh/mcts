@@ -104,6 +104,38 @@ describe("TunerApp fleet", () => {
     expect(screen.getByTestId("kpi-failed")).toHaveTextContent("1 failed");
   });
 
+  it("pre-checks the launch and blocks it when the config is invalid", async () => {
+    const launchRun = vi.fn(() => Effect.send(runView({ run_id: "x", status: "live" })));
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send(objectives),
+          listRuns: () => Effect.send([]),
+          launchRun,
+          preflightRun: () =>
+            Effect.send({
+              ok: false,
+              errors: ["validation pairs cannot exceed production validation pairs"],
+            }),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-fleet")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "New run" }));
+    await vi.waitFor(() => expect(screen.getByText("Launch a tuner run")).toBeInTheDocument());
+
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("preflight-errors")).toHaveTextContent(
+        "validation pairs cannot exceed production validation pairs",
+      ),
+    );
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Launch" }));
+    expect(launchRun).not.toHaveBeenCalled();
+  });
+
   it("launches a run and navigates to its overview", async () => {
     const launchRun = vi.fn((_req: TunerLaunchRequest) =>
       Effect.send(runView({ run_id: "launched-1", status: "live" })),

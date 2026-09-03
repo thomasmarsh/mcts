@@ -22,24 +22,48 @@ export const FleetDashboard: Component<{
 
   const liveRuns = createMemo(() => runs().filter((r) => r.status === "live"));
   const liveIds = createMemo(() => new Set(liveRuns().map((r) => r.run_id)));
-  const projectedIds = createMemo(() => new Set(projection().map((r) => r.run_id)));
+
+  // A run that died before it began working, from whichever source saw it
+  // first: the operational journal (`status: "failed"`, carries the tuner's
+  // own `launch.err` in `error_detail`) or the projection (`ingest_error`,
+  // once it has refreshed). Keyed by run_id, journal reason preferred — so
+  // the operator always gets a concrete why, and the run never shows up
+  // twice or hides in "Completed & failed" as a deceptive green "exited".
+  const failedRuns = createMemo(() => {
+    const byId = new Map<
+      string,
+      { runId: string; reason: string; game?: string | null; objective?: string | null }
+    >();
+    for (const r of projection()) {
+      if (r.ingest_error && !liveIds().has(r.run_id)) {
+        byId.set(r.run_id, {
+          runId: r.run_id,
+          reason: r.ingest_error,
+          game: r.game_kind,
+          objective: r.objective_id,
+        });
+      }
+    }
+    for (const r of runs()) {
+      if (r.status === "failed") {
+        byId.set(r.run_id, {
+          runId: r.run_id,
+          reason:
+            r.error_detail ??
+            byId.get(r.run_id)?.reason ??
+            "The run process exited during startup — check its launch.err.",
+        });
+      }
+    }
+    return [...byId.values()];
+  });
+  const failedIds = createMemo(() => new Set(failedRuns().map((r) => r.runId)));
+
   const finishedProjection = createMemo(() =>
-    projection().filter((r) => !liveIds().has(r.run_id)),
+    projection().filter((r) => !liveIds().has(r.run_id) && !failedIds().has(r.run_id)),
   );
 
-  // Runs the launcher journalled as dead before they ever wrote a manifest.
-  // The projection surfaces these too once it refreshes; until then this is
-  // the only place they appear, so the operator is never left wondering why
-  // a run they just launched vanished.
-  const failedToStart = createMemo(() =>
-    runs().filter((r) => r.status === "failed" && !projectedIds().has(r.run_id)),
-  );
-
-  const failedCount = createMemo(
-    () =>
-      finishedProjection().filter((r) => r.ingest_error || r.report_status === "failed").length +
-      failedToStart().length,
-  );
+  const failedCount = createMemo(() => failedRuns().length);
 
   const freshness = createMemo(() => {
     const at = state().lastProjectionRefreshAt;
@@ -102,18 +126,19 @@ export const FleetDashboard: Component<{
         </Show>
       </section>
 
-      <Show when={failedToStart().length > 0}>
+      <Show when={failedRuns().length > 0}>
         <section class="tuner-fleet-section">
           <h3>Failed to start</h3>
-          <For each={failedToStart()}>
+          <For each={failedRuns()}>
             {(run) => (
               <RunCard
-                runId={run.run_id}
-                status={run.status}
-                terminalOutcome={run.terminal_outcome}
-                errorDetail={run.error_detail ?? "exited during startup — see launch.err"}
+                runId={run.runId}
+                status="failed"
+                game={run.game}
+                objective={run.objective}
+                failureReason={run.reason}
                 onOpen={() =>
-                  props.navigate({ view: "run", runId: run.run_id, tab: "overview" })
+                  props.navigate({ view: "run", runId: run.runId, tab: "overview" })
                 }
               />
             )}

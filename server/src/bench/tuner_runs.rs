@@ -385,13 +385,14 @@ pub fn shell_validate_objective(
     })
 }
 
-pub(crate) async fn launch_tuner_run(
-    AxumState(state): AxumState<Arc<BenchState>>,
-    Json(mut request): Json<TunerLaunchRequest>,
-) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
+/// Fill `runs_root` and resolve the caller-friendly `game_kind` /
+/// `objective_key` to absolute paths, so no filesystem path is ever part of
+/// the API contract. Shared by launch and preflight.
+fn resolve_launch_request(
+    state: &BenchState,
+    request: &mut TunerLaunchRequest,
+) -> Result<(), BenchError> {
     request.runs_root = state.bench_runs_dir.clone();
-    // Resolve the caller-friendly keys to absolute paths so no filesystem
-    // path is ever part of the API contract.
     if request.game_binary.as_os_str().is_empty() {
         let kind = request
             .game_kind
@@ -414,6 +415,65 @@ pub(crate) async fn launch_tuner_run(
             return Err(bad_request(format!("unknown objective_key '{key}'")));
         }
         request.objective_file = candidate;
+    }
+    Ok(())
+}
+
+/// `POST /api/bench/tuner/runs/preflight` — dry-run a launch request through
+/// every check `tuner_cli` applies before it creates the run dir or plays a
+/// game. Returns `{ ok, errors }`; the launch form blocks on `ok: false`.
+pub(crate) async fn preflight_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Json(mut request): Json<TunerLaunchRequest>,
+) -> Result<Json<super::types::LaunchPreflight>, BenchError> {
+    resolve_launch_request(&state, &mut request)?;
+    let result = (state.tuner_launch_preflight)(&request).map_err(|error| BenchError {
+        status: StatusCode::BAD_GATEWAY,
+        message: format!("could not preflight the launch: {error}"),
+    })?;
+    Ok(Json(result))
+}
+
+/// Production [`BenchState::tuner_launch_preflight`]: shells
+/// `python -m tuner_cli preflight` with the request's resolved argv.
+pub fn shell_preflight_launch(
+    request: &TunerLaunchRequest,
+) -> std::io::Result<super::types::LaunchPreflight> {
+    let argv = request.preflight_argv();
+    let output = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "preflight exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        std::io::Error::other(format!("preflight produced invalid JSON: {error}"))
+    })
+}
+
+pub(crate) async fn launch_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    Json(mut request): Json<TunerLaunchRequest>,
+) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
+    resolve_launch_request(&state, &mut request)?;
+    // Everything a launch could fail on before it starts a run is the
+    // preflight's job -- run it here too so a launch is never accepted for a
+    // reason the form could have shown. (The form calls the same check; this
+    // is the backstop for a direct API caller.)
+    let preflight = (state.tuner_launch_preflight)(&request).map_err(|error| BenchError {
+        status: StatusCode::BAD_GATEWAY,
+        message: format!("could not preflight the launch: {error}"),
+    })?;
+    if !preflight.ok {
+        return Err(bad_request(if preflight.errors.is_empty() {
+            "launch rejected by preflight".to_owned()
+        } else {
+            preflight.errors.join("; ")
+        }));
     }
     let record = tuner_launch::launch(&request).map_err(|error| BenchError {
         status: match error.kind() {

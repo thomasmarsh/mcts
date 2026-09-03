@@ -25,6 +25,7 @@ import type {
   ProjectionRunListItem,
   ProjectionValidation,
   ObjectiveValidationResult,
+  LaunchPreflightResult,
   TunerLaunchRequest,
   TunerObjectiveDetail,
   TunerObjectiveFile,
@@ -41,6 +42,16 @@ export interface TunerLaunchState {
   /** run id of the last run this session launched — used to highlight it in
    * the fleet and to open its overview. */
   lastRunId: string | null;
+}
+
+/** Result of the dry-run the launch form runs against the current form
+ * values, so a launch is never attempted for a knowable reason. */
+export interface TunerPreflightState {
+  status: "idle" | "checking" | "ok" | "invalid" | "error";
+  /** Concrete reasons the launch would fail (`status: "invalid"`). */
+  errors: string[];
+  /** The preflight request itself failed to run (`status: "error"`). */
+  error: string | null;
 }
 
 export interface TunerLogTailState {
@@ -70,6 +81,9 @@ export interface TunerState {
   objectiveMutating: string | null;
   objectiveMutateError: string | null;
   launch: TunerLaunchState;
+  preflight: TunerPreflightState;
+  /** Bumped on every preflight request so a stale response is dropped. */
+  preflightGeneration: number;
   /** null → fleet dashboard; a run id → that run's overview. */
   openRunId: string | null;
   /** Per-run projection resources for the open run's overview / drawer.
@@ -113,6 +127,8 @@ export function initialTunerState(): TunerState {
     objectiveMutating: null,
     objectiveMutateError: null,
     launch: { status: "idle", error: null, lastRunId: null },
+    preflight: { status: "idle", errors: [], error: null },
+    preflightGeneration: 0,
     openRunId: null,
     projectionDetail: idle(),
     validation: idle(),
@@ -164,6 +180,10 @@ export type TunerAction =
   | { tag: "launch"; request: TunerLaunchRequest }
   | { tag: "launchOk"; run: TunerRunView }
   | { tag: "launchFailed"; error: string }
+  | { tag: "preflight"; request: TunerLaunchRequest }
+  | { tag: "preflightChecked"; generation: number; result: LaunchPreflightResult }
+  | { tag: "preflightErrored"; generation: number; error: string }
+  | { tag: "resetPreflight" }
   | { tag: "openRun"; runId: string }
   | { tag: "closeRun" }
   | { tag: "loadRunResources"; runId: string }
@@ -506,6 +526,32 @@ export function tunerReducer(
       // the journal (and reproject) so the fleet shows it as "failed to
       // start" with its diagnostics rather than nothing at all.
       return Effect.merge(fetchJournal(env), Effect.send<TunerAction>({ tag: "refreshProjection" }));
+
+    case "preflight": {
+      draft.preflightGeneration += 1;
+      draft.preflight = { status: "checking", errors: [], error: null };
+      const generation = draft.preflightGeneration;
+      return env
+        .preflightRun(action.request)
+        .map((result): TunerAction => ({ tag: "preflightChecked", generation, result }))
+        .catch((e): TunerAction => ({ tag: "preflightErrored", generation, error: String(e) }));
+    }
+    case "preflightChecked":
+      if (action.generation !== draft.preflightGeneration) return null;
+      draft.preflight = action.result.ok
+        ? { status: "ok", errors: [], error: null }
+        : { status: "invalid", errors: action.result.errors, error: null };
+      return null;
+    case "preflightErrored":
+      if (action.generation !== draft.preflightGeneration) return null;
+      // The check itself failed to run — don't block the launch on it (the
+      // server preflights again as a backstop), just surface the problem.
+      draft.preflight = { status: "error", errors: [], error: action.error };
+      return null;
+    case "resetPreflight":
+      draft.preflightGeneration += 1;
+      draft.preflight = { status: "idle", errors: [], error: null };
+      return null;
 
     case "openRun": {
       const changed = draft.openRunId !== action.runId;

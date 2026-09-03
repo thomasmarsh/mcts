@@ -285,6 +285,19 @@ impl TunerLaunchRequest {
         }
         argv
     }
+
+    /// The same argv as [`argv`](Self::argv), but for the `preflight`
+    /// subcommand: it runs every check `tuner_cli` applies before it creates
+    /// the run directory or plays a game (argument coherence, objective
+    /// resolution, option-vs-panel cross-checks) and prints
+    /// `{"ok":bool,"errors":[..]}`. Reuses the `run` argument set verbatim so
+    /// a launch can never fail for something preflight would have passed.
+    pub fn preflight_argv(&self) -> Vec<String> {
+        let mut argv = self.argv();
+        // argv[6] is "tuner_cli"; the subcommand goes right after it.
+        argv.insert(7, "preflight".into());
+        argv
+    }
 }
 
 /// A request to raise one or more of a frozen run's pair budgets and resume it.
@@ -737,6 +750,22 @@ mod tests {
             argv.iter().filter(|arg| *arg == "--exclude-family").count(),
             2
         );
+    }
+
+    #[test]
+    fn preflight_argv_is_the_run_argv_with_the_subcommand_prepended() {
+        let argv = base_request(&PathBuf::from("runs"), "run_12a").preflight_argv();
+        assert_eq!(
+            &argv[..8],
+            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli", "preflight"]
+        );
+        // every launch flag still rides along, so the check sees the real config
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--tuning-pair-budget", "10"]));
+        assert!(argv
+            .windows(2)
+            .any(|pair| pair == ["--run-dir", "runs/run_12a"]));
     }
 
     #[test]

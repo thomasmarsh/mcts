@@ -68,6 +68,29 @@ pub struct BenchState {
     /// returns `[projected, skipped, ingest_errors, pruned]`. Production uses
     /// [`super::tuner_api::shell_refresh`]; tests inject a stub.
     pub tuner_projection_refresh: ProjectionRefresher,
+    /// Dry-runs a launch request through every check `tuner_cli` applies
+    /// before it starts a run (production: shells `python -m tuner_cli
+    /// preflight`; tests inject a stub). The launch form calls this so a
+    /// launch is never started for a knowable reason.
+    pub tuner_launch_preflight: LaunchPreflighter,
+}
+
+/// Dry-runs a resolved launch request: `&TunerLaunchRequest ->
+/// {ok, errors}`. Production shells `tuner_cli preflight`; the request's
+/// `game_binary` / `objective_file` are already resolved to absolute paths.
+pub type LaunchPreflighter = Arc<
+    dyn Fn(&mcts_bench::tuner_launch::TunerLaunchRequest) -> std::io::Result<LaunchPreflight>
+        + Send
+        + Sync,
+>;
+
+/// Result of [`LaunchPreflighter`] — mirrors the JSON line from
+/// `tuner_cli preflight`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchPreflight {
+    pub ok: bool,
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
 /// Refreshes the tuner projection out of band: `(bench_runs_dir, projection_db)

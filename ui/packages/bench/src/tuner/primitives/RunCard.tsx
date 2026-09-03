@@ -16,8 +16,10 @@ export interface RunCardProps {
   validationClaim?: string | null;
   totalPairs?: number | null;
   ingestError?: string | null;
-  /** `launch.err` tail for a run that died before it began working. */
-  errorDetail?: string | null;
+  /** Why a run failed — the tuner's own `launch.err` message for a run that
+   * died before it began working. Rendered verbatim, outside the card's
+   * click target so long multi-line messages stay readable. */
+  failureReason?: string | null;
   highlight?: boolean;
   onOpen: () => void;
   onStop?: () => void;
@@ -50,16 +52,19 @@ export const RunCard: Component<RunCardProps> = (props) => {
         <Show when={props.validationClaim}>
           <div class="tuner-run-card-claim">{props.validationClaim}</div>
         </Show>
-        <Show when={props.ingestError}>
+        <Show when={props.ingestError && !props.failureReason}>
           <div class="tuner-run-card-error">ingest error: {props.ingestError}</div>
-        </Show>
-        <Show when={props.errorDetail}>
-          <pre class="tuner-run-card-error tuner-run-card-error-detail">{props.errorDetail}</pre>
         </Show>
         <Show when={props.totalPairs != null && props.totalPairs > 0}>
           <div class="tuner-run-card-compute">{props.totalPairs} pair attempts</div>
         </Show>
       </button>
+      <Show when={props.failureReason}>
+        <div class="tuner-run-card-failure" role="alert" data-testid="run-card-failure">
+          <span class="tuner-run-card-failure-label">Why it failed</span>
+          <pre class="tuner-run-card-failure-body">{props.failureReason}</pre>
+        </div>
+      </Show>
       <Show when={props.status === "live" && props.onStop}>
         <button class="tuner-run-card-stop" onClick={() => props.onStop?.()}>
           Stop

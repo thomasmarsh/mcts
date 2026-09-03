@@ -103,6 +103,14 @@ export interface TunerBudgetExtension {
   reason: string;
 }
 
+/** `POST /api/bench/tuner/runs/preflight` — dry-run of every launch check
+ * `tuner_cli` applies before it starts a run. `ok: false` means the launch
+ * would fail for the reasons in `errors`; the form blocks on it. */
+export interface LaunchPreflightResult {
+  ok: boolean;
+  errors: string[];
+}
+
 // --- Projection (science) ----------------------------------------------
 
 /** One row of `GET /api/bench/tuner/projection/runs`. */

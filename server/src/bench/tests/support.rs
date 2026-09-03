@@ -177,6 +177,20 @@ pub(super) fn seeded_app_with_state_and_signaller(
         // real projector shell-out is covered by `tuner_api`'s parser unit test
         // and by code review (see the plan's `refresh_is_only_spawn` claim).
         tuner_projection_refresh: Arc::new(|_, _| Ok([2, 1, 0, 0])),
+        // Canned preflight: a launch whose run_id contains "badcfg" is
+        // rejected, everything else passes. Real coherence checks are covered
+        // by the tuner's own pytest.
+        tuner_launch_preflight: Arc::new(|request| {
+            let ok = !request.run_id.contains("badcfg");
+            Ok(super::super::LaunchPreflight {
+                ok,
+                errors: if ok {
+                    vec![]
+                } else {
+                    vec!["validation pairs cannot exceed production validation pairs".into()]
+                },
+            })
+        }),
     });
 
     (bench_router(state.clone()), tmp_dir, state)
