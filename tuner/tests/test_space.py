@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from tuner_cli.schema import ActivationCondition, ParameterSpec, TuningSchema
-from tuner_cli.space import build_space, default_values
+from tuner_cli.space import build_space, default_values, random_values
 
 
 def test_configspace_preserves_zero_defaults_and_active_values() -> None:
@@ -36,3 +36,30 @@ def test_excluded_default_uses_first_allowed_family_and_active_children() -> Non
         "{}",
     )
     assert default_values(build_space(schema, 5, ("a",))) == {"family": "b", "depth": 2}
+
+
+def test_transitively_conditioned_parameter_builds_a_valid_space() -> None:
+    # `c` is active only when `select == rave`, and `select` itself is active
+    # only when `algorithm == mcts`: ConfigSpace needs the full chain.
+    schema = TuningSchema(
+        "strategy",
+        (),
+        1,
+        (
+            ParameterSpec("algorithm", "categorical", None, ("mcts", "random"), "mcts", None),
+            ParameterSpec("select", "categorical", None, ("ucb1", "rave"), "ucb1", None),
+            ParameterSpec("c", "float", (0.5, 3.0), None, 1.4, None),
+        ),
+        (
+            ActivationCondition("algorithm", ("mcts",), ("select",)),
+            ActivationCondition("select", ("rave",), ("c",)),
+        ),
+        "{}",
+    )
+    space = build_space(schema, 5)
+    for _ in range(200):
+        sample = random_values(space)
+        if "c" in sample:
+            assert sample["select"] == "rave" and sample["algorithm"] == "mcts"
+        if sample["algorithm"] == "random":
+            assert "select" not in sample and "c" not in sample

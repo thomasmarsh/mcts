@@ -197,6 +197,100 @@ def test_candidate_gate() -> None:
     )
 
 
+def test_predicated_range_is_a_forbidden_clause_in_configspace() -> None:
+    constraints = decode_constraints(
+        [{"when": {"select": ["ucb1", "ucb1_tuned"]}, "set": {"c": {"range": [1.2, 1.8]}}}]
+    )
+    schema = constrained_schema(_schema(), constraints)
+    # The predicate crosses the space, so `c` keeps its full domain in the schema.
+    assert next(p for p in schema.parameters if p.name == "c").bounds == (0.5, 3.0)
+    space = build_space(schema, 11, constraints=constraints)
+    seen_other = False
+    for _ in range(300):
+        sample = random_values(space)
+        if sample["select"] in ("ucb1", "ucb1_tuned"):
+            assert 1.2 <= sample["c"] <= 1.8
+        else:
+            seen_other = True
+            if not 1.2 <= sample["c"] <= 1.8:
+                break
+    assert seen_other, "expected some samples on the unconstrained `select` branch"
+
+
+def test_predicated_choices_is_a_forbidden_clause() -> None:
+    constraints = decode_constraints(
+        [{"when": {"select": ["rave"]}, "set": {"q_init": {"choices": ["Zero"]}}}]
+    )
+    schema = constrained_schema(_schema(), constraints)
+    space = build_space(schema, 5, constraints=constraints)
+    for _ in range(300):
+        sample = random_values(space)
+        if sample["select"] == "rave":
+            assert sample["q_init"] == "Zero"
+
+
+def test_predicated_constraint_folds_when_parent_is_entailed() -> None:
+    # `select` fixed to `rave` unconditionally makes the predicate always hold.
+    constraints = decode_constraints(
+        [
+            {"set": {"select": {"fix": "rave"}}},
+            {"when": {"select": ["rave"]}, "set": {"c": {"range": [2.0, 2.5]}}},
+        ]
+    )
+    schema = constrained_schema(_schema(), constraints)
+    c = next(p for p in schema.parameters if p.name == "c")
+    assert c.bounds == (2.0, 2.5)
+    space = build_space(schema, 3, constraints=constraints)
+    assert all(2.0 <= random_values(space)["c"] <= 2.5 for _ in range(30))
+
+
+def test_predicated_constraint_dropped_when_parent_is_contradicted() -> None:
+    constraints = decode_constraints(
+        [
+            {"set": {"select": {"choices": ["ucb1", "rave"]}}},
+            {"when": {"select": ["ucb1_tuned"]}, "set": {"c": {"range": [2.0, 2.5]}}},
+        ]
+    )
+    schema = constrained_schema(_schema(), constraints)
+    assert next(p for p in schema.parameters if p.name == "c").bounds == (0.5, 3.0)
+    space = build_space(schema, 3, constraints=constraints)
+    assert any(random_values(space)["c"] < 2.0 for _ in range(50))
+
+
+def test_predicated_default_is_retargeted_so_configspace_accepts_the_space() -> None:
+    # Schema default select=ucb1, c=1.4 would violate the predicated range.
+    constraints = decode_constraints(
+        [{"when": {"select": ["ucb1"]}, "set": {"c": {"range": [2.0, 2.5]}}}]
+    )
+    schema = constrained_schema(_schema(), constraints)
+    assert next(p for p in schema.parameters if p.name == "c").default == 2.0
+    assert default_values(build_space(schema, 1, constraints=constraints))["c"] == 2.0
+
+
+def test_predicated_multi_parent_when_is_conjunctive() -> None:
+    schema_in = TuningSchema(
+        "strategy",
+        (),
+        1,
+        (
+            ParameterSpec("select", "categorical", None, ("ucb1", "rave"), "ucb1", None),
+            ParameterSpec("q_init", "categorical", None, ("Parent", "Zero"), "Parent", None),
+            ParameterSpec("c", "float", (0.5, 3.0), None, 1.4, None),
+        ),
+        (),
+        "{}",
+    )
+    constraints = decode_constraints(
+        [{"when": {"select": ["ucb1"], "q_init": ["Zero"]}, "set": {"c": {"range": [1.2, 1.4]}}}]
+    )
+    schema = constrained_schema(schema_in, constraints)
+    space = build_space(schema, 7, constraints=constraints)
+    for _ in range(400):
+        sample = random_values(space)
+        if sample["select"] == "ucb1" and sample["q_init"] == "Zero":
+            assert 1.2 <= sample["c"] <= 1.4
+
+
 def test_when_validation() -> None:
     schema = _schema()
     with pytest.raises(ValueError):

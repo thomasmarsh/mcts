@@ -389,6 +389,8 @@ def _apply_op(parameter: ParameterSpec, op: SetOp | None) -> ParameterSpec:
         for choice in parameter.choices
         if any(same_scalar(choice, allowed) for allowed in op.choices)
     )
+    if not kept:
+        raise ValueError("a constraint leaves a categorical parameter with no choices")
     default = (
         parameter.default
         if any(same_scalar(parameter.default, choice) for choice in kept)
@@ -397,18 +399,167 @@ def _apply_op(parameter: ParameterSpec, op: SetOp | None) -> ParameterSpec:
     return replace(parameter, choices=kept, default=default)
 
 
-def constrained_schema(schema: TuningSchema, constraints: Constraints) -> TuningSchema:
-    """Return ``schema`` with the un-predicated ``constraints`` baked in.
+def _retarget_default(parameter: ParameterSpec, op: SetOp) -> ParameterSpec:
+    """Move only ``parameter``'s default into ``op``'s range, leaving its domain.
 
-    ``when``-predicated constraints cannot be expressed as a static domain
-    narrowing here (the child domain varies with the parent), so they are
-    enforced at proposal time by :func:`require_candidate_allowed`.
+    Used for a ``when``-predicated constraint that holds under the schema's own
+    default configuration: the domain stays wide (the constraint is enforced by
+    a ConfigSpace forbidden clause / the candidate gate), but the default point
+    must not itself violate it or ConfigSpace rejects the space.
+    """
+    if isinstance(op, FixOp):
+        return replace(parameter, default=op.value)
+    if isinstance(op, RangeOp):
+        assert isinstance(parameter.default, (int, float))
+        return replace(parameter, default=min(max(parameter.default, op.low), op.high))
+    assert parameter.choices is not None
+    if any(same_scalar(parameter.default, choice) for choice in op.choices):
+        return parameter
+    kept = next(
+        choice
+        for choice in parameter.choices
+        if any(same_scalar(choice, allowed) for allowed in op.choices)
+    )
+    return replace(parameter, default=kept)
+
+
+PredicateStatus = str  # "always" | "never" | "dynamic"
+
+
+def _param_domain(parameter: ParameterSpec | None) -> tuple[JsonValue, ...] | None:
+    """The finite value set of a categorical/bool/constant parameter, else None."""
+    if parameter is None:
+        return None
+    if parameter.kind == "constant":
+        return (parameter.constant_value,)
+    return parameter.choices
+
+
+def predicate_status(
+    when: tuple[tuple[str, tuple[ParamScalar, ...]], ...],
+    by_name: dict[str, ParameterSpec],
+) -> PredicateStatus:
+    """Whether ``when`` is entailed by, contradicted by, or crosses the schema.
+
+    ``always`` -- every predicate parent's residual domain lies inside its
+    ``when`` values (the guarded ``set`` is effectively unconditional).
+    ``never`` -- some parent's residual domain is disjoint from its ``when``
+    values (the guarded ``set`` can never fire).  ``dynamic`` -- otherwise.
+    """
+    covered = True
+    for parent, values in when:
+        domain = _param_domain(by_name.get(parent))
+        if domain is None:
+            covered = False
+            continue
+        in_values = [any(same_scalar(item, value) for value in values) for item in domain]
+        if not any(in_values):
+            return "never"
+        if not all(in_values):
+            covered = False
+    return "always" if covered else "dynamic"
+
+
+def constrained_schema(schema: TuningSchema, constraints: Constraints) -> TuningSchema:
+    """Return ``schema`` with ``constraints`` baked in as far as statically possible.
+
+    Un-predicated constraints narrow their parameter's domain outright. A
+    ``when``-predicated constraint is folded in too when the predicate is
+    statically decided against the (already narrowed) schema: entailed ⇒ its
+    ``set`` applies unconditionally, contradicted ⇒ it is dropped. A predicate
+    that genuinely crosses the space stays dynamic -- enforced by a ConfigSpace
+    forbidden clause (:func:`tuner_cli.space.build_space`) and the candidate
+    gate (:func:`require_candidate_allowed`) -- but its target's *default* is
+    retargeted here so the default configuration never violates it.
     """
     validate_constraints(schema, constraints)
     if not constraints:
         return schema
-    parameters = tuple(
+    parameters = [
         _apply_op(parameter, _unconditional_set(constraints, parameter.name))
         for parameter in schema.parameters
-    )
-    return replace(schema, parameters=parameters)
+    ]
+    index = {parameter.name: position for position, parameter in enumerate(schema.parameters)}
+    by_name = {parameter.name: parameter for parameter in parameters}
+
+    for constraint in constraints:
+        if not constraint.when:
+            continue
+        status = predicate_status(constraint.when, by_name)
+        if status == "never":
+            continue
+        for name, op in constraint.sets:
+            position = index[name]
+            if status == "always":
+                if _unconditional_set(constraints, name) is not None:
+                    raise ValueError(
+                        f"entailed predicated constraint on {name!r} collides with an "
+                        "unconditional one"
+                    )
+                parameters[position] = _apply_op(parameters[position], op)
+            else:
+                defaults = {
+                    other.name: (
+                        other.constant_value if other.kind == "constant" else other.default
+                    )
+                    for other in parameters
+                }
+                if _predicate_matches(constraint.when, defaults):
+                    parameters[position] = _retarget_default(parameters[position], op)
+            by_name[name] = parameters[position]
+
+    result = replace(schema, parameters=tuple(parameters))
+    if any(constraint.when for constraint in constraints):
+        _reject_empty_residual(result)
+    return result
+
+
+def dynamic_forbiddens(
+    schema: TuningSchema, constraints: Constraints
+) -> list[tuple[tuple[tuple[str, tuple[ParamScalar, ...]], ...], str, SetOp]]:
+    """Yield ``(guard, child, op)`` for each ``when``-predicated ``set`` that
+    still crosses ``schema`` after :func:`constrained_schema`.
+
+    ``guard`` keeps only the predicate parents whose residual domain is not
+    wholly inside their ``when`` values -- a fully-covered parent adds nothing
+    to a ConfigSpace forbidden clause. ``child`` parameters already collapsed to
+    a schema constant are skipped (their unconditional ``fix`` dominates).
+    """
+    by_name = {parameter.name: parameter for parameter in schema.parameters}
+    out: list[tuple[tuple[tuple[str, tuple[ParamScalar, ...]], ...], str, SetOp]] = []
+    for constraint in constraints:
+        if not constraint.when or predicate_status(constraint.when, by_name) != "dynamic":
+            continue
+        guard = tuple(
+            (parent, values)
+            for parent, values in constraint.when
+            if not _covers(_param_domain(by_name.get(parent)), values)
+        )
+        for name, op in constraint.sets:
+            child = by_name.get(name)
+            if child is not None and child.kind != "constant":
+                out.append((guard, name, op))
+    return out
+
+
+def _covers(domain: tuple[JsonValue, ...] | None, values: tuple[ParamScalar, ...]) -> bool:
+    if domain is None:
+        return False
+    return all(any(same_scalar(item, value) for value in values) for item in domain)
+
+
+def _reject_empty_residual(schema: TuningSchema) -> None:
+    for parameter in schema.parameters:
+        if parameter.kind in ("categorical", "bool") and not parameter.choices:
+            raise ValueError(f"constraints leave parameter {parameter.name!r} with no choices")
+    for condition in schema.conditions:
+        parent = next((p for p in schema.parameters if p.name == condition.parent), None)
+        domain = _param_domain(parent)
+        if domain is not None and not any(
+            any(same_scalar(item, value) for value in condition.values) for item in domain
+        ):
+            children = ", ".join(condition.children)
+            raise ValueError(
+                f"constraints on {condition.parent!r} leave conditional "
+                f"parameter(s) {children} unreachable"
+            )
