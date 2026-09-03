@@ -130,6 +130,8 @@ describe("tunerReducer", () => {
       s.runs = ok([runView({ run_id: "r1", status: "live" })]);
       s.projectionRefreshActive = true;
       s.projectionRefreshGeneration = 1;
+      s.evidenceStreamActive = true;
+      s.evidenceGeneration = 1;
     });
     ts.receive({ tag: "projectionRefreshTick", generation: 1 });
     // The tick re-armed itself alongside the journal poll.
@@ -171,6 +173,8 @@ describe("tunerReducer", () => {
       s.runs = ok([runView({ run_id: "r1", status: "exited" })]);
       s.projectionRefreshActive = false;
       s.projectionRefreshGeneration = 2;
+      s.evidenceStreamActive = false;
+      s.evidenceGeneration = 2;
     });
     // A run going terminal still triggers one (manual-path) refresh + reload.
     ts.receive({ tag: "refreshProjection" }, (s) => {
@@ -249,6 +253,8 @@ describe("tunerReducer", () => {
       s.logGeneration = 1;
       s.journalGeneration = 1;
       s.resourceGeneration = 1;
+      s.evidenceStreamActive = true;
+      s.evidenceGeneration = 1;
       s.projectionDetail = { status: "loading" };
       s.validation = { status: "loading" };
       s.candidates = { status: "loading" };
@@ -300,6 +306,8 @@ describe("tunerReducer", () => {
       { tag: "runsLoaded", runs: [runView({ run_id: "fresh", status: "exited" })] },
       (s) => {
         s.runs = ok([runView({ run_id: "fresh", status: "exited" })]);
+        s.evidenceStreamActive = false;
+        s.evidenceGeneration = 2;
       },
     );
     ts.receive({ tag: "refreshProjection" }, (s) => {

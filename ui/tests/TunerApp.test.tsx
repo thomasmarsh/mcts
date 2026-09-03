@@ -776,6 +776,52 @@ describe("TunerApp run evidence", () => {
   });
 });
 
+describe("TunerApp live run", () => {
+  it("streams evidence into the ticker and advances the progress rail without a projection refresh", async () => {
+    const events = [
+      { sequence: 1, type: "proposal_created", payload: { source: "smac_model", candidate_id: "candidate-aaa111", cohort_index: 0 } },
+      { sequence: 2, type: "pair_started", payload: { phase: "tuning", pair_id: "pair-abc123", candidate_id: "candidate-aaa111", opponent_id: "baseline" } },
+      { sequence: 3, type: "pair_completed", payload: { phase: "tuning", pair_id: "pair-abc123", candidate_id: "candidate-aaa111", opponent_id: "baseline", pair_utility: 0.125 } },
+      { sequence: 4, type: "cohort_completed", payload: { cohort_index: 0, candidate_ids: ["candidate-aaa111", "candidate-bbb222"], retained_candidate_ids: ["candidate-aaa111"] } },
+    ];
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send(objectives),
+          listRuns: () => Effect.send([runView({ run_id: "live-1", status: "live" })]),
+          listProjectionRuns: () => Effect.send([]),
+          openEvidenceStream: () =>
+            Effect.stream((send, done) => {
+              send({ kind: "events", events });
+              done();
+            }),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("live-1")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("live-1"));
+
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-overview")).toBeInTheDocument());
+
+    // The ticker shows the formatted lines off the raw evidence payloads.
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("event-ticker")).toHaveTextContent(
+        "pair abc123 done · aaa111 vs baseline · +0.125",
+      ),
+    );
+    expect(screen.getByTestId("event-ticker")).toHaveTextContent(
+      "cohort 0 complete — 1 promoted, 1 eliminated",
+    );
+
+    // The progress rail advances from the fold alone (the projection has no
+    // compute ledger for this run yet).
+    expect(screen.getByTestId("progress-cohort")).toHaveTextContent("cohort 0");
+    expect(screen.getByTestId("progress-live-counts")).toHaveTextContent("1 pairs done");
+  });
+});
+
 describe("TunerApp run science part 2", () => {
   it("renders elimination calibration, opponent response, diagnostic graph, and compute", async () => {
     render(() => (

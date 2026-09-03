@@ -44,11 +44,15 @@ fn err_tail(run_dir: &std::path::Path) -> Option<String> {
     Some(trimmed[start..].to_string())
 }
 
-fn view(record: TunerLaunchRecord) -> TunerRunView {
+/// The `live | exited | failed | unknown` decision for one launch record.
+/// `failed` means the process ended before it ever wrote a `manifest.json`,
+/// so the projection will never describe it. Shared by the journal `view`
+/// and the evidence stream's close condition.
+pub(crate) fn liveness(record: &TunerLaunchRecord) -> &'static str {
     let started_but_never_worked = record.terminal_outcome.is_some()
         && !record.run_dir.join("manifest.json").exists()
         && !matches!(record.terminal_outcome, Some(TerminalOutcome::Signalled));
-    let status = if started_but_never_worked {
+    if started_but_never_worked {
         "failed"
     } else if record.terminal_outcome.is_some() {
         "exited"
@@ -56,7 +60,12 @@ fn view(record: TunerLaunchRecord) -> TunerRunView {
         "live"
     } else {
         "unknown"
-    };
+    }
+}
+
+fn view(record: TunerLaunchRecord) -> TunerRunView {
+    let status = liveness(&record);
+    let started_but_never_worked = status == "failed";
     let error_detail = if started_but_never_worked {
         err_tail(&record.run_dir)
     } else {
@@ -72,6 +81,21 @@ fn view(record: TunerLaunchRecord) -> TunerRunView {
         status,
         error_detail,
     }
+}
+
+/// Locate one launch record by run id, or a 404 / journal 500.
+pub(crate) fn find_record(
+    state: &BenchState,
+    run_id: &str,
+) -> Result<TunerLaunchRecord, BenchError> {
+    tuner_launch::records(&state.bench_runs_dir)
+        .map_err(journal_error)?
+        .into_iter()
+        .find(|record| record.run_id == run_id)
+        .ok_or_else(|| BenchError {
+            status: StatusCode::NOT_FOUND,
+            message: format!("tuner run '{run_id}' not found"),
+        })
 }
 
 fn journal_error(error: std::io::Error) -> BenchError {

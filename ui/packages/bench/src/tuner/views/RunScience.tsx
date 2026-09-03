@@ -136,7 +136,9 @@ export const RunScience: Component<{
           <p class="tuner-fleet-empty">
             {reportPending()
               ? "Loading the run report…"
-              : "Science is available once the run's report has been projected."}
+              : "Science is available once the run's report has been projected. " +
+                "Live sections populate from the projection while the run is in progress; " +
+                "until then, follow the run from its overview's live event feed."}
           </p>
         }
       >

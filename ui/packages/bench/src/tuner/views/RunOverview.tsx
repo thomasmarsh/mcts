@@ -12,8 +12,10 @@ import type { TunerRoute } from "../tuner-routes.js";
 import { deriveProgress } from "../models/progress-model.js";
 import { deriveVerdict } from "../models/verdict-model.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
+import { foldEvidence, tickerLines } from "../models/evidence-fold.js";
 import { RunStatusBadge } from "../primitives/RunStatusBadge.js";
 import { ProgressRail } from "../primitives/ProgressRail.js";
+import { EventTicker } from "../primitives/EventTicker.js";
 import { ShipVerdict } from "../primitives/ShipVerdict.js";
 import { Forest } from "../primitives/Forest.js";
 import { DataTable } from "../primitives/DataTable.js";
@@ -36,6 +38,10 @@ export const RunOverview: Component<{
   const detail = createMemo(() => peek(state().projectionDetail));
   const status = createMemo(() => journalRow()?.status ?? (projectionRow() ? "exited" : null));
   const live = createMemo(() => status() === "live");
+
+  const evidenceRing = createMemo(() => state().evidence.ring);
+  const liveProgress = createMemo(() => (live() ? foldEvidence(evidenceRing()) : null));
+  const ticker = createMemo(() => tickerLines(evidenceRing(), 200));
 
   const progress = createMemo(() =>
     deriveProgress({
@@ -106,7 +112,22 @@ export const RunOverview: Component<{
         startedAt={journalRow()?.started_at ?? null}
         nowMs={Date.now()}
         compute={detail()?.compute}
+        live={liveProgress()}
       />
+
+      <Show when={live() || ticker().length > 0}>
+        <section class="tuner-live-feed">
+          <h3>Live events</h3>
+          <EventTicker
+            lines={ticker()}
+            emptyLabel={
+              live()
+                ? "Waiting for the tuner's first event…"
+                : "No events streamed for this run."
+            }
+          />
+        </section>
+      </Show>
 
       <Show when={progress().phase !== "starting" && !live()}>
         <p class="tuner-run-compute-summary">
@@ -183,8 +204,9 @@ export const RunOverview: Component<{
       </div>
 
       <Show when={live() || state().log.lines.length > 0}>
-        <section class="tuner-log-tail">
-          <h3>Launch log</h3>
+        <details class="tuner-process-diag">
+          <summary>Process diagnostics</summary>
+          <section class="tuner-log-tail">
           <Show when={state().log.error}>
             <div class="launch-error" role="alert">
               {state().log.error}
@@ -212,7 +234,8 @@ export const RunOverview: Component<{
               </For>
             </pre>
           </Show>
-        </section>
+          </section>
+        </details>
       </Show>
     </div>
   );

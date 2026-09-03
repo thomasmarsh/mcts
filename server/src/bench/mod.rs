@@ -8,6 +8,7 @@ mod router;
 mod runs;
 mod traces;
 mod tuner_api;
+mod tuner_evidence;
 mod tuner_runs;
 mod types;
 

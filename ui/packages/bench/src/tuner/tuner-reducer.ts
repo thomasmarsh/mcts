@@ -19,9 +19,16 @@
 
 import { Effect } from "@mcts/core";
 import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
-import { JOURNAL_POLL_MS, PROJECTION_REFRESH_MS, journalPollDelayMs } from "./tuner-poll.js";
+import {
+  JOURNAL_POLL_MS,
+  PROJECTION_REFRESH_MS,
+  journalPollDelayMs,
+  evidencePollDelayMs,
+} from "./tuner-poll.js";
 import type { TunerEnv } from "./tuner-env.js";
 import type {
+  EvidenceEnvelope,
+  EvidenceTailResponse,
   ProjectionCandidate,
   ProjectionGameRow,
   ProjectionPairRow,
@@ -39,6 +46,9 @@ import type { JsonValue, TunerGameInfo } from "../types.js";
 
 /** Fixed cadence for the open run's launch-log tail. */
 export const LOG_TAIL_MS = 3_000;
+
+/** Bounded ring buffer for the open run's live evidence envelopes. */
+export const EVIDENCE_RING_MAX = 400;
 
 export interface TunerLaunchState {
   status: "idle" | "pending" | "done" | "error";
@@ -108,6 +118,19 @@ export interface TunerState {
   pairGames: RemoteData<ProjectionGameRow[]>;
   pairGamesGeneration: number;
   resourceGeneration: number;
+  /** The open run's live evidence journal: a bounded ring of the most recent
+   * envelopes and the highest sequence applied. Populated by the SSE stream
+   * (or its degraded poll fallback) while the run is live. */
+  evidence: { seq: number; ring: EvidenceEnvelope[] };
+  /** true while the evidence stream (or its poll fallback) is following the
+   * open live run. */
+  evidenceStreamActive: boolean;
+  /** false once the SSE push has failed and the reducer has fallen back to
+   * polling `getRunEvidence`. */
+  evidenceStreamOk: boolean;
+  /** Bumped whenever the evidence follower starts or stops, so a stale
+   * `evidenceEvents` / poll tick is dropped. */
+  evidenceGeneration: number;
   log: TunerLogTailState;
   stopError: string | null;
   /** true while a manual `projection/refresh` POST is in flight. */
@@ -154,6 +177,10 @@ export function initialTunerState(): TunerState {
     pairGames: idle(),
     pairGamesGeneration: 0,
     resourceGeneration: 0,
+    evidence: { seq: 0, ring: [] },
+    evidenceStreamActive: false,
+    evidenceStreamOk: true,
+    evidenceGeneration: 0,
     log: { lines: [], errLines: [], offset: 0, error: null, active: false },
     stopError: null,
     refreshing: false,
@@ -231,6 +258,11 @@ export type TunerAction =
       nextOffset: number;
     }
   | { tag: "logFailed"; generation: number; error: string }
+  | { tag: "evidenceEvents"; generation: number; events: EvidenceEnvelope[]; nextSeq?: number }
+  | { tag: "evidenceStreamEnded"; generation: number }
+  | { tag: "evidenceStreamFailed"; generation: number; error: string }
+  | { tag: "evidencePollTick"; generation: number }
+  | { tag: "evidencePolled"; generation: number; response: EvidenceTailResponse }
   | { tag: "stopRun"; runId: string }
   | { tag: "stopOk" }
   | { tag: "stopFailed"; error: string };
@@ -260,6 +292,64 @@ function syncAutoRefresh(draft: TunerState): Effect<TunerAction> | null {
   if (!live && draft.projectionRefreshActive) {
     draft.projectionRefreshActive = false;
     draft.projectionRefreshGeneration += 1;
+  }
+  return null;
+}
+
+/** Append envelopes to the bounded ring and advance the applied sequence. */
+function applyEvidence(
+  draft: TunerState,
+  events: EvidenceEnvelope[],
+  nextSeq: number,
+): void {
+  const ring = [...draft.evidence.ring, ...events];
+  const seq = events.reduce((max, e) => Math.max(max, e.sequence), draft.evidence.seq);
+  draft.evidence = {
+    seq: Math.max(seq, nextSeq),
+    ring: ring.length > EVIDENCE_RING_MAX ? ring.slice(-EVIDENCE_RING_MAX) : ring,
+  };
+}
+
+/** The long-lived SSE effect for the open run, tagged with `generation` so a
+ * message that arrives after the follower was torn down is ignored. */
+function evidenceStreamEffect(
+  env: TunerEnv,
+  runId: string,
+  sinceSeq: number,
+  generation: number,
+): Effect<TunerAction> {
+  return env.openEvidenceStream(runId, sinceSeq).map((message): TunerAction => {
+    switch (message.kind) {
+      case "events":
+        return { tag: "evidenceEvents", generation, events: message.events };
+      case "ended":
+        return { tag: "evidenceStreamEnded", generation };
+      case "error":
+        return { tag: "evidenceStreamFailed", generation, error: message.error };
+    }
+  });
+}
+
+/** Start or stop the open run's evidence follower to match its liveness,
+ * mirroring `syncAutoRefresh`. Returns the stream effect when it needs
+ * starting, else `null` (bumping the generation so a follower still in
+ * flight is disowned). */
+function syncEvidenceStream(draft: TunerState, env: TunerEnv): Effect<TunerAction> | null {
+  const live = isOpenRunLive(draft);
+  if (live && !draft.evidenceStreamActive && draft.openRunId) {
+    draft.evidenceStreamActive = true;
+    draft.evidenceStreamOk = true;
+    draft.evidenceGeneration += 1;
+    return evidenceStreamEffect(
+      env,
+      draft.openRunId,
+      draft.evidence.seq,
+      draft.evidenceGeneration,
+    );
+  }
+  if (!live && draft.evidenceStreamActive) {
+    draft.evidenceStreamActive = false;
+    draft.evidenceGeneration += 1;
   }
   return null;
 }
@@ -498,9 +588,11 @@ export function tunerReducer(
         effects.push(Effect.send<TunerAction>({ tag: "refreshProjection" }));
       }
       // The open run's liveness may have changed with this poll — start or
-      // stop its projection auto-refresh loop to match.
+      // stop its projection auto-refresh loop and evidence follower to match.
       const auto = syncAutoRefresh(draft);
       if (auto) effects.push(auto);
+      const evidence = syncEvidenceStream(draft, env);
+      if (evidence) effects.push(evidence);
       if (effects.length === 0) return null;
       return effects.length === 1 ? effects[0]! : Effect.merge(...effects);
     }
@@ -608,11 +700,15 @@ export function tunerReducer(
       draft.logGeneration += 1;
       draft.journalGeneration += 1;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
-      return Effect.merge(
+      draft.evidence = { seq: 0, ring: [] };
+      const effects = [
         Effect.send<TunerAction>({ tag: "logTick", generation: draft.logGeneration }),
         Effect.send<TunerAction>({ tag: "journalTick", generation: draft.journalGeneration }),
         startResourceLoad(draft, env, action.run.run_id),
-      );
+      ];
+      const evidence = syncEvidenceStream(draft, env);
+      if (evidence) effects.push(evidence);
+      return Effect.merge(...effects);
     }
     case "launchFailed":
       draft.launch = { status: "error", error: action.error, lastRunId: null };
@@ -661,19 +757,25 @@ export function tunerReducer(
       draft.openCandidateId = null;
       draft.openPairId = null;
       draft.pairGames = idle();
+      draft.evidence = { seq: 0, ring: [] };
       const effects = [logTick, startResourceLoad(draft, env, action.runId)];
       // If the newly opened run is already live, start its projection
-      // auto-refresh loop now rather than waiting for the next journal poll.
+      // auto-refresh loop and evidence follower now rather than waiting for
+      // the next journal poll.
       const auto = syncAutoRefresh(draft);
       if (auto) effects.push(auto);
+      const evidence = syncEvidenceStream(draft, env);
+      if (evidence) effects.push(evidence);
       return Effect.merge(...effects);
     }
     case "closeRun":
       draft.openRunId = null;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
       clearResources(draft);
-      // No open run — wind the auto-refresh loop down.
+      draft.evidence = { seq: 0, ring: [] };
+      // No open run — wind the auto-refresh loop and evidence follower down.
       syncAutoRefresh(draft);
+      syncEvidenceStream(draft, env);
       return null;
 
     case "loadRunResources": {
@@ -783,6 +885,71 @@ export function tunerReducer(
         tag: "logTick",
         generation: action.generation,
       });
+    }
+
+    case "evidenceEvents": {
+      if (action.generation !== draft.evidenceGeneration) return null;
+      applyEvidence(draft, action.events, action.nextSeq ?? draft.evidence.seq);
+      return null;
+    }
+    case "evidenceStreamEnded": {
+      if (action.generation !== draft.evidenceGeneration) return null;
+      draft.evidenceStreamActive = false;
+      return null;
+    }
+    case "evidenceStreamFailed": {
+      if (action.generation !== draft.evidenceGeneration) return null;
+      draft.evidenceStreamOk = false;
+      // The push channel is gone; fall back to polling the tail while the run
+      // is still live.
+      if (!isOpenRunLive(draft)) {
+        draft.evidenceStreamActive = false;
+        return null;
+      }
+      const delay = evidencePollDelayMs(false, "live");
+      return delay === null
+        ? null
+        : Effect.delay<TunerAction>(delay, {
+            tag: "evidencePollTick",
+            generation: action.generation,
+          });
+    }
+    case "evidencePollTick": {
+      if (action.generation !== draft.evidenceGeneration || !draft.evidenceStreamActive) {
+        return null;
+      }
+      if (!isOpenRunLive(draft) || !draft.openRunId) {
+        draft.evidenceStreamActive = false;
+        return null;
+      }
+      const runId = draft.openRunId;
+      const sinceSeq = draft.evidence.seq;
+      const generation = action.generation;
+      return env
+        .getRunEvidence(runId, sinceSeq)
+        .map((response): TunerAction => ({ tag: "evidencePolled", generation, response }))
+        .catch(
+          (): TunerAction => ({
+            tag: "evidencePolled",
+            generation,
+            response: { events: [], next_seq: sinceSeq, run_status: "unknown" },
+          }),
+        );
+    }
+    case "evidencePolled": {
+      if (action.generation !== draft.evidenceGeneration) return null;
+      applyEvidence(draft, action.response.events, action.response.next_seq);
+      if (!isOpenRunLive(draft)) {
+        draft.evidenceStreamActive = false;
+        return null;
+      }
+      const delay = evidencePollDelayMs(false, "live");
+      return delay === null
+        ? null
+        : Effect.delay<TunerAction>(delay, {
+            tag: "evidencePollTick",
+            generation: action.generation,
+          });
     }
 
     case "stopRun": {

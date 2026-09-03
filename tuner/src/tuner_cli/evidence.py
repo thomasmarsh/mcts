@@ -37,6 +37,7 @@ __all__ = [
     "pair_payload",
     "read_events",
     "scientific_projection",
+    "tail_events",
     "write_manifest",
 ]
 
@@ -222,6 +223,31 @@ def read_events(path: Path) -> list[EvidenceEvent]:
         decode_event(strict_json(line, "evidence line"), sequence)
         for sequence, line in enumerate(text.splitlines(), 1)
     ]
+
+
+def tail_events(path: Path, *, since_seq: int) -> tuple[list[EvidenceEvent], int]:
+    """Events with ``sequence > since_seq`` plus the new maximum sequence.
+
+    Applies the same strict decode and contiguity check as :func:`read_events`,
+    but only to the lines past ``since_seq`` -- a live run's growing log is not
+    fully re-validated on every poll. A torn trailing line (the writer is
+    mid-append, so the text does not end in a newline) is not counted or
+    returned until its newline lands.
+    """
+    if not path.is_file():
+        raise ValueError(f"missing evidence log: {path}")
+    text = path.read_text(encoding="utf-8")
+    if "\n\n" in text:
+        raise ValueError("evidence log contains a blank line")
+    # "a\nb\n" -> ["a", "b", ""]; "a\nb" -> ["a", "b"] (torn); "" -> [""].
+    # Dropping the last element yields the complete lines in every case.
+    complete = text.split("\n")[:-1]
+    events = [
+        decode_event(strict_json(line, "evidence line"), sequence)
+        for sequence, line in enumerate(complete, 1)
+        if sequence > since_seq
+    ]
+    return events, len(complete)
 
 
 class EvidenceWriter:

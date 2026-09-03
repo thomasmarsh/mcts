@@ -4,6 +4,8 @@ import {
   journalPollDelayMs,
   PROJECTION_REFRESH_MS,
   projectionRefreshDelayMs,
+  EVIDENCE_POLL_MS,
+  evidencePollDelayMs,
 } from "../../src/tuner/tuner-poll.js";
 
 describe("tuner-poll", () => {
@@ -24,5 +26,15 @@ describe("tuner-poll", () => {
     expect(projectionRefreshDelayMs("exited")).toBeNull();
     expect(projectionRefreshDelayMs("unknown")).toBeNull();
     expect(projectionRefreshDelayMs("none")).toBeNull();
+  });
+
+  it("does not poll evidence while the SSE stream is healthy", () => {
+    expect(evidencePollDelayMs(true, "live")).toBeNull();
+  });
+
+  it("polls the evidence tail only when the stream is degraded and the run is live", () => {
+    expect(evidencePollDelayMs(false, "live")).toBe(EVIDENCE_POLL_MS);
+    expect(evidencePollDelayMs(false, "exited")).toBeNull();
+    expect(evidencePollDelayMs(false, "none")).toBeNull();
   });
 });

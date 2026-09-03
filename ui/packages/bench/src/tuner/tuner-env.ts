@@ -6,6 +6,8 @@
 import { Effect } from "@mcts/core";
 import type { TunerApiClient } from "./tuner-api-client.js";
 import type {
+  EvidenceStreamMessage,
+  EvidenceTailResponse,
   ProjectionCandidate,
   ProjectionCohort,
   ProjectionGameRow,
@@ -40,6 +42,12 @@ export interface TunerEnv {
   stopRun(runId: string): Effect<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Effect<TunerRunView>;
   getRunLog(runId: string, since: number): Effect<TunerRunLog>;
+  getRunEvidence(runId: string, sinceSeq: number): Effect<EvidenceTailResponse>;
+  /** A long-lived effect: pushes `{kind:"events"}` messages as the run's
+   * evidence stream appends, then exactly one terminal `{kind:"ended"}` or
+   * `{kind:"error"}` and resolves. Opening a new stream closes the previous
+   * one (the UI only ever follows one run at a time). */
+  openEvidenceStream(runId: string, sinceSeq: number): Effect<EvidenceStreamMessage>;
   refreshProjection(): Effect<ProjectionRefreshResult>;
   listProjectionRuns(): Effect<ProjectionRunListItem[]>;
   getProjectionRun(runId: string): Effect<ProjectionRunDetail>;
@@ -54,6 +62,8 @@ export interface TunerEnv {
 
 export function createTunerEnv(api: TunerApiClient): TunerEnv {
   const lift = <T>(thunk: () => Promise<T>): Effect<T> => Effect.fromPromise(thunk);
+  // Only one evidence stream is ever open: opening the next closes this.
+  let activeStream: { close(): void } | null = null;
   return {
     listKinds: () => lift(() => api.listKinds()),
     listObjectives: () => lift(() => api.listObjectives()),
@@ -68,6 +78,24 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     stopRun: (runId) => lift(() => api.stopRun(runId)),
     extendRun: (runId, body) => lift(() => api.extendRun(runId, body)),
     getRunLog: (runId, since) => lift(() => api.getRunLog(runId, since)),
+    getRunEvidence: (runId, sinceSeq) => lift(() => api.getRunEvidence(runId, sinceSeq)),
+    openEvidenceStream: (runId, sinceSeq) =>
+      Effect.stream<EvidenceStreamMessage>((send, done) => {
+        activeStream?.close();
+        activeStream = api.openEvidenceStream(runId, sinceSeq, {
+          onEvents: (events) => send({ kind: "events", events }),
+          onEnd: () => {
+            activeStream = null;
+            send({ kind: "ended" });
+            done();
+          },
+          onError: (error) => {
+            activeStream = null;
+            send({ kind: "error", error });
+            done();
+          },
+        });
+      }),
     refreshProjection: () => lift(() => api.refreshProjection()),
     listProjectionRuns: () => lift(() => api.listProjectionRuns()),
     getProjectionRun: (runId) => lift(() => api.getProjectionRun(runId)),

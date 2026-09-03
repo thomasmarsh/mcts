@@ -111,6 +111,72 @@ export interface LaunchPreflightResult {
   errors: string[];
 }
 
+// --- Live evidence journal --------------------------------------------
+
+/** The evidence event types the tuner emits (mirrors `event_payloads.py`'s
+ * `EventType`). The UI treats the payload as opaque and reads only the
+ * shallow fields the ticker / progress fold need. */
+export type EvidenceEventType =
+  | "proposal_created"
+  | "proposal_accepted"
+  | "proposal_rejected"
+  | "cohort_completed"
+  | "pair_started"
+  | "pair_completed"
+  | "pair_failed"
+  | "diagnostic_pair_started"
+  | "diagnostic_pair_completed"
+  | "diagnostic_pair_failed"
+  | "run_interrupted"
+  | "run_failed"
+  | "observation_completed"
+  | "finalists_selected"
+  | "run_completed"
+  | "allocation_decided"
+  | "shadow_race_decided"
+  | "candidate_failed"
+  | "budget_extended";
+
+/** One line of `evidence.jsonl`, decoded but passed through verbatim. */
+export interface EvidenceEnvelope {
+  sequence: number;
+  type: EvidenceEventType;
+  payload: unknown;
+}
+
+/** `GET /api/bench/tuner/runs/{id}/evidence?since_seq=N` — a forward tail. */
+export interface EvidenceTailResponse {
+  events: EvidenceEnvelope[];
+  next_seq: number;
+  run_status: TunerRunLiveness;
+}
+
+/** What `openEvidenceStream` pushes: batches of envelopes, then exactly one
+ * terminal `ended` or `error`. */
+export type EvidenceStreamMessage =
+  | { kind: "events"; events: EvidenceEnvelope[] }
+  | { kind: "ended" }
+  | { kind: "error"; error: string };
+
+/** One rendered line in the `<EventTicker>`. */
+export interface TickerLine {
+  seq: number;
+  text: string;
+}
+
+export type LivePhase = "proposal" | "tuning" | "validation" | "diagnostic" | "done";
+
+/** Event tallies behind the live progress rail — counts and maxima only, no
+ * statistics (those stay in the projection / `report.json`). */
+export interface LiveProgress {
+  phase: LivePhase;
+  cohortIndex: number | null;
+  pairs: { started: number; completed: number; failed: number };
+  proposals: Record<string, { created: number; accepted: number; rejected: number }>;
+  bestSoFar: { candidateId: string; pairUtility: number } | null;
+  lastEventSeq: number;
+}
+
 // --- Projection (science) ----------------------------------------------
 
 /** One row of `GET /api/bench/tuner/projection/runs`. */

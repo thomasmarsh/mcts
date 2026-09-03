@@ -53,6 +53,32 @@ export class Effect<A> {
     );
   }
 
+  /** Lift a push subscription that emits many values then finishes -- e.g. an
+   * SSE stream. `start` is handed a `send` and a `done`; call `send` for each
+   * value and `done` once when the source closes (the effect's promise
+   * resolves then). Values sent after `done` are dropped. There is no
+   * cancellation channel: the source itself must terminate (server closes the
+   * stream, or it errors), so use this only for sources that do. */
+  static stream<A>(start: (send: (a: A) => void, done: () => void) => void): Effect<A> {
+    return new Effect(
+      (send) =>
+        new Promise((resolve) => {
+          let finished = false;
+          start(
+            (a) => {
+              if (!finished) send(a);
+            },
+            () => {
+              if (!finished) {
+                finished = true;
+                resolve();
+              }
+            },
+          );
+        }),
+    );
+  }
+
   /** An effect that sends a single value after `ms` milliseconds. For poll-loop backoff. */
   static delay<A>(ms: number, a: A): Effect<A> {
     return new Effect(

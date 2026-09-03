@@ -5,6 +5,8 @@
 // to an `Effect`; the reducer and components only ever touch the env.
 
 import type {
+  EvidenceEnvelope,
+  EvidenceTailResponse,
   ProjectionCandidate,
   ProjectionCohort,
   ProjectionGameRow,
@@ -23,6 +25,18 @@ import type {
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
+
+/** Callbacks the evidence SSE subscription drives; `onEnd` / `onError` fire
+ * at most once and are terminal. */
+export interface EvidenceStreamHandlers {
+  onEvents(events: EvidenceEnvelope[]): void;
+  onEnd(): void;
+  onError(message: string): void;
+}
+
+export interface EvidenceSubscription {
+  close(): void;
+}
 import type { JsonValue, TunerGameInfo } from "../types.js";
 
 export interface TunerApiClient {
@@ -41,6 +55,14 @@ export interface TunerApiClient {
   stopRun(runId: string): Promise<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Promise<TunerRunView>;
   getRunLog(runId: string, since?: number): Promise<TunerRunLog>;
+  getRunEvidence(runId: string, sinceSeq: number): Promise<EvidenceTailResponse>;
+  /** Subscribe to the run's evidence SSE stream from `sinceSeq`. Returns a
+   * handle whose `close()` tears down the underlying `EventSource`. */
+  openEvidenceStream(
+    runId: string,
+    sinceSeq: number,
+    handlers: EvidenceStreamHandlers,
+  ): EvidenceSubscription;
   // Projection.
   refreshProjection(): Promise<ProjectionRefreshResult>;
   listProjectionRuns(): Promise<ProjectionRunListItem[]>;
@@ -143,6 +165,42 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     extendRun: (runId, body) => sendJson(url(`${runPath(runId)}/extend`), "POST", body),
     getRunLog: (runId, since) =>
       fetchJson(url(`${runPath(runId)}/log${queryString({ since })}`)),
+    getRunEvidence: (runId, sinceSeq) =>
+      fetchJson(url(`${runPath(runId)}/evidence${queryString({ since_seq: sinceSeq })}`)),
+    openEvidenceStream: (runId, sinceSeq, handlers) => {
+      const source = new EventSource(
+        url(`${runPath(runId)}/evidence/stream${queryString({ since_seq: sinceSeq })}`),
+      );
+      let closed = false;
+      const close = (): void => {
+        if (!closed) {
+          closed = true;
+          source.close();
+        }
+      };
+      source.onmessage = (event: MessageEvent<string>) => {
+        try {
+          const envelope = JSON.parse(event.data) as EvidenceEnvelope;
+          handlers.onEvents([envelope]);
+        } catch (error: unknown) {
+          handlers.onError(`invalid evidence event: ${String(error)}`);
+        }
+      };
+      // The server names its final frame `event: end`.
+      source.addEventListener("end", () => {
+        close();
+        handlers.onEnd();
+      });
+      source.onerror = () => {
+        // EventSource reconnects on a transient drop; a hard failure (run
+        // gone, 4xx) leaves it CLOSED — only then surface the error.
+        if (source.readyState === EventSource.CLOSED) {
+          close();
+          handlers.onError("evidence stream connection lost");
+        }
+      };
+      return { close };
+    },
     refreshProjection: () =>
       sendJson(url("/api/bench/tuner/projection/refresh"), "POST"),
     listProjectionRuns: () => fetchJson(url("/api/bench/tuner/projection/runs")),
