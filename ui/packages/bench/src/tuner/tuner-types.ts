@@ -275,6 +275,60 @@ export interface ProjectionGameRow {
   opponent_iterations_total: number;
 }
 
+/** `GET .../projection/runs/{id}/proposals` — the `proposals` table
+ * verbatim. Populated on every projection refresh, so it is live during a
+ * run; `disposition` is `null` while the proposal still awaits its cohort's
+ * decision. */
+export interface ProjectionProposal {
+  proposal_index: number;
+  cohort_index: number;
+  cohort_slot: number;
+  candidate_id: string;
+  source: string;
+  source_attempt: number;
+  disposition: string | null;
+  frontier_id: string;
+  origin: string | null;
+  acquisition: number | null;
+  prediction: number | null;
+  uncertainty: number | null;
+  parent_candidate_id: string | null;
+  refill_of_candidate_id: string | null;
+}
+
+/** `GET .../projection/runs/{id}/observations`. */
+export interface ProjectionObservation {
+  observation_id: string;
+  candidate_id: string;
+  phase: string;
+  prefix_id: string;
+  mean: number;
+  lower: number;
+  upper: number;
+}
+
+/** `GET .../projection/runs/{id}/shadow-decisions`. */
+export interface ProjectionShadowDecision {
+  race_index: number;
+  cohort_index: number;
+  prefix_id: string;
+  candidate_id: string;
+  boundary_candidate_id: string;
+  disposition: string;
+  policy_kind: string;
+  policy_version: string;
+}
+
+/** `GET .../projection/runs/{id}/active-eliminations`. */
+export interface ProjectionActiveElimination {
+  batch_index: number;
+  cohort_index: number;
+  prefix_id: string;
+  candidate_id: string;
+  action: string;
+  margin_kind: string;
+}
+
 export interface ProjectionValidationRow {
   candidate_id: string;
   rank: number;

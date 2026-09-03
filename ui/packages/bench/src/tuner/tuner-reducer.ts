@@ -21,19 +21,23 @@ import { Effect } from "@mcts/core";
 import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
 import {
   JOURNAL_POLL_MS,
-  PROJECTION_REFRESH_MS,
   journalPollDelayMs,
   evidencePollDelayMs,
+  projectionRefreshDelayMs,
 } from "./tuner-poll.js";
 import type { TunerEnv } from "./tuner-env.js";
 import type {
   EvidenceEnvelope,
   EvidenceTailResponse,
+  ProjectionActiveElimination,
   ProjectionCandidate,
   ProjectionGameRow,
+  ProjectionObservation,
   ProjectionPairRow,
+  ProjectionProposal,
   ProjectionRunDetail,
   ProjectionRunListItem,
+  ProjectionShadowDecision,
   ProjectionValidation,
   ObjectiveValidationResult,
   LaunchPreflightResult,
@@ -109,7 +113,19 @@ export interface TunerState {
   /** Evidence view: the open run's pair rows (server-capped; filtered
    * client-side by the pairs table). */
   pairs: RemoteData<ProjectionPairRow[]>;
+  /** Live science row tables — populated on every projection refresh (partial
+   * or complete), so the science charts fill in from these before
+   * `report.json` exists. Re-fetched on every projection refresh alongside
+   * `candidates` / `pairs`. */
+  proposals: RemoteData<ProjectionProposal[]>;
+  observations: RemoteData<ProjectionObservation[]>;
+  shadowDecisions: RemoteData<ProjectionShadowDecision[]>;
+  activeEliminations: RemoteData<ProjectionActiveElimination[]>;
   report: RemoteData<JsonValue>;
+  /** Set when the evidence stream sees a scientific event since the last
+   * projection refresh; shortens the next auto-refresh cycle. Cleared by any
+   * completed refresh. */
+  scienceStale: boolean;
   /** `?candidate=<cid>` — the candidate drawer's subject, or null. */
   openCandidateId: string | null;
   /** The pair whose inspector is open in the evidence view, or null. */
@@ -171,7 +187,12 @@ export function initialTunerState(): TunerState {
     validation: idle(),
     candidates: idle(),
     pairs: idle(),
+    proposals: idle(),
+    observations: idle(),
+    shadowDecisions: idle(),
+    activeEliminations: idle(),
     report: idle(),
+    scienceStale: false,
     openCandidateId: null,
     openPairId: null,
     pairGames: idle(),
@@ -242,6 +263,14 @@ export type TunerAction =
   | { tag: "candidatesFailed"; generation: number; error: string }
   | { tag: "pairsLoaded"; generation: number; pairs: ProjectionPairRow[] }
   | { tag: "pairsFailed"; generation: number; error: string }
+  | { tag: "proposalsLoaded"; generation: number; proposals: ProjectionProposal[] }
+  | { tag: "proposalsFailed"; generation: number; error: string }
+  | { tag: "observationsLoaded"; generation: number; observations: ProjectionObservation[] }
+  | { tag: "observationsFailed"; generation: number; error: string }
+  | { tag: "shadowDecisionsLoaded"; generation: number; rows: ProjectionShadowDecision[] }
+  | { tag: "shadowDecisionsFailed"; generation: number; error: string }
+  | { tag: "activeEliminationsLoaded"; generation: number; rows: ProjectionActiveElimination[] }
+  | { tag: "activeEliminationsFailed"; generation: number; error: string }
   | { tag: "selectPair"; pairId: string | null }
   | { tag: "pairGamesLoaded"; generation: number; games: ProjectionGameRow[] }
   | { tag: "pairGamesFailed"; generation: number; error: string }
@@ -295,6 +324,24 @@ function syncAutoRefresh(draft: TunerState): Effect<TunerAction> | null {
   }
   return null;
 }
+
+/** Evidence event types that change what the projection would materialise —
+ * a new one since the last refresh means the science charts are behind. */
+const SCIENTIFIC_EVIDENCE_TYPES: ReadonlySet<string> = new Set([
+  "pair_completed",
+  "observation_completed",
+  "shadow_race_decided",
+  "cohort_completed",
+  "allocation_decided",
+  "proposal_created",
+  "proposal_accepted",
+  "proposal_rejected",
+  "finalists_selected",
+  "run_completed",
+]);
+
+const hasScientificEvent = (events: EvidenceEnvelope[]): boolean =>
+  events.some((e) => SCIENTIFIC_EVIDENCE_TYPES.has(e.type));
 
 /** Append envelopes to the bounded ring and advance the applied sequence. */
 function applyEvidence(
@@ -419,6 +466,24 @@ function fetchRunResources(env: TunerEnv, runId: string, generation: number): Ef
       .getProjectionReport(runId)
       .map((report): TunerAction => ({ tag: "reportLoaded", generation, report }))
       .catch((e): TunerAction => ({ tag: "reportFailed", generation, error: String(e) })),
+    env
+      .getProjectionProposals(runId)
+      .map((proposals): TunerAction => ({ tag: "proposalsLoaded", generation, proposals }))
+      .catch((e): TunerAction => ({ tag: "proposalsFailed", generation, error: String(e) })),
+    env
+      .getProjectionObservations(runId)
+      .map((observations): TunerAction => ({ tag: "observationsLoaded", generation, observations }))
+      .catch((e): TunerAction => ({ tag: "observationsFailed", generation, error: String(e) })),
+    env
+      .getProjectionShadowDecisions(runId)
+      .map((rows): TunerAction => ({ tag: "shadowDecisionsLoaded", generation, rows }))
+      .catch((e): TunerAction => ({ tag: "shadowDecisionsFailed", generation, error: String(e) })),
+    env
+      .getProjectionActiveEliminations(runId)
+      .map((rows): TunerAction => ({ tag: "activeEliminationsLoaded", generation, rows }))
+      .catch(
+        (e): TunerAction => ({ tag: "activeEliminationsFailed", generation, error: String(e) }),
+      ),
   );
 }
 
@@ -428,6 +493,10 @@ function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Eff
   draft.validation = toLoading(draft.validation);
   draft.candidates = toLoading(draft.candidates);
   draft.pairs = toLoading(draft.pairs);
+  draft.proposals = toLoading(draft.proposals);
+  draft.observations = toLoading(draft.observations);
+  draft.shadowDecisions = toLoading(draft.shadowDecisions);
+  draft.activeEliminations = toLoading(draft.activeEliminations);
   draft.report = toLoading(draft.report);
   return fetchRunResources(env, runId, draft.resourceGeneration);
 }
@@ -438,7 +507,12 @@ function clearResources(draft: TunerState): void {
   draft.validation = idle();
   draft.candidates = idle();
   draft.pairs = idle();
+  draft.proposals = idle();
+  draft.observations = idle();
+  draft.shadowDecisions = idle();
+  draft.activeEliminations = idle();
   draft.report = idle();
+  draft.scienceStale = false;
   draft.openCandidateId = null;
   draft.openPairId = null;
   draft.pairGames = idle();
@@ -623,6 +697,7 @@ export function tunerReducer(
     }
     case "refreshDone": {
       draft.refreshing = false;
+      draft.scienceStale = false;
       draft.lastProjectionRefreshAt = Date.now();
       const list = fetchProjection(env);
       return draft.openRunId
@@ -645,9 +720,10 @@ export function tunerReducer(
         draft.projectionRefreshActive = false;
         return null;
       }
+      const delay = projectionRefreshDelayMs("live", draft.scienceStale) ?? 6_000;
       return Effect.merge(
         Effect.send<TunerAction>({ tag: "autoRefreshProjection" }),
-        Effect.delay<TunerAction>(PROJECTION_REFRESH_MS, {
+        Effect.delay<TunerAction>(delay, {
           tag: "projectionRefreshTick",
           generation: action.generation,
         }),
@@ -667,6 +743,7 @@ export function tunerReducer(
     }
     case "autoRefreshDone": {
       draft.autoRefreshing = false;
+      draft.scienceStale = false;
       draft.lastProjectionRefreshAt = Date.now();
       const list = fetchProjection(env);
       if (!draft.openRunId) return list;
@@ -814,6 +891,38 @@ export function tunerReducer(
       if (action.generation !== draft.resourceGeneration) return null;
       draft.pairs = toErr(action.error, draft.pairs);
       return null;
+    case "proposalsLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.proposals = toOk(action.proposals, Date.now());
+      return null;
+    case "proposalsFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.proposals = toErr(action.error, draft.proposals);
+      return null;
+    case "observationsLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.observations = toOk(action.observations, Date.now());
+      return null;
+    case "observationsFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.observations = toErr(action.error, draft.observations);
+      return null;
+    case "shadowDecisionsLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.shadowDecisions = toOk(action.rows, Date.now());
+      return null;
+    case "shadowDecisionsFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.shadowDecisions = toErr(action.error, draft.shadowDecisions);
+      return null;
+    case "activeEliminationsLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.activeEliminations = toOk(action.rows, Date.now());
+      return null;
+    case "activeEliminationsFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.activeEliminations = toErr(action.error, draft.activeEliminations);
+      return null;
     case "selectPair": {
       draft.openPairId = action.pairId;
       draft.pairGamesGeneration += 1;
@@ -890,6 +999,7 @@ export function tunerReducer(
     case "evidenceEvents": {
       if (action.generation !== draft.evidenceGeneration) return null;
       applyEvidence(draft, action.events, action.nextSeq ?? draft.evidence.seq);
+      if (hasScientificEvent(action.events)) draft.scienceStale = true;
       return null;
     }
     case "evidenceStreamEnded": {
@@ -939,6 +1049,7 @@ export function tunerReducer(
     case "evidencePolled": {
       if (action.generation !== draft.evidenceGeneration) return null;
       applyEvidence(draft, action.response.events, action.response.next_seq);
+      if (hasScientificEvent(action.response.events)) draft.scienceStale = true;
       if (!isOpenRunLive(draft)) {
         draft.evidenceStreamActive = false;
         return null;

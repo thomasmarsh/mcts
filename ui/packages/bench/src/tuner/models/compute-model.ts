@@ -4,6 +4,7 @@
 // dispositions per phase, and headline totals. No rendering, no `fetch`.
 
 import type { JsonValue } from "../../types.js";
+import type { ProjectionComputePhase } from "../tuner-types.js";
 import { asArray, asNumber, asObject, asString } from "./json-util.js";
 import { formatWall } from "./progress-model.js";
 import type { KpiItem } from "../primitives/KpiRow.js";
@@ -50,10 +51,45 @@ function n(v: JsonValue | undefined): number {
   return asNumber(v) ?? 0;
 }
 
-export function deriveComputeLedger(report: JsonValue | undefined): ComputeLedgerView {
+/** Build the ledger from the projection's `compute_phases` rows (live during a
+ * run) with the `report.compute` overlay when it exists. The rows carry
+ * attempts / completed / failed / censored / games / iterations / wall; the
+ * report additionally carries the per-phase budget, overrun and unspent
+ * counts and the extension log. */
+export function deriveComputeLedger(
+  report: JsonValue | undefined,
+  computePhases?: ProjectionComputePhase[],
+): ComputeLedgerView {
   const compute = asObject(asObject(report)?.["compute"]);
-  if (!compute) return EMPTY;
+  const rows = computePhases ?? [];
+  if (compute) return fromReport(compute);
+  if (rows.length === 0) return EMPTY;
 
+  const byPhase = new Map(rows.map((r) => [r.phase, r]));
+  const phases: PhaseLedger[] = PHASES.flatMap((phase) => {
+    const r = byPhase.get(phase);
+    if (!r) return [];
+    return [
+      {
+        phase,
+        label: PHASE_LABEL[phase] ?? phase,
+        budget: 0,
+        pairAttempts: r.pair_attempts,
+        completedPairs: r.completed_pairs,
+        failedAttempts: r.failed_attempts,
+        censoredAttempts: r.censored_attempts,
+        overrunPairAttempts: 0,
+        unspentPairAttempts: 0,
+        physicalGames: r.physical_games,
+        searchIterations: r.search_iterations,
+        wallTimeMs: r.wall_time_ms,
+      },
+    ];
+  });
+  return assemble(phases, []);
+}
+
+function fromReport(compute: Record<string, JsonValue>): ComputeLedgerView {
   const budget = asObject(compute["budget"]) ?? {};
   const phases: PhaseLedger[] = PHASES.flatMap((phase) => {
     const p = asObject(compute[phase]);
@@ -76,6 +112,25 @@ export function deriveComputeLedger(report: JsonValue | undefined): ComputeLedge
     ];
   });
 
+  const extensions: ComputeExtension[] = asArray(compute["extensions"]).flatMap((eRaw) => {
+    const e = asObject(eRaw);
+    if (!e) return [];
+    return [
+      {
+        label: asString(e["at"]) ?? asString(e["timestamp"]) ?? "extension",
+        detail: asString(e["detail"]) ?? JSON.stringify(e),
+      },
+    ];
+  });
+
+  return assemble(phases, extensions, asString(compute["policy_version"]));
+}
+
+function assemble(
+  phases: PhaseLedger[],
+  extensions: ComputeExtension[],
+  policyVersion?: string | null,
+): ComputeLedgerView {
   const treemap: TreemapGroup[] = phases
     .filter((p) => p.budget > 0 || p.pairAttempts > 0)
     .map((p) => ({
@@ -97,19 +152,8 @@ export function deriveComputeLedger(report: JsonValue | undefined): ComputeLedge
     { label: "Physical games", value: String(sum((p) => p.physicalGames)) },
     { label: "Search iterations", value: String(sum((p) => p.searchIterations)) },
     { label: "Wall time", value: formatWall(sum((p) => p.wallTimeMs)) },
-    { label: "Policy", value: asString(compute["policy_version"]) ?? "—" },
+    { label: "Policy", value: policyVersion ?? "—" },
   ];
-
-  const extensions: ComputeExtension[] = asArray(compute["extensions"]).flatMap((eRaw) => {
-    const e = asObject(eRaw);
-    if (!e) return [];
-    return [
-      {
-        label: asString(e["at"]) ?? asString(e["timestamp"]) ?? "extension",
-        detail: asString(e["detail"]) ?? JSON.stringify(e),
-      },
-    ];
-  });
 
   return { present: phases.length > 0, phases, treemap, kpis, extensions };
 }

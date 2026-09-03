@@ -7,8 +7,12 @@
 import type {
   EvidenceEnvelope,
   EvidenceTailResponse,
+  ProjectionActiveElimination,
   ProjectionCandidate,
   ProjectionCohort,
+  ProjectionObservation,
+  ProjectionProposal,
+  ProjectionShadowDecision,
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
@@ -74,6 +78,12 @@ export interface TunerApiClient {
   getProjectionPairGames(runId: string, pairId: string): Promise<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Promise<ProjectionValidation>;
   getProjectionReport(runId: string): Promise<JsonValue>;
+  // Live science row tables — populated on every projection refresh, partial
+  // or complete, so they carry the run's science before `report.json` exists.
+  getProjectionProposals(runId: string): Promise<ProjectionProposal[]>;
+  getProjectionObservations(runId: string): Promise<ProjectionObservation[]>;
+  getProjectionShadowDecisions(runId: string): Promise<ProjectionShadowDecision[]>;
+  getProjectionActiveEliminations(runId: string): Promise<ProjectionActiveElimination[]>;
 }
 
 class TunerApiError extends Error {
@@ -215,5 +225,11 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
       fetchJson(url(`${projPath(runId)}/pairs/${encodeURIComponent(pairId)}/games`)),
     getProjectionValidation: (runId) => fetchJson(url(`${projPath(runId)}/validation`)),
     getProjectionReport: (runId) => fetchJson(url(`${projPath(runId)}/report`)),
+    getProjectionProposals: (runId) => fetchJson(url(`${projPath(runId)}/proposals`)),
+    getProjectionObservations: (runId) => fetchJson(url(`${projPath(runId)}/observations`)),
+    getProjectionShadowDecisions: (runId) =>
+      fetchJson(url(`${projPath(runId)}/shadow-decisions`)),
+    getProjectionActiveEliminations: (runId) =>
+      fetchJson(url(`${projPath(runId)}/active-eliminations`)),
   };
 }

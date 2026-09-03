@@ -822,6 +822,75 @@ describe("TunerApp live run", () => {
   });
 });
 
+describe("TunerApp live science from projection rows", () => {
+  it("renders convergence / funnel / observations from rows while the run is live, with 'in progress' badges", async () => {
+    const proposals = [
+      { proposal_index: 0, cohort_index: 0, cohort_slot: 0, candidate_id: "candidate-aaaa1111", source: "schema_default", source_attempt: 0, disposition: "accepted", frontier_id: "f", origin: null, acquisition: null, prediction: null, uncertainty: null, parent_candidate_id: null, refill_of_candidate_id: null },
+      { proposal_index: 1, cohort_index: 0, cohort_slot: 1, candidate_id: "candidate-bbbb2222", source: "smac_model", source_attempt: 0, disposition: "accepted", frontier_id: "f", origin: null, acquisition: null, prediction: null, uncertainty: null, parent_candidate_id: null, refill_of_candidate_id: null },
+    ];
+    const observations = [
+      { observation_id: "o1", candidate_id: "candidate-aaaa1111", phase: "tuning", prefix_id: "p1", mean: 0.4, lower: 0.2, upper: 0.6 },
+      { observation_id: "o2", candidate_id: "candidate-bbbb2222", phase: "tuning", prefix_id: "p1", mean: 0.62, lower: 0.4, upper: 0.8 },
+    ];
+    const candidates = [
+      { candidate_id: "candidate-aaaa1111", fingerprint: "f", canonical_config: {}, cohort_index: 0, cohort_slot: 0, source: "schema_default", parent_candidate_id: null },
+      { candidate_id: "candidate-bbbb2222", fingerprint: "f", canonical_config: {}, cohort_index: 0, cohort_slot: 1, source: "smac_model", parent_candidate_id: null },
+    ];
+
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send(objectives),
+          listRuns: () => Effect.send([runView({ run_id: "live-1", status: "live" })]),
+          listProjectionRuns: () => Effect.send([]),
+          getProjectionRun: () =>
+            Effect.send({
+              run_id: "live-1",
+              terminal_status: "open",
+              report_available: false,
+              ingest_error: null,
+              manifest: null,
+              report: null,
+              compute: [],
+            }),
+          // The report 404s until the run completes.
+          getProjectionReport: () =>
+            Effect.fromPromise(() => Promise.reject(new Error("no report"))),
+          getProjectionProposals: () => Effect.send(proposals),
+          getProjectionObservations: () => Effect.send(observations),
+          getProjectionCandidates: () => Effect.send(candidates),
+          openEvidenceStream: () => Effect.stream((_s, done) => done()),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("live-1")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("live-1"));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-overview")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Full science →" }));
+    await vi.waitFor(() => expect(screen.getByTestId("tuner-run-science")).toBeInTheDocument());
+
+    // The view renders even though there is no report.
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("science-convergence-liveness")).toHaveTextContent("in progress"),
+    );
+    expect(screen.getByTestId("science-proposal-search-liveness")).toHaveTextContent("in progress");
+    // A 12e-8 section still waits for the report.
+    expect(screen.getByTestId("science-opponent-response-liveness")).toHaveTextContent(
+      "available when the run completes",
+    );
+
+    // The observation forest carries the row means.
+    const obsSection = within(screen.getByTestId("science-observations"));
+    fireEvent.click(obsSection.getByRole("button", { name: "Show numbers" }));
+    await vi.waitFor(() =>
+      expect(screen.getByTestId("observation-numbers")).toHaveTextContent("0.620"),
+    );
+  });
+});
+
 describe("TunerApp run science part 2", () => {
   it("renders elimination calibration, opponent response, diagnostic graph, and compute", async () => {
     render(() => (

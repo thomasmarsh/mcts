@@ -4580,6 +4580,36 @@ body.bench-active #analysis-panel {
 .tuner-science-caret {
   opacity: 0.6;
 }
+.tuner-science-liveness {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #d0d0d0);
+  opacity: 0.85;
+}
+.tuner-science-liveness-live {
+  border-color: #3b82f6;
+  color: #3b82f6;
+}
+.tuner-science-liveness-pending,
+.tuner-science-liveness-empty {
+  opacity: 0.55;
+}
+.tuner-science-live-note {
+  font-size: 0.82rem;
+  opacity: 0.75;
+  margin: 4px 0 12px;
+  max-width: 70ch;
+}
+.tuner-overview-sparkline {
+  margin: 12px 0;
+}
+.tuner-overview-sparkline h3 {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+}
 .tuner-science-caption {
   font-size: 0.82rem;
   opacity: 0.75;

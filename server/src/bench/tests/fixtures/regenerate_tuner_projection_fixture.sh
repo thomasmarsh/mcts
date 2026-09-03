@@ -25,6 +25,15 @@ cp -RL "$fixtures"/version4-active-halving "$staging/version4-active-halving"
 mkdir -p "$staging/broken"
 printf '{ this is not valid json' > "$staging/broken/manifest.json"
 
+# A still-running run: version4's evidence truncated just after its first
+# cohort completes, so `terminal_status` is "open" and no report.json exists,
+# yet the proposals / observations / shadow_decisions / compute_phases rows
+# are populated. This is the fixture the live-science endpoint tests read.
+cp -RL "$fixtures"/version4 "$staging/version4-partial"
+rm -f "$staging/version4-partial/report.json" \
+      "$staging/version4-partial/scientific_projection.json"
+head -160 "$fixtures/version4/evidence.jsonl" > "$staging/version4-partial/evidence.jsonl"
+
 rm -f "$out"
 uv run --project "$repo_root/tuner" tuner-project \
     --runs-root "$staging" --db "$out" --rebuild

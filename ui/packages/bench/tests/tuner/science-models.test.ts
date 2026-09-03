@@ -72,3 +72,37 @@ describe("deriveObservations", () => {
     expect(deriveObservations({}).present).toBe(false);
   });
 });
+
+describe("science models from projection rows (live, no report)", () => {
+  const cohorts = [
+    { cohort_index: 0, candidate_ids: ["candidate-aaaa1111", "candidate-bbbb2222"], retained_candidate_ids: [] },
+    { cohort_index: 1, candidate_ids: ["candidate-cccc3333"], retained_candidate_ids: [] },
+  ];
+  const observations = [
+    { observation_id: "o1", candidate_id: "candidate-aaaa1111", phase: "tuning", prefix_id: "p1", mean: 0.4, lower: 0.2, upper: 0.6 },
+    { observation_id: "o2", candidate_id: "candidate-bbbb2222", phase: "tuning", prefix_id: "p1", mean: 0.55, lower: 0.3, upper: 0.8 },
+    { observation_id: "o3", candidate_id: "candidate-cccc3333", phase: "tuning", prefix_id: "p2", mean: 0.7, lower: 0.5, upper: 0.9 },
+  ];
+
+  it("deriveConvergence: one step per cohort, y = best observed mean among its members", () => {
+    const c = deriveConvergence(undefined, cohorts, observations);
+    expect(c.present).toBe(true);
+    expect(c.steps.map((s) => s.bestMargin)).toEqual([0.55, 0.7]);
+    expect(c.steps[1]!.leaderShortId).toBe("cccc3333");
+  });
+
+  it("deriveObservations: per-candidate forest rows from the observation rows", () => {
+    const o = deriveObservations(undefined, observations, [
+      { candidate_id: "candidate-aaaa1111", fingerprint: "f", canonical_config: {}, cohort_index: 0, cohort_slot: 0, source: "s", parent_candidate_id: null },
+    ]);
+    expect(o.present).toBe(true);
+    expect(o.rows.map((r) => r.shortId)).toEqual(["cccc3333", "bbbb2222", "aaaa1111"]);
+    expect(o.rows[0]).toMatchObject({ mean: 0.7, lower: 0.5, upper: 0.9 });
+  });
+
+  it("still uses the report when it is present", () => {
+    const c = deriveConvergence(report, cohorts, observations);
+    expect(c.steps).toHaveLength(2);
+    expect(c.steps[1]!.bestMargin).toBe(0.5); // from maximum_mean_difference, not observations
+  });
+});

@@ -4,6 +4,11 @@
 // layout-only.
 
 import type { JsonValue } from "../../types.js";
+import type {
+  ProjectionCandidate,
+  ProjectionCohort,
+  ProjectionObservation,
+} from "../tuner-types.js";
 import { asArray, asNumber, asObject, asString } from "./json-util.js";
 import { shortCandidateId } from "./verdict-model.js";
 
@@ -27,8 +32,15 @@ export interface Convergence {
   present: boolean;
 }
 
-export function deriveConvergence(report: JsonValue | undefined): Convergence {
+export function deriveConvergence(
+  report: JsonValue | undefined,
+  projectionCohorts?: ProjectionCohort[],
+  observations?: ProjectionObservation[],
+): Convergence {
   const cohorts = asArray(asObject(asObject(report)?.["shadow_elimination"])?.["cohorts"]);
+  if (cohorts.length === 0 && (projectionCohorts?.length ?? 0) > 0) {
+    return convergenceFromRows(projectionCohorts!, observations ?? []);
+  }
   const steps: ConvergenceStep[] = [];
 
   cohorts.forEach((cRaw, ordinal) => {
@@ -66,6 +78,48 @@ export function deriveConvergence(report: JsonValue | undefined): Convergence {
   };
 }
 
+/** Live convergence from the projection `cohorts` + `observations` rows: one
+ * step per cohort, y = the best observed candidate mean among that cohort's
+ * members (the tuner's best-so-far signal before `report.json` exists). */
+function convergenceFromRows(
+  cohorts: ProjectionCohort[],
+  observations: ProjectionObservation[],
+): Convergence {
+  const bestByCandidate = new Map<string, number>();
+  for (const o of observations) {
+    const prior = bestByCandidate.get(o.candidate_id);
+    if (prior === undefined || o.mean > prior) bestByCandidate.set(o.candidate_id, o.mean);
+  }
+
+  const steps: ConvergenceStep[] = cohorts.map((cohort, ordinal) => {
+    let bestMargin = -Infinity;
+    let leaderCandidateId: string | null = null;
+    for (const cid of cohort.candidate_ids) {
+      const mean = bestByCandidate.get(cid);
+      if (mean !== undefined && mean > bestMargin) {
+        bestMargin = mean;
+        leaderCandidateId = cid;
+      }
+    }
+    if (bestMargin === -Infinity) bestMargin = 0;
+    return {
+      cohortIndex: cohort.cohort_index,
+      x: ordinal + 1,
+      label: `Cohort ${cohort.cohort_index}`,
+      bestMargin,
+      leaderCandidateId,
+      leaderShortId: leaderCandidateId ? shortCandidateId(leaderCandidateId) : null,
+    };
+  });
+
+  const maxY = steps.reduce((a, s) => Math.max(a, s.bestMargin), 0);
+  return {
+    steps,
+    domain: [0, maxY > 0 ? maxY * 1.1 : 1],
+    present: steps.length > 0,
+  };
+}
+
 // --- Observations -----------------------------------------------------
 
 export interface ObservationRow {
@@ -90,8 +144,15 @@ export interface Observations {
  * `opponent_response_analysis` — the one report section that carries a
  * mean and an interval per (candidate, opponent). The row interval is the
  * envelope across opponents, not a re-estimated CI. */
-export function deriveObservations(report: JsonValue | undefined): Observations {
+export function deriveObservations(
+  report: JsonValue | undefined,
+  observations?: ProjectionObservation[],
+  candidates?: ProjectionCandidate[],
+): Observations {
   const ora = asObject(asObject(report)?.["opponent_response_analysis"]);
+  if (!ora && (observations?.length ?? 0) > 0) {
+    return observationsFromRows(observations!, candidates ?? []);
+  }
   const cands = asArray(ora?.["candidates"]);
   const cohortIndex = asNumber(asObject(ora?.["scope"])?.["cohort_index"]);
 
@@ -135,5 +196,51 @@ export function deriveObservations(report: JsonValue | undefined): Observations 
     domain = [lo - pad, hi + pad];
   }
 
+  return { cohortIndex, rows, domain, present: rows.length > 0 };
+}
+
+/** Live observations from the projection `observations` rows: per-candidate
+ * tuning performance summarised across the rows recorded so far. The row
+ * interval is the envelope of the per-observation intervals, not a
+ * re-estimated CI (same contract as the report path). */
+function observationsFromRows(
+  observations: ProjectionObservation[],
+  candidates: ProjectionCandidate[],
+): Observations {
+  const cohortById = new Map(candidates.map((c) => [c.candidate_id, c.cohort_index]));
+  const tuning = observations.filter((o) => o.phase === "tuning");
+  const source = tuning.length > 0 ? tuning : observations;
+
+  const byCandidate = new Map<string, ProjectionObservation[]>();
+  for (const o of source) {
+    const list = byCandidate.get(o.candidate_id) ?? [];
+    list.push(o);
+    byCandidate.set(o.candidate_id, list);
+  }
+
+  const rows: ObservationRow[] = [];
+  let cohortIndex: number | null = null;
+  for (const [candidateId, obs] of byCandidate) {
+    const mean = obs.reduce((a, o) => a + o.mean, 0) / obs.length;
+    rows.push({
+      candidateId,
+      shortId: shortCandidateId(candidateId),
+      mean,
+      lower: Math.min(...obs.map((o) => o.lower)),
+      upper: Math.max(...obs.map((o) => o.upper)),
+      opponents: obs.length,
+    });
+    const cohort = cohortById.get(candidateId);
+    if (cohort !== undefined) cohortIndex = Math.max(cohortIndex ?? cohort, cohort);
+  }
+  rows.sort((a, b) => b.mean - a.mean);
+
+  let domain: [number, number] = [0, 1];
+  if (rows.length > 0) {
+    const lo = Math.min(...rows.map((r) => r.lower));
+    const hi = Math.max(...rows.map((r) => r.upper));
+    const pad = (hi - lo) * 0.05 || 0.05;
+    domain = [lo - pad, hi + pad];
+  }
   return { cohortIndex, rows, domain, present: rows.length > 0 };
 }

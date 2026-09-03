@@ -142,6 +142,22 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             get(tuner_api::pair_games),
         )
         .route(
+            "/api/bench/tuner/projection/runs/{run_id}/proposals",
+            get(tuner_api::proposals),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/observations",
+            get(tuner_api::observations),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/shadow-decisions",
+            get(tuner_api::shadow_decisions),
+        )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/active-eliminations",
+            get(tuner_api::active_eliminations),
+        )
+        .route(
             "/api/bench/tuner/projection/runs/{run_id}/validation",
             get(tuner_api::validation),
         )

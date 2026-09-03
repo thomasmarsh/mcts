@@ -1,10 +1,15 @@
 // RunScience — the irace-style scientific report for one run. Each section
-// maps to one `report.json` key, renders one or two chart primitives with a
-// plain-language caption, and hides its raw numbers behind a "show numbers"
-// toggle. Section collapse state is remembered per-viewer in localStorage.
-// This slice covers convergence, the proposal-search funnel, the cohort
-// race, and per-cohort observations; the remaining sections are later
-// slices.
+// renders one or two chart primitives with a plain-language caption and
+// hides its raw numbers behind a "show numbers" toggle; section collapse
+// state is remembered per-viewer in localStorage.
+//
+// The view always renders, live or complete. Convergence, the proposal
+// funnel, the cohort race, observations and the compute ledger derive from
+// the projection row tables while a run is in progress and fold in the
+// completed `report.json` as an overlay once it exists; each section's
+// heading badge says which. The elimination-calibration, opponent-response
+// and diagnostic-graph sections still need analysis the projection does not
+// row-ify yet, so they show "available when the run completes" until then.
 
 import { createMemo, createSignal, For, Show, type Component, type JSX } from "solid-js";
 import type { Store } from "@mcts/core";
@@ -48,6 +53,18 @@ function saveCollapsed(map: Record<string, boolean>): void {
   }
 }
 
+/** How current a section's data is: `final` = from the completed report;
+ * `live` = from projection rows while the run is still going; `pending` =
+ * waits for the report (the 12e-8 sections); `empty` = no rows yet. */
+export type SectionLiveness = "final" | "live" | "pending" | "empty";
+
+const LIVENESS_LABEL: Record<SectionLiveness, string> = {
+  final: "complete",
+  live: "in progress",
+  pending: "available when the run completes",
+  empty: "no data yet",
+};
+
 const Section: Component<{
   id: string;
   title: string;
@@ -56,6 +73,7 @@ const Section: Component<{
   toggle: (id: string) => void;
   children: JSX.Element;
   numbers?: JSX.Element;
+  liveness?: SectionLiveness;
 }> = (props) => {
   const [showNumbers, setShowNumbers] = createSignal(false);
   const open = (): boolean => !props.collapsed[props.id];
@@ -64,6 +82,14 @@ const Section: Component<{
       <button class="tuner-science-heading" onClick={() => props.toggle(props.id)}>
         <span class="tuner-science-caret">{open() ? "▾" : "▸"}</span>
         <h3>{props.title}</h3>
+        <Show when={props.liveness}>
+          <span
+            class={`tuner-science-liveness tuner-science-liveness-${props.liveness}`}
+            data-testid={`science-${props.id}-liveness`}
+          >
+            {LIVENESS_LABEL[props.liveness!]}
+          </span>
+        </Show>
       </button>
       <Show when={open()}>
         <p class="tuner-science-caption">{props.caption}</p>
@@ -89,16 +115,54 @@ export const RunScience: Component<{
 
   const report = createMemo(() => peek(state().report));
   const candidates = createMemo(() => peek(state().candidates));
-  const reportPending = createMemo(() => isLoading(state().report) && !report());
+  const proposals = createMemo(() => peek(state().proposals) ?? []);
+  const observationRows = createMemo(() => peek(state().observations) ?? []);
+  const shadowRows = createMemo(() => peek(state().shadowDecisions) ?? []);
+  const detail = createMemo(() => peek(state().projectionDetail));
+  const anyLoading = createMemo(
+    () =>
+      isLoading(state().report) ||
+      isLoading(state().candidates) ||
+      isLoading(state().proposals) ||
+      isLoading(state().observations),
+  );
 
-  const funnel = createMemo(() => deriveProposalFunnel(report()));
-  const race = createMemo(() => deriveCohortRace(report(), candidates()));
-  const convergence = createMemo(() => deriveConvergence(report()));
-  const observations = createMemo(() => deriveObservations(report()));
+  /** Pseudo-cohorts built from the candidate list (no dedicated cohorts
+   * resource), so live convergence has one step per cohort. */
+  const cohorts = createMemo(() => {
+    const byIndex = new Map<number, string[]>();
+    for (const c of candidates() ?? []) {
+      const list = byIndex.get(c.cohort_index) ?? [];
+      list.push(c.candidate_id);
+      byIndex.set(c.cohort_index, list);
+    }
+    return [...byIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([cohort_index, candidate_ids]) => ({
+        cohort_index,
+        candidate_ids,
+        retained_candidate_ids: [],
+      }));
+  });
+
+  const funnel = createMemo(() => deriveProposalFunnel(report(), proposals()));
+  const race = createMemo(() => deriveCohortRace(report(), candidates(), shadowRows()));
+  const convergence = createMemo(() => deriveConvergence(report(), cohorts(), observationRows()));
+  const observations = createMemo(() =>
+    deriveObservations(report(), observationRows(), candidates()),
+  );
   const elimination = createMemo(() => deriveElimination(report()));
   const opponents = createMemo(() => deriveOpponentResponse(report()));
   const diagnostic = createMemo(() => deriveDiagnosticGraph(report()));
-  const compute = createMemo(() => deriveComputeLedger(report()));
+  const compute = createMemo(() => deriveComputeLedger(report(), detail()?.compute));
+
+  /** `final` once the report is in; otherwise `live` when the section's rows
+   * are non-empty, `empty` when they are genuinely absent. */
+  const rowLiveness = (present: boolean): SectionLiveness =>
+    report() ? "final" : present ? "live" : "empty";
+  /** The three stats-heavy sections that still need the report (12e-8). */
+  const pendingLiveness = (present: boolean): SectionLiveness =>
+    report() ? "final" : present ? "live" : "pending";
 
   const [collapsed, setCollapsed] = createSignal<Record<string, boolean>>(loadCollapsed());
   const toggle = (id: string): void => {
@@ -130,20 +194,22 @@ export const RunScience: Component<{
         </button>
       </div>
 
-      <Show
-        when={report()}
-        fallback={
-          <p class="tuner-fleet-empty">
-            {reportPending()
-              ? "Loading the run report…"
-              : "Science is available once the run's report has been projected. " +
-                "Live sections populate from the projection while the run is in progress; " +
-                "until then, follow the run from its overview's live event feed."}
-          </p>
-        }
-      >
-        <Section
+      <Show when={!report() && anyLoading()}>
+        <p class="tuner-fleet-empty" data-testid="science-loading">
+          Loading the projection…
+        </p>
+      </Show>
+      <Show when={!report()}>
+        <p class="tuner-science-live-note" data-testid="science-live-note">
+          This run is still in progress. Sections marked “in progress” populate
+          from the projection and refresh every few seconds; the report overlay
+          fills the rest in once the run completes.
+        </p>
+      </Show>
+
+      <Section
           id="convergence"
+          liveness={rowLiveness(convergence().present)}
           title="Convergence"
           caption="The leading candidate's largest margin over its cohort's elimination boundary, one step per cohort — the tuner's best-so-far signal."
           collapsed={collapsed()}
@@ -179,6 +245,7 @@ export const RunScience: Component<{
 
         <Section
           id="proposal-search"
+          liveness={rowLiveness(funnel().present)}
           title="Proposal search"
           caption="Where candidate configurations came from: configured budget, attempts made, and how many each source landed."
           collapsed={collapsed()}
@@ -216,6 +283,7 @@ export const RunScience: Component<{
 
         <Section
           id="cohort-race"
+          liveness={rowLiveness(race().present)}
           title="Cohort race"
           caption={`Shadow disposition for each candidate at each common prefix. ${
             race().enforced ? "Elimination was enforced." : "Recorded but not enforced."
@@ -262,6 +330,7 @@ export const RunScience: Component<{
 
         <Section
           id="observations"
+          liveness={rowLiveness(observations().present)}
           title="Observations"
           caption="Per-candidate performance across the opponent panel at the maximum tuning prefix. The bar is the envelope across opponents, not a re-estimated interval."
           collapsed={collapsed()}
@@ -311,6 +380,7 @@ export const RunScience: Component<{
 
         <Section
           id="elimination"
+          liveness={pendingLiveness(elimination().present)}
           title={elimination().enforced ? "Active elimination" : "Shadow elimination"}
           caption={
             elimination().enforced
@@ -378,6 +448,7 @@ export const RunScience: Component<{
 
         <Section
           id="opponent-response"
+          liveness={pendingLiveness(opponents().present)}
           title="Opponent response"
           caption="Each finalist's mean pair utility against every panel opponent. Flagged cells are where a pairwise interaction found a material (non-tie) contrast or a ranking reversal."
           collapsed={collapsed()}
@@ -432,6 +503,7 @@ export const RunScience: Component<{
 
         <Section
           id="diagnostic"
+          liveness={pendingLiveness(diagnostic().present)}
           title="Diagnostic matchup graph"
           caption="Direct candidate-vs-candidate games run to resolve the objective ranking. An arrow A → B means A beat B; highlighted nodes sit in a material preference cycle."
           collapsed={collapsed()}
@@ -505,6 +577,7 @@ export const RunScience: Component<{
 
         <Section
           id="compute"
+          liveness={rowLiveness(compute().present)}
           title="Compute ledger"
           caption="Where the pair-attempt budget went, per phase: completed, failed, censored, overrun, and unspent."
           collapsed={collapsed()}
@@ -547,7 +620,6 @@ export const RunScience: Component<{
             </Show>
           </Show>
         </Section>
-      </Show>
     </div>
   );
 };

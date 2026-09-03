@@ -4,6 +4,7 @@
 // headline numbers. No rendering, no `fetch`.
 
 import type { JsonValue } from "../../types.js";
+import type { ProjectionProposal } from "../tuner-types.js";
 import { asArray, asNumber, asObject, asString, asStringArray, shortId } from "./json-util.js";
 
 /** Proposal sources in the order the funnel lists them. */
@@ -58,9 +59,12 @@ function configuredFor(source: string, configured: Record<string, JsonValue> | n
   return key ? asNumber(configured[key]) : null;
 }
 
-export function deriveProposalFunnel(report: JsonValue | undefined): ProposalFunnel {
+export function deriveProposalFunnel(
+  report: JsonValue | undefined,
+  proposals?: ProjectionProposal[],
+): ProposalFunnel {
   const ps = asObject(asObject(report)?.["proposal_search"]);
-  if (!ps) return { stages: [], kpis: [], present: false };
+  if (!ps) return fromRows(proposals ?? []);
 
   const configured = asObject(ps["configured"]);
   const attempts = asObject(ps["actual_source_attempts"]) ?? {};
@@ -94,4 +98,39 @@ export function deriveProposalFunnel(report: JsonValue | undefined): ProposalFun
 
   const totalAttempts = stages.reduce((a, s) => a + s.attempted, 0);
   return { stages, kpis, present: totalAttempts > 0 };
+}
+
+/** Live funnel from the projection `proposals` rows (no `report.json` yet).
+ * Each row is one proposal attempt; `disposition` is `accepted` / `rejected`
+ * / `null` (still pending). Configured budgets are unknown without the
+ * report, so those stay `null`. */
+function fromRows(proposals: ProjectionProposal[]): ProposalFunnel {
+  const bySource = new Map<string, { attempted: number; accepted: number; rejected: number }>();
+  for (const p of proposals) {
+    const bucket = bySource.get(p.source) ?? { attempted: 0, accepted: 0, rejected: 0 };
+    bucket.attempted += 1;
+    if (p.disposition === "accepted") bucket.accepted += 1;
+    else if (p.disposition === "rejected") bucket.rejected += 1;
+    bySource.set(p.source, bucket);
+  }
+  const ordered = [...SOURCE_ORDER, ...[...bySource.keys()].filter((s) => !SOURCE_ORDER.includes(s as never))];
+  const stages: ProposalStage[] = ordered
+    .filter((s) => bySource.has(s))
+    .map((source) => {
+      const b = bySource.get(source)!;
+      return {
+        source,
+        label: SOURCE_LABEL[source] ?? source,
+        configured: source === "schema_default" ? 1 : null,
+        attempted: b.attempted,
+        accepted: b.accepted,
+        rejected: b.rejected,
+      };
+    });
+  const pending = proposals.filter((p) => p.disposition == null).length;
+  const kpis: { label: string; value: string }[] = [
+    { label: "Proposals", value: String(proposals.length) },
+    { label: "Pending", value: String(pending) },
+  ];
+  return { stages, kpis, present: stages.length > 0 };
 }

@@ -166,6 +166,18 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "reportLoaded", generation: 1, report: {} }, (s) => {
       s.report = ok({});
     });
+    ts.receive({ tag: "proposalsLoaded", generation: 1, proposals: [] }, (s) => {
+      s.proposals = ok([]);
+    });
+    ts.receive({ tag: "observationsLoaded", generation: 1, observations: [] }, (s) => {
+      s.observations = ok([]);
+    });
+    ts.receive({ tag: "shadowDecisionsLoaded", generation: 1, rows: [] }, (s) => {
+      s.shadowDecisions = ok([]);
+    });
+    ts.receive({ tag: "activeEliminationsLoaded", generation: 1, rows: [] }, (s) => {
+      s.activeEliminations = ok([]);
+    });
     expect(refreshes).toBe(1);
 
     // The next journal poll reports the run exited — the loop deactivates.
@@ -188,6 +200,10 @@ describe("tunerReducer", () => {
       s.validation = { status: "loading", previous: { rows: [], unresolved_ties: null } };
       s.candidates = { status: "loading", previous: [] };
       s.pairs = { status: "loading", previous: [] };
+      s.proposals = { status: "loading", previous: [] };
+      s.observations = { status: "loading", previous: [] };
+      s.shadowDecisions = { status: "loading", previous: [] };
+      s.activeEliminations = { status: "loading", previous: [] };
       s.report = { status: "loading", previous: {} };
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
@@ -208,6 +224,18 @@ describe("tunerReducer", () => {
     });
     ts.receive({ tag: "reportLoaded", generation: 2, report: {} }, (s) => {
       s.report = ok({});
+    });
+    ts.receive({ tag: "proposalsLoaded", generation: 2, proposals: [] }, (s) => {
+      s.proposals = ok([]);
+    });
+    ts.receive({ tag: "observationsLoaded", generation: 2, observations: [] }, (s) => {
+      s.observations = ok([]);
+    });
+    ts.receive({ tag: "shadowDecisionsLoaded", generation: 2, rows: [] }, (s) => {
+      s.shadowDecisions = ok([]);
+    });
+    ts.receive({ tag: "activeEliminationsLoaded", generation: 2, rows: [] }, (s) => {
+      s.activeEliminations = ok([]);
     });
     expect(refreshes).toBe(2);
 
@@ -259,6 +287,10 @@ describe("tunerReducer", () => {
       s.validation = { status: "loading" };
       s.candidates = { status: "loading" };
       s.pairs = { status: "loading" };
+      s.proposals = { status: "loading" };
+      s.observations = { status: "loading" };
+      s.shadowDecisions = { status: "loading" };
+      s.activeEliminations = { status: "loading" };
       s.report = { status: "loading" };
       s.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
     });
@@ -282,6 +314,18 @@ describe("tunerReducer", () => {
     });
     ts.receive({ tag: "reportLoaded", generation: 1, report: {} }, (s) => {
       s.report = ok({});
+    });
+    ts.receive({ tag: "proposalsLoaded", generation: 1, proposals: [] }, (s) => {
+      s.proposals = ok([]);
+    });
+    ts.receive({ tag: "observationsLoaded", generation: 1, observations: [] }, (s) => {
+      s.observations = ok([]);
+    });
+    ts.receive({ tag: "shadowDecisionsLoaded", generation: 1, rows: [] }, (s) => {
+      s.shadowDecisions = ok([]);
+    });
+    ts.receive({ tag: "activeEliminationsLoaded", generation: 1, rows: [] }, (s) => {
+      s.activeEliminations = ok([]);
     });
 
     ts.receive(
@@ -321,6 +365,10 @@ describe("tunerReducer", () => {
       s.validation = { status: "loading", previous: { rows: [], unresolved_ties: null } };
       s.candidates = { status: "loading", previous: [] };
       s.pairs = { status: "loading", previous: [] };
+      s.proposals = { status: "loading", previous: [] };
+      s.observations = { status: "loading", previous: [] };
+      s.shadowDecisions = { status: "loading", previous: [] };
+      s.activeEliminations = { status: "loading", previous: [] };
       s.report = { status: "loading", previous: {} };
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
@@ -341,6 +389,18 @@ describe("tunerReducer", () => {
     });
     ts.receive({ tag: "reportLoaded", generation: 2, report: {} }, (s) => {
       s.report = ok({});
+    });
+    ts.receive({ tag: "proposalsLoaded", generation: 2, proposals: [] }, (s) => {
+      s.proposals = ok([]);
+    });
+    ts.receive({ tag: "observationsLoaded", generation: 2, observations: [] }, (s) => {
+      s.observations = ok([]);
+    });
+    ts.receive({ tag: "shadowDecisionsLoaded", generation: 2, rows: [] }, (s) => {
+      s.shadowDecisions = ok([]);
+    });
+    ts.receive({ tag: "activeEliminationsLoaded", generation: 2, rows: [] }, (s) => {
+      s.activeEliminations = ok([]);
     });
     expect(LOG_TAIL_MS).toBe(3000);
   });
@@ -522,6 +582,38 @@ describe("tunerReducer objectives", () => {
     ts.receive({ tag: "validateObjectiveOk", result }, (s) => {
       s.objectiveValidation = ok(result);
     });
+  });
+});
+
+describe("tunerReducer scienceStale", () => {
+  const env = mockTunerEnv();
+
+  it("is set by a scientific evidence event and cleared by a completed refresh", () => {
+    const draft = initialTunerState();
+
+    // A non-scientific event leaves it alone.
+    tunerReducer(
+      draft,
+      { tag: "evidenceEvents", generation: 0, events: [{ sequence: 1, type: "pair_started", payload: {} }] },
+      env,
+    );
+    expect(draft.scienceStale).toBe(false);
+
+    // A pair completion means the projection is behind.
+    tunerReducer(
+      draft,
+      {
+        tag: "evidenceEvents",
+        generation: 0,
+        events: [{ sequence: 2, type: "pair_completed", payload: {} }],
+      },
+      env,
+    );
+    expect(draft.scienceStale).toBe(true);
+
+    // Any completed refresh brings the science level again.
+    tunerReducer(draft, { tag: "autoRefreshDone" }, env);
+    expect(draft.scienceStale).toBe(false);
   });
 });
 

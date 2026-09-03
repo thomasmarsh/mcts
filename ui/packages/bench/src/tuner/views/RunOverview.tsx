@@ -13,9 +13,11 @@ import { deriveProgress } from "../models/progress-model.js";
 import { deriveVerdict } from "../models/verdict-model.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
 import { foldEvidence, tickerLines } from "../models/evidence-fold.js";
+import { deriveConvergence } from "../models/science-models.js";
 import { RunStatusBadge } from "../primitives/RunStatusBadge.js";
 import { ProgressRail } from "../primitives/ProgressRail.js";
 import { EventTicker } from "../primitives/EventTicker.js";
+import { StepLine } from "../primitives/StepLine.js";
 import { ShipVerdict } from "../primitives/ShipVerdict.js";
 import { Forest } from "../primitives/Forest.js";
 import { DataTable } from "../primitives/DataTable.js";
@@ -42,6 +44,27 @@ export const RunOverview: Component<{
   const evidenceRing = createMemo(() => state().evidence.ring);
   const liveProgress = createMemo(() => (live() ? foldEvidence(evidenceRing()) : null));
   const ticker = createMemo(() => tickerLines(evidenceRing(), 200));
+
+  // A compact live "is it improving" signal without opening Science: one step
+  // per cohort, from the projection candidate + observation rows.
+  const cohorts = createMemo(() => {
+    const byIndex = new Map<number, string[]>();
+    for (const c of peek(state().candidates) ?? []) {
+      const list = byIndex.get(c.cohort_index) ?? [];
+      list.push(c.candidate_id);
+      byIndex.set(c.cohort_index, list);
+    }
+    return [...byIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([cohort_index, candidate_ids]) => ({
+        cohort_index,
+        candidate_ids,
+        retained_candidate_ids: [],
+      }));
+  });
+  const convergence = createMemo(() =>
+    deriveConvergence(peek(state().report), cohorts(), peek(state().observations) ?? []),
+  );
 
   const progress = createMemo(() =>
     deriveProgress({
@@ -114,6 +137,16 @@ export const RunOverview: Component<{
         compute={detail()?.compute}
         live={liveProgress()}
       />
+
+      <Show when={convergence().present && convergence().steps.length > 1}>
+        <section class="tuner-overview-sparkline" data-testid="overview-convergence">
+          <h3>Convergence</h3>
+          <StepLine
+            points={convergence().steps.map((s) => ({ x: s.x, y: s.bestMargin, label: s.label }))}
+            domain={convergence().domain}
+          />
+        </section>
+      </Show>
 
       <Show when={live() || ticker().length > 0}>
         <section class="tuner-live-feed">

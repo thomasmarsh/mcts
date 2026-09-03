@@ -218,6 +218,58 @@ pub(crate) struct GameRow {
 }
 
 #[derive(Serialize)]
+pub(crate) struct ProposalRow {
+    proposal_index: i64,
+    cohort_index: i64,
+    cohort_slot: i64,
+    candidate_id: String,
+    source: String,
+    source_attempt: i64,
+    /// `accepted` / `rejected` / `null` while still pending.
+    disposition: Option<String>,
+    frontier_id: String,
+    origin: Option<String>,
+    acquisition: Option<f64>,
+    prediction: Option<f64>,
+    uncertainty: Option<f64>,
+    parent_candidate_id: Option<String>,
+    refill_of_candidate_id: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ObservationRow {
+    observation_id: String,
+    candidate_id: String,
+    phase: String,
+    prefix_id: String,
+    mean: f64,
+    lower: f64,
+    upper: f64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ShadowDecisionRow {
+    race_index: i64,
+    cohort_index: i64,
+    prefix_id: String,
+    candidate_id: String,
+    boundary_candidate_id: String,
+    disposition: String,
+    policy_kind: String,
+    policy_version: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ActiveEliminationRow {
+    batch_index: i64,
+    cohort_index: i64,
+    prefix_id: String,
+    candidate_id: String,
+    action: String,
+    margin_kind: String,
+}
+
+#[derive(Serialize)]
 pub(crate) struct ValidationRow {
     candidate_id: String,
     rank: i64,
@@ -614,6 +666,145 @@ pub(crate) async fn pair_games(
                 elapsed_ms: row.get(5)?,
                 candidate_iterations_total: row.get(6)?,
                 opponent_iterations_total: row.get(7)?,
+            })
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    Ok(Json(rows))
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/proposals`
+///
+/// The `proposals` table verbatim. Populated on every projection refresh, so
+/// this is live during a run -- `disposition` is `null` for a proposal still
+/// awaiting its cohort's decision.
+pub(crate) async fn proposals(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ProposalRow>>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT proposal_index, cohort_index, cohort_slot, candidate_id, source, \
+                    source_attempt, disposition, frontier_id, origin, acquisition, \
+                    prediction, uncertainty, parent_candidate_id, refill_of_candidate_id \
+             FROM proposals WHERE run_id = ?1 ORDER BY proposal_index",
+        )
+        .map_err(sql_error)?;
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ProposalRow {
+                proposal_index: row.get(0)?,
+                cohort_index: row.get(1)?,
+                cohort_slot: row.get(2)?,
+                candidate_id: row.get(3)?,
+                source: row.get(4)?,
+                source_attempt: row.get(5)?,
+                disposition: row.get(6)?,
+                frontier_id: row.get(7)?,
+                origin: row.get(8)?,
+                acquisition: row.get(9)?,
+                prediction: row.get(10)?,
+                uncertainty: row.get(11)?,
+                parent_candidate_id: row.get(12)?,
+                refill_of_candidate_id: row.get(13)?,
+            })
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    Ok(Json(rows))
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/observations`
+pub(crate) async fn observations(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ObservationRow>>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id, candidate_id, phase, prefix_id, mean, lower, upper \
+             FROM observations WHERE run_id = ?1 ORDER BY observation_id",
+        )
+        .map_err(sql_error)?;
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ObservationRow {
+                observation_id: row.get(0)?,
+                candidate_id: row.get(1)?,
+                phase: row.get(2)?,
+                prefix_id: row.get(3)?,
+                mean: row.get(4)?,
+                lower: row.get(5)?,
+                upper: row.get(6)?,
+            })
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    Ok(Json(rows))
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/shadow-decisions`
+pub(crate) async fn shadow_decisions(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ShadowDecisionRow>>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT race_index, cohort_index, prefix_id, candidate_id, boundary_candidate_id, \
+                    disposition, policy_kind, policy_version \
+             FROM shadow_decisions WHERE run_id = ?1 ORDER BY race_index, candidate_id",
+        )
+        .map_err(sql_error)?;
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ShadowDecisionRow {
+                race_index: row.get(0)?,
+                cohort_index: row.get(1)?,
+                prefix_id: row.get(2)?,
+                candidate_id: row.get(3)?,
+                boundary_candidate_id: row.get(4)?,
+                disposition: row.get(5)?,
+                policy_kind: row.get(6)?,
+                policy_version: row.get(7)?,
+            })
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+    Ok(Json(rows))
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/active-eliminations`
+pub(crate) async fn active_eliminations(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ActiveEliminationRow>>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT batch_index, cohort_index, prefix_id, candidate_id, action, margin_kind \
+             FROM active_elimination_decisions WHERE run_id = ?1 \
+             ORDER BY batch_index, candidate_id",
+        )
+        .map_err(sql_error)?;
+    let rows = stmt
+        .query_map([&run_id], |row| {
+            Ok(ActiveEliminationRow {
+                batch_index: row.get(0)?,
+                cohort_index: row.get(1)?,
+                prefix_id: row.get(2)?,
+                candidate_id: row.get(3)?,
+                action: row.get(4)?,
+                margin_kind: row.get(5)?,
             })
         })
         .map_err(sql_error)?

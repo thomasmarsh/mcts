@@ -69,3 +69,26 @@ describe("deriveCohortRace", () => {
     expect(deriveCohortRace({}, []).present).toBe(false);
   });
 });
+
+describe("deriveCohortRace from projection shadow_decisions rows (live, no report)", () => {
+  it("builds the per-cohort grid from rows when the report has no shadow_elimination", () => {
+    const g = deriveCohortRace(
+      undefined,
+      [
+        { candidate_id: "candidate-aaaa1111", fingerprint: "f", canonical_config: {}, cohort_index: 0, cohort_slot: 0, source: "smac_model", parent_candidate_id: null },
+      ] as ProjectionCandidate[],
+      [
+        { race_index: 0, cohort_index: 0, prefix_id: "prefix-p1", candidate_id: "candidate-aaaa1111", boundary_candidate_id: "candidate-bbbb2222", disposition: "continue", policy_kind: "paired_bootstrap", policy_version: "v1" },
+        { race_index: 1, cohort_index: 0, prefix_id: "prefix-p2", candidate_id: "candidate-aaaa1111", boundary_candidate_id: "candidate-bbbb2222", disposition: "eliminate", policy_kind: "paired_bootstrap", policy_version: "v1" },
+      ],
+    );
+    expect(g.present).toBe(true);
+    expect(g.enforced).toBe(false);
+    expect(g.policyKind).toBe("paired_bootstrap");
+    expect(g.cohorts[0]!.prefixes).toHaveLength(2);
+    const row = g.cohorts[0]!.rows.find((r) => r.candidateId === "candidate-aaaa1111")!;
+    expect(row.cells).toEqual(["continue", "eliminate"]);
+    expect(row.source).toBe("smac_model");
+    expect(row.firstEliminationPrefixId).toBe("prefix-p2");
+  });
+});

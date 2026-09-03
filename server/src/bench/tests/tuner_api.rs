@@ -22,7 +22,15 @@ async fn lists_runs() {
         .iter()
         .map(|r| r["run_id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["broken", "version4", "version4-active-halving"]);
+    assert_eq!(
+        ids,
+        [
+            "broken",
+            "version4",
+            "version4-active-halving",
+            "version4-partial"
+        ]
+    );
 
     let v4 = &rows[1];
     assert_eq!(v4["terminal_status"], "complete");
@@ -170,6 +178,78 @@ async fn report_verbatim() {
     assert_eq!(report["schema_version"], 4);
     assert_eq!(report["status"], "complete");
     assert!(report["validation_order"].is_array());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn live_science_rows_serve_from_a_partial_run() {
+    // `version4-partial` has evidence truncated just after its first cohort
+    // completes: `terminal_status` is "open", there is no report, yet the
+    // science row tables are populated. These four endpoints are the live
+    // science source (12e-7).
+    let (app, root) = seeded_app(default_seed);
+    const P: &str = "/api/bench/tuner/projection/runs/version4-partial";
+
+    let (status, body) = http_get(app.clone(), P).await;
+    assert_eq!(status, StatusCode::OK);
+    let detail = body_json(&body);
+    assert_eq!(detail["terminal_status"], "open");
+    assert!(detail["report"].is_null());
+
+    let (status, body) = http_get(app.clone(), &format!("{P}/proposals")).await;
+    assert_eq!(status, StatusCode::OK);
+    let proposals = body_json(&body);
+    assert_eq!(proposals.as_array().unwrap().len(), 4);
+    assert_eq!(proposals[0]["disposition"], "accepted");
+    assert!(proposals[0]["candidate_id"].is_string());
+
+    let (status, body) = http_get(app.clone(), &format!("{P}/observations")).await;
+    assert_eq!(status, StatusCode::OK);
+    let observations = body_json(&body);
+    assert_eq!(observations.as_array().unwrap().len(), 28);
+    assert!(observations[0]["mean"].is_number());
+    assert!(observations[0]["prefix_id"].is_string());
+
+    let (status, body) = http_get(app.clone(), &format!("{P}/shadow-decisions")).await;
+    assert_eq!(status, StatusCode::OK);
+    let shadow = body_json(&body);
+    assert_eq!(shadow.as_array().unwrap().len(), 4);
+    assert_eq!(shadow[0]["policy_kind"], "paired_bootstrap");
+    assert!(shadow[0]["boundary_candidate_id"].is_string());
+
+    let (status, body) = http_get(app.clone(), &format!("{P}/active-eliminations")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body_json(&body).as_array().unwrap().is_empty());
+
+    // The report overlay is genuinely absent for a live run.
+    let (status, _) = http_get(app.clone(), &format!("{P}/report")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Unknown run -> 404 on every new route.
+    for suffix in ["proposals", "observations", "shadow-decisions", "active-eliminations"] {
+        let (status, _) = http_get(
+            app.clone(),
+            &format!("/api/bench/tuner/projection/runs/nope/{suffix}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{suffix}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn active_eliminations_serve_from_the_halving_run() {
+    let (app, root) = seeded_app(default_seed);
+    let (status, body) = http_get(
+        app,
+        "/api/bench/tuner/projection/runs/version4-active-halving/active-eliminations",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body_json(&body);
+    assert!(!rows.as_array().unwrap().is_empty());
+    assert!(rows[0]["action"].is_string());
+    assert!(rows[0]["margin_kind"].is_string());
     std::fs::remove_dir_all(root).unwrap();
 }
 

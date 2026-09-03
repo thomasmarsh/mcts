@@ -42,7 +42,8 @@ use tower::ServiceExt;
 
 pub(super) const DEFAULT_RUN_ID: &str = "rr-druid-20260101T000000-abc1234";
 
-/// The checked-in read-only tuner projection fixture (three runs: `version4`,
+/// The checked-in read-only tuner projection fixture (four runs: `version4`,
+/// `version4-partial` (evidence truncated, still "open", no report),
 /// `version4-active-halving`, and a garbage-manifest `broken` run). Rebuild it
 /// with `tests/fixtures/regenerate_tuner_projection_fixture.sh`.
 pub(super) fn tuner_projection_fixture() -> PathBuf {

@@ -11,7 +11,14 @@
 //     manual "Refresh science" button.
 
 export const JOURNAL_POLL_MS = 3_000;
-export const PROJECTION_REFRESH_MS = 20_000;
+/** Auto-refresh cadence for the open run's projection while it is live. Fast
+ * enough that convergence / funnel / race / observations move on-screen every
+ * few pair completions without a manual "Refresh science". */
+export const PROJECTION_REFRESH_MS = 6_000;
+/** One accelerated cycle immediately after the evidence stream reports a new
+ * *scientific* event, so a burst of pair completions pulls the science
+ * forward within ~3 s instead of waiting the full cadence. */
+export const SCIENCE_STALE_REFRESH_MS = 3_000;
 /** Fallback cadence for the open run's evidence tail when the SSE stream is
  * degraded (push failed). While the stream is healthy the UI does not poll. */
 export const EVIDENCE_POLL_MS = 1_500;
@@ -26,9 +33,15 @@ export type OpenRunLiveness = "live" | "exited" | "unknown" | "none";
 
 /** Milliseconds until the next automatic projection refresh for the open
  * run, or `null` when the UI should fall back to a manual refresh button
- * (no run open, or the open run has finished). */
-export function projectionRefreshDelayMs(open: OpenRunLiveness): number | null {
-  return open === "live" ? PROJECTION_REFRESH_MS : null;
+ * (no run open, or the open run has finished). `scienceStale` shortens the
+ * next cycle to `SCIENCE_STALE_REFRESH_MS` after a new scientific evidence
+ * event has landed since the last refresh. */
+export function projectionRefreshDelayMs(
+  open: OpenRunLiveness,
+  scienceStale = false,
+): number | null {
+  if (open !== "live") return null;
+  return scienceStale ? SCIENCE_STALE_REFRESH_MS : PROJECTION_REFRESH_MS;
 }
 
 /** Milliseconds until the next evidence-tail poll, or `null` to not poll.

@@ -8,8 +8,12 @@ import type { TunerApiClient } from "./tuner-api-client.js";
 import type {
   EvidenceStreamMessage,
   EvidenceTailResponse,
+  ProjectionActiveElimination,
   ProjectionCandidate,
   ProjectionCohort,
+  ProjectionObservation,
+  ProjectionProposal,
+  ProjectionShadowDecision,
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
@@ -58,6 +62,10 @@ export interface TunerEnv {
   getProjectionPairGames(runId: string, pairId: string): Effect<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Effect<ProjectionValidation>;
   getProjectionReport(runId: string): Effect<JsonValue>;
+  getProjectionProposals(runId: string): Effect<ProjectionProposal[]>;
+  getProjectionObservations(runId: string): Effect<ProjectionObservation[]>;
+  getProjectionShadowDecisions(runId: string): Effect<ProjectionShadowDecision[]>;
+  getProjectionActiveEliminations(runId: string): Effect<ProjectionActiveElimination[]>;
 }
 
 export function createTunerEnv(api: TunerApiClient): TunerEnv {
@@ -108,5 +116,11 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
       lift(() => api.getProjectionPairGames(runId, pairId)),
     getProjectionValidation: (runId) => lift(() => api.getProjectionValidation(runId)),
     getProjectionReport: (runId) => lift(() => api.getProjectionReport(runId)),
+    getProjectionProposals: (runId) => lift(() => api.getProjectionProposals(runId)),
+    getProjectionObservations: (runId) => lift(() => api.getProjectionObservations(runId)),
+    getProjectionShadowDecisions: (runId) =>
+      lift(() => api.getProjectionShadowDecisions(runId)),
+    getProjectionActiveEliminations: (runId) =>
+      lift(() => api.getProjectionActiveEliminations(runId)),
   };
 }
