@@ -28,10 +28,10 @@ use std::time::Duration;
 use game_breakthrough::Breakthrough;
 use game_ingenious::Ingenious;
 use mcts::game::Game;
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     backprop::Classic, select, simulate, strategy, strategy::Compose, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 

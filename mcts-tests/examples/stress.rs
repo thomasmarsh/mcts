@@ -115,12 +115,12 @@ fn tree_parallel_transpositions_survive_many_real_time_games() {
     // and belongs here rather than in the unit-test suite.
     use game_ttt::*;
     use mcts::game::Game;
-    use mcts::strategies::Search;
+    use mcts::algorithms::Search;
     type G = TicTacToe;
 
-    type TS = mcts::strategies::mcts::TreeSearch<G, mcts::strategies::mcts::strategy::Ucb1>;
+    type TS = mcts::algorithms::mcts::TreeSearch<G, mcts::algorithms::mcts::strategy::Ucb1>;
     let mut ts = TS::default().config(
-        mcts::strategies::mcts::SearchConfig::default()
+        mcts::algorithms::mcts::SearchConfig::default()
             .max_time(std::time::Duration::from_millis(30))
             .use_transpositions(true)
             .num_tree_threads(4),
@@ -141,12 +141,12 @@ fn tree_parallel_transpositions_survive_many_real_time_games() {
 /// covers the regression's minimal repro, but this wider space (multiple
 /// board sizes, iteration counts, and seeds) is what actually exercised the
 /// bug reliably, so this sweep is the real coverage for the fix
-/// (`mcts::strategies::mcts::search::shared::verified_child_id`).
+/// (`mcts::algorithms::mcts::search::shared::verified_child_id`).
 fn atarigo_transposition_symmetry_sweep_no_corruption() {
     use game_atarigo::AtariGo;
     use game_atarigo::State;
-    use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-    use mcts::strategies::Search;
+    use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+    use mcts::algorithms::Search;
 
     type TS = TreeSearch<AtariGo, strategy::Ucb1>;
     for &size in &[5, 7, 9] {

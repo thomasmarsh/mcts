@@ -311,7 +311,7 @@ impl Game for BiddingTicTacToe {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcts::strategies::{
+    use mcts::algorithms::{
         mcts::{strategy, SearchConfig, TreeSearch},
         Search,
     };

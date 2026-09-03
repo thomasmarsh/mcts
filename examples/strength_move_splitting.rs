@@ -22,8 +22,8 @@
 use std::time::Duration;
 
 use mcts::game::{Game, TerminalStatus};
-use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 use game_druid::{DruidFlat, DruidSplit, HashedState, Pending, Player, Size};
 

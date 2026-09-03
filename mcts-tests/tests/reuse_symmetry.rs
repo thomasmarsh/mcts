@@ -1,4 +1,4 @@
-// Smoke coverage for tree reuse (`mcts::strategies::mcts::search::reuse`)
+// Smoke coverage for tree reuse (`mcts::algorithms::mcts::search::reuse`)
 // composed with a symmetric game's canonicalization
 // (`Game::canonical_representation`/`apply_to_action`/`invert_action`).
 // `reuse_or_reset`'s promote path has to translate a promoted node's own
@@ -14,7 +14,7 @@
 // exercises the same real_action/retranslate_actions code paths against a
 // game that fails loudly rather than silently.
 use mcts::game::Game;
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 
 #[test]
 fn test_reuse_tree_self_play_traffic_lights_many_seeds_no_panic() {

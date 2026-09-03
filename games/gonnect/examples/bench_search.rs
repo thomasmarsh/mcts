@@ -1,6 +1,6 @@
 // `games/gonnect/src/lib.rs`'s `generate_actions` recomputes Go-style
 // capture/suicide legality from scratch for every empty cell on every call,
-// which `SimulateStrategy::playout` (mcts/src/strategies/mcts/simulate.rs)
+// which `SimulatePolicy::playout` (mcts/src/strategies/mcts/simulate.rs)
 // then calls on every ply of every random rollout. This measures the actual
 // cost of that: how much it drags down search throughput, and what fraction
 // of rollout time it eats -- the reference numbers to compare against once
@@ -17,7 +17,7 @@
 //   search from the empty board, timed end to end -> iterations/sec. This is
 //   the number that should move once `generate_actions` stops re-flooding
 //   every empty cell on every call.
-// - A rough breakdown of where a rollout's time goes: `SimulateStrategy::
+// - A rough breakdown of where a rollout's time goes: `SimulatePolicy::
 //   playout` (mcts/src/strategies/mcts/simulate.rs) calls `generate_actions`
 //   on every ply of every random rollout, so this replays that same
 //   uniform-random-playout shape directly (seeded, terminating games only --
@@ -68,7 +68,7 @@ fn bench_search(size: usize, iterations: usize) -> (Duration, f64) {
 }
 
 /// Plays `ROLLOUT_GAMES` seeded uniform-random games to completion (same
-/// shape as `SimulateStrategy::playout`'s rollouts), timing total wall time
+/// shape as `SimulatePolicy::playout`'s rollouts), timing total wall time
 /// against time spent purely inside `generate_actions`. Returns
 /// (total_elapsed, generate_actions_elapsed, total_plies).
 fn bench_rollouts(size: usize) -> (Duration, Duration, usize) {

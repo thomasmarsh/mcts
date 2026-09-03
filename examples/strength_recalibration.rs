@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
-use mcts::strategies::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::util::battle_royale;
 use mcts_bench::tournament::wilson_interval;
 

@@ -1,8 +1,8 @@
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
 use mcts::game::Transform;
-use mcts::strategies::parallel_test_guard;
-use mcts::strategies::Search;
+use mcts::algorithms::parallel_test_guard;
+use mcts::algorithms::Search;
 
 #[test]
 fn test_expand0() {
@@ -311,7 +311,7 @@ fn test_mcgs_correction_residual_picks_legal_actions_single_and_tree_parallel() 
     // Wiring smoke test: `McgsCorrection::Residual` only
     // ever short-circuits `select_step`'s descent at an edge into an
     // already-shared node (`shared::mcgs_correction_at_edge`, unit-tested
-    // directly against hand-built stats in `strategies::tests`), backing out
+    // directly against hand-built stats in `algorithms::tests`), backing out
     // that edge's virtual loss and backpropagating a synthetic correction
     // trial through the saved path instead of a real rollout
     // (`shared::backprop_correction_step`). Every virtual-loss add/remove is
@@ -630,7 +630,7 @@ fn test_root_report_flags_the_proven_winning_move() {
     let final_report = ts.search_report(&init_state, &chosen);
     assert_eq!(
         final_report.termination,
-        Some(mcts::strategies::SearchTermination::Solved)
+        Some(mcts::algorithms::SearchTermination::Solved)
     );
 
     let report = ts.root_report(&init_state);
@@ -999,7 +999,7 @@ fn test_nst_bigram_table_populated_by_backprop() {
 #[test]
 fn test_nst_backoff_falls_back_to_unigram_below_threshold() {
     use game_ttt::*;
-    use mcts::simulate::{Nst, SimulateStrategy};
+    use mcts::simulate::{Nst, SimulatePolicy};
     use rand::SeedableRng;
 
     type G = TicTacToe;
@@ -1090,7 +1090,7 @@ fn test_minimax_rollout_prefers_the_winning_move_to_a_forced_draw() {
     // even odds; `MinimaxRollout` with `n` covering both remaining plies
     // should search the position out exactly and always prefer the win.
     use game_ttt::*;
-    use mcts::simulate::{MinimaxRollout, SimulateStrategy};
+    use mcts::simulate::{MinimaxRollout, SimulatePolicy};
     use rand::SeedableRng;
 
     let mut position = Position::new();
@@ -1429,7 +1429,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
     use mcts::node;
     use mcts::prior::NegamaxPrior;
     use mcts::search::shared::expand;
-    use mcts::select::{SelectContext, SelectStrategy, Ucb1};
+    use mcts::select::{SelectContext, SelectPolicy, Ucb1};
     use mcts::stack::NodeStack;
     use rand::SeedableRng;
 
@@ -1573,7 +1573,7 @@ fn test_evaluated_cutoff_scores_the_depth_cutoff_with_the_evaluator() {
     use game_ttt::*;
     use mcts::evaluator::{Evaluator, Score, EVAL_MAGNITUDE_LIMIT};
     use mcts::game::PlayerIndex;
-    use mcts::simulate::{EndType, EvaluatedCutoff, SimulateStrategy, Uniform};
+    use mcts::simulate::{EndType, EvaluatedCutoff, SimulatePolicy, Uniform};
     use rand::SeedableRng;
 
     type G = TicTacToe;
@@ -2349,7 +2349,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     use game_ttt::*;
     use mcts::node;
     use mcts::search::shared::{expand, new_child};
-    use mcts::select::{ProgressiveHistory, SelectContext, SelectStrategy};
+    use mcts::select::{ProgressiveHistory, SelectContext, SelectPolicy};
     use mcts::stack::NodeStack;
     use mcts::Shared;
     use rand::SeedableRng;
@@ -2466,7 +2466,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     use game_ttt::*;
     use mcts::node;
     use mcts::search::shared::{expand, new_child};
-    use mcts::select::{MaxRobustChild, RobustChild, SelectContext, SelectStrategy};
+    use mcts::select::{MaxRobustChild, RobustChild, SelectContext, SelectPolicy};
     use mcts::stack::NodeStack;
     use mcts::Shared;
     use rand::SeedableRng;
@@ -2581,7 +2581,7 @@ fn test_requirements_union_composes_and_survives_wrapping() {
     // `config::Requirements` (see its doc comment) is the union algebra
     // that resolves a composed strategy's storage needs/constraints without
     // a per-pair-of-features match arm. `select::UctPn` is the one
-    // `SelectStrategy` that overrides `requirements()` beyond what
+    // `SelectPolicy` that overrides `requirements()` beyond what
     // `backprop_flags()` alone can express (`solver`); wrap it in
     // `select::EpsilonGreedy` to prove that override survives composition
     // instead of silently reverting to the `from_backprop_flags` default.
@@ -2589,7 +2589,7 @@ fn test_requirements_union_composes_and_survives_wrapping() {
     use mcts::select::{EpsilonGreedy, UctPn};
     type G = TicTacToe;
 
-    let plain = <UctPn as mcts::select::SelectStrategy<G>>::requirements(&UctPn::default());
+    let plain = <UctPn as mcts::select::SelectPolicy<G>>::requirements(&UctPn::default());
     assert!(
         plain.solver,
         "UctPn requires the solver's proof bookkeeping"
@@ -2599,7 +2599,7 @@ fn test_requirements_union_composes_and_survives_wrapping() {
         "UctPn's proof/disproof-number ranking is sound at any player count"
     );
 
-    let wrapped = <EpsilonGreedy<G, UctPn> as mcts::select::SelectStrategy<G>>::requirements(
+    let wrapped = <EpsilonGreedy<G, UctPn> as mcts::select::SelectPolicy<G>>::requirements(
         &EpsilonGreedy::new(),
     );
     assert_eq!(
@@ -2618,7 +2618,7 @@ fn test_requirements_union_composes_and_survives_wrapping() {
 
     // And the whole thing is exactly what `SearchConfig::requirements()`
     // reports for a real composed strategy, wired end to end.
-    type Strat = mcts::strategies::mcts::strategy::Compose<UctPn, mcts::simulate::Uniform>;
+    type Strat = mcts::algorithms::mcts::strategy::Compose<UctPn, mcts::simulate::Uniform>;
     let cfg = mcts::SearchConfig::<G, Strat>::default();
     assert_eq!(cfg.requirements(), plain);
     assert!(cfg.validate().is_ok());
@@ -2818,7 +2818,7 @@ fn test_graph_reroot_across_self_play_keeps_ply_and_table_consistent() {
 #[test]
 fn test_final_search_report_tracks_only_the_latest_search() {
     use game_ttt::*;
-    use mcts::strategies::{
+    use mcts::algorithms::{
         SearchGraphMode, SearchReportReason, SearchReportStatus, SearchWarning,
     };
     type G = TicTacToe;
@@ -2844,7 +2844,7 @@ fn test_final_search_report_tracks_only_the_latest_search() {
     assert_eq!(first.status, SearchReportStatus::Available);
     assert_eq!(
         first.termination,
-        Some(mcts::strategies::SearchTermination::Iterations)
+        Some(mcts::algorithms::SearchTermination::Iterations)
     );
     assert_eq!(first.iteration_limit, Some(24));
     assert_eq!(first.completed_iterations, 24);
@@ -2873,7 +2873,7 @@ fn test_final_search_report_tracks_only_the_latest_search() {
     assert_eq!(second.completed_iterations, 24);
     assert_eq!(
         second.termination,
-        Some(mcts::strategies::SearchTermination::Iterations)
+        Some(mcts::algorithms::SearchTermination::Iterations)
     );
     assert!(
         second.tt_reads > 0,
@@ -2884,7 +2884,7 @@ fn test_final_search_report_tracks_only_the_latest_search() {
 #[test]
 fn test_final_search_report_tree_mode_has_no_tt_reads() {
     use game_ttt::*;
-    use mcts::strategies::SearchGraphMode;
+    use mcts::algorithms::SearchGraphMode;
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
 
@@ -2900,8 +2900,8 @@ fn test_final_search_report_tree_mode_has_no_tt_reads() {
 #[test]
 fn test_final_search_report_marks_non_tree_strategies_unsupported() {
     use game_ttt::*;
-    use mcts::strategies::random::Random;
-    use mcts::strategies::{SearchReportReason, SearchReportStatus};
+    use mcts::algorithms::random::Random;
+    use mcts::algorithms::{SearchReportReason, SearchReportStatus};
     type G = TicTacToe;
 
     let state = HashedPosition::new();
@@ -2916,7 +2916,7 @@ fn test_final_search_report_marks_non_tree_strategies_unsupported() {
 #[test]
 fn test_final_search_report_identifies_dag_stat_owners() {
     use game_ttt::*;
-    use mcts::strategies::SearchGraphMode;
+    use mcts::algorithms::SearchGraphMode;
     use mcts::{GraphSearch, GraphStats};
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
@@ -2971,7 +2971,7 @@ fn test_final_search_report_separates_reuse_from_recent_work() {
 fn test_final_search_report_is_available_for_tree_parallel_search() {
     let _guard = parallel_test_guard();
     use game_ttt::*;
-    use mcts::strategies::SearchReportStatus;
+    use mcts::algorithms::SearchReportStatus;
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
 
@@ -2993,7 +2993,7 @@ fn test_final_search_report_is_available_for_tree_parallel_search() {
 fn test_final_search_report_aggregates_root_parallel_workers() {
     let _guard = parallel_test_guard();
     use game_ttt::*;
-    use mcts::strategies::{SearchReportReason, SearchReportStatus, SearchWarning};
+    use mcts::algorithms::{SearchReportReason, SearchReportStatus, SearchWarning};
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
 
@@ -3074,7 +3074,7 @@ fn test_final_search_report_aggregates_root_parallel_workers() {
 fn test_final_search_report_aggregates_hybrid_root_and_tree_parallel_work() {
     let _guard = parallel_test_guard();
     use game_ttt::*;
-    use mcts::strategies::{SearchReportReason, SearchReportStatus};
+    use mcts::algorithms::{SearchReportReason, SearchReportStatus};
     type G = TicTacToe;
     type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
 

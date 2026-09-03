@@ -32,8 +32,8 @@
 use std::time::Duration;
 
 use game_knightthrough::Knightthrough;
-use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 

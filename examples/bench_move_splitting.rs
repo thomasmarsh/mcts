@@ -10,10 +10,10 @@
 use std::time::{Duration, Instant};
 
 use mcts::game::Game;
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 
 use game_druid::{Druid, HashedState, Size};
 

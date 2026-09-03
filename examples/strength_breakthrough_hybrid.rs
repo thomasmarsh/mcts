@@ -22,8 +22,8 @@
 use std::time::Duration;
 
 use game_breakthrough::{Breakthrough, Heuristic};
-use mcts::strategies::mcts::{select, simulate, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
@@ -59,7 +59,7 @@ type MsPrior = Baseline;
 // depth on Breakthrough (Baier & Winands 2015).
 const MS_DEPTH: u32 = 2;
 // How many fictitious visits each seeded prior is worth -- see
-// `mcts::prior::PriorStrategy::pseudo_visits`'s doc comment.
+// `mcts::prior::PriorPolicy::pseudo_visits`'s doc comment.
 const MS_PSEUDO_VISITS: u32 = 4;
 
 // Plies before a still-unresolved rollout gets cut off and scored via
@@ -115,7 +115,7 @@ fn ms_prior_config(budget: Duration) -> TreeSearch<Board, MsPrior> {
             .max_time(budget)
             .select(select::Ucb1::with_c(1.414))
             .with_prior(
-                mcts::strategies::mcts::prior::NegamaxPrior::<Board, Heuristic>::new()
+                mcts::algorithms::mcts::prior::NegamaxPrior::<Board, Heuristic>::new()
                     .depth(MS_DEPTH)
                     .pseudo_visits(MS_PSEUDO_VISITS),
             ),

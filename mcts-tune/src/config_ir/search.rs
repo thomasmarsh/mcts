@@ -2,11 +2,11 @@ use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
 use super::final_action::{resolve_final_action, FinalActionSpec};
 use super::select::{resolve_select, DynSelect, SelectSpec};
 use super::simulate::{resolve_simulate, DynSimulate, SimulateSpec};
-use mcts::backprop::BackpropStrategy;
+use mcts::backprop::BackpropPolicy;
 use mcts::game::Game;
 use mcts::node::QInit;
-use mcts::strategies::mcts::strategy::Compose;
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::strategy::Compose;
+use mcts::algorithms::Search;
 use mcts::{GraphSearch, SearchConfig, TranspositionKeying, TreeSearch};
 use serde::{Deserialize, Serialize};
 
@@ -77,7 +77,7 @@ where
 {
     type Output = Box<dyn Search<G = G>>;
 
-    fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output {
+    fn call<B: BackpropPolicy + 'static>(self, backprop: B) -> Self::Output {
         type S<G, B> = Compose<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>;
         let mut config = SearchConfig::<G, S<G, B>>::new()
             .max_iterations(self.settings.max_iterations)

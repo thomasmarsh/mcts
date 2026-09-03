@@ -2,7 +2,7 @@ use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
 use super::codec::{field, to_snake_case};
 use super::search::SearchSpec;
 use super::select::{requirements_of, DynSelect, EraseSelectCont, RequirementsCont, SelectCont};
-use mcts::backprop::BackpropStrategy;
+use mcts::backprop::BackpropPolicy;
 use mcts::game::Game;
 use mcts::select;
 use mcts::Requirements;
@@ -85,7 +85,7 @@ macro_rules! register_final_action {
             }
         }
 
-        /// Dispatches `spec` to the concrete `SelectStrategy<G>` it names by
+        /// Dispatches `spec` to the concrete `SelectPolicy<G>` it names by
         /// invoking `cont` with it -- see `with_base_select` above.
         pub fn with_final_action<G, C>(spec: &FinalActionSpec, cont: C) -> C::Output
         where
@@ -112,12 +112,12 @@ register_final_action! {
 }
 
 /// Reuses `RequirementsCont` (defined above for the `select` axis) since
-/// `final_action`'s dispatch resolves to the same `SelectStrategy<G>` trait.
+/// `final_action`'s dispatch resolves to the same `SelectPolicy<G>` trait.
 pub fn requirements_of_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> Requirements {
     with_final_action::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
 }
 
-/// Whether `spec` resolves to a `BackpropStrategy` that populates
+/// Whether `spec` resolves to a `BackpropPolicy` that populates
 /// `posterior_mean`/`posterior_variance` (`BayesGaussian`/`BayesNumeric`) --
 /// dispatched through `with_backprop`, same as every other spec->real-type
 /// question in this file, rather than a second hand-matched list of names
@@ -126,21 +126,21 @@ pub fn provides_posterior(spec: &BackpropSpec) -> bool {
     struct ProvidesPosteriorCont;
     impl BackpropCont for ProvidesPosteriorCont {
         type Output = bool;
-        fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> bool {
+        fn call<B: BackpropPolicy + 'static>(self, backprop: B) -> bool {
             backprop.provides_posterior()
         }
     }
     with_backprop(spec, ProvidesPosteriorCont)
 }
 
-/// Whether `spec` resolves to a `BackpropStrategy` that writes the
+/// Whether `spec` resolves to a `BackpropPolicy` that writes the
 /// mellowmax soft-Bellman value (`SoftmaxBackprop`) `select::Ments` selects
 /// on -- dispatched through `with_backprop`, same as `provides_posterior`.
 pub fn provides_softmax_value(spec: &BackpropSpec) -> bool {
     struct ProvidesSoftmaxValueCont;
     impl BackpropCont for ProvidesSoftmaxValueCont {
         type Output = bool;
-        fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> bool {
+        fn call<B: BackpropPolicy + 'static>(self, backprop: B) -> bool {
             backprop.provides_softmax_value()
         }
     }
@@ -175,7 +175,7 @@ pub fn validate_search_spec<G: Game + 'static>(spec: &SearchSpec) -> Result<(), 
 
 /// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- reuses
 /// `select.rs`'s own erasure machinery directly rather than duplicating it,
-/// since `final_action` erases the identical `SelectStrategy<G>` trait
+/// since `final_action` erases the identical `SelectPolicy<G>` trait
 /// `select` does (see `DynSelect`'s doc comment for why `build_search` wants
 /// this instead of routing `FA` generically through its whole stage chain).
 pub fn resolve_final_action<G: Game + 'static>(spec: &FinalActionSpec) -> DynSelect<G> {

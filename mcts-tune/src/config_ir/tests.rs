@@ -1,12 +1,12 @@
 use super::*;
 use game_nim::Nim;
-use mcts::backprop::{self as mcts_backprop, BackpropStrategy};
+use mcts::backprop::{self as mcts_backprop, BackpropPolicy};
 use mcts::game::Game;
 use mcts::node::QInit;
-use mcts::select::{self as mcts_select, SelectStrategy};
-use mcts::simulate::{self as mcts_simulate, SimulateStrategy};
-use mcts::strategies::mcts::strategy::Compose;
-use mcts::strategies::Search;
+use mcts::select::{self as mcts_select, SelectPolicy};
+use mcts::simulate::{self as mcts_simulate, SimulatePolicy};
+use mcts::algorithms::mcts::strategy::Compose;
+use mcts::algorithms::Search;
 use mcts::{GraphSearch, Requirements, SearchConfig, TreeSearch};
 
 /// Builds and runs a `TreeSearch<Nim, Compose<S, mcts_simulate::Uniform>>`
@@ -20,7 +20,7 @@ struct RunCont<'a, G: Game> {
 impl<'a, G: Game> SelectCont<G> for RunCont<'a, G> {
     type Output = G::A;
 
-    fn call<S: SelectStrategy<G>>(self, select: S) -> G::A {
+    fn call<S: SelectPolicy<G>>(self, select: S) -> G::A {
         let mut ts = TreeSearch::<G, Compose<S, mcts_simulate::Uniform>>::default().config(
             SearchConfig::default()
                 .select(select)
@@ -447,7 +447,7 @@ struct RunSimulateCont<'a, G: Game> {
 impl<'a, G: Game> SimulateCont<G> for RunSimulateCont<'a, G> {
     type Output = G::A;
 
-    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> G::A {
+    fn call<S: SimulatePolicy<G>>(self, simulate: S) -> G::A {
         let mut ts = TreeSearch::<G, Compose<mcts_select::Ucb1, S>>::default().config(
             SearchConfig::default()
                 .simulate(simulate)
@@ -722,18 +722,18 @@ fn backprop_spec_deserialize_rejects_unknown_kind_and_missing_fields() {
 }
 
 /// A `BackpropCont` whose `Output` is just a marker proving `with_backprop`
-/// actually resolved to a real `BackpropStrategy` -- there's no
+/// actually resolved to a real `BackpropPolicy` -- there's no
 /// `requirements()` to check (see `register_backprop!`'s doc comment on
 /// why), so this is the `backprop`-axis analogue of the `select`/
 /// `simulate` "build a working search" tests, minus the search: any
-/// `BackpropStrategy` is usable in a `Compose<..>` without further
+/// `BackpropPolicy` is usable in a `Compose<..>` without further
 /// per-type configuration.
 struct ResolvedCont;
 
 impl BackpropCont for ResolvedCont {
     type Output = &'static str;
 
-    fn call<B: BackpropStrategy>(self, _backprop: B) -> &'static str {
+    fn call<B: BackpropPolicy>(self, _backprop: B) -> &'static str {
         "resolved"
     }
 }
@@ -755,7 +755,7 @@ fn final_action_spec_round_trips_through_json() {
 #[test]
 fn requirements_of_final_action_matches_the_real_components_own_answer() {
     // None of the four `final_action` families override `requirements()`
-    // beyond the `SelectStrategy` default, unlike `UctPn` on the `select`
+    // beyond the `SelectPolicy` default, unlike `UctPn` on the `select`
     // axis -- so this just pins that they all resolve to
     // `Requirements::none()` rather than silently picking up some future
     // override without a test noticing.
@@ -783,7 +783,7 @@ struct RunFinalActionCont<'a, G: Game> {
 impl<'a, G: Game> SelectCont<G> for RunFinalActionCont<'a, G> {
     type Output = G::A;
 
-    fn call<S: SelectStrategy<G>>(self, final_action: S) -> G::A {
+    fn call<S: SelectPolicy<G>>(self, final_action: S) -> G::A {
         let mut ts = TreeSearch::<
             G,
             Compose<mcts_select::Ucb1, mcts_simulate::Uniform, mcts_backprop::Classic, S>,

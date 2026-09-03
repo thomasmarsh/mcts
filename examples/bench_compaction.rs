@@ -1,7 +1,7 @@
 // Bounded pruning after re-rooting (`SearchConfig::max_arena_len`,
 // `search/compact.rs`'s `TreeSearch::compact`): what does a compaction event
 // actually cost in wall-clock time, at realistic subtree sizes? The unit
-// tests (`strategies::tests::test_compact_*`) pin the *correctness* of
+// tests (`algorithms::tests::test_compact_*`) pin the *correctness* of
 // compaction on small hand-verifiable shapes; this measures the *cost* on a
 // real game, which needs a real arena at real size and can't be a
 // deterministic `cargo test --lib` assertion (see AGENTS.md's "keep
@@ -21,8 +21,8 @@ use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()

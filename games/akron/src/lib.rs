@@ -756,7 +756,7 @@ impl Game for Akron {
         }
     }
 
-    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// Rejection-sampling fast path for `SimulatePolicy::playout`'s
     /// uniform rollouts -- same idea as `games/margo`/`games/gonnect`/
     /// `games/atarigo`'s `random_action` overrides: an `Add` candidate is
     /// `O(1)` to confirm (any empty level-0 cell while the pile is
@@ -862,7 +862,7 @@ impl Game for Akron {
     /// as two independent calls, each of which redoes the same
     /// `has_span`/`has_legal_action` work above from scratch -- doubling the
     /// cost of every terminal check along an MCTS rollout, which calls
-    /// `terminal_status` once per ply (see `mcts::strategies::mcts::simulate`).
+    /// `terminal_status` once per ply (see `mcts::algorithms::mcts::simulate`).
     /// `is_terminal`/`winner` above still each do their own read when called
     /// standalone, same as before this override existed.
     fn terminal_status(state: &State) -> TerminalStatus<Player> {

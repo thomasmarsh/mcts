@@ -1,6 +1,6 @@
 use mcts::game::Game;
 use mcts::search::TreeStats;
-use mcts::simulate::{DecisiveMove, DecisiveMoveMode, SimulateStrategy};
+use mcts::simulate::{DecisiveMove, DecisiveMoveMode, SimulatePolicy};
 
 use game_ttt::{HashedPosition, Move, Piece, Position, TicTacToe};
 

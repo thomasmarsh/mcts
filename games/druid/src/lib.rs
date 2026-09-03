@@ -44,9 +44,9 @@ mod tests {
     use crate::heuristics::heuristic_scores;
     use crate::zobrist::*;
     use mcts::game::{Game, PlayerIndex, TerminalStatus};
-    use mcts::strategies::mcts::simulate::SimulateStrategy;
-    use mcts::strategies::mcts::TreeStats;
-    use mcts::strategies::{
+    use mcts::algorithms::mcts::simulate::SimulatePolicy;
+    use mcts::algorithms::mcts::TreeStats;
+    use mcts::algorithms::{
         mcts::{
             node::QInit,
             render::{self, NodeRender},
@@ -1136,8 +1136,8 @@ mod flat_tests {
     use super::*;
     use crate::zobrist::{full_hash, zobrist_height_bits};
     use mcts::game::{Game, PlayerIndex};
-    use mcts::strategies::mcts::simulate::SimulateStrategy;
-    use mcts::strategies::mcts::TreeStats;
+    use mcts::algorithms::mcts::simulate::SimulatePolicy;
+    use mcts::algorithms::mcts::TreeStats;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 

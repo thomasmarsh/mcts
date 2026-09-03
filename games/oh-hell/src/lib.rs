@@ -587,7 +587,7 @@ impl<const P: usize, const K: usize> Game for OhHell<P, K> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcts::strategies::{
+    use mcts::algorithms::{
         mcts::{render, strategy, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };

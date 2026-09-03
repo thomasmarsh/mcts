@@ -1,11 +1,11 @@
 //! Compares a `select`-axis search with `select` fully monomorphized into
 //! `TreeSearch`'s type parameter against the same search with `select`
 //! erased through `mcts_tune::config_ir::DynSelect<G>`
-//! (`Box<dyn ErasedSelectStrategy<G>>` under a `SelectStrategy<G>` newtype) --
+//! (`Box<dyn ErasedSelectPolicy<G>>` under a `SelectPolicy<G>` newtype) --
 //! the latter is what `mcts_tune::config_ir::build_search` actually builds.
 //! `simulate`/`final_action` are erased in both builds via `DynSimulate<G>`/
 //! `DynSelect<G>` (`final_action` erases through the same `DynSelect<G>`
-//! `select` does, since both axes erase the identical `SelectStrategy<G>`
+//! `select` does, since both axes erase the identical `SelectPolicy<G>`
 //! trait -- see `mcts_tune::config_ir::select`'s `DynSelect` doc comment),
 //! matching what `build_search` does regardless of how `select` is handled,
 //! so those two axes contribute no difference between the two columns below
@@ -26,9 +26,9 @@ use game_nim::{Nim, NimState};
 use game_othello::{Othello, State as OthelloState};
 use mcts::backprop;
 use mcts::game::Game;
-use mcts::select::{Rave, SelectStrategy, Ucb1};
-use mcts::strategies::mcts::strategy::Compose;
-use mcts::strategies::Search;
+use mcts::select::{Rave, SelectPolicy, Ucb1};
+use mcts::algorithms::mcts::strategy::Compose;
+use mcts::algorithms::Search;
 use mcts::{SearchConfig, TreeSearch};
 use mcts_tune::config_ir::{resolve_select, DynSelect, DynSimulate, SelectSpec};
 
@@ -44,14 +44,14 @@ const MAX_PLAYOUT_DEPTH: usize = 200;
 
 /// Builds and runs one fixed-iteration, single-threaded search, returning
 /// iterations/sec. Generic over `S1` so the same function drives both the
-/// statically monomorphized path (`S1` a concrete `SelectStrategy`) and the
+/// statically monomorphized path (`S1` a concrete `SelectPolicy`) and the
 /// erased path (`S1 = DynSelect<G>`) -- `simulate`/`final_action`/`backprop`
 /// are identical in both calls, isolating `select` as the only variable.
 fn measure<G, S1>(select: S1, state: &G::S, iterations: usize, seed: u64) -> f64
 where
     G: Game + 'static,
     G::S: std::fmt::Display,
-    S1: SelectStrategy<G> + 'static,
+    S1: SelectPolicy<G> + 'static,
 {
     type Strat<G, S1> = Compose<S1, DynSimulate<G>, backprop::Classic, DynSelect<G>>;
     let config = SearchConfig::<G, Strat<G, S1>>::new()
@@ -89,7 +89,7 @@ fn compare<G, S1>(
 ) where
     G: Game + 'static,
     G::S: std::fmt::Display,
-    S1: SelectStrategy<G> + 'static,
+    S1: SelectPolicy<G> + 'static,
 {
     let static_rates: Vec<f64> = SEEDS
         .iter()

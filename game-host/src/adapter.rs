@@ -5,7 +5,7 @@ use crate::{
 use serde_json::Value;
 
 /// Type-erased, per-game-kind adapter over `mcts::game::Game` +
-/// `mcts::strategies::Search`.
+/// `mcts::algorithms::Search`.
 ///
 /// Every method is stateless: state flows in as a JSON `Value` and back out
 /// as another. Concrete adapters deserialize `Value` arguments into real

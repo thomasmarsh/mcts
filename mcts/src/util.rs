@@ -3,10 +3,10 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 
 use crate::game::{Game, PlayerIndex};
-use crate::strategies;
+use crate::algorithms;
 
-use crate::strategies::random::Random;
-use crate::strategies::Search;
+use crate::algorithms::random::Random;
+use crate::algorithms::Search;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -95,18 +95,18 @@ impl<'a, T> Iterator for ReversePairs2<'a, T> {
 }
 
 #[derive(Clone)]
-pub struct AnySearch<'a, G: Game + Clone>(pub Arc<Mutex<Box<dyn strategies::Search<G = G> + 'a>>>);
+pub struct AnySearch<'a, G: Game + Clone>(pub Arc<Mutex<Box<dyn algorithms::Search<G = G> + 'a>>>);
 
 impl<'a, G> AnySearch<'a, G>
 where
     G: Game + Clone,
 {
-    pub fn new<S: strategies::Search<G = G> + 'a>(search: S) -> Self {
+    pub fn new<S: algorithms::Search<G = G> + 'a>(search: S) -> Self {
         Self(Arc::new(Mutex::new(Box::new(search))))
     }
 }
 
-impl<'a, G: Game + Clone> strategies::Search for AnySearch<'a, G> {
+impl<'a, G: Game + Clone> algorithms::Search for AnySearch<'a, G> {
     type G = G;
 
     fn friendly_name(&self) -> String {
@@ -170,11 +170,11 @@ pub fn battle_royale<G, S1, S2>(s1: &mut S1, s2: &mut S2) -> Option<usize>
 where
     G: Game,
     G::S: Default + Clone,
-    S1: strategies::Search<G = G>,
-    S2: strategies::Search<G = G>,
+    S1: algorithms::Search<G = G>,
+    S2: algorithms::Search<G = G>,
 {
     let mut state = G::S::default();
-    let mut strategies: [&mut dyn strategies::Search<G = G>; 2] = [s1, s2];
+    let mut strategies: [&mut dyn algorithms::Search<G = G>; 2] = [s1, s2];
     let mut s = 0;
     loop {
         if G::is_terminal(&state) {

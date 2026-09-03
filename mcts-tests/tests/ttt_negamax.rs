@@ -1,6 +1,6 @@
 use mcts::game::Game;
 use mcts::negamax::{MaterialBlind, Negamax, NegamaxOptions};
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 
 // Tic-tac-toe never runs past 9 plies, so a `MaterialBlind` evaluator (an
 // always-draw score) is fine here -- with `max_depth` at least 9, negamax

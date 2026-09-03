@@ -22,8 +22,8 @@
 // for this codebase's conventions) is itself costing Bayes-UCT2 games
 // against a tuned opponent, independent of the domain-correlation gap.
 use game_gonnect::Gonnect;
-use mcts::strategies::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
@@ -66,7 +66,7 @@ fn main() {
     println!();
 
     let ucb1 =
-        TreeSearch::<G7, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>>::new()
+        TreeSearch::<G7, Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>>::new()
             .config(
                 SearchConfig::new()
                     .name("ucb1/c=sqrt2")
@@ -79,8 +79,8 @@ fn main() {
         G7,
         Compose<
             select::BayesUct2,
-            mcts::strategies::mcts::simulate::Uniform,
-            mcts::strategies::mcts::backprop::BayesGaussian,
+            mcts::algorithms::mcts::simulate::Uniform,
+            mcts::algorithms::mcts::backprop::BayesGaussian,
         >,
     >::new()
     .config(
@@ -89,7 +89,7 @@ fn main() {
             .max_iterations(iterations)
             .q_init(QInit::Infinity)
             .select(select::BayesUct2::with_c(bayes_c))
-            .backprop(mcts::strategies::mcts::backprop::BayesGaussian::default()),
+            .backprop(mcts::algorithms::mcts::backprop::BayesGaussian::default()),
     );
 
     let mut strategies: Vec<AnySearch<G7>> = vec![AnySearch::new(ucb1), AnySearch::new(bayes_uct2)];

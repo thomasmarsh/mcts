@@ -171,7 +171,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// candidate (e.g. an incremental engine) can override it with rejection
     /// sampling -- draw a random cell, check just that one, retry on
     /// failure -- instead of enumerating every candidate on every rollout
-    /// ply. `SimulateStrategy::playout`'s default (uniform) path is the only
+    /// ply. `SimulatePolicy::playout`'s default (uniform) path is the only
     /// caller; context-sensitive strategies (`Mast`/`Nst`/`Lgr`/`Lgr2`) still
     /// need the full list for their policy lookups and don't use this.
     fn random_action(state: &Self::S, rng: &mut SmallRng) -> Option<Self::A> {
@@ -415,7 +415,7 @@ pub trait Game: Sized + Clone + Sync + Send {
     /// no chance-node branching, can see the whole picture. Defaults to
     /// `false` (deterministic), matching every game in this repo today.
     /// Consulted opportunistically by strategies that assume determinism
-    /// (see `strategies::negamax::supports`) as a capability check, not a
+    /// (see `algorithms::negamax::supports`) as a capability check, not a
     /// compile-time guarantee -- a `true` here doesn't add or remove any
     /// method on `Game` itself.
     fn is_stochastic() -> bool {

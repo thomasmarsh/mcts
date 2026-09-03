@@ -1,6 +1,6 @@
 //! Symmetry-element bookkeeping shared by any search that canonicalizes
-//! game states -- today MCTS (`strategies::mcts::node::real_action`,
-//! `strategies::mcts::stack::NodeStack::incoming_syms`), and negamax's
+//! game states -- today MCTS (`algorithms::mcts::node::real_action`,
+//! `algorithms::mcts::stack::NodeStack::incoming_syms`), and negamax's
 //! symmetry-aware transposition table. Nothing here is MCTS-specific; it
 //! only depends on `Game::canonical_representation`/`Transform`.
 

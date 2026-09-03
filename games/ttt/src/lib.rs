@@ -295,7 +295,7 @@ mod tests {
     use super::{HashedPosition, Move, TicTacToe};
     use mcts::{
         game::Game,
-        strategies::{
+        algorithms::{
             mcts::{node::QInit, render, select, strategy, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },

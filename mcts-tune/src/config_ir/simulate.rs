@@ -2,9 +2,9 @@ use super::codec::{field, to_snake_case};
 use mcts::game::Game;
 use mcts::search::TreeStats;
 use mcts::select;
-use mcts::simulate::{self, SimulateStrategy, Trial};
-use mcts::strategies::mcts::config::BackpropFlags;
-use mcts::strategies::mcts::strategy::Compose;
+use mcts::simulate::{self, SimulatePolicy, Trial};
+use mcts::algorithms::mcts::config::BackpropFlags;
+use mcts::algorithms::mcts::strategy::Compose;
 use mcts::{Requirements, SearchConfig, TreeSearch};
 use rand::rngs::SmallRng;
 use serde::de::Error as _;
@@ -15,7 +15,7 @@ use serde_json::Value;
 /// Invokes a continuation after resolving a concrete simulation strategy.
 pub trait SimulateCont<G: Game> {
     type Output;
-    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> Self::Output;
+    fn call<S: SimulatePolicy<G> + 'static>(self, simulate: S) -> Self::Output;
 }
 
 /// `register_simulate!`'s table, expanded into `BaseSimulateSpec`/
@@ -23,7 +23,7 @@ pub trait SimulateCont<G: Game> {
 ///
 /// `EpsilonGreedy` and `DecisiveMove` are not rows here -- both wrap an
 /// *inner* spec (`simulate::EpsilonGreedy<G, S>`/`simulate::DecisiveMove<G,
-/// S>` are generic over an arbitrary inner `SimulateStrategy`), and are
+/// S>` are generic over an arbitrary inner `SimulatePolicy`), and are
 /// handled by hand below on both enums instead, the same way
 /// `register_select!` special-cases its own `EpsilonGreedy`. Their inner
 /// spec is a `BaseSimulateSpec` (the table's variants only, no wrapper
@@ -34,7 +34,7 @@ pub trait SimulateCont<G: Game> {
 /// one wrapper deep.
 ///
 /// `MetaMcts` is also not a row here -- `simulate::MetaMcts<G, S: Strategy<G>>`
-/// wraps a whole nested `TreeSearch`, not a `SimulateStrategy`. Its inner
+/// wraps a whole nested `TreeSearch`, not a `SimulatePolicy`. Its inner
 /// search is *not* independently configurable: it's always `Compose<Ucb1,
 /// Uniform>` with `Ucb1`'s default `c`, matching the one real caller
 /// (`mcts-tune::make_candidate`'s `meta_mcts` arm, which has never varied
@@ -110,7 +110,7 @@ macro_rules! register_simulate {
             }
         }
 
-        /// Dispatches `spec` to the concrete `SimulateStrategy<G>` it names
+        /// Dispatches `spec` to the concrete `SimulatePolicy<G>` it names
         /// by invoking `cont` with it -- see `with_base_select` above.
         pub fn with_base_simulate<G, C>(spec: &BaseSimulateSpec, cont: C) -> C::Output
         where
@@ -371,7 +371,7 @@ register_simulate! {
     Lgr2Mast {} => simulate::Lgr2::<G, simulate::Lgr<G, simulate::Mast>>::new(),
 }
 
-/// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
+/// Forwards a resolved `S: SimulatePolicy<G>` on to `cont`, wrapped in
 /// `simulate::EpsilonGreedy` -- `with_simulate`'s handling of the recursive
 /// `EpsilonGreedy` spec variant.
 struct EpsilonGreedySimulateCont<C> {
@@ -386,13 +386,13 @@ where
 {
     type Output = C::Output;
 
-    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> C::Output {
+    fn call<S: SimulatePolicy<G> + 'static>(self, simulate: S) -> C::Output {
         let wrapped = simulate::EpsilonGreedy::<G, S>::with_epsilon(self.epsilon).inner(simulate);
         self.cont.call(wrapped)
     }
 }
 
-/// Forwards a resolved `S: SimulateStrategy<G>` on to `cont`, wrapped in
+/// Forwards a resolved `S: SimulatePolicy<G>` on to `cont`, wrapped in
 /// `simulate::DecisiveMove` -- `with_simulate`'s handling of the recursive
 /// `DecisiveMove` spec variant.
 struct DecisiveMoveSimulateCont<C> {
@@ -407,7 +407,7 @@ where
 {
     type Output = C::Output;
 
-    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> C::Output {
+    fn call<S: SimulatePolicy<G> + 'static>(self, simulate: S) -> C::Output {
         let wrapped = simulate::DecisiveMove::<G, S>::new()
             .mode(self.mode)
             .inner(simulate);
@@ -423,7 +423,7 @@ struct SimulateRequirementsCont<G>(std::marker::PhantomData<G>);
 impl<G: Game> SimulateCont<G> for SimulateRequirementsCont<G> {
     type Output = Requirements;
 
-    fn call<S: SimulateStrategy<G>>(self, simulate: S) -> Requirements {
+    fn call<S: SimulatePolicy<G>>(self, simulate: S) -> Requirements {
         simulate.requirements()
     }
 }
@@ -432,18 +432,18 @@ pub fn requirements_of_simulate<G: Game + 'static>(spec: &SimulateSpec) -> Requi
     with_simulate::<G, _>(spec, SimulateRequirementsCont(std::marker::PhantomData))
 }
 
-/// A shadow of `SimulateStrategy<G>` covering only the methods anything
+/// A shadow of `SimulatePolicy<G>` covering only the methods anything
 /// outside this module's own dispatch machinery actually calls on a
 /// resolved simulate strategy (`playout`, `backprop_flags`, plus what
-/// `Clone`/`Send`/`Sync` need) -- unlike `SimulateStrategy` itself, this one
+/// `Clone`/`Send`/`Sync` need) -- unlike `SimulatePolicy` itself, this one
 /// is object-safe (no `Self`-by-value `Default`/`Clone` in its signature),
 /// which is what lets `DynSimulate` below erase the ~10 concrete leaf types
 /// `with_simulate` can produce (3 base families x wrapped in `EpsilonGreedy`/
 /// `DecisiveMove`, plus `MetaMcts`) into one. Blanket-implemented over every
-/// real `SimulateStrategy`, so nothing here can drift from
+/// real `SimulatePolicy`, so nothing here can drift from
 /// `register_simulate!`'s table -- there's no second by-hand list of
 /// families to keep in sync.
-trait ErasedSimulateStrategy<G: Game>: Send + Sync {
+trait ErasedSimulatePolicy<G: Game>: Send + Sync {
     fn playout(
         &mut self,
         state: G::S,
@@ -453,13 +453,13 @@ trait ErasedSimulateStrategy<G: Game>: Send + Sync {
         rng: &mut SmallRng,
     ) -> Trial<G>;
     fn backprop_flags(&self) -> BackpropFlags;
-    fn clone_box(&self) -> Box<dyn ErasedSimulateStrategy<G>>;
+    fn clone_box(&self) -> Box<dyn ErasedSimulatePolicy<G>>;
 }
 
-impl<G, S> ErasedSimulateStrategy<G> for S
+impl<G, S> ErasedSimulatePolicy<G> for S
 where
     G: Game,
-    S: SimulateStrategy<G> + 'static,
+    S: SimulatePolicy<G> + 'static,
 {
     fn playout(
         &mut self,
@@ -469,30 +469,30 @@ where
         prev_action: Option<G::A>,
         rng: &mut SmallRng,
     ) -> Trial<G> {
-        SimulateStrategy::playout(self, state, max_playout_depth, stats, prev_action, rng)
+        SimulatePolicy::playout(self, state, max_playout_depth, stats, prev_action, rng)
     }
 
     fn backprop_flags(&self) -> BackpropFlags {
-        SimulateStrategy::backprop_flags(self)
+        SimulatePolicy::backprop_flags(self)
     }
 
-    fn clone_box(&self) -> Box<dyn ErasedSimulateStrategy<G>> {
+    fn clone_box(&self) -> Box<dyn ErasedSimulatePolicy<G>> {
         Box::new(self.clone())
     }
 }
 
-/// One `SimulateStrategy<G>` impl standing in for all of `with_simulate`'s
-/// concrete leaf types, via a `Box<dyn ErasedSimulateStrategy<G>>` --
+/// One `SimulatePolicy<G>` impl standing in for all of `with_simulate`'s
+/// concrete leaf types, via a `Box<dyn ErasedSimulatePolicy<G>>` --
 /// `build_search`'s way of stopping the `select` x `simulate` x
 /// `final_action` monomorphization product from ever including `simulate`'s
-/// share of the fan-out. `SimulateStrategy::playout` is called once per
+/// share of the fan-out. `SimulatePolicy::playout` is called once per
 /// search *iteration* (its own per-ply `select_move` calls happen inside
 /// whichever concrete type's own `playout` body runs, fully statically
 /// dispatched there), so the one indirect call this adds per iteration is
 /// cheap relative to a whole rollout's game-state work -- `select`'s own,
 /// hotter per-child dispatch (once per child, at every node, every
 /// tree-descent step) is erased the same way, via `DynSelect`.
-pub struct DynSimulate<G: Game>(Box<dyn ErasedSimulateStrategy<G>>);
+pub struct DynSimulate<G: Game>(Box<dyn ErasedSimulatePolicy<G>>);
 
 impl<G: Game> Clone for DynSimulate<G> {
     fn clone(&self) -> Self {
@@ -506,7 +506,7 @@ impl<G: Game> Default for DynSimulate<G> {
     }
 }
 
-impl<G: Game> SimulateStrategy<G> for DynSimulate<G> {
+impl<G: Game> SimulatePolicy<G> for DynSimulate<G> {
     fn playout(
         &mut self,
         state: G::S,
@@ -534,7 +534,7 @@ struct EraseSimulateCont<G>(std::marker::PhantomData<G>);
 impl<G: Game + 'static> SimulateCont<G> for EraseSimulateCont<G> {
     type Output = DynSimulate<G>;
 
-    fn call<S: SimulateStrategy<G> + 'static>(self, simulate: S) -> DynSimulate<G> {
+    fn call<S: SimulatePolicy<G> + 'static>(self, simulate: S) -> DynSimulate<G> {
         DynSimulate(Box::new(simulate))
     }
 }

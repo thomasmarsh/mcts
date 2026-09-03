@@ -961,7 +961,7 @@ impl<const P: usize> Game for Ingenious<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcts::strategies::{
+    use mcts::algorithms::{
         mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };

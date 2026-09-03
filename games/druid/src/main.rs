@@ -38,7 +38,7 @@ use game_druid::{
     Player, Size, Square, State,
 };
 use mcts::game::Game;
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use mcts_tune::presets::PresetTable;
 
 // ---------------------------------------------------------------------------

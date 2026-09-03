@@ -12,7 +12,7 @@ use bitboard::Dyn;
 use game_gonnect::book::{self, BookBuildConfig};
 use game_gonnect::{Bits, Gonnect, Move, Player, State};
 use mcts::game::Game;
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use mcts_tune::presets::PresetTable;
 
 /// Number of self-play games one `tune_eval` call runs when the caller

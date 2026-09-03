@@ -50,10 +50,10 @@
 //
 // Usage: cargo run --release --example strength_oh_hell_dag_ismcts
 use game_oh_hell::OhHell;
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     select, strategy, GraphSearch, GraphStats, IsmctsMode, McgsCorrection, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 

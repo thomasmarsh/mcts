@@ -1,7 +1,7 @@
 //! A static evaluation of a non-terminal state -- opt-in, per-game, and
 //! independent of any particular search strategy, so any strategy (not
-//! just `strategies::negamax`, its original and so-far-only consumer) can
-//! depend on it without depending on that module. `strategies::negamax`
+//! just `algorithms::negamax`, its original and so-far-only consumer) can
+//! depend on it without depending on that module. `algorithms::negamax`
 //! re-exports everything in this module, so existing `negamax::Evaluator`/
 //! `negamax::MaterialBlind`/etc. call sites are unaffected by where it
 //! actually lives.

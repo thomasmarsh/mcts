@@ -8,8 +8,8 @@
 
 use mcts::evaluator::MaterialBlind;
 use mcts::game::Game;
-use mcts::strategies::negamax::{Negamax, NegamaxOptions};
-use mcts::strategies::{flat_mc::FlatMonteCarloStrategy, random::Random, Search};
+use mcts::algorithms::negamax::{Negamax, NegamaxOptions};
+use mcts::algorithms::{flat_mc::FlatMonteCarloStrategy, random::Random, Search};
 
 use crate::family_catalog::DirectFamily;
 use crate::SearchBudget;

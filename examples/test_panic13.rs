@@ -1,6 +1,6 @@
 use game_druid::{Druid, HashedState, Size};
-use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 fn main() {
     let state = HashedState::new(Size { w: 5, h: 5 });

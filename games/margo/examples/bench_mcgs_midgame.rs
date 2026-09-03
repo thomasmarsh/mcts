@@ -19,10 +19,10 @@ use std::time::{Duration, Instant};
 
 use game_margo::{Margo, State};
 use mcts::game::Game;
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use rand::{rngs::SmallRng, SeedableRng};
 
 /// Byte-for-byte the same config `bench_mcgs.rs::strong_config` builds --

@@ -2,8 +2,8 @@ use super::codec::{field, to_snake_case};
 use mcts::game::Game;
 use mcts::index::Id;
 use mcts::node::ChildArray;
-use mcts::select::{self, SelectContext, SelectStrategy};
-use mcts::strategies::mcts::config::BackpropFlags;
+use mcts::select::{self, SelectContext, SelectPolicy};
+use mcts::algorithms::mcts::config::BackpropFlags;
 use mcts::Requirements;
 use rand::rngs::SmallRng;
 use serde::de::Error as _;
@@ -14,7 +14,7 @@ use serde_json::Value;
 /// Invokes a continuation after resolving a concrete selection strategy.
 pub trait SelectCont<G: Game> {
     type Output;
-    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> Self::Output;
+    fn call<S: SelectPolicy<G> + 'static>(self, select: S) -> Self::Output;
 }
 
 /// `register_select!`'s table, expanded into `BaseSelectSpec`/`SelectSpec`
@@ -24,7 +24,7 @@ pub trait SelectCont<G: Game> {
 /// Each row is `Variant { field: ty, ... } => expr`, where `expr` is
 /// evaluated with the row's fields bound by value (see `with_select`'s
 /// `match spec.clone()`) and must produce a value implementing
-/// `SelectStrategy<G>` for whatever `G` the call site is generic over.
+/// `SelectPolicy<G>` for whatever `G` the call site is generic over.
 ///
 /// `EpsilonGreedy` is not a row here -- it wraps an *inner* spec, and is
 /// handled by hand below on both enums instead. Its inner spec is a
@@ -103,7 +103,7 @@ macro_rules! register_select {
             }
         }
 
-        /// Dispatches `spec` to the concrete `SelectStrategy<G>` it names by
+        /// Dispatches `spec` to the concrete `SelectPolicy<G>` it names by
         /// invoking `cont` with it -- see this module's doc comment for why
         /// this is a continuation call rather than a return value.
         pub fn with_base_select<G, C>(spec: &BaseSelectSpec, cont: C) -> C::Output
@@ -245,7 +245,7 @@ register_select! {
     BayesUct2 { c: f64 } => select::BayesUct2::with_c(c),
 }
 
-/// Forwards a resolved `S: SelectStrategy<G>` on to `cont`, wrapped in
+/// Forwards a resolved `S: SelectPolicy<G>` on to `cont`, wrapped in
 /// `select::EpsilonGreedy` -- `with_select`'s handling of the recursive
 /// `EpsilonGreedy` spec variant.
 struct EpsilonGreedyCont<C> {
@@ -260,7 +260,7 @@ where
 {
     type Output = C::Output;
 
-    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> C::Output {
+    fn call<S: SelectPolicy<G> + 'static>(self, select: S) -> C::Output {
         let wrapped = select::EpsilonGreedy::<G, S>::new()
             .epsilon(self.epsilon)
             .inner(select);
@@ -271,7 +271,7 @@ where
 /// A `SelectCont` whose `Output` is just the resolved component's own
 /// `Requirements` -- reusing `with_select`'s dispatch to compute this means
 /// it's derived from the *actual* constructed component calling its own
-/// `SelectStrategy::requirements()` (see `config::Requirements`'s doc
+/// `SelectPolicy::requirements()` (see `config::Requirements`'s doc
 /// comment in `mcts`), not a second, independently-drifting description of
 /// the same table.
 pub(super) struct RequirementsCont<G>(pub(super) std::marker::PhantomData<G>);
@@ -279,7 +279,7 @@ pub(super) struct RequirementsCont<G>(pub(super) std::marker::PhantomData<G>);
 impl<G: Game> SelectCont<G> for RequirementsCont<G> {
     type Output = Requirements;
 
-    fn call<S: SelectStrategy<G>>(self, select: S) -> Requirements {
+    fn call<S: SelectPolicy<G>>(self, select: S) -> Requirements {
         select.requirements()
     }
 }
@@ -288,51 +288,51 @@ pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
     with_select::<G, _>(spec, RequirementsCont(std::marker::PhantomData))
 }
 
-/// A shadow of `SelectStrategy<G>` covering only `best_child` (the one
+/// A shadow of `SelectPolicy<G>` covering only `best_child` (the one
 /// method `select_step` calls on a search's `select` component, once per
 /// tree-descent step) plus `backprop_flags`/`Clone`/`Send`/`Sync` -- the
-/// `select`-axis counterpart of `ErasedSimulateStrategy` in `simulate.rs`.
+/// `select`-axis counterpart of `ErasedSimulatePolicy` in `simulate.rs`.
 /// `final_action.rs`'s `resolve_final_action` reuses this same shadow trait
 /// and `DynSelect` rather than defining its own copy, since both axes erase
-/// the identical `SelectStrategy<G>` trait.
+/// the identical `SelectPolicy<G>` trait.
 /// `score_child`/`unvisited_value` aren't part of this shadow: whichever
 /// concrete family a `DynSelect` box holds still runs its own per-child
 /// scoring loop inside its own `best_child` (the default implementation in
-/// `mcts::select::SelectStrategy`), fully statically dispatched there --
+/// `mcts::select::SelectPolicy`), fully statically dispatched there --
 /// only the one per-node call into the box is erased, not the per-child
-/// comparisons inside it. Unlike `SelectStrategy` itself, this shadow is
+/// comparisons inside it. Unlike `SelectPolicy` itself, this shadow is
 /// object-safe (no `Self`-by-value `Default`/`Clone`, no associated `Score`/
 /// `Aux` types in its signature), which is what lets `DynSelect` below erase
 /// every concrete family `with_select` can produce into one type.
-/// Blanket-implemented over every real `SelectStrategy`, so nothing here can
+/// Blanket-implemented over every real `SelectPolicy`, so nothing here can
 /// drift from `register_select!`'s table.
-trait ErasedSelectStrategy<G: Game>: Send + Sync {
+trait ErasedSelectPolicy<G: Game>: Send + Sync {
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize;
     fn backprop_flags(&self) -> BackpropFlags;
-    fn clone_box(&self) -> Box<dyn ErasedSelectStrategy<G>>;
+    fn clone_box(&self) -> Box<dyn ErasedSelectPolicy<G>>;
 }
 
-impl<G, S> ErasedSelectStrategy<G> for S
+impl<G, S> ErasedSelectPolicy<G> for S
 where
     G: Game,
-    S: SelectStrategy<G> + 'static,
+    S: SelectPolicy<G> + 'static,
 {
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
-        SelectStrategy::best_child(self, ctx, rng)
+        SelectPolicy::best_child(self, ctx, rng)
     }
 
     fn backprop_flags(&self) -> BackpropFlags {
-        SelectStrategy::backprop_flags(self)
+        SelectPolicy::backprop_flags(self)
     }
 
-    fn clone_box(&self) -> Box<dyn ErasedSelectStrategy<G>> {
+    fn clone_box(&self) -> Box<dyn ErasedSelectPolicy<G>> {
         Box::new(self.clone())
     }
 }
 
-/// One `SelectStrategy<G>` impl standing in for all of `with_select`'s
+/// One `SelectPolicy<G>` impl standing in for all of `with_select`'s
 /// concrete leaf types (the `register_select!` table, each optionally
-/// wrapped in `EpsilonGreedy`), via a `Box<dyn ErasedSelectStrategy<G>>` --
+/// wrapped in `EpsilonGreedy`), via a `Box<dyn ErasedSelectPolicy<G>>` --
 /// mirrors `DynSimulate` in `simulate.rs`, and is also what
 /// `final_action.rs`'s `resolve_final_action` returns directly (`select` and
 /// `final_action` are two independently-configured axes that both happen to
@@ -346,7 +346,7 @@ where
 /// reads them, since `best_child` is always overridden here rather than
 /// falling back to the trait's default (which is the only thing that would
 /// call `score_child`/`unvisited_value`/`setup` on `Self`).
-pub struct DynSelect<G: Game>(Box<dyn ErasedSelectStrategy<G>>);
+pub struct DynSelect<G: Game>(Box<dyn ErasedSelectPolicy<G>>);
 
 impl<G: Game> Clone for DynSelect<G> {
     fn clone(&self) -> Self {
@@ -360,7 +360,7 @@ impl<G: Game> Default for DynSelect<G> {
     }
 }
 
-impl<G: Game> SelectStrategy<G> for DynSelect<G> {
+impl<G: Game> SelectPolicy<G> for DynSelect<G> {
     type Score = ();
     type Aux = ();
 
@@ -400,7 +400,7 @@ pub(super) struct EraseSelectCont<G>(pub(super) std::marker::PhantomData<G>);
 impl<G: Game + 'static> SelectCont<G> for EraseSelectCont<G> {
     type Output = DynSelect<G>;
 
-    fn call<S: SelectStrategy<G> + 'static>(self, select: S) -> DynSelect<G> {
+    fn call<S: SelectPolicy<G> + 'static>(self, select: S) -> DynSelect<G> {
         DynSelect(Box::new(select))
     }
 }

@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use game_host::{AiPresetInfo, HostError};
 use mcts::game::Game;
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

@@ -12,8 +12,8 @@
 
 use game_nim::Nim;
 use mcts::game::Game;
-use mcts::strategies::mcts::{strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use serde_json::json;
 
 /// Bounded the same way `mcts-tune`'s own unit-test `baseline()` is:

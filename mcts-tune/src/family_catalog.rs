@@ -21,7 +21,7 @@ use game_host::{HostError, TunerCondition, TunerParameter};
 use mcts::evaluator::Score;
 use mcts::select::{GpnBias, RaveSchedule, RaveUcb};
 use mcts::simulate::DecisiveMoveMode;
-use mcts::strategies::negamax;
+use mcts::algorithms::negamax;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};

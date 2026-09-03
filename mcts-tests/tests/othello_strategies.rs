@@ -10,7 +10,7 @@
 fn test_othello_graph_reroot_self_play_keeps_ply_and_legal_moves() {
     use game_othello::*;
     use mcts::game::Game;
-    use mcts::strategies::Search;
+    use mcts::algorithms::Search;
     use mcts::{GraphSearch, GraphStats};
 
     for stats in [GraphStats::Edges, GraphStats::Nodes, GraphStats::Both] {

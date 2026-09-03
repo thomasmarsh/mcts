@@ -3,7 +3,7 @@ use game_host::{
     HostError, SearchReport,
 };
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use serde_json::{json, Value};
 
 use crate::{

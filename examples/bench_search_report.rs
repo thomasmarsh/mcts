@@ -6,8 +6,8 @@
 use std::time::Instant;
 
 use game_druid::{Druid, HashedState};
-use mcts::strategies::mcts::{strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 const DEFAULT_LARGE_ITERATIONS: usize = 20_000;
 const MAX_ITERATIONS: usize = 100_000;

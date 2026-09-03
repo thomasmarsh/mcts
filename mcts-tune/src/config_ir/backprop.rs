@@ -1,5 +1,5 @@
 use super::codec::{field, to_snake_case};
-use mcts::backprop::{self, BackpropStrategy};
+use mcts::backprop::{self, BackpropPolicy};
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -8,13 +8,13 @@ use serde_json::Value;
 /// Invokes a continuation after resolving a concrete backpropagation strategy.
 pub trait BackpropCont {
     type Output;
-    fn call<B: BackpropStrategy + 'static>(self, backprop: B) -> Self::Output;
+    fn call<B: BackpropPolicy + 'static>(self, backprop: B) -> Self::Output;
 }
 
 /// `register_backprop!`'s table. `backprop::Classic` was, for a long time,
-/// the *only* type in the whole workspace implementing `BackpropStrategy` --
+/// the *only* type in the whole workspace implementing `BackpropPolicy` --
 /// a macro rather than a hand-written enum mainly so a second
-/// `BackpropStrategy` impl slots in the same way a new `select`/`simulate`
+/// `BackpropPolicy` impl slots in the same way a new `select`/`simulate`
 /// family does, without inventing a new pattern. `BayesGaussian`/
 /// `BayesNumeric` are the first strategies to actually exercise that: they
 /// exist specifically to pair with `select::BayesUct1`/`BayesUct2`
@@ -23,9 +23,9 @@ pub trait BackpropCont {
 ///
 /// There is no `Base.../...` recursive-wrapper split here (contrast
 /// `register_select!`/`register_simulate!`): nothing wraps a
-/// `BackpropStrategy` anywhere in the codebase.
+/// `BackpropPolicy` anywhere in the codebase.
 ///
-/// There is also no `requirements_of_backprop` -- `BackpropStrategy` itself
+/// There is also no `requirements_of_backprop` -- `BackpropPolicy` itself
 /// declares no `requirements()`/`backprop_flags()` method
 /// (`SearchConfig::requirements()` only unions `Select`/`Simulate`/
 /// `FinalAction`, never `Backprop`), so there is nothing real for such a
@@ -104,7 +104,7 @@ macro_rules! register_backprop {
             }
         }
 
-        /// Dispatches `spec` to the concrete `BackpropStrategy` it names by
+        /// Dispatches `spec` to the concrete `BackpropPolicy` it names by
         /// invoking `cont` with it -- see `with_base_select` above.
         pub fn with_backprop<C>(spec: &BackpropSpec, cont: C) -> C::Output
         where

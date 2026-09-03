@@ -1,4 +1,4 @@
-//! Heuristic-guided playouts: the `DruidHeuristic` simulate strategy built on
+//! Heuristic-guided playouts: the `DruidHeuristic` simulate policy built on
 //! `heuristic_scores`'s three Browne-motivated detectors, plus the
 //! `RaveDecisiveHeuristic` preset wrapper. The score core is shared between
 //! the flat and move-split encodings (it reasons purely in `PlacedPiece`s);
@@ -18,9 +18,9 @@ use rand::rngs::SmallRng;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     backprop, select,
-    simulate::{self, SimulateStrategy},
+    simulate::{self, SimulatePolicy},
     Strategy, TreeStats,
 };
 use mcts::util::random_best;
@@ -212,7 +212,7 @@ pub(crate) fn max_heuristic_for_cells(
     scores.into_iter().fold(f64::NEG_INFINITY, f64::max)
 }
 
-/// `SimulateStrategy<DruidGame<M>>` driven by `heuristic_scores`: picks among the
+/// `SimulatePolicy<DruidGame<M>>` driven by `heuristic_scores`: picks among the
 /// max-scoring candidate moves (ties broken randomly by `random_best`, same
 /// as `simulate::Mast`). On its own this only ever *narrows* the choice --
 /// when no heuristic condition fires every move scores 0 and it degrades to
@@ -235,7 +235,7 @@ impl<M: MoveEncoding> DruidHeuristic<M> {
     }
 }
 
-impl<M: MoveEncoding> SimulateStrategy<DruidGame<M>> for DruidHeuristic<M> {
+impl<M: MoveEncoding> SimulatePolicy<DruidGame<M>> for DruidHeuristic<M> {
     #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,

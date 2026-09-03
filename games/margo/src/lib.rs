@@ -1051,7 +1051,7 @@ impl Game for Margo {
     /// the position genuinely is terminal (rare, near the very end).
     ///
     /// This matters independently of `random_action`'s own fix:
-    /// `SimulateStrategy::Uniform::playout` calls `G::is_terminal` (via
+    /// `SimulatePolicy::Uniform::playout` calls `G::is_terminal` (via
     /// `terminal_status`) on *every* rollout ply to decide whether to keep
     /// going, so without this override the full-board scan `random_action`
     /// eliminated from move selection was still being paid right next to
@@ -1094,7 +1094,7 @@ impl Game for Margo {
         true
     }
 
-    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// Rejection-sampling fast path for `SimulatePolicy::playout`'s
     /// uniform rollouts -- same idea as `games/gonnect`/`games/atarigo`'s
     /// `random_action`: draw a random cell and run
     /// [`candidate_is_legal`]'s single-candidate check on just that one
@@ -2387,11 +2387,11 @@ mod tests {
     /// "single-position ko, not full positional superko").
     #[test]
     fn regression_state_only_keying_no_corruption_with_real_captures() {
-        use mcts::strategies::mcts::{
+        use mcts::algorithms::mcts::{
             node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
             TranspositionKeying, TreeSearch,
         };
-        use mcts::strategies::Search;
+        use mcts::algorithms::Search;
 
         type TS = TreeSearch<Margo, strategy::Ucb1>;
         let n = 4;
@@ -2428,11 +2428,11 @@ mod tests {
     /// that silently stops the merge from happening gets caught.
     #[test]
     fn state_only_keying_shrinks_the_arena_via_a_real_recapture_transposition() {
-        use mcts::strategies::mcts::{
+        use mcts::algorithms::mcts::{
             node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
             TranspositionKeying, TreeSearch,
         };
-        use mcts::strategies::Search;
+        use mcts::algorithms::Search;
 
         type TS = TreeSearch<Margo, strategy::Ucb1>;
         let n = 4;

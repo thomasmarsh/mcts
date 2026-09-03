@@ -21,10 +21,10 @@ use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     node::QInit, select, simulate, MemoryStats, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()

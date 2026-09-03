@@ -87,7 +87,7 @@ impl IntoResponse for AdapterError {
 // ---------------------------------------------------------------------------
 
 /// A type-erased, per-game-kind adapter over `mcts::game::Game` +
-/// `mcts::strategies::Search`. Each concrete adapter deserializes its
+/// `mcts::algorithms::Search`. Each concrete adapter deserializes its
 /// `Value` arguments into the real `G::S`/`G::A`, calls straight through to
 /// `Game`/`Search`, and re-serializes the result -- all per-game
 /// specificity lives inside the game binary; nothing outside this trait

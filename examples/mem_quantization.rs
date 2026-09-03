@@ -15,12 +15,12 @@
 //
 // Usage: cargo run --release --example mem_quantization
 use game_druid::{Druid, HashedState};
-use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 const ITERATIONS: usize = 20_000;
 
-fn report(label: &str, stats: &mcts::strategies::mcts::MemoryStats) {
+fn report(label: &str, stats: &mcts::algorithms::mcts::MemoryStats) {
     let child_bytes = stats.child_array_heap_bytes;
     println!(
         "{label:<20} nodes={:<7} node_bytes={:<10} child_array_heap_bytes={:<10} solver_bytes={:<9} total={}",

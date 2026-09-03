@@ -45,7 +45,7 @@ use game_gonnect::book::{self, BookBuildConfig};
 use game_gonnect::{Gonnect, State};
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
-use mcts::strategies::mcts::book::OpeningBook;
+use mcts::algorithms::mcts::book::OpeningBook;
 
 struct Args {
     size: usize,

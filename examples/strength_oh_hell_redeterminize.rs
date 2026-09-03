@@ -42,8 +42,8 @@
 //
 // Usage: cargo run --release --example strength_oh_hell_redeterminize
 use game_oh_hell::OhHell;
-use mcts::strategies::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 

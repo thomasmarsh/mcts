@@ -5,8 +5,8 @@
 //! `GameAdapter` method (the subprocess-protocol path), so the two never
 //! drift apart on how the strategy is wired up.
 //!
-//! See `mcts::strategies::mcts::select::quasi`'s doc comment for the
-//! algorithm itself and `mcts::strategies::mcts::book` for the resulting
+//! See `mcts::algorithms::mcts::select::quasi`'s doc comment for the
+//! algorithm itself and `mcts::algorithms::mcts::book` for the resulting
 //! structure. This module supplies the game-specific plumbing for both
 //! directions: building a book (`build`, below) and consulting one during
 //! live play (`BookIndex`/`BookAugmented`, at the bottom of this file) --
@@ -18,10 +18,10 @@
 use crate::{Gonnect, Move, State};
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
-use mcts::strategies::mcts::book::OpeningBook;
-use mcts::strategies::mcts::index;
-use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::{ActionReport, RootReport, Search};
+use mcts::algorithms::mcts::book::OpeningBook;
+use mcts::algorithms::mcts::index;
+use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::{ActionReport, RootReport, Search};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]

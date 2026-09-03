@@ -1223,7 +1223,7 @@ impl<const N: usize> fmt::Display for State<N> {
 }
 
 #[cfg(test)]
-impl<const N: usize> mcts::strategies::mcts::render::NodeRender for State<N> {}
+impl<const N: usize> mcts::algorithms::mcts::render::NodeRender for State<N> {}
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -1599,7 +1599,7 @@ mod tests {
 
     #[test]
     fn test_mcts_smoke() {
-        use mcts::strategies::{
+        use mcts::algorithms::{
             mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
             Search,
         };

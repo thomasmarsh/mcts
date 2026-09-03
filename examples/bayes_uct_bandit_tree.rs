@@ -24,8 +24,8 @@
 use std::cell::RefCell;
 
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 const WIDTH: usize = 5;
 
@@ -147,7 +147,7 @@ impl Game for BanditTree {
 
 fn ucb1(
     iterations: usize,
-) -> TreeSearch<BanditTree, Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>> {
+) -> TreeSearch<BanditTree, Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("ucb1")
@@ -163,8 +163,8 @@ fn bayes_uct1(
     BanditTree,
     Compose<
         select::BayesUct1,
-        mcts::strategies::mcts::simulate::Uniform,
-        mcts::strategies::mcts::backprop::BayesGaussian,
+        mcts::algorithms::mcts::simulate::Uniform,
+        mcts::algorithms::mcts::backprop::BayesGaussian,
     >,
 > {
     TreeSearch::new().config(
@@ -173,7 +173,7 @@ fn bayes_uct1(
             .max_iterations(iterations)
             .q_init(QInit::Infinity)
             .select(select::BayesUct1::with_c(1.0))
-            .backprop(mcts::strategies::mcts::backprop::BayesGaussian::default()),
+            .backprop(mcts::algorithms::mcts::backprop::BayesGaussian::default()),
     )
 }
 
@@ -183,8 +183,8 @@ fn bayes_uct2(
     BanditTree,
     Compose<
         select::BayesUct2,
-        mcts::strategies::mcts::simulate::Uniform,
-        mcts::strategies::mcts::backprop::BayesGaussian,
+        mcts::algorithms::mcts::simulate::Uniform,
+        mcts::algorithms::mcts::backprop::BayesGaussian,
     >,
 > {
     TreeSearch::new().config(
@@ -193,7 +193,7 @@ fn bayes_uct2(
             .max_iterations(iterations)
             .q_init(QInit::Infinity)
             .select(select::BayesUct2::with_c(1.0))
-            .backprop(mcts::strategies::mcts::backprop::BayesGaussian::default()),
+            .backprop(mcts::algorithms::mcts::backprop::BayesGaussian::default()),
     )
 }
 

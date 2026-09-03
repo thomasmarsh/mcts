@@ -12,10 +12,10 @@
 use std::time::{Duration, Instant};
 
 use game_margo::{Margo, State};
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::{
     node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 
 /// Byte-for-byte the same axes `mcts-tune::resolve_graph_search` derives
 /// from `mcgs: true` -- `use_transpositions` forced off in favor of the

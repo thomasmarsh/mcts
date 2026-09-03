@@ -22,8 +22,8 @@ use std::time::Duration;
 
 use game_ingenious::{Ingenious, State};
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::AnySearch;
 use mcts_bench::tournament::Result as GameResult;
 

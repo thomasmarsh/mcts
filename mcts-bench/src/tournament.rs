@@ -12,7 +12,7 @@ use std::ops::{Add, AddAssign};
 use std::sync::atomic::AtomicU32;
 
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 
 use crate::log::LogRecord;

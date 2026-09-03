@@ -435,7 +435,7 @@ impl Game for AtariGo {
         }
     }
 
-    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// Rejection-sampling fast path for `SimulatePolicy::playout`'s
     /// uniform rollouts: draw a random cell and run `State::valid` (the
     /// `GoEngine`-backed O(neighbors) check) on just that one cell instead of
     /// probing every empty cell via `generate_actions`. Falls back to the
@@ -1101,7 +1101,7 @@ mod tests {
     /// `ChildArray` that isn't legal for the real board it's replaying.
     ///
     /// Root cause (confirmed via ad hoc instrumentation, not yet fixed):
-    /// `ChildArray::child_ids[idx]` (`mcts::strategies::mcts::node`) is a
+    /// `ChildArray::child_ids[idx]` (`mcts::algorithms::mcts::node`) is a
     /// `OnceLock`, resolved once per (parent node, action index) and then
     /// reused forever. That was unsound once a parent node itself became
     /// shared across more than one real board orientation (which
@@ -1117,7 +1117,7 @@ mod tests {
     /// fixed earlier (which made `incoming_sym` always recomputed fresh
     /// rather than cached) -- that fix stopped the *translation* from going
     /// stale, but the *child identity* cached in `ChildArray` had the exact
-    /// same staleness problem. Fixed by `mcts::strategies::mcts::search::
+    /// same staleness problem. Fixed by `mcts::algorithms::mcts::search::
     /// shared::verified_child_id`, which re-derives the real successor
     /// state's hash on every visit to an already-explored `ChildArray` slot
     /// and falls through to the shared transposition/DAG table (instead of
@@ -1125,8 +1125,8 @@ mod tests {
     /// child's own stored hash.
     #[test]
     fn regression_transposition_corruption_past_symmetry_ply_limit() {
-        use mcts::strategies::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
-        use mcts::strategies::Search;
+        use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::algorithms::Search;
 
         type TS = TreeSearch<AtariGo, strategy::Ucb1>;
         let mut ts = TS::default().config(
@@ -1152,11 +1152,11 @@ mod tests {
     /// cycles) still terminates with a legal PV.
     #[test]
     fn regression_state_only_keying_no_corruption_past_symmetry_ply_limit() {
-        use mcts::strategies::mcts::{
+        use mcts::algorithms::mcts::{
             node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
             TreeSearch,
         };
-        use mcts::strategies::Search;
+        use mcts::algorithms::Search;
 
         type TS = TreeSearch<AtariGo, strategy::Ucb1>;
         let mut ts = TS::default().config(
@@ -1189,11 +1189,11 @@ mod tests {
     /// cross-ply merging newly reachable here.
     #[test]
     fn state_only_keying_matches_per_ply_arena_size_when_no_recapture_is_possible() {
-        use mcts::strategies::mcts::{
+        use mcts::algorithms::mcts::{
             node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
             TreeSearch,
         };
-        use mcts::strategies::Search;
+        use mcts::algorithms::Search;
 
         type TS = TreeSearch<AtariGo, strategy::Ucb1>;
         for seed in 0..5u64 {

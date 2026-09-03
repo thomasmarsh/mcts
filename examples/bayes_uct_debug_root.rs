@@ -6,8 +6,8 @@
 use std::cell::RefCell;
 
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 
 const WIDTH: usize = 5;
 
@@ -134,7 +134,7 @@ fn main() {
 
     let mut ucb1 = TreeSearch::<
         BanditTree,
-        Compose<select::Ucb1, mcts::strategies::mcts::simulate::Uniform>,
+        Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>,
     >::new()
     .config(
         SearchConfig::new()
@@ -168,8 +168,8 @@ fn main() {
         BanditTree,
         Compose<
             select::BayesUct2,
-            mcts::strategies::mcts::simulate::Uniform,
-            mcts::strategies::mcts::backprop::BayesGaussian,
+            mcts::algorithms::mcts::simulate::Uniform,
+            mcts::algorithms::mcts::backprop::BayesGaussian,
         >,
     >::new()
     .config(
@@ -177,7 +177,7 @@ fn main() {
             .max_iterations(n)
             .q_init(QInit::Infinity)
             .select(select::BayesUct2::with_c(1.0))
-            .backprop(mcts::strategies::mcts::backprop::BayesGaussian::default()),
+            .backprop(mcts::algorithms::mcts::backprop::BayesGaussian::default()),
     );
     let chosen2 = bayes2.choose_action(&BanditState::default());
     let report2 = bayes2.root_report(&BanditState::default());

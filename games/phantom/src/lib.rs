@@ -359,7 +359,7 @@ mod tests {
     use super::{Phantom, Piece, Position, LINES, NUM_CELLS};
     use mcts::{
         game::{Game, PlayerIndex},
-        strategies::{
+        algorithms::{
             mcts::{node::NodeState, render, strategy, IsmctsMode, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },

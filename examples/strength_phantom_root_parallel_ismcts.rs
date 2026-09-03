@@ -34,8 +34,8 @@
 //
 // Usage: cargo run --release --example strength_phantom_root_parallel_ismcts
 use game_phantom::Phantom;
-use mcts::strategies::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
-use mcts::strategies::Search;
+use mcts::algorithms::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
+use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 

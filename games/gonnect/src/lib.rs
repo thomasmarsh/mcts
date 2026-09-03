@@ -596,7 +596,7 @@ impl Game for Gonnect {
         }
     }
 
-    /// Rejection-sampling fast path for `SimulateStrategy::playout`'s
+    /// Rejection-sampling fast path for `SimulatePolicy::playout`'s
     /// uniform rollouts -- same idea as `AtariGo::random_action`: draw a
     /// random cell and run the `GoEngine`-backed `State::valid`/`is_ko`
     /// checks on just that one cell instead of probing every empty cell via
@@ -811,11 +811,11 @@ impl fmt::Display for State {
 }
 
 #[cfg(test)]
-impl mcts::strategies::mcts::render::NodeRender for State {}
+impl mcts::algorithms::mcts::render::NodeRender for State {}
 
 #[cfg(test)]
 mod tests {
-    use mcts::strategies::{
+    use mcts::algorithms::{
         mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
         Search,
     };

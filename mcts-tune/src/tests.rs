@@ -5,11 +5,11 @@ use crate::*;
 use game_host::{ConfiguredCandidateSide, ConfiguredOutcome, HostError, TunerInfo};
 use game_nim::Nim;
 use mcts::game::{Game, PlayerIndex};
-use mcts::strategies::mcts::select::{RaveSchedule, RaveUcb};
-use mcts::strategies::mcts::{
+use mcts::algorithms::mcts::select::{RaveSchedule, RaveUcb};
+use mcts::algorithms::mcts::{
     node::QInit, simulate, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
-use mcts::strategies::Search;
+use mcts::algorithms::Search;
 use serde_json::{json, Value};
 
 fn nim_action_value(state: &<Nim as Game>::S, action: &<Nim as Game>::A) -> Value {
@@ -142,7 +142,7 @@ fn one_iteration_mcts_search_selects_after_the_root_playout() {
 #[test]
 fn non_mcts_search_reports_explicit_unavailability() {
     let state = <Nim as Game>::S::default();
-    let mut search = mcts::strategies::random::Random::<Nim>::new();
+    let mut search = mcts::algorithms::random::Random::<Nim>::new();
     let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
         nim_action_value(&state, action)
     });
@@ -201,7 +201,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
         Some(7),
         false,
         budget,
-        || Box::new(mcts::strategies::random::Random::<TraceGame>::new()),
+        || Box::new(mcts::algorithms::random::Random::<TraceGame>::new()),
         TraceState::default(),
         |state| json!({"position": state.0}),
         |state, _| Some(json!({"kind": "advance", "from": state.0})),
@@ -1494,7 +1494,7 @@ fn dispatch_family_resolves_negamax_to_the_direct_variant() {
         Ok(FamilySpec::Direct(DirectFamily::Negamax {
             max_depth: 3,
             table_bits: 10,
-            replacement: mcts::strategies::negamax::Replacement::Always,
+            replacement: mcts::algorithms::negamax::Replacement::Always,
             aspiration_window: None,
             principal_variation_search: false,
             history_heuristic: false,

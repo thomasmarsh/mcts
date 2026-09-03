@@ -5,8 +5,8 @@ use game_host::{
     SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
 };
 use mcts::game::Game;
-use mcts::strategies::mcts::{node::QInit, GraphSearch, GraphStats, TranspositionKeying};
-use mcts::strategies::{
+use mcts::algorithms::mcts::{node::QInit, GraphSearch, GraphStats, TranspositionKeying};
+use mcts::algorithms::{
     Search, SearchGraphMode as EngineSearchGraphMode, SearchReport as EngineSearchReport,
     SearchReportReason as EngineSearchReportReason, SearchReportStatus as EngineSearchReportStatus,
     SearchTermination as EngineSearchTermination, SearchWarning as EngineSearchWarning,
