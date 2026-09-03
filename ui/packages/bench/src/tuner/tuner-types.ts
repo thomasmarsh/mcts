@@ -12,8 +12,10 @@ import type { JsonValue } from "../types.js";
 /** `record.terminal_outcome` — how the detached process ended. */
 export type TerminalOutcome = "exited" | "signalled" | "spawn_failed";
 
-/** Derived liveness the server reports on each journal row. */
-export type TunerRunLiveness = "live" | "exited" | "unknown";
+/** Derived liveness the server reports on each journal row. `failed` = the
+ * process ended before it ever wrote a `manifest.json`, so the projection
+ * will never describe it; `error_detail` carries its `launch.err`. */
+export type TunerRunLiveness = "live" | "exited" | "failed" | "unknown";
 
 /** One row of `GET /api/bench/tuner/runs`. */
 export interface TunerRunView {
@@ -24,6 +26,8 @@ export interface TunerRunView {
   started_at: string;
   terminal_outcome: TerminalOutcome | null;
   status: TunerRunLiveness;
+  /** Tail of `launch.err`, present only when `status === "failed"`. */
+  error_detail?: string | null;
 }
 
 /** `GET /api/bench/tuner/runs/{id}/log?since=N` — tail of `launch.out` plus

@@ -22,12 +22,23 @@ export const FleetDashboard: Component<{
 
   const liveRuns = createMemo(() => runs().filter((r) => r.status === "live"));
   const liveIds = createMemo(() => new Set(liveRuns().map((r) => r.run_id)));
+  const projectedIds = createMemo(() => new Set(projection().map((r) => r.run_id)));
   const finishedProjection = createMemo(() =>
     projection().filter((r) => !liveIds().has(r.run_id)),
   );
 
+  // Runs the launcher journalled as dead before they ever wrote a manifest.
+  // The projection surfaces these too once it refreshes; until then this is
+  // the only place they appear, so the operator is never left wondering why
+  // a run they just launched vanished.
+  const failedToStart = createMemo(() =>
+    runs().filter((r) => r.status === "failed" && !projectedIds().has(r.run_id)),
+  );
+
   const failedCount = createMemo(
-    () => finishedProjection().filter((r) => r.ingest_error || r.report_status === "failed").length,
+    () =>
+      finishedProjection().filter((r) => r.ingest_error || r.report_status === "failed").length +
+      failedToStart().length,
   );
 
   const freshness = createMemo(() => {
@@ -90,6 +101,25 @@ export const FleetDashboard: Component<{
           </div>
         </Show>
       </section>
+
+      <Show when={failedToStart().length > 0}>
+        <section class="tuner-fleet-section">
+          <h3>Failed to start</h3>
+          <For each={failedToStart()}>
+            {(run) => (
+              <RunCard
+                runId={run.run_id}
+                status={run.status}
+                terminalOutcome={run.terminal_outcome}
+                errorDetail={run.error_detail ?? "exited during startup — see launch.err"}
+                onOpen={() =>
+                  props.navigate({ view: "run", runId: run.run_id, tab: "overview" })
+                }
+              />
+            )}
+          </For>
+        </section>
+      </Show>
 
       <section class="tuner-fleet-section">
         <h3>Completed &amp; failed</h3>

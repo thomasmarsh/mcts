@@ -96,6 +96,77 @@ def test_records_ingest_error(tmp_path: Path) -> None:
         store.close()
 
 
+def _journal(root: Path, run_id: str, run_dir: Path) -> None:
+    import json
+
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "launches.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "event": "launch",
+                    "record": {"run_id": run_id, "run_dir": str(run_dir), "pid": 1, "argv": []},
+                }
+            )
+            + "\n"
+        )
+        terminal = {"event": "terminal", "run_id": run_id, "outcome": "exited"}
+        handle.write(json.dumps(terminal) + "\n")
+
+
+def test_surfaces_a_launch_that_never_wrote_a_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    run_dir = root / "doomed"
+    run_dir.mkdir(parents=True)
+    (run_dir / "launch.err").write_text(
+        "tuner failed: objective file does not exist\n", encoding="utf-8"
+    )
+    _journal(root, "doomed", run_dir)
+    db_path = tmp_path / "p.sqlite"
+
+    summary = project_runs(root, db_path, rebuild=True)
+    assert summary.ingest_errors == 1
+    store = open_store(db_path)
+    try:
+        connection = store._connection  # noqa: SLF001 - test inspects stored rows
+        row = connection.execute("SELECT ingest_error FROM runs WHERE run_id = 'doomed'").fetchone()
+        assert row is not None and "objective file does not exist" in row[0]
+    finally:
+        store.close()
+
+    # It is stable across a re-projection and never pruned while the journal
+    # still lists it.
+    again = project_runs(root, db_path, rebuild=False)
+    assert again.skipped == 1 and again.pruned == 0
+
+
+def test_a_manifest_written_later_supersedes_the_startup_failure_row(tmp_path: Path) -> None:
+    root = tmp_path / "runs"
+    run_dir = root / "version4"
+    shutil.copytree(FIXTURES / "version4", run_dir)
+    manifest = run_dir / "manifest.json"
+    manifest_body = manifest.read_text(encoding="utf-8")
+    manifest.unlink()
+    _journal(root, "version4", run_dir)
+    db_path = tmp_path / "p.sqlite"
+
+    first = project_runs(root, db_path, rebuild=True)
+    assert first.ingest_errors == 1
+
+    manifest.write_text(manifest_body, encoding="utf-8")
+    second = project_runs(root, db_path, rebuild=False)
+    store = open_store(db_path)
+    try:
+        connection = store._connection  # noqa: SLF001
+        row = connection.execute(
+            "SELECT ingest_error FROM runs WHERE run_id = 'version4'"
+        ).fetchone()
+        assert row is not None and row[0] is None
+    finally:
+        store.close()
+    assert second.pruned == 0
+
+
 def test_prunes_removed_runs(tmp_path: Path) -> None:
     root = _copy_root(tmp_path)
     db_path = tmp_path / "p.sqlite"

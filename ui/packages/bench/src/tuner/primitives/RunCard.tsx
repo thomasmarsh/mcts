@@ -16,6 +16,8 @@ export interface RunCardProps {
   validationClaim?: string | null;
   totalPairs?: number | null;
   ingestError?: string | null;
+  /** `launch.err` tail for a run that died before it began working. */
+  errorDetail?: string | null;
   highlight?: boolean;
   onOpen: () => void;
   onStop?: () => void;
@@ -50,6 +52,9 @@ export const RunCard: Component<RunCardProps> = (props) => {
         </Show>
         <Show when={props.ingestError}>
           <div class="tuner-run-card-error">ingest error: {props.ingestError}</div>
+        </Show>
+        <Show when={props.errorDetail}>
+          <pre class="tuner-run-card-error tuner-run-card-error-detail">{props.errorDetail}</pre>
         </Show>
         <Show when={props.totalPairs != null && props.totalPairs > 0}>
           <div class="tuner-run-card-compute">{props.totalPairs} pair attempts</div>

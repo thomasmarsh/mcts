@@ -22,16 +22,45 @@ pub(crate) struct TunerRunView {
     pid: Option<u32>,
     started_at: String,
     terminal_outcome: Option<TerminalOutcome>,
+    /// `live` | `exited` | `failed` | `unknown`. `failed` means the process
+    /// ended before it ever wrote a `manifest.json`, so nothing in the
+    /// projection will ever describe it -- `error_detail` carries its
+    /// `launch.err` so the fleet can say what went wrong.
     status: &'static str,
+    /// Tail of `launch.err`, populated only when `status == "failed"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_detail: Option<String>,
+}
+
+/// Last ~4 KiB of a failed run's `launch.err`, for the fleet's failure card.
+fn err_tail(run_dir: &std::path::Path) -> Option<String> {
+    let (lines, _) = tail_from(&run_dir.join("launch.err"), 0).ok()?;
+    let joined = lines.join("\n");
+    let trimmed = joined.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let start = trimmed.len().saturating_sub(4096);
+    Some(trimmed[start..].to_string())
 }
 
 fn view(record: TunerLaunchRecord) -> TunerRunView {
-    let status = if record.terminal_outcome.is_some() {
+    let started_but_never_worked = record.terminal_outcome.is_some()
+        && !record.run_dir.join("manifest.json").exists()
+        && !matches!(record.terminal_outcome, Some(TerminalOutcome::Signalled));
+    let status = if started_but_never_worked {
+        "failed"
+    } else if record.terminal_outcome.is_some() {
         "exited"
     } else if record.pid.is_some_and(tuner_launch::is_alive) {
         "live"
     } else {
         "unknown"
+    };
+    let error_detail = if started_but_never_worked {
+        err_tail(&record.run_dir)
+    } else {
+        None
     };
     TunerRunView {
         run_id: record.run_id,
@@ -41,6 +70,7 @@ fn view(record: TunerLaunchRecord) -> TunerRunView {
         started_at: record.started_at,
         terminal_outcome: record.terminal_outcome,
         status,
+        error_detail,
     }
 }
 
@@ -389,6 +419,9 @@ pub(crate) async fn launch_tuner_run(
         status: match error.kind() {
             std::io::ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
             std::io::ErrorKind::AlreadyExists => StatusCode::CONFLICT,
+            // The child spawned but died inside the startup grace window --
+            // its own diagnostics are already in the message.
+            std::io::ErrorKind::Other => StatusCode::BAD_GATEWAY,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         },
         message: format!("failed to launch tuner run: {error}"),

@@ -3958,6 +3958,20 @@ body.bench-active #analysis-panel {
   color: #e07a7a;
 }
 
+.tuner-run-card-error-detail {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 8.5em;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+  line-height: 1.4;
+  background: #201a1a;
+  border: 1px solid #4a2f2f;
+  border-radius: 4px;
+}
+
 .tuner-run-card-compute {
   font-size: 11px;
   color: #686a75;

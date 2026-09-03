@@ -19,6 +19,7 @@ interface Badge {
 
 function badge(props: RunStatusBadgeProps): Badge {
   if (props.status === "live") return { label: "live", cls: "badge-running" };
+  if (props.status === "failed") return { label: "failed to start", cls: "badge-crashed" };
   if (props.reportStatus) {
     const s = props.reportStatus.toLowerCase();
     if (s.includes("complete") || s === "ok") return { label: props.reportStatus, cls: "badge-completed" };

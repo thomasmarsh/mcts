@@ -497,6 +497,55 @@ def test_interrupted_pair_resumes_to_the_same_scientific_artifact(tmp_path: Path
     assert (resumed_dir / "report.json").read_bytes() == report
 
 
+def test_fresh_run_tolerates_the_launcher_created_wrapper_directory(tmp_path: Path) -> None:
+    # The detached launcher must create the run directory before it can
+    # redirect the child's stdout/stderr into it, so a fresh run legitimately
+    # starts with launch.out / launch.err already present.
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "launch.out").write_text("", encoding="utf-8")
+    (run_dir / "launch.err").write_text("", encoding="utf-8")
+    options = RunOptions(
+        _fake_binary(tmp_path),
+        run_dir,
+        objective_file=_objective(tmp_path),
+        task_seed=9,
+        cohort_size=4,
+        finalists=1,
+        bootstrap_candidates=2,
+        random_reserve_candidates=1,
+        tuning_pairs=2,
+        tuning_pair_budget=16,
+        validation_pair_budget=2,
+        production_validation_pairs=2,
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
+    )
+    run_foreground(options, FakeTarget(), model_proposer=FakeModel())
+    assert (run_dir / "manifest.json").is_file()
+    assert (run_dir / "report.json").is_file()
+
+
+def test_fresh_run_still_refuses_a_populated_run_directory(tmp_path: Path) -> None:
+    from tuner_cli.run import validate_options
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "launch.err").write_text("", encoding="utf-8")
+    (run_dir / "evidence.jsonl").write_text("", encoding="utf-8")
+    options = RunOptions(
+        _fake_binary(tmp_path),
+        run_dir,
+        objective_file=_objective(tmp_path),
+        tuning_effort=SearchEffort("iterations", 3),
+        validation_effort=SearchEffort("iterations", 5),
+        production_effort=SearchEffort("iterations", 9),
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        validate_options(options)
+
+
 def _budgeted_options(
     tmp_path: Path,
     tuning_pair_budget: int,

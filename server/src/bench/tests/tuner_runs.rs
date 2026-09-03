@@ -24,12 +24,14 @@ fn objective_body(game_kind: &str) -> serde_json::Value {
 }
 
 fn record(runs_root: &std::path::Path, run_id: &str, pid: Option<u32>) {
+    let run_dir = runs_root.join(run_id);
+    std::fs::create_dir_all(&run_dir).unwrap();
     tuner_launch::append_launch(
         runs_root,
         &TunerLaunchRecord {
             run_id: run_id.into(),
             argv: vec!["uv".into()],
-            run_dir: PathBuf::from(run_id),
+            run_dir,
             pid,
             started_at: "2026-01-01T00:00:00Z".into(),
             terminal_outcome: None,
@@ -313,6 +315,9 @@ async fn stop_is_idempotent_on_an_already_exited_run() {
     let (app, root) = seeded_app(default_seed);
     let runs_root = root.join("bench-runs");
     record(&runs_root, "done", Some(999_999_999));
+    // A run that got far enough to write its manifest before exiting reads
+    // back as "exited"; one that died before that reads back as "failed".
+    std::fs::write(runs_root.join("done/manifest.json"), "{}").unwrap();
     tuner_launch::append_terminal(&runs_root, "done", TerminalOutcome::Exited).unwrap();
 
     let (status, body) = http_post_json(app.clone(), "/api/bench/tuner/runs/done/stop", json!({})).await;

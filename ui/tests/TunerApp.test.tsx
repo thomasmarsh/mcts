@@ -75,6 +75,35 @@ describe("TunerApp fleet", () => {
     expect(screen.getByText("production validation")).toBeInTheDocument();
   });
 
+  it("shows a run that died on startup as failed, with its launch.err", async () => {
+    render(() => (
+      <TunerApp
+        env={mockTunerEnv({
+          listKinds: () => Effect.send(kinds),
+          listObjectives: () => Effect.send(objectives),
+          listRuns: () =>
+            Effect.send([
+              runView({
+                run_id: "doomed-1",
+                status: "failed",
+                terminal_outcome: "exited",
+                error_detail: "tuner failed: run directory already exists",
+              }),
+            ]),
+          listProjectionRuns: () => Effect.send([]),
+        })}
+      />
+    ));
+
+    await vi.waitFor(() => expect(screen.getByText("Failed to start")).toBeInTheDocument());
+    expect(screen.getByText("doomed-1")).toBeInTheDocument();
+    expect(screen.getByText("failed to start")).toBeInTheDocument();
+    expect(
+      screen.getByText(/tuner failed: run directory already exists/),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("kpi-failed")).toHaveTextContent("1 failed");
+  });
+
   it("launches a run and navigates to its overview", async () => {
     const launchRun = vi.fn((_req: TunerLaunchRequest) =>
       Effect.send(runView({ run_id: "launched-1", status: "live" })),

@@ -502,7 +502,10 @@ export function tunerReducer(
     }
     case "launchFailed":
       draft.launch = { status: "error", error: action.error, lastRunId: null };
-      return null;
+      // A launch that failed fast still leaves a journalled, dead run — pull
+      // the journal (and reproject) so the fleet shows it as "failed to
+      // start" with its diagnostics rather than nothing at all.
+      return Effect.merge(fetchJournal(env), Effect.send<TunerAction>({ tag: "refreshProjection" }));
 
     case "openRun": {
       const changed = draft.openRunId !== action.runId;

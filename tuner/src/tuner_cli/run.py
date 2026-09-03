@@ -207,9 +207,23 @@ def validate_options(options: RunOptions) -> tuple[Path, Path, Path]:
         raise ValueError(f"game binary is missing, not a regular executable file: {binary}")
     if options.resume and not directory.is_dir():
         raise ValueError(f"resume run directory does not exist: {directory}")
-    if not options.resume and directory.exists():
+    if not options.resume and directory.exists() and not _only_wrapper_files(directory):
         raise ValueError(f"run directory already exists: {directory}; use --resume to continue it")
     return binary, directory, objective
+
+
+# A detached launcher (`mcts-bench`'s `tuner_launch`) has to create the run
+# directory before it can redirect the child's stdout/stderr into it, so a
+# fresh run legitimately starts with these two files already present. Anything
+# else (a manifest, an evidence log) means a real prior run is there.
+_WRAPPER_FILES = frozenset({"launch.out", "launch.err"})
+
+
+def _only_wrapper_files(directory: Path) -> bool:
+    try:
+        return {entry.name for entry in directory.iterdir()} <= _WRAPPER_FILES
+    except OSError:
+        return False
 
 
 def _extension_deltas(options: RunOptions) -> tuple[int, int, int]:
@@ -320,7 +334,7 @@ def open_run(
         return manifest, EvidenceWriter.open(directory / "evidence.jsonl")
     preflight_default(target, spec, objective, options.seed, options.excluded_families)
     manifest = manifest_for(options, directory, spec, objective)
-    directory.mkdir(parents=True)
+    directory.mkdir(parents=True, exist_ok=True)
     write_manifest(directory / "manifest.json", manifest_json(manifest))
     return manifest, EvidenceWriter(directory / "evidence.jsonl")
 

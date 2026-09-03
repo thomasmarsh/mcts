@@ -97,6 +97,58 @@ def _discover(runs_root: Path) -> list[Path]:
     )
 
 
+def _launch_err_tail(run_dir: Path) -> str:
+    try:
+        text = (run_dir / "launch.err").read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    detail = text[-4000:] if text else "(launch.err was empty or absent)"
+    return f"run exited during startup and never wrote manifest.json — {detail}"
+
+
+def _orphan_launch_failures(runs_root: Path) -> dict[str, str]:
+    """`run_id -> diagnostic` for every run the detached launcher journalled as
+    terminated that never got far enough to write a ``manifest.json``.
+
+    ``_discover`` finds runs only by their manifest, so without this a run that
+    dies in argument/objective validation, on a missing binary, or on an
+    import error would be silently absent from the projection -- the operator
+    launches it and nothing ever appears. Here it surfaces as a failed row
+    carrying its ``launch.err``.
+    """
+    journal = runs_root / "launches.jsonl"
+    try:
+        lines = journal.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    run_dirs: dict[str, Path] = {}
+    terminated: set[str] = set()
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except ValueError:
+            continue
+        if event.get("event") == "launch":
+            record = event.get("record", {})
+            run_id = record.get("run_id")
+            if isinstance(run_id, str):
+                raw_dir = record.get("run_dir")
+                run_dirs[run_id] = Path(raw_dir) if isinstance(raw_dir, str) else runs_root / run_id
+        elif event.get("event") == "terminal":
+            run_id = event.get("run_id")
+            if isinstance(run_id, str):
+                terminated.add(run_id)
+    failures: dict[str, str] = {}
+    for run_id in terminated:
+        run_dir = run_dirs.get(run_id, runs_root / run_id)
+        if not (run_dir / "manifest.json").exists():
+            failures[run_id] = _launch_err_tail(run_dir)
+    return failures
+
+
 def _prune(store: Store, discovered: set[str]) -> int:
     stale = [run_id for run_id in store.projected_run_ids() if run_id not in discovered]
     for run_id in stale:
@@ -111,6 +163,7 @@ def project_runs(runs_root: Path, db_path: Path, *, rebuild: bool) -> Projection
     projected = skipped = errors = 0
     try:
         run_dirs = _discover(runs_root)
+        discovered = {directory.name for directory in run_dirs}
         for run_dir in run_dirs:
             run_id = run_dir.name
             fingerprint = _fingerprint(run_dir)
@@ -121,7 +174,21 @@ def project_runs(runs_root: Path, db_path: Path, *, rebuild: bool) -> Projection
             store.replace_run(projection)
             projected += 1
             errors += 1 if projection.run.ingest_error is not None else 0
-        pruned = _prune(store, {directory.name for directory in run_dirs})
+        # Runs the launcher started that died before writing a manifest never
+        # reach `_discover`; surface them here so the fleet can show the
+        # failure instead of the run just vanishing.
+        startup_fingerprint = ChangeFingerprint(-1, -1, "")
+        for run_id, detail in _orphan_launch_failures(runs_root).items():
+            if run_id in discovered:
+                continue
+            discovered.add(run_id)
+            if not rebuild and store.fingerprint(run_id) == startup_fingerprint:
+                skipped += 1
+                continue
+            store.replace_run(_error_projection(run_id, startup_fingerprint, detail))
+            projected += 1
+            errors += 1
+        pruned = _prune(store, discovered)
         store.vacuum()
         return ProjectionSummary(projected, skipped, errors, pruned)
     finally:

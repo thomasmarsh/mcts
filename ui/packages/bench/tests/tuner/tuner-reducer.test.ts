@@ -216,6 +216,58 @@ describe("tunerReducer", () => {
     });
     expect(LOG_TAIL_MS).toBe(3000);
   });
+
+  it("surfaces a fast launch failure and repulls the journal so the fleet shows it", async () => {
+    const dead = runView({
+      run_id: "fresh",
+      status: "failed",
+      terminal_outcome: "exited",
+      error_detail: "tuner failed: objective file does not exist",
+    });
+    const ts = store(
+      mockTunerEnv({
+        launchRun: () =>
+          Effect.fromPromise(() =>
+            Promise.reject(
+              new Error(
+                "failed to launch tuner run: tuner run 'fresh' died during startup (exit status 3)",
+              ),
+            ),
+          ),
+        listRuns: () => Effect.send([dead]),
+      }),
+    );
+
+    ts.send({ tag: "launch", request: launchRequest() }, (s) => {
+      s.launch = { status: "pending", error: null, lastRunId: null };
+    });
+    await ts.drain();
+    ts.receive(
+      {
+        tag: "launchFailed",
+        error: "Error: failed to launch tuner run: tuner run 'fresh' died during startup (exit status 3)",
+      },
+      (s) => {
+        s.launch = {
+          status: "error",
+          error:
+            "Error: failed to launch tuner run: tuner run 'fresh' died during startup (exit status 3)",
+          lastRunId: null,
+        };
+      },
+    );
+    ts.receive({ tag: "runsLoaded", runs: [dead] }, (s) => {
+      s.runs = ok([dead]);
+    });
+    ts.receive({ tag: "refreshProjection" }, (s) => {
+      s.refreshing = true;
+    });
+    ts.receive({ tag: "refreshDone" }, (s) => {
+      s.refreshing = false;
+      s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
+    });
+    ts.receive({ tag: "projectionLoaded", runs: [] });
+  });
 });
 
 describe("tunerReducer objectives", () => {

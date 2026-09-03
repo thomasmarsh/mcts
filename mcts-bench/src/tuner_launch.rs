@@ -12,9 +12,10 @@
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -22,6 +23,38 @@ use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
 
 use serde::{Deserialize, Serialize};
+
+/// How long [`spawn_and_journal`] watches a freshly-spawned `tuner_cli` before
+/// it hands off to the async reaper. A child that dies inside this window
+/// never began real work (it failed argument/objective validation, a missing
+/// binary, an already-populated run dir, an import error) -- so the launch
+/// call itself fails loudly with the child's `launch.err`, instead of
+/// returning `202 Accepted` for a run that is already dead.
+pub const STARTUP_GRACE: Duration = Duration::from_millis(2500);
+
+/// Last `max_bytes` bytes of `path` as a lossy string, or a short marker if it
+/// cannot be read. Used to fold a failed child's `launch.err` into the launch
+/// error so the operator sees the actual cause without opening a file.
+fn tail(path: &Path, max_bytes: u64) -> String {
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return format!("(no readable {})", path.display()),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if len > max_bytes {
+        let _ = file.seek(SeekFrom::Start(len - max_bytes));
+    }
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return format!("(unreadable {})", path.display());
+    }
+    let trimmed = buf.trim();
+    if trimmed.is_empty() {
+        "(launch.err was empty)".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 /// A launch request for one foreground `tuner_cli` run.
 ///
@@ -357,7 +390,7 @@ pub fn extend(
     argv.push("--extend-requested-at".into());
     argv.push(crate::launch::iso_timestamp());
     let run_dir = record.run_dir.clone();
-    spawn_and_journal(root, run_id, run_dir, argv)
+    spawn_and_journal(root, run_id, run_dir, argv, false)
 }
 
 pub fn safe_run_id(run_id: &str) -> bool {
@@ -411,7 +444,7 @@ pub fn launch(request: &TunerLaunchRequest) -> io::Result<TunerLaunchRecord> {
     }
     fs::create_dir_all(&run_dir)?;
     let argv = request.argv();
-    spawn_and_journal(&request.runs_root, &request.run_id, run_dir, argv)
+    spawn_and_journal(&request.runs_root, &request.run_id, run_dir, argv, true)
 }
 
 /// Spawn `argv` as a detached child in its own process group, redirect its
@@ -422,6 +455,7 @@ fn spawn_and_journal(
     run_id: &str,
     run_dir: PathBuf,
     argv: Vec<String>,
+    verify_startup: bool,
 ) -> io::Result<TunerLaunchRecord> {
     let mut command = Command::new(&argv[0]);
     command.args(&argv[1..]);
@@ -455,6 +489,40 @@ fn spawn_and_journal(
         terminal_outcome: None,
     };
     append_launch(runs_root, &record)?;
+
+    // Watch a fresh launch for a short grace window. If it dies this fast it
+    // never started working, and returning `Ok` here would report a launched
+    // run that is already a corpse -- so classify it as a startup failure and
+    // surface the child's own `launch.err`. Skipped for `--resume` relaunches:
+    // a small budget extension can legitimately complete inside the window.
+    let deadline = Instant::now() + STARTUP_GRACE;
+    while verify_startup && Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                #[cfg(unix)]
+                let outcome = if status.signal().is_some() {
+                    TerminalOutcome::Signalled
+                } else {
+                    TerminalOutcome::Exited
+                };
+                #[cfg(not(unix))]
+                let outcome = TerminalOutcome::Exited;
+                let _ = append_terminal(runs_root, run_id, outcome);
+                let how = match status.code() {
+                    Some(code) => format!("exit status {code}"),
+                    None => "a signal".to_string(),
+                };
+                return Err(io::Error::other(format!(
+                    "tuner run '{run_id}' died during startup ({how}) without beginning work. \
+                     Its launch.err said:\n{}",
+                    tail(&record.run_dir.join("launch.err"), 4096),
+                )));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => return Err(error),
+        }
+    }
+
     let root = runs_root.to_owned();
     let id = run_id.to_owned();
     std::thread::spawn(move || {
@@ -749,6 +817,7 @@ mod tests {
             "live",
             run_dir.clone(),
             vec!["sh".into(), "-c".into(), "sleep 30".into()],
+            false,
         )
         .unwrap();
         let pid = record.pid.unwrap();
@@ -777,6 +846,37 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
         assert_eq!(outcome, Some(TerminalOutcome::Signalled));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn spawn_reports_a_child_that_dies_during_the_startup_grace_window() {
+        let root = scratch("startup-fail");
+        let run_dir = root.join("doomed");
+        fs::create_dir_all(&run_dir).unwrap();
+        let error = spawn_and_journal(
+            &root,
+            "doomed",
+            run_dir,
+            vec![
+                "sh".into(),
+                "-c".into(),
+                "echo 'objective file does not exist' >&2; exit 3".into(),
+            ],
+            true,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("died during startup"), "{message}");
+        assert!(message.contains("exit status 3"), "{message}");
+        assert!(message.contains("objective file does not exist"), "{message}");
+        // The journal still carries a launch and a terminal outcome for it.
+        let record = records(&root)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.run_id == "doomed")
+            .unwrap();
+        assert_eq!(record.terminal_outcome, Some(TerminalOutcome::Exited));
         let _ = fs::remove_dir_all(&root);
     }
 
