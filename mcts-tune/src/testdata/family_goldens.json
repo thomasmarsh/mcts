@@ -1,0 +1,693 @@
+{
+  "amaf": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "a": 4.0,
+        "kind": "secure_child"
+      },
+      "select": {
+        "alpha": 0.5,
+        "c": 1.4,
+        "kind": "amaf"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "amaf_mast": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "alpha": 0.5,
+        "c": 1.4,
+        "kind": "amaf"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "mast"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "bayes_uct1_gaussian": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "bayes_gaussian",
+        "obs_variance": 1.0,
+        "prior_variance": 1.0
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.0,
+        "kind": "bayes_uct1"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "bayes_uct2_numeric": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "bayes_numeric",
+        "obs_variance": 1.0,
+        "prior_variance": 1.0,
+        "value_hi": 1.0,
+        "value_lo": -1.0
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.0,
+        "kind": "bayes_uct2"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "gpn": {
+    "contempt_factor": null,
+    "solver_loss_threshold": 5,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "bias": "max",
+        "c": 1.4,
+        "c_pn": 1.0,
+        "kind": "gpn"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "grill_act": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "grill_act"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "kl_ucb": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "kl_ucb"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ments": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "softmax",
+        "tau": 1.0
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "epsilon": 0.1,
+        "kind": "ments",
+        "tau": 1.0
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "meta_mcts": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "max_avg"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "iterations": 50,
+        "kind": "meta_mcts"
+      }
+    }
+  },
+  "power_uct": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "alpha": 0.5,
+        "depth": 0,
+        "kind": "power_mean",
+        "p": 4.0
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "rave": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "kind": "rave",
+        "schedule": {
+          "kind": "threshold",
+          "rave": 700
+        },
+        "threshold": 700,
+        "ucb": {
+          "exploration_constant": 0.3,
+          "kind": "ucb1_tuned"
+        }
+      },
+      "simulate": {
+        "epsilon": 0.1,
+        "kind": "decisive_move_mast",
+        "mode": "win_loss"
+      }
+    }
+  },
+  "score_bounded_uct": {
+    "contempt_factor": null,
+    "solver_loss_threshold": 5,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "delta": 0.1,
+        "gamma": 0.1,
+        "kind": "score_bounded_uct"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "td_uct": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "td",
+        "lambda": 0.8,
+        "max_child": 0
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1_adm": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "max_avg"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "inner": {
+          "kind": "uniform"
+        },
+        "kind": "decisive_move",
+        "mode": "anti_decisive"
+      }
+    }
+  },
+  "ucb1_adm_nst": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "kind": "decisive_move_nst",
+        "mode": "anti_decisive",
+        "nst_backoff_threshold": 3
+      }
+    }
+  },
+  "ucb1_dm": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "max_avg"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "inner": {
+          "kind": "uniform"
+        },
+        "kind": "decisive_move",
+        "mode": "win"
+      }
+    }
+  },
+  "ucb1_dm_nst": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "kind": "decisive_move_nst",
+        "mode": "win",
+        "nst_backoff_threshold": 3
+      }
+    }
+  },
+  "ucb1_lgr": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "lgr"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_lgr2": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "lgr2"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_lgr2_mast": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "lgr2_mast"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_mast": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "mast"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_max_robust": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "max_robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1_nst": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "backoff_threshold": 3,
+          "kind": "nst"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_pn": {
+    "contempt_factor": null,
+    "solver_loss_threshold": 5,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "c_pn": 1.0,
+        "kind": "uct_pn"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1_pn_mast": {
+    "contempt_factor": -0.5,
+    "solver_loss_threshold": 5,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "c_pn": 1.0,
+        "kind": "uct_pn"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "inner": {
+          "kind": "mast"
+        },
+        "kind": "epsilon_greedy"
+      }
+    }
+  },
+  "ucb1_progressive_history": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "progressive_history",
+        "ph_weight": 0.5
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1_tuned": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1_tuned"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  },
+  "ucb1_tuned_dm": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1_tuned"
+      },
+      "simulate": {
+        "inner": {
+          "kind": "uniform"
+        },
+        "kind": "decisive_move",
+        "mode": "win"
+      }
+    }
+  },
+  "ucb1_tuned_dm_mast": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1_tuned"
+      },
+      "simulate": {
+        "epsilon": 0.2,
+        "kind": "decisive_move_mast",
+        "mode": "win"
+      }
+    }
+  },
+  "ucb1_tuned_mast": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb1_tuned"
+      },
+      "simulate": {
+        "kind": "mast"
+      }
+    }
+  },
+  "ucb_v": {
+    "contempt_factor": null,
+    "solver_loss_threshold": null,
+    "spec": {
+      "backprop": {
+        "kind": "classic"
+      },
+      "final_action": {
+        "kind": "robust_child"
+      },
+      "select": {
+        "c": 1.4,
+        "kind": "ucb_v"
+      },
+      "simulate": {
+        "kind": "uniform"
+      }
+    }
+  }
+}

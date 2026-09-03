@@ -1890,6 +1890,51 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
     ]
 }
 
+/// AN-1 golden capture: writes the exact `SearchSpec` (plus the two
+/// PN-only `SearchSettings` knobs) every composable `family` row resolves
+/// to, keyed by family name, into `src/testdata/family_goldens.json`. Run
+/// once before `register_family!` is deleted; the algorithm-native
+/// `to_{select,simulate,backprop,final_action}_spec` path is then asserted
+/// against this snapshot so each axis assignment provably reproduces the
+/// pre-cutover composition. Not a normal assertion -- gated on an env var
+/// so it never runs (or rewrites the checked-in file) during an ordinary
+/// `cargo test --lib`.
+#[test]
+fn capture_family_goldens() {
+    if std::env::var("CAPTURE_FAMILY_GOLDENS").is_err() {
+        return;
+    }
+    let mut out = serde_json::Map::new();
+    for (name, mut params) in family_required_params() {
+        params["q_init"] = json!("Infinity");
+        let t = trial(params);
+        match dispatch_family(name, &t).unwrap() {
+            FamilySpec::Direct(_) => continue,
+            FamilySpec::Compose(_) => {}
+        }
+        let (spec, settings) =
+            to_search_spec(&t, 0, false, &SearchBudget::default()).unwrap();
+        out.insert(
+            name.to_string(),
+            json!({
+                "spec": serde_json::to_value(&spec).unwrap(),
+                "solver_loss_threshold": settings.solver_loss_threshold,
+                "contempt_factor": settings.contempt_factor,
+            }),
+        );
+    }
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/testdata/family_goldens.json");
+    std::fs::create_dir_all(
+        std::path::Path::new(path).parent().unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        path,
+        format!("{}\n", serde_json::to_string_pretty(&Value::Object(out)).unwrap()),
+    )
+    .unwrap();
+}
+
 #[test]
 fn test_family_required_params_covers_every_registered_family() {
     // The gap `family_required_params()`'s own doc comment identifies:
