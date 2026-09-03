@@ -4,7 +4,7 @@
 // ranked validation table. Cohort race strips and the full science /
 // evidence views are their own slices.
 
-import { createMemo, For, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
@@ -40,6 +40,73 @@ export const RunOverview: Component<{
   const detail = createMemo(() => peek(state().projectionDetail));
   const status = createMemo(() => journalRow()?.status ?? (projectionRow() ? "exited" : null));
   const live = createMemo(() => status() === "live");
+
+  // A run is extendable once its process has exited cleanly — a
+  // tuning-budget-exhaustion freeze or a normal completion. A run that never
+  // wrote a manifest (`status: "failed"`) or was killed / crashed
+  // (`signalled` / `spawn_failed`) is not: a resume has nothing to build on.
+  const extendable = createMemo(() => {
+    if (status() !== "exited") return false;
+    const outcome = journalRow()?.terminal_outcome;
+    return outcome == null || outcome === "exited";
+  });
+
+  const [extendTuning, setExtendTuning] = createSignal("");
+  const [extendValidation, setExtendValidation] = createSignal("");
+  const [extendDiagnostic, setExtendDiagnostic] = createSignal("");
+  const [extendReason, setExtendReason] = createSignal("");
+
+  // A non-negative integer, or null if the field is malformed. Empty is 0.
+  const parseDelta = (raw: string): number | null => {
+    const t = raw.trim();
+    if (t === "") return 0;
+    if (!/^\d+$/.test(t)) return null;
+    return Number(t);
+  };
+  const extendDeltas = createMemo(() => ({
+    tuning: parseDelta(extendTuning()),
+    validation: parseDelta(extendValidation()),
+    diagnostic: parseDelta(extendDiagnostic()),
+  }));
+  const extendValid = createMemo(() => {
+    const d = extendDeltas();
+    if (d.tuning === null || d.validation === null || d.diagnostic === null) return false;
+    if (d.tuning + d.validation + d.diagnostic <= 0) return false;
+    return extendReason().trim().length > 0;
+  });
+
+  // Reset the fields once an extend has succeeded — keyed off the reducer's
+  // `extendSeq` rather than an `extendBusy` edge, which the async valtio→Solid
+  // snapshot bridge can coalesce away on a synchronous success. A rejection
+  // leaves the values in place so the operator can adjust and retry.
+  let seenExtendSeq = state().extendSeq;
+  createEffect(() => {
+    const seq = state().extendSeq;
+    if (seq !== seenExtendSeq) {
+      seenExtendSeq = seq;
+      setExtendTuning("");
+      setExtendValidation("");
+      setExtendDiagnostic("");
+      setExtendReason("");
+    }
+  });
+
+  const submitExtend = (): void => {
+    const d = extendDeltas();
+    if (!extendValid() || d.tuning === null || d.validation === null || d.diagnostic === null) {
+      return;
+    }
+    dispatch({
+      tag: "extendRun",
+      runId: props.runId,
+      extension: {
+        tuning_pair_attempts_delta: d.tuning,
+        validation_pair_attempts_delta: d.validation,
+        diagnostic_pair_attempts_delta: d.diagnostic,
+        reason: extendReason().trim(),
+      },
+    });
+  };
 
   const evidenceRing = createMemo(() => state().evidence.ring);
   const liveProgress = createMemo(() => (live() ? foldEvidence(evidenceRing()) : null));
@@ -128,6 +195,72 @@ export const RunOverview: Component<{
         <div class="launch-error" role="alert">
           {state().refreshError}
         </div>
+      </Show>
+
+      <Show when={!live() && extendable()}>
+        <section class="tuner-extend-budget" data-testid="extend-budget-form">
+          <h3>Extend budget</h3>
+          <p class="tuner-extend-hint">
+            Raise this run's pair-attempt budgets and resume it. At least one
+            delta must be positive; the run re-opens as <code>live</code>.
+          </p>
+          <div class="tuner-extend-fields">
+            <label>
+              Tuning pairs
+              <input
+                type="number"
+                min="0"
+                step="1"
+                data-testid="extend-tuning-delta"
+                value={extendTuning()}
+                onInput={(e) => setExtendTuning(e.currentTarget.value)}
+              />
+            </label>
+            <label>
+              Validation pairs
+              <input
+                type="number"
+                min="0"
+                step="1"
+                data-testid="extend-validation-delta"
+                value={extendValidation()}
+                onInput={(e) => setExtendValidation(e.currentTarget.value)}
+              />
+            </label>
+            <label>
+              Diagnostic pairs
+              <input
+                type="number"
+                min="0"
+                step="1"
+                data-testid="extend-diagnostic-delta"
+                value={extendDiagnostic()}
+                onInput={(e) => setExtendDiagnostic(e.currentTarget.value)}
+              />
+            </label>
+          </div>
+          <label class="tuner-extend-reason">
+            Reason
+            <input
+              type="text"
+              data-testid="extend-reason"
+              value={extendReason()}
+              onInput={(e) => setExtendReason(e.currentTarget.value)}
+            />
+          </label>
+          <button
+            data-testid="extend-submit"
+            disabled={!extendValid() || state().extendBusy}
+            onClick={submitExtend}
+          >
+            {state().extendBusy ? "Extending…" : "Extend budget"}
+          </button>
+          <Show when={state().extendError}>
+            <div class="launch-error" role="alert" data-testid="extend-error">
+              {state().extendError}
+            </div>
+          </Show>
+        </section>
       </Show>
 
       <ProgressRail

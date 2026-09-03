@@ -42,6 +42,7 @@ import type {
   ProjectionValidation,
   ObjectiveValidationResult,
   LaunchPreflightResult,
+  TunerBudgetExtension,
   TunerLaunchRequest,
   TunerObjectiveDetail,
   TunerObjectiveFile,
@@ -150,6 +151,16 @@ export interface TunerState {
   evidenceGeneration: number;
   log: TunerLogTailState;
   stopError: string | null;
+  /** Inline error from the last `POST .../extend` — the server's rejection
+   * (corpus ceiling, `finalists` divisibility) shown verbatim below the
+   * "Extend budget" form. */
+  extendError: string | null;
+  /** true while an extend POST is in flight, so the form's submit is held. */
+  extendBusy: boolean;
+  /** Incremented on every successful extend. The form watches it (rather than
+   * a `busy` edge, which the async valtio→Solid snapshot can coalesce away)
+   * to know when to reset its fields. */
+  extendSeq: number;
   /** true while a manual `projection/refresh` POST is in flight. */
   refreshing: boolean;
   refreshError: string | null;
@@ -209,6 +220,9 @@ export function initialTunerState(): TunerState {
     evidenceGeneration: 0,
     log: { lines: [], errLines: [], offset: 0, error: null, active: false },
     stopError: null,
+    extendError: null,
+    extendBusy: false,
+    extendSeq: 0,
     refreshing: false,
     refreshError: null,
     lastProjectionRefreshAt: null,
@@ -302,7 +316,10 @@ export type TunerAction =
   | { tag: "evidencePolled"; generation: number; response: EvidenceTailResponse }
   | { tag: "stopRun"; runId: string }
   | { tag: "stopOk" }
-  | { tag: "stopFailed"; error: string };
+  | { tag: "stopFailed"; error: string }
+  | { tag: "extendRun"; runId: string; extension: TunerBudgetExtension }
+  | { tag: "extendOk" }
+  | { tag: "extendFailed"; error: string };
 
 const liveCount = (runs: TunerRunView[] | undefined): number =>
   (runs ?? []).filter((r) => r.status === "live").length;
@@ -872,6 +889,7 @@ export function tunerReducer(
       const changed = draft.openRunId !== action.runId;
       draft.openRunId = action.runId;
       draft.stopError = null;
+      draft.extendError = null;
       draft.logGeneration += 1;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
       const logTick = Effect.send<TunerAction>({
@@ -1132,6 +1150,34 @@ export function tunerReducer(
       return fetchJournal(env);
     case "stopFailed":
       draft.stopError = action.error;
+      return null;
+
+    case "extendRun": {
+      if (draft.extendBusy) return null;
+      draft.extendBusy = true;
+      draft.extendError = null;
+      const { runId, extension } = action;
+      return env
+        .extendRun(runId, extension)
+        .map((): TunerAction => ({ tag: "extendOk" }))
+        .catch((e): TunerAction => ({ tag: "extendFailed", error: String(e) }));
+    }
+    case "extendOk": {
+      draft.extendBusy = false;
+      draft.extendError = null;
+      draft.extendSeq += 1;
+      // The run re-opens as `live`: restart the journal poll loop (it stopped
+      // when the run went terminal) so the card flips back and the projection
+      // follower's fresh rows are picked up on the next pass.
+      draft.journalGeneration += 1;
+      return Effect.send<TunerAction>({
+        tag: "journalTick",
+        generation: draft.journalGeneration,
+      });
+    }
+    case "extendFailed":
+      draft.extendError = action.error;
+      draft.extendBusy = false;
       return null;
   }
 }

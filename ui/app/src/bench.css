@@ -4196,16 +4196,44 @@ body.bench-active #analysis-panel {
 }
 
 .tuner-ship-verdict,
-.tuner-validation-table {
+.tuner-validation-table,
+.tuner-extend-budget {
   margin: 16px 0;
   padding: 12px;
   border: 1px solid var(--border, #d0d0d0);
   border-radius: 6px;
 }
 .tuner-ship-verdict h3,
-.tuner-validation-table h3 {
+.tuner-validation-table h3,
+.tuner-extend-budget h3 {
   margin: 0 0 8px;
   font-size: 0.95rem;
+}
+.tuner-extend-hint {
+  margin: 0 0 10px;
+  font-size: 0.82rem;
+  color: var(--muted, #666);
+}
+.tuner-extend-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.tuner-extend-fields label,
+.tuner-extend-reason {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+}
+.tuner-extend-fields input {
+  width: 8rem;
+}
+.tuner-extend-reason {
+  margin: 10px 0;
+}
+.tuner-extend-budget button {
+  margin-top: 4px;
 }
 .tuner-ship-finalist-head {
   display: flex;
