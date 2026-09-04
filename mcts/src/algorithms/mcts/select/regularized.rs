@@ -31,7 +31,8 @@ use rand::rngs::SmallRng;
 ///   uniform-implicit-prior form here is the network-free target anyway.
 /// - a decaying `ε` schedule (the paper's
 ///   `λ_s = ε·|A(s)| / log(Σn + 1)`) -- fixed `ε` is measured first.
-/// - a MENTS-aware final action -- `strategy::Ments` keeps `RobustChild`.
+/// - a MENTS-aware final action -- the MENTS pairing (`select::Ments` +
+///   `backprop::SoftmaxBackprop`) keeps `RobustChild`.
 #[derive(Clone)]
 pub struct Ments {
     /// E2W softmax temperature -- MUST equal the paired
@@ -248,8 +249,9 @@ pub(crate) fn grill_discrepancy(pi_bar: &[f64], ns: &[f64]) -> Vec<f64> {
 ///   pseudo-visits, not a readable probability, so this needs the `node.rs`
 ///   storage change `select::Ments` also waits on. `π_prior` is uniform
 ///   `1/|A|` here; the seeded prior still acts indirectly via `Q(a)`.
-/// - a `GrillAct`-aware final action -- `strategy::GrillAct` keeps
-///   `RobustChild`; the discrepancy rule already drives visit counts toward
+/// - a `π̄`-aware final action -- pairing `select::GrillAct` with the plain
+///   `Classic` backup keeps `RobustChild`; the discrepancy rule already
+///   drives visit counts toward
 ///   `π̄`. Measure a `π̄`-argmax final action first.
 /// - "act" (sample `π̄`) vs "search" (this argmax-discrepancy rule) -- the
 ///   paper uses `π̄` for both; sampling `π̄` under a uniform prior collapses
