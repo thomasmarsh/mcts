@@ -10,17 +10,17 @@ def test_configspace_preserves_zero_defaults_and_active_values() -> None:
         (),
         1,
         (
-            ParameterSpec("family", "categorical", None, ("a", "b"), "a", None),
+            ParameterSpec("algorithm", "categorical", None, ("a", "b"), "a", None),
             ParameterSpec("zero", "float", (0.0, 1.0), None, 0.0, None),
             ParameterSpec("enabled", "bool", None, (False, True), False, None),
             ParameterSpec("child", "int", (0.0, 2.0), None, 0, None),
             ParameterSpec("fixed", "constant", None, None, None, "yes"),
         ),
-        (ActivationCondition("family", ("b",), ("child",)),),
+        (ActivationCondition("algorithm", ("b",), ("child",)),),
         "{}",
     )
     values = default_values(build_space(schema, 5))
-    assert values == {"family": "a", "zero": 0.0, "enabled": False, "fixed": "yes"}
+    assert values == {"algorithm": "a", "zero": 0.0, "enabled": False, "fixed": "yes"}
 
 
 def test_constrained_default_uses_first_allowed_family_and_active_children() -> None:
@@ -31,14 +31,16 @@ def test_constrained_default_uses_first_allowed_family_and_active_children() -> 
         (),
         1,
         (
-            ParameterSpec("family", "categorical", None, ("a", "b", "c"), "a", None),
+            ParameterSpec("algorithm", "categorical", None, ("a", "b", "c"), "a", None),
             ParameterSpec("depth", "int", (1.0, 3.0), None, 2, None),
         ),
-        (ActivationCondition("family", ("b",), ("depth",)),),
+        (ActivationCondition("algorithm", ("b",), ("depth",)),),
         "{}",
     )
-    narrowed = constrained_schema(schema, decode_constraints({"family": {"choices": ["b", "c"]}}))
-    assert default_values(build_space(narrowed, 5)) == {"family": "b", "depth": 2}
+    narrowed = constrained_schema(
+        schema, decode_constraints({"algorithm": {"choices": ["b", "c"]}})
+    )
+    assert default_values(build_space(narrowed, 5)) == {"algorithm": "b", "depth": 2}
 
 
 def test_transitively_conditioned_parameter_builds_a_valid_space() -> None:

@@ -14,8 +14,8 @@ from .codec import (
     number,
     object_fields,
     string,
-    strings,
 )
+from .constraints import Constraints, decode_constraints, encode_constraints
 from .domain import SearchEffort
 from .effort import decode_effort, encode_effort
 from .identity import canonical_json, fingerprint
@@ -35,7 +35,7 @@ _SHARED_RUN_FIELDS = {
     "tuning_effort",
     "validation_effort",
     "production_effort",
-    "excluded_families",
+    "constraints",
     "evaluator_workers",
     "pair_timeout_seconds",
 }
@@ -72,7 +72,7 @@ class SharedRun:
     tuning_effort: SearchEffort
     validation_effort: SearchEffort
     production_effort: SearchEffort
-    excluded_families: tuple[str, ...]
+    constraints: Constraints
     evaluator_workers: int
     pair_timeout_seconds: int
 
@@ -118,7 +118,7 @@ def _decode_shared_run(value: object) -> SharedRun:
         decode_effort(item["tuning_effort"], "tuning effort"),
         decode_effort(item["validation_effort"], "validation effort"),
         decode_effort(item["production_effort"], "production effort"),
-        strings(item["excluded_families"], "excluded families"),
+        decode_constraints(item["constraints"]),
         integer(item["evaluator_workers"], "evaluator workers", positive=True),
         integer(item["pair_timeout_seconds"], "pair timeout seconds", positive=True),
     )
@@ -180,7 +180,7 @@ def _encode_shared_run(shared: SharedRun) -> JsonObject:
         "tuning_effort": encode_effort(shared.tuning_effort),
         "validation_effort": encode_effort(shared.validation_effort),
         "production_effort": encode_effort(shared.production_effort),
-        "excluded_families": list(shared.excluded_families),
+        "constraints": encode_constraints(shared.constraints),
         "evaluator_workers": shared.evaluator_workers,
         "pair_timeout_seconds": shared.pair_timeout_seconds,
     }

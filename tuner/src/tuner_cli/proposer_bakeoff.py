@@ -97,7 +97,7 @@ def _options(spec: BakeoffSpec, cell: BakeoffCell) -> RunOptions:
         production_effort=shared.production_effort,
         pair_timeout_seconds=shared.pair_timeout_seconds,
         evaluator_workers=shared.evaluator_workers,
-        exclude_family=shared.excluded_families,
+        constraints=shared.constraints,
         active_elimination_audit_probability=None,
         proposer_policy=cell.policy,
         resume=cell.run_dir.exists(),

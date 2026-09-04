@@ -289,7 +289,7 @@ A tiny smoke spec (mechanics, replay, accounting, and result projection only):
     "tuning_effort": {"kind": "iterations", "value": 200},
     "validation_effort": {"kind": "iterations", "value": 1000},
     "production_effort": {"kind": "iterations", "value": 1000},
-    "excluded_families": ["meta_mcts", "negamax"],
+    "constraints": [{"set": {"algorithm": {"choices": ["mcts", "flat_mc"]}}}],
     "evaluator_workers": 3, "pair_timeout_seconds": 600,
     "active_audit_probability": 0.25
   },

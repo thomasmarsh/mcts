@@ -24,7 +24,7 @@ _PANEL: list[dict[str, object]] = [
         "label": "Historical",
         "role": "historical_reference",
         "weight": 1,
-        "config": {"source": "inline", "value": {"family": "b"}},
+        "config": {"source": "inline", "value": {"algorithm": "b"}},
     },
 ]
 
@@ -44,7 +44,7 @@ def _write(path: Path, opponents: list[dict[str, object]], game_config: object =
 
 
 def test_game_config_override_resolves_and_is_carried(tmp_path: Path) -> None:
-    default = candidate_from_config({"family": "a"})
+    default = candidate_from_config({"algorithm": "a"})
     resolved = resolve_objective(
         _write(tmp_path / "o.json", _PANEL, {"size": 9}),
         "example",
@@ -56,7 +56,7 @@ def test_game_config_override_resolves_and_is_carried(tmp_path: Path) -> None:
 
 
 def test_game_config_defaults_when_absent(tmp_path: Path) -> None:
-    default = candidate_from_config({"family": "a"})
+    default = candidate_from_config({"algorithm": "a"})
     resolved = resolve_objective(
         _write(tmp_path / "o.json", _PANEL), "example", default, _SIZE_SCHEMA, '{"size":13}'
     )
@@ -76,7 +76,7 @@ def test_game_config_override_is_validated(tmp_path: Path, game_config: object, 
         resolve_objective(
             _write(tmp_path / "bad.json", _PANEL, game_config),
             "example",
-            candidate_from_config({"family": "a"}),
+            candidate_from_config({"algorithm": "a"}),
             _SIZE_SCHEMA,
             '{"size":13}',
         )
@@ -96,10 +96,10 @@ def test_resolved_panel_is_content_identified_not_path_identified(tmp_path: Path
             "label": "Historical",
             "role": "historical_reference",
             "weight": 2,
-            "config": {"source": "inline", "value": {"family": "b"}},
+            "config": {"source": "inline", "value": {"algorithm": "b"}},
         },
     ]
-    default = candidate_from_config({"family": "a"})
+    default = candidate_from_config({"algorithm": "a"})
     first = resolve_objective(_write(tmp_path / "one.json", opponents), "example", default)
     second = resolve_objective(_write(tmp_path / "two.json", opponents), "example", default)
     assert first.fingerprint == second.fingerprint
@@ -132,7 +132,7 @@ def test_resolved_panel_is_content_identified_not_path_identified(tmp_path: Path
                 "label": "Historical",
                 "role": "historical_reference",
                 "weight": 2,
-                "config": {"source": "inline", "value": {"family": "b"}},
+                "config": {"source": "inline", "value": {"algorithm": "b"}},
             },
         ],
     ],
@@ -142,5 +142,5 @@ def test_objective_rejects_insufficient_or_nonreduced_panels(tmp_path: Path, opp
         resolve_objective(
             _write(tmp_path / "bad.json", opponents),
             "example",
-            candidate_from_config({"family": "a"}),
+            candidate_from_config({"algorithm": "a"}),
         )

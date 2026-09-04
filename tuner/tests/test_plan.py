@@ -11,6 +11,7 @@ from pathlib import Path
 
 from test_run import FakeTarget, _fake_binary, _objective
 
+from tuner_cli.constraints import decode_constraints
 from tuner_cli.domain import SearchEffort
 from tuner_cli.plan import plan_launch
 from tuner_cli.run import RunOptions
@@ -46,20 +47,23 @@ def test_resolves_schema_default_opponent(tmp_path: Path) -> None:
     default = by_id["schema-default"]
     assert default["source"] == "schema_default"
     assert default["role"] == "default"
-    assert default["config"] == '{"family":"a"}'
+    assert default["config"] == '{"algorithm":"a"}'
     assert default["fingerprint"]
-    assert by_id["historical"]["config"] == '{"family":"b"}'
+    assert by_id["historical"]["config"] == '{"algorithm":"b"}'
 
 
 def test_space_reflects_constraints(tmp_path: Path) -> None:
-    # `--exclude-family` folds against the resolved schema into a `choices`
-    # narrowing, which the plan then reports as the residual `family` domain.
-    options = _options(tmp_path, exclude_family=("d", "e", "f", "g", "h"))
+    # A `choices` narrowing of the `algorithm` categorical, validated against the
+    # resolved schema, is reported as the residual `algorithm` domain.
+    options = _options(
+        tmp_path,
+        constraints=decode_constraints({"algorithm": {"choices": ["a", "b", "c"]}}),
+    )
     plan = plan_launch(options, target=FakeTarget())
-    assert plan["space"]["residual_categoricals"]["family"] == ["a", "b", "c"]
-    assert plan["space"]["constraints"] == [{"set": {"family": {"choices": ["a", "b", "c"]}}}]
-    family = next(p for p in plan["space"]["parameters"] if p["name"] == "family")
-    assert family["choices"] == ["a", "b", "c"]
+    assert plan["space"]["residual_categoricals"]["algorithm"] == ["a", "b", "c"]
+    assert plan["space"]["constraints"] == [{"set": {"algorithm": {"choices": ["a", "b", "c"]}}}]
+    algorithm = next(p for p in plan["space"]["parameters"] if p["name"] == "algorithm")
+    assert algorithm["choices"] == ["a", "b", "c"]
 
 
 def test_efforts_and_budgets_are_reported(tmp_path: Path) -> None:

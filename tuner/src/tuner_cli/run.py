@@ -13,7 +13,6 @@ from .artifacts import Manifest, build_manifest, manifest_json, read_manifest
 from .constraints import (
     Constraints,
     constrained_schema,
-    family_exclusion_constraint,
     no_constraints,
     validate_constraints,
 )
@@ -61,7 +60,6 @@ class RunOptions:
     shadow_policy: Literal["paired_bootstrap", "successive_halving"] = "paired_bootstrap"
     shadow_halving_spare_margin: float = 0.0
     active_elimination_audit_probability: float | None = None
-    exclude_family: tuple[str, ...] = ()
     constraints: Constraints = field(default_factory=no_constraints)
     proposer_policy: ProposerPolicy = "smac_mixed"
     resume: bool = False
@@ -85,7 +83,7 @@ def run_foreground(
     executor = pair_executor(options.evaluator_workers)
     active_target = GameBinaryTarget(binary) if target is None else target
     spec = game_spec(active_target, binary)
-    options = replace(options, exclude_family=(), constraints=resolved_constraints(spec, options))
+    options = replace(options, constraints=resolved_constraints(spec, options))
     objective_default = schema_default(spec, options.seed)
     proposal_default = schema_default(spec, options.seed, options.constraints)
     objective = resolve_objective(
@@ -298,12 +296,9 @@ def game_spec(target: Target, binary: Path) -> GameSpec:
 
 
 def resolved_constraints(spec: GameSpec, options: RunOptions) -> Constraints:
-    """Fold the ``options.exclude_family`` bake-off sugar into
-    ``options.constraints`` and validate the result against the resolved schema."""
-    legacy = family_exclusion_constraint(spec.tuning, options.exclude_family)
-    constraints = (legacy, *options.constraints) if legacy is not None else options.constraints
-    validate_constraints(spec.tuning, constraints)
-    return constraints
+    """Validate ``options.constraints`` against the resolved schema."""
+    validate_constraints(spec.tuning, options.constraints)
+    return options.constraints
 
 
 def schema_default(

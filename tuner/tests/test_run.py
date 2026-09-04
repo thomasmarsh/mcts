@@ -62,7 +62,7 @@ def _objective(tmp_path: Path) -> Path:
                         "label": "Historical",
                         "role": "historical_reference",
                         "weight": 1,
-                        "config": {"source": "inline", "value": {"family": "b"}},
+                        "config": {"source": "inline", "value": {"algorithm": "b"}},
                     },
                 ],
                 "start_distribution": {"kind": "default_only"},
@@ -90,7 +90,7 @@ class FakeTarget:
                 "game_config": {"size": 5},
                 "parameters": [
                     {
-                        "name": "family",
+                        "name": "algorithm",
                         "type": "categorical",
                         "choices": ["a", "b", "c", "d", "e", "f", "g", "h"],
                         "default": "a",
@@ -108,7 +108,7 @@ class FakeTarget:
 
     def _outcome(self, task: PairTask, candidate_config: dict[str, str]) -> str:
         del task
-        return "candidate_win" if candidate_config["family"] == "b" else "draw"
+        return "candidate_win" if candidate_config["algorithm"] == "b" else "draw"
 
     def evaluate(self, task, candidate, opponent, game_config, timeout_seconds):  # type: ignore[no-untyped-def]
         self.calls.append(task)
@@ -150,15 +150,15 @@ class FakeTarget:
 class FakeModel:
     def ask(self, request: ProposalRequest) -> ProposedConfiguration:
         return ProposedConfiguration(
-            candidate_from_config({"family": f"model-{request.attempt.source_attempt}"}), None
+            candidate_from_config({"algorithm": f"model-{request.attempt.source_attempt}"}), None
         )
 
 
 class ActiveProfileModel:
     def ask(self, request: ProposalRequest) -> ProposedConfiguration:
         source_attempt = request.attempt.source_attempt
-        family = "c" if source_attempt == 1 else ("e", "f", "g", "h")[source_attempt - 2]
-        return ProposedConfiguration(candidate_from_config({"family": family}), None)
+        algorithm = "c" if source_attempt == 1 else ("e", "f", "g", "h")[source_attempt - 2]
+        return ProposedConfiguration(candidate_from_config({"algorithm": algorithm}), None)
 
 
 class ActiveProfileTarget(FakeTarget):
@@ -169,13 +169,13 @@ class ActiveProfileTarget(FakeTarget):
     def _outcome(self, task: PairTask, candidate_config: dict[str, str]) -> str:
         if task.task_case.phase != "tuning":
             return "draw"
-        family = candidate_config["family"]
+        algorithm = candidate_config["algorithm"]
         if not self.recovery:
-            return "candidate_win" if family == "c" else "draw"
+            return "candidate_win" if algorithm == "c" else "draw"
         if task.task_case.ordinal < 3:
-            return "candidate_win" if family == "c" else "draw"
+            return "candidate_win" if algorithm == "c" else "draw"
         if task.task_case.ordinal >= 12:
-            return "draw" if family == "c" else "candidate_win"
+            return "draw" if algorithm == "c" else "candidate_win"
         return "draw"
 
 
@@ -624,7 +624,7 @@ def _mock_eliminating_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
         candidates = current_active_candidates(state)
         observations = comparable_prefix_observations(state.observations, candidates, prefix)
         boundary = next(
-            (item for item in candidates if json.loads(item.canonical_config)["family"] == "c"),
+            (item for item in candidates if json.loads(item.canonical_config)["algorithm"] == "c"),
             candidates[0],
         )
         return ShadowRaceDecision(
@@ -757,7 +757,7 @@ def _mock_halving_shadow(monkeypatch: pytest.MonkeyPatch) -> None:
             for item in race.decisions
             if item.disposition == "eliminate"
         }
-        ranked = sorted(candidates, key=lambda c: json.loads(c.canonical_config)["family"])
+        ranked = sorted(candidates, key=lambda c: json.loads(c.canonical_config)["algorithm"])
         target = (len(ranked) + 1) // 2
         rank_of = {c.candidate_id: index + 1 for index, c in enumerate(ranked)}
         kept = {c.candidate_id for c in ranked[:target]}
@@ -1058,7 +1058,7 @@ def test_worker_count_is_validated_before_creating_artifacts(
     assert not options.run_dir.exists()
 
 
-_CONSTRAINT = {"family": {"choices": ["a", "b", "c", "d", "f", "g"]}}
+_CONSTRAINT = {"algorithm": {"choices": ["a", "b", "c", "d", "f", "g"]}}
 
 
 def _built_manifest(options: RunOptions) -> tuple[dict, object]:
@@ -1105,6 +1105,8 @@ def test_resume_rejects_a_constraint_change(tmp_path: Path) -> None:
         constraints=decode_constraints(_CONSTRAINT),
     )
     frozen, _ = _built_manifest(options)
-    widened = replace(options, constraints=decode_constraints({"family": {"choices": ["a", "b"]}}))
+    widened = replace(
+        options, constraints=decode_constraints({"algorithm": {"choices": ["a", "b"]}})
+    )
     rebuilt, _ = _built_manifest(widened)
     assert frozen["fingerprint"] != rebuilt["fingerprint"]

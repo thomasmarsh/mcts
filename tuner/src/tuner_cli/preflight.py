@@ -2,7 +2,7 @@
 
 Runs exactly the checks `run_foreground` performs *before* it creates the run
 directory or starts any search -- argument coherence (`validate_options`), the
-game-spec / family-exclusion checks, objective resolution, the
+game-spec / space-constraint checks, objective resolution, the
 option-vs-panel cross-checks (`validate_objective_options`), and the
 schema-default-vs-panel binary check (`preflight_default`) -- and reports what
 fails as a JSON line. The bench server's launch form calls this so a launch

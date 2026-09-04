@@ -34,9 +34,9 @@ ACTIVE_FIXTURES = Path(__file__).parent / "fixtures" / "version4-active-halving"
 
 # The two cohorts need more valid configurations than either cohort alone, while
 # still exercising one deterministic semantic rejection.
-_FAMILIES = ("a", "b", "c", "d", "e", "f", "g", "h")
-_WINNING_FAMILIES = frozenset({"b", "c"})
-_INVALID_FAMILY = "e"
+_ALGORITHMS = ("a", "b", "c", "d", "e", "f", "g", "h")
+_WINNING_ALGORITHMS = frozenset({"b", "c"})
+_INVALID_ALGORITHM = "e"
 
 
 def golden_options(binary: Path, run_dir: Path, objective_file: Path) -> RunOptions:
@@ -98,7 +98,7 @@ def write_objective(tmp_path: Path) -> Path:
                         "label": "Historical",
                         "role": "historical_reference",
                         "weight": 1,
-                        "config": {"source": "inline", "value": {"family": "b"}},
+                        "config": {"source": "inline", "value": {"algorithm": "b"}},
                     },
                 ],
                 "start_distribution": {"kind": "default_only"},
@@ -129,8 +129,8 @@ def normalize_operational(text: str, manifest: dict[str, object]) -> str:
     return text
 
 
-def _family(candidate: Candidate) -> str:
-    value = json.loads(candidate.canonical_config)["family"]
+def _algorithm(candidate: Candidate) -> str:
+    value = json.loads(candidate.canonical_config)["algorithm"]
     return value if isinstance(value, str) else ""
 
 
@@ -157,9 +157,9 @@ class GoldenTarget:
                 "game_config": {"size": 5},
                 "parameters": [
                     {
-                        "name": "family",
+                        "name": "algorithm",
                         "type": "categorical",
-                        "choices": list(_FAMILIES),
+                        "choices": list(_ALGORITHMS),
                         "default": "a",
                     }
                 ],
@@ -173,13 +173,13 @@ class GoldenTarget:
         invalid = [
             index
             for index, candidate in enumerate(candidates)
-            if _family(candidate) == _INVALID_FAMILY
+            if _algorithm(candidate) == _INVALID_ALGORITHM
         ]
         if invalid:
             return ValidationResult(
                 False,
                 tuple(
-                    ValidationError("family", "family 'e' is not supported", index)
+                    ValidationError("algorithm", "algorithm 'e' is not supported", index)
                     for index in invalid
                 ),
             )
@@ -187,7 +187,7 @@ class GoldenTarget:
 
     def _outcome(self, task: PairTask, candidate: Candidate) -> str:
         del task
-        return "candidate_win" if _family(candidate) in _WINNING_FAMILIES else "draw"
+        return "candidate_win" if _algorithm(candidate) in _WINNING_ALGORITHMS else "draw"
 
     def evaluate(
         self,
@@ -243,9 +243,9 @@ class GoldenTarget:
 
 
 class ActiveHalvingGoldenTarget(GoldenTarget):
-    """Graded per-family win rates so the eta-2 rank cut resolves a real order.
+    """Graded per-algorithm win rates so the eta-2 rank cut resolves a real order.
 
-    Earlier families in ``_FAMILIES`` win more tuning tasks, producing a strict
+    Earlier algorithms in ``_ALGORITHMS`` win more tuning tasks, producing a strict
     objective ranking the successive-halving policy can cut on -- unlike the
     two-tier :class:`GoldenTarget`, whose ties the spare-margin rule would carry.
     """
@@ -253,5 +253,5 @@ class ActiveHalvingGoldenTarget(GoldenTarget):
     def _outcome(self, task: PairTask, candidate: Candidate) -> str:
         if task.task_case.phase != "tuning":
             return "draw"
-        rank = _FAMILIES.index(_family(candidate))
-        return "candidate_win" if task.task_case.ordinal % len(_FAMILIES) >= rank else "draw"
+        rank = _ALGORITHMS.index(_algorithm(candidate))
+        return "candidate_win" if task.task_case.ordinal % len(_ALGORITHMS) >= rank else "draw"

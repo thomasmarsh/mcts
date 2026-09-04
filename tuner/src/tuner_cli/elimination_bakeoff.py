@@ -28,8 +28,8 @@ from .codec import (
     object_fields,
     strict_json,
     string,
-    strings,
 )
+from .constraints import Constraints, decode_constraints, encode_constraints
 from .domain import Observation, ReplayState, SearchEffort
 from .effort import decode_effort, encode_effort, exceeds_same_kind
 from .elimination_bakeoff_metrics import EliminationChildFact, EliminationDecision, aggregate
@@ -65,7 +65,7 @@ _SHARED_RUN_FIELDS = {
     "tuning_effort",
     "validation_effort",
     "production_effort",
-    "excluded_families",
+    "constraints",
     "evaluator_workers",
     "pair_timeout_seconds",
     "active_audit_probability",
@@ -101,7 +101,7 @@ class EliminationSharedRun:
     tuning_effort: SearchEffort
     validation_effort: SearchEffort
     production_effort: SearchEffort
-    excluded_families: tuple[str, ...]
+    constraints: Constraints
     evaluator_workers: int
     pair_timeout_seconds: int
     active_audit_probability: float
@@ -166,7 +166,7 @@ def _decode_shared_run(value: object) -> EliminationSharedRun:
         decode_effort(item["tuning_effort"], "tuning effort"),
         decode_effort(item["validation_effort"], "validation effort"),
         decode_effort(item["production_effort"], "production effort"),
-        strings(item["excluded_families"], "excluded families"),
+        decode_constraints(item["constraints"]),
         integer(item["evaluator_workers"], "evaluator workers", positive=True),
         integer(item["pair_timeout_seconds"], "pair timeout seconds", positive=True),
         audit,
@@ -250,7 +250,7 @@ def _encode_shared_run(shared: EliminationSharedRun) -> JsonObject:
         "tuning_effort": encode_effort(shared.tuning_effort),
         "validation_effort": encode_effort(shared.validation_effort),
         "production_effort": encode_effort(shared.production_effort),
-        "excluded_families": list(shared.excluded_families),
+        "constraints": encode_constraints(shared.constraints),
         "evaluator_workers": shared.evaluator_workers,
         "pair_timeout_seconds": shared.pair_timeout_seconds,
         "active_audit_probability": shared.active_audit_probability,
@@ -358,7 +358,7 @@ def _options(spec: EliminationBakeoffSpec, cell: EliminationCell) -> RunOptions:
         shadow_policy=shadow_policy,
         shadow_halving_spare_margin=spare,
         active_elimination_audit_probability=audit,
-        exclude_family=shared.excluded_families,
+        constraints=shared.constraints,
         proposer_policy=shared.proposer_policy,
         resume=cell.run_dir.exists(),
     )

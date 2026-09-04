@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from tuner_cli.constraints import decode_constraints
 from tuner_cli.domain import SearchEffort
 from tuner_cli.elimination_bakeoff import (
     EliminationBakeoffSpec,
@@ -53,7 +54,7 @@ def build_spec() -> EliminationBakeoffSpec:
         tuning_effort=SearchEffort("iterations", 400),
         validation_effort=SearchEffort("iterations", 2000),
         production_effort=SearchEffort("iterations", 2000),
-        excluded_families=("meta_mcts", "negamax"),
+        constraints=decode_constraints([{"set": {"simulate": {"choices": ["random_playout"]}}}]),
         evaluator_workers=3,
         pair_timeout_seconds=600,
         active_audit_probability=0.25,

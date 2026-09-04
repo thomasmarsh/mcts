@@ -1,7 +1,7 @@
 """Run-scoped tuning-space constraints: narrow (never widen) the declared schema.
 
-Unifies the tuner's two prior run-scoped space controls -- named-family
-exclusion and the ``fix``/``range``/``choices`` space overrides -- into one
+Unifies the tuner's prior run-scoped space controls -- categorical exclusion
+and the ``fix``/``range``/``choices`` space overrides -- into one
 predicated form. A constraint is a ``set`` of per-parameter narrowings,
 optionally guarded by a ``when`` predicate over categorical parameters.
 "Exclude algorithm/axis-variant X" is now expressed as a ``choices`` narrowing
@@ -77,32 +77,6 @@ Constraints = tuple[Constraint, ...]
 def no_constraints() -> Constraints:
     """An empty constraint list, for dataclass ``field(default_factory=...)``."""
     return ()
-
-
-def family_exclusion_constraint(
-    schema: TuningSchema, excluded_families: tuple[str, ...]
-) -> Constraint | None:
-    """Lower an ``excluded_families`` list to a ``choices`` narrowing.
-
-    "Exclude family X" is a bake-off launch convenience (the tuner UI/CLI now
-    emit the residual choice set directly as a ``constraints`` entry). It maps
-    to a ``choices`` narrowing of the ``family`` categorical keeping every value
-    not named -- ``None`` when the list is empty.
-    """
-    if not excluded_families:
-        return None
-    family = next((p for p in schema.parameters if p.name == "family"), None)
-    if family is None or family.kind != "categorical" or family.choices is None:
-        raise ValueError("family exclusion needs a categorical 'family' parameter")
-    unknown = sorted(set(excluded_families) - {str(c) for c in family.choices})
-    if unknown:
-        raise ValueError(f"unknown excluded family: {unknown[0]}")
-    kept = tuple(
-        _param_scalar(c, "family choice") for c in family.choices if c not in excluded_families
-    )
-    if not kept:
-        raise ValueError("family exclusions cannot exclude every family")
-    return Constraint(when=(), sets=(("family", ChoicesOp(kept)),))
 
 
 # --- decoding -------------------------------------------------------------------

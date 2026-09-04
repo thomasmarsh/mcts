@@ -22,11 +22,11 @@ def _description() -> dict[str, object]:
             "parameters": [
                 {"name": "ratio", "type": "float", "bounds": [0.0, 1.0], "default": 0.5},
                 {"name": "depth", "type": "int", "bounds": [1, 3], "default": 2},
-                {"name": "family", "type": "categorical", "choices": ["a", "b"], "default": "a"},
+                {"name": "algorithm", "type": "categorical", "choices": ["a", "b"], "default": "a"},
                 {"name": "flag", "type": "bool", "default": False},
                 {"name": "fixed", "type": "constant", "value": "fixed"},
             ],
-            "conditions": [{"if": {"flag": True}, "then": ["family"]}],
+            "conditions": [{"if": {"flag": True}, "then": ["algorithm"]}],
         },
     }
 
@@ -51,8 +51,8 @@ def test_decoder_rejects_contract_and_condition_errors(tmp_path) -> None:
     tuning = raw["tuning"]
     assert isinstance(tuning, dict)
     tuning["conditions"] = [
-        {"if": {"flag": True}, "then": ["family"]},
-        {"if": {"family": "a"}, "then": ["flag"]},
+        {"if": {"flag": True}, "then": ["algorithm"]},
+        {"if": {"algorithm": "a"}, "then": ["flag"]},
     ]
     with pytest.raises(ValueError, match="cycle"):
         decode_game_spec(raw, tmp_path / "game", "0" * 64)
