@@ -4214,6 +4214,73 @@ body.bench-active #analysis-panel {
   flex: none;
 }
 
+.constraint-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.constraint-editor-group {
+  border: 1px solid #33353f;
+  border-radius: 6px;
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.constraint-editor-group legend {
+  font-size: 12px;
+  color: #686a75;
+  padding: 0 4px;
+}
+
+.constraint-editor-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.constraint-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.constraint-editor-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.constraint-editor-choices,
+.constraint-editor-when-parent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 13px;
+}
+
+.constraint-editor-choices label,
+.constraint-editor-when-parent label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.constraint-editor-when summary {
+  font-size: 12px;
+  color: #686a75;
+  cursor: pointer;
+}
+
+.constraint-editor-when-parent {
+  margin-top: 6px;
+}
+
 #tuner-launch-button {
   align-self: flex-start;
   background: #4a6ee0;

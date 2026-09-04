@@ -5,6 +5,7 @@ export { FleetDashboard } from "./views/FleetDashboard.js";
 export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
 export { ObjectiveManager } from "./views/ObjectiveManager.js";
 export { ObjectiveEditor } from "./views/ObjectiveEditor.js";
+export { ConstraintEditor } from "./views/ConstraintEditor.js";
 export { RunOverview } from "./views/RunOverview.js";
 export { RunScience } from "./views/RunScience.js";
 export { RunEvidence } from "./views/RunEvidence.js";
@@ -45,6 +46,20 @@ export {
   type ConfigDiffRow,
 } from "./models/config-diff-model.js";
 export { buildPreset, type PresetSpec, type PresetCopyResult } from "./models/preset-copy.js";
+export {
+  axisGroups,
+  deriveConstraints,
+  emptyRow,
+  emptyRows,
+  modesFor,
+  predicateParents,
+  type ConstraintAxisGroup,
+  type ConstraintDerivation,
+  type ConstraintMode,
+  type ConstraintRow,
+  type ConstraintRows,
+  type ParamSchema as ConstraintParamSchema,
+} from "./models/constraint-editor-model.js";
 export {
   emptyDraft,
   draftFromContent,
