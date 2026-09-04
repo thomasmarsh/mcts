@@ -1,7 +1,7 @@
 //! Builds a runnable `Box<dyn Search<G>>` for a non-MCTS [`AlgorithmSpec`] --
 //! the `random`/`flat_mc`/`negamax` counterpart of `config_ir::build_search`.
 //! Those three are standalone `Search` impls, not a
-//! `Compose<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>` `TreeSearch`,
+//! `Mcts<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>` `TreeSearch`,
 //! so this is the one place `G` is monomorphized against its concrete type
 //! instead of erased through `config_ir`'s `Dyn*` axes.
 

@@ -5,11 +5,11 @@ use mcts::game::Game;
 use mcts::node::QInit;
 use mcts::select::{self as mcts_select, SelectPolicy};
 use mcts::simulate::{self as mcts_simulate, SimulatePolicy};
-use mcts::algorithms::mcts::strategy::Compose;
+use mcts::algorithms::mcts::profile::Mcts;
 use mcts::algorithms::Search;
 use mcts::{GraphSearch, Requirements, SearchConfig, TreeSearch};
 
-/// Builds and runs a `TreeSearch<Nim, Compose<S, mcts_simulate::Uniform>>`
+/// Builds and runs a `TreeSearch<Nim, Mcts<S, mcts_simulate::Uniform>>`
 /// for whatever concrete `S` `with_select` resolves -- the end-to-end
 /// proof that a `SelectSpec` parsed from JSON reaches an optimized,
 /// monomorphized search, not just a type-erased stand-in.
@@ -21,7 +21,7 @@ impl<'a, G: Game> SelectCont<G> for RunCont<'a, G> {
     type Output = G::A;
 
     fn call<S: SelectPolicy<G>>(self, select: S) -> G::A {
-        let mut ts = TreeSearch::<G, Compose<S, mcts_simulate::Uniform>>::default().config(
+        let mut ts = TreeSearch::<G, Mcts<S, mcts_simulate::Uniform>>::default().config(
             SearchConfig::default()
                 .select(select)
                 .max_iterations(200)
@@ -437,7 +437,7 @@ fn with_select_builds_a_working_tree_search_for_progressive_history() {
     );
 }
 
-/// Builds and runs a `TreeSearch<Nim, Compose<mcts_select::Ucb1, S>>` for
+/// Builds and runs a `TreeSearch<Nim, Mcts<mcts_select::Ucb1, S>>` for
 /// whatever concrete `S` `with_simulate` resolves -- the `simulate`-axis
 /// counterpart of `RunCont` above.
 struct RunSimulateCont<'a, G: Game> {
@@ -448,7 +448,7 @@ impl<'a, G: Game> SimulateCont<G> for RunSimulateCont<'a, G> {
     type Output = G::A;
 
     fn call<S: SimulatePolicy<G>>(self, simulate: S) -> G::A {
-        let mut ts = TreeSearch::<G, Compose<mcts_select::Ucb1, S>>::default().config(
+        let mut ts = TreeSearch::<G, Mcts<mcts_select::Ucb1, S>>::default().config(
             SearchConfig::default()
                 .simulate(simulate)
                 .max_iterations(200)
@@ -630,7 +630,7 @@ fn meta_mcts_spec_round_trips_through_json() {
 
 #[test]
 fn with_simulate_builds_a_working_nested_search_for_meta_mcts() {
-    // The inner search is always `Compose<Ucb1, Uniform>` -- see
+    // The inner search is always `Mcts<Ucb1, Uniform>` -- see
     // `register_simulate!`'s doc comment on why `MetaMcts`'s inner
     // strategy isn't independently configurable.
     let spec = SimulateSpec::MetaMcts { iterations: 25 };
@@ -726,7 +726,7 @@ fn backprop_spec_deserialize_rejects_unknown_kind_and_missing_fields() {
 /// `requirements()` to check (see `register_backprop!`'s doc comment on
 /// why), so this is the `backprop`-axis analogue of the `select`/
 /// `simulate` "build a working search" tests, minus the search: any
-/// `BackpropPolicy` is usable in a `Compose<..>` without further
+/// `BackpropPolicy` is usable in a `Mcts<..>` without further
 /// per-type configuration.
 struct ResolvedCont;
 
@@ -772,7 +772,7 @@ fn requirements_of_final_action_matches_the_real_components_own_answer() {
     }
 }
 
-/// Builds and runs a `TreeSearch<Nim, Compose<mcts_select::Ucb1, mcts_simulate::Uniform,
+/// Builds and runs a `TreeSearch<Nim, Mcts<mcts_select::Ucb1, mcts_simulate::Uniform,
 /// mcts_backprop::Classic, S>>` for whatever concrete `S` `with_final_action`
 /// resolves -- the `final_action`-axis counterpart of `RunCont`/
 /// `RunSimulateCont` above.
@@ -786,7 +786,7 @@ impl<'a, G: Game> SelectCont<G> for RunFinalActionCont<'a, G> {
     fn call<S: SelectPolicy<G>>(self, final_action: S) -> G::A {
         let mut ts = TreeSearch::<
             G,
-            Compose<mcts_select::Ucb1, mcts_simulate::Uniform, mcts_backprop::Classic, S>,
+            Mcts<mcts_select::Ucb1, mcts_simulate::Uniform, mcts_backprop::Classic, S>,
         >::default()
         .config(
             SearchConfig::default()

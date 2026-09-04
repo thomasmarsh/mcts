@@ -11,7 +11,7 @@
 //! Exit status is non-zero if any case fails.
 
 use game_nim::Nim;
-use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::game::Game;
 use serde_json::json;
@@ -20,7 +20,7 @@ use serde_json::json;
 /// `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
 fn baseline() -> Box<dyn Search<G = Nim>> {
     Box::new(
-        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(50)),
+        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)),
     )
 }
 

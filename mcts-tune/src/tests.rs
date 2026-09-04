@@ -2,7 +2,7 @@ use crate::*;
 use game_host::{ConfiguredCandidateSide, ConfiguredOutcome, HostError, TunerInfo};
 use game_nim::Nim;
 use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use serde_json::{json, Value};
 
@@ -84,7 +84,7 @@ impl Game for TraceGame {
 fn search_report_and_legacy_analysis_agree_on_the_selected_action() {
     let state = <Nim as Game>::S::default();
     let mut search =
-        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(20));
+        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(20));
     let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
         nim_action_value(&state, action)
     });
@@ -116,7 +116,7 @@ fn search_report_and_legacy_analysis_agree_on_the_selected_action() {
 fn one_iteration_mcts_search_selects_after_the_root_playout() {
     let state = <Nim as Game>::S::default();
     let mut search =
-        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(1));
+        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(1));
 
     let (selected_action, report) = choose_action_with_report(&mut search, &state, |action| {
         nim_action_value(&state, action)
@@ -256,7 +256,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
 // and `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
 fn baseline() -> Box<dyn Search<G = Nim>> {
     Box::new(
-        TreeSearch::<Nim, strategy::Ucb1>::new().config(SearchConfig::new().max_iterations(50)),
+        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)),
     )
 }
 

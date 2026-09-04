@@ -4,7 +4,7 @@ use mcts::search::TreeStats;
 use mcts::select;
 use mcts::simulate::{self, SimulatePolicy, Trial};
 use mcts::algorithms::mcts::config::BackpropFlags;
-use mcts::algorithms::mcts::strategy::Compose;
+use mcts::algorithms::mcts::profile::Mcts;
 use mcts::{Requirements, SearchConfig, TreeSearch};
 use rand::rngs::SmallRng;
 use serde::de::Error as _;
@@ -33,10 +33,10 @@ pub trait SimulateCont<G: Game> {
 /// being representable, matching the fact that real configs only ever nest
 /// one wrapper deep.
 ///
-/// `MetaMcts` is also not a row here -- `simulate::MetaMcts<G, S: Strategy<G>>`
+/// `MetaMcts` is also not a row here -- `simulate::MetaMcts<G, S: PolicyProfile<G>>`
 /// wraps a whole nested `TreeSearch`, not a `SimulatePolicy`. Its inner
-/// search is *not* independently configurable: it's always `Compose<Ucb1,
-/// Uniform>` with `Ucb1`'s default `c`, matching the one real caller
+/// search is *not* independently configurable: it's always `Mcts::default()`
+/// (UCB1/Uniform with UCB1's default `c`), matching the one real caller
 /// (`mcts-tune::make_candidate`'s `meta_mcts` arm, which has never varied
 /// the inner strategy). Earlier revisions of this file let the inner
 /// `select`/`simulate` be arbitrary specs, which multiplied the already
@@ -343,9 +343,9 @@ macro_rules! register_simulate {
                     cont.call(simulate)
                 }
                 SimulateSpec::MetaMcts { iterations } => {
-                    let inner = TreeSearch::<G, Compose<select::Ucb1, simulate::Uniform>>::default()
+                    let inner = TreeSearch::<G, Mcts<select::Ucb1, simulate::Uniform>>::default()
                         .config(
-                            SearchConfig::<G, Compose<select::Ucb1, simulate::Uniform>>::new()
+                            SearchConfig::<G, Mcts<select::Ucb1, simulate::Uniform>>::new()
                                 .max_iterations(iterations),
                         );
                     cont.call(simulate::MetaMcts { inner })
