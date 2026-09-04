@@ -30,6 +30,7 @@ import { LaunchForm } from "./views/LaunchForm.js";
 import { ObjectiveManager } from "./views/ObjectiveManager.js";
 import { ObjectiveEditor } from "./views/ObjectiveEditor.js";
 import { ProfileManager } from "./views/ProfileManager.js";
+import { ProfileEditor } from "./views/ProfileEditor.js";
 import { RunOverview } from "./views/RunOverview.js";
 import { RunScience } from "./views/RunScience.js";
 import { RunEvidence } from "./views/RunEvidence.js";
@@ -155,7 +156,7 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
             <button class="tuner-back" onClick={() => navigate({ view: "fleet" })}>
               ← Fleet
             </button>
-            <LaunchForm store={store} />
+            <LaunchForm store={store} navigate={navigate} />
           </div>
         </Match>
         <Match when={route().view === "objectives"}>
@@ -175,12 +176,9 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
           <ProfileManager store={store} navigate={navigate} />
         </Match>
         <Match when={profileRoute()}>
-          <div class="tuner-launch-pane">
-            <button class="tuner-back" onClick={() => navigate({ view: "profiles" })}>
-              ← Profiles
-            </button>
-            <p class="tuner-fleet-empty">The profile editor is not built yet.</p>
-          </div>
+          {(r) => (
+            <ProfileEditor store={store} profileKey={r().key} navigate={navigate} />
+          )}
         </Match>
         <Match when={runRoute()}>
           {(r) => (

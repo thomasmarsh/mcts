@@ -6,6 +6,7 @@ export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
 export { ObjectiveManager } from "./views/ObjectiveManager.js";
 export { ObjectiveEditor } from "./views/ObjectiveEditor.js";
 export { ProfileManager } from "./views/ProfileManager.js";
+export { ProfileEditor } from "./views/ProfileEditor.js";
 export { ConstraintEditor } from "./views/ConstraintEditor.js";
 export { RunOverview } from "./views/RunOverview.js";
 export { RunScience } from "./views/RunScience.js";
@@ -79,6 +80,20 @@ export {
   type JsonObject,
   type DraftParse,
 } from "./models/objective-model.js";
+export {
+  emptyProfileDraft,
+  draftFromProfileContent,
+  draftToProfileContent,
+  rowsFromConstraints,
+  validateProfileDraft,
+  profileSlugKey,
+  PROFILE_PHASES,
+  type ProfileDraft,
+  type ProfileDraftParse,
+  type ProfilePhase,
+  type ProfileEffortDraft,
+  type ProfileBudgetsDraft,
+} from "./models/profile-model.js";
 export {
   derivePairInspector,
   type PairInspectorView,

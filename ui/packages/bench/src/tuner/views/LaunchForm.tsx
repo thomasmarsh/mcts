@@ -12,12 +12,14 @@ import {
   For,
   onCleanup,
   Show,
+  untrack,
   type Component,
 } from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import type { TunerLaunchRequest } from "../tuner-types.js";
+import type { TunerRoute } from "../tuner-routes.js";
 import { summarizeRunPlan } from "../models/run-plan-model.js";
 import { ConstraintEditor } from "./ConstraintEditor.js";
 import {
@@ -26,6 +28,11 @@ import {
   type ConstraintRows,
   type ParamSchema,
 } from "../models/constraint-editor-model.js";
+import {
+  draftFromProfileContent,
+  draftToProfileContent,
+  type ProfileDraft,
+} from "../models/profile-model.js";
 import { OpponentPanelTable } from "../primitives/OpponentPanelTable.js";
 import { KpiRow } from "../primitives/KpiRow.js";
 
@@ -68,12 +75,16 @@ function suggestRunId(kind: string, objectiveKey: string): string {
   return `${base}-${stamp}`;
 }
 
-export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = (props) => {
+export const LaunchForm: Component<{
+  store: Store<TunerState, TunerAction>;
+  navigate?: (route: TunerRoute) => void;
+}> = (props) => {
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
 
   const tunableGames = createMemo(() => peek(state().tunableGames) ?? []);
   const objectives = createMemo(() => peek(state().objectives) ?? []);
+  const profiles = createMemo(() => peek(state().profiles) ?? []);
 
   const [gameKind, setGameKind] = createSignal("");
   const [objectiveKey, setObjectiveKey] = createSignal("");
@@ -117,8 +128,16 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   // schema. A different game has a different schema, so start fresh on a
   // game switch.
   const [constraintRows, setConstraintRows] = createSignal<ConstraintRows>({});
+  // Set while a "start from profile" seed is switching the game, so the
+  // game-switch reset below doesn't wipe the constraint rows the seed just
+  // installed. Reset by that same effect on its next run.
+  const [profileSeeding, setProfileSeeding] = createSignal(false);
   createEffect(() => {
     gameKind();
+    if (untrack(profileSeeding)) {
+      setProfileSeeding(false);
+      return;
+    }
     setConstraintRows(emptyRows(schema()));
   });
   const constraintResult = createMemo(() => deriveConstraints(schema(), constraintRows()));
@@ -150,6 +169,85 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
       }
     }
     return null;
+  });
+
+  // --- Start from / save as a launch profile ---------------------------
+  const [fromProfileKey, setFromProfileKey] = createSignal("");
+  const [savePanelOpen, setSavePanelOpen] = createSignal(false);
+  const [saveKey, setSaveKey] = createSignal("");
+  let seededProfileKey: string | null = null;
+
+  function selectProfile(key: string): void {
+    setFromProfileKey(key);
+    seededProfileKey = null;
+    if (key) dispatch({ tag: "openProfile", key });
+  }
+
+  /** The current form state as a `ProfileDraft`, for "save as profile". */
+  const currentProfileDraft = (): ProfileDraft => ({
+    profileId: saveKey().trim(),
+    gameKind: gameKind(),
+    objectiveKey: objectiveKey(),
+    constraintRows: constraintRows(),
+    efforts: {
+      tuning: { value: effortValue().tuning, unit: effortUnit().tuning },
+      validation: { value: effortValue().validation, unit: effortUnit().validation },
+      production: { value: effortValue().production, unit: effortUnit().production },
+    },
+    budgets: {
+      tuningPairBudget: tuningBudget(),
+      validationPairBudget: validationBudget(),
+      productionValidationPairs: productionPairs(),
+      cohortSize: cohortSize(),
+      finalists: finalists(),
+    },
+  });
+
+  function saveAsProfile(): void {
+    const key = saveKey().trim();
+    if (key === "") return;
+    dispatch({
+      tag: "saveProfile",
+      key,
+      content: draftToProfileContent(currentProfileDraft(), schema()),
+    });
+  }
+
+  // Seed every field from the selected profile once its detail loads. The
+  // operator can still override anything before launching.
+  createEffect(() => {
+    const key = fromProfileKey();
+    if (!key || seededProfileKey === key) return;
+    const detail = peek(state().profileDetail);
+    if (!detail || detail.key !== key) return;
+    seededProfileKey = key;
+
+    const probe = draftFromProfileContent(detail.content, EMPTY_SCHEMA);
+    const sch = tunableGames().find((k) => k.game === probe.draft.gameKind)?.tuner ?? EMPTY_SCHEMA;
+    const { draft } = draftFromProfileContent(detail.content, sch);
+
+    if (draft.gameKind && draft.gameKind !== gameKind()) setProfileSeeding(true);
+    if (draft.gameKind) setGameKind(draft.gameKind);
+    if (draft.objectiveKey) setObjectiveKey(draft.objectiveKey);
+    setConstraintRows(draft.constraintRows);
+    setTuningBudget(draft.budgets.tuningPairBudget);
+    setValidationBudget(draft.budgets.validationPairBudget);
+    setProductionPairs(draft.budgets.productionValidationPairs);
+    setCohortSize(draft.budgets.cohortSize);
+    setFinalists(draft.budgets.finalists);
+    setEffortValue({
+      tuning: draft.efforts.tuning.value,
+      validation: draft.efforts.validation.value,
+      production: draft.efforts.production.value,
+    });
+    setEffortUnit({
+      tuning: draft.efforts.tuning.unit,
+      validation: draft.efforts.validation.unit,
+      production: draft.efforts.production.unit,
+    });
+    if (draft.constraintRows && Object.keys(draft.constraintRows).length > 0) {
+      setShowAdvanced(true);
+    }
   });
 
   // Objectives whose `game_kind` matches the picked game come first; an
@@ -261,6 +359,23 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   return (
     <form id="tuner-launch-form" class="tuner-launch-form" onSubmit={onSubmit}>
       <h3>Launch a tuner run</h3>
+
+      <Show when={profiles().length > 0}>
+        <label class="tuner-launch-from-profile">
+          Start from profile
+          <select
+            data-testid="from-profile"
+            value={fromProfileKey()}
+            onInput={(e) => selectProfile(e.currentTarget.value)}
+            disabled={busy()}
+          >
+            <option value="">(none — blank form)</option>
+            <For each={profiles()}>
+              {(p) => <option value={p.key}>{p.profile_id ?? p.key}</option>}
+            </For>
+          </select>
+        </label>
+      </Show>
 
       <Show when={launchError()}>
         <div class="launch-error" role="alert">
@@ -530,6 +645,74 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
               game_config override: <code class="tuner-mono">{runPlan().gameConfig}</code>
             </p>
           </Show>
+        </Show>
+      </section>
+
+      <section class="tuner-launch-save-profile">
+        <Show
+          when={savePanelOpen()}
+          fallback={
+            <button
+              type="button"
+              class="tuner-launch-advanced-toggle"
+              data-testid="save-as-profile-toggle"
+              onClick={() => {
+                setSaveKey(fromProfileKey() || runId().trim());
+                setSavePanelOpen(true);
+              }}
+            >
+              Save these settings as a profile…
+            </button>
+          }
+        >
+          <div class="tuner-launch-grid">
+            <label>
+              Profile key
+              <input
+                type="text"
+                data-testid="save-profile-key"
+                value={saveKey()}
+                onInput={(e) => setSaveKey(e.currentTarget.value)}
+              />
+            </label>
+          </div>
+          <Show when={state().profileSave.status === "error" && state().profileSave.error}>
+            <p class="launch-error" role="alert" data-testid="save-profile-error">
+              {state().profileSave.error}
+            </p>
+          </Show>
+          <Show when={state().profileSave.status === "done"}>
+            <p class="tuner-launch-hint" data-testid="save-profile-done">
+              Saved profile <code>{saveKey().trim()}</code>.
+              <Show when={props.navigate}>
+                {" "}
+                <a
+                  href="#/tuner/profiles"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    props.navigate!({ view: "profiles" });
+                  }}
+                >
+                  Manage profiles
+                </a>
+              </Show>
+            </p>
+          </Show>
+          <button
+            type="button"
+            data-testid="save-profile-submit"
+            disabled={
+              saveKey().trim() === "" ||
+              buildRequest() === null ||
+              state().profileSave.status === "pending"
+            }
+            onClick={saveAsProfile}
+          >
+            {state().profileSave.status === "pending" ? "Saving…" : "Save profile"}
+          </button>
+          <button type="button" onClick={() => setSavePanelOpen(false)}>
+            Cancel
+          </button>
         </Show>
       </section>
 
