@@ -770,28 +770,36 @@ pub fn is_alive(pid: u32) -> bool {
 /// spawned into its own group), so `tuner_cli` and any evaluator workers it
 /// spawned all see it. `tuner_cli` maps `KeyboardInterrupt` to exit 130 and
 /// leaves the run resumable.
+#[cfg(unix)]
 pub fn interrupt(pid: u32) -> io::Result<()> {
-    let status = Command::new("kill")
-        .arg("-INT")
-        .arg(format!("-{pid}"))
-        .status()?;
-    if status.success() {
-        return Ok(());
+    let pid = pid as libc::pid_t;
+    // Try the whole process group first (the child is its own group leader),
+    // then fall back to the bare pid if that group is already gone. `kill(2)`
+    // directly, rather than shelling out to `kill(1)` -- some `kill(1)`
+    // implementations misparse a negative pgid argument as an unknown option.
+    for target in [-pid, pid] {
+        // SAFETY: `kill` with a signal number and a pid/pgid has no memory
+        // safety implications.
+        if unsafe { libc::kill(target, libc::SIGINT) } == 0 {
+            return Ok(());
+        }
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::ESRCH) {
+            return Err(err);
+        }
     }
-    // Fall back to the bare pid if the group signal was rejected (e.g. the
-    // child never became a group leader on this platform).
-    let status = Command::new("kill")
-        .arg("-INT")
-        .arg(pid.to_string())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "process is no longer alive",
-        ))
-    }
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "process is no longer alive",
+    ))
+}
+
+#[cfg(not(unix))]
+pub fn interrupt(_pid: u32) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "interrupting a launched run is only supported on unix",
+    ))
 }
 
 #[cfg(test)]
@@ -1068,6 +1076,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawn_journals_a_launch_then_a_terminal_outcome_and_stops_cleanly() {
         let root = scratch("spawn");
         let run_dir = root.join("live");
@@ -1101,7 +1110,8 @@ mod tests {
                 break;
             }
             if i == 20 && is_alive(pid) {
-                let _ = Command::new("kill").arg("-KILL").arg(pid.to_string()).status();
+                // SAFETY: `kill` with a signal number and pid is always sound.
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
@@ -1206,15 +1216,14 @@ mod tests {
     /// Deliver `SIGKILL` to a process group, used only to force-clean a test
     /// whose wrapper inherited a `SIG_IGN` SIGINT disposition from a
     /// non-interactive CI runner.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn kill_group(pgid: u32) {
-        let _ = Command::new("kill")
-            .arg("-KILL")
-            .arg(format!("-{pgid}"))
-            .status();
+        // SAFETY: `kill` to a process group has no memory safety implications.
+        unsafe { libc::kill(-(pgid as libc::pid_t), libc::SIGKILL) };
     }
 
     #[test]
+    #[cfg(unix)]
     fn stop_reaps_process_tree() {
         let root = scratch("reap-tree");
         let run_dir = root.join("tree");
@@ -1305,6 +1314,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stop_twice_is_noop() {
         let root = scratch("stop-twice");
         let run_dir = root.join("run");
