@@ -3322,6 +3322,18 @@ body.bench-active #analysis-panel {
   color: #686a75;
 }
 
+.tuner-launch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tuner-launch-field-hint {
+  font-size: 11px;
+  color: #686a75;
+  margin: 0;
+}
+
 .tuner-launch-effort {
   border: 1px solid #33353f;
   border-radius: 6px;

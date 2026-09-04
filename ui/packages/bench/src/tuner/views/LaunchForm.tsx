@@ -50,6 +50,15 @@ const DEFAULTS = {
   production_validation_pairs: 8,
 };
 
+// `tuning_pairs` (pairs per candidate in the initial cohort) has no form
+// field -- it's fixed at the CLI's own default and only enters validation
+// via `tuning_pair_budget >= cohort_size * tuning_pairs`.
+const TUNING_PAIRS = 4;
+// Mirrors RunOptions.finalists / .cohort_size in tuner_cli/run.py: the value
+// the server falls back to when the (optional) form field is left blank.
+const DEFAULT_FINALISTS = 3;
+const DEFAULT_COHORT_SIZE = 8;
+
 /** `1` → `1`, `""` → undefined, junk → undefined. */
 function optInt(raw: string): number | undefined {
   const t = raw.trim();
@@ -278,6 +287,39 @@ export const LaunchForm: Component<{
   const runPlan = createMemo(() => summarizeRunPlan(peek(state().runPlan)));
   const planPending = createMemo(() => state().runPlan.status === "loading");
 
+  // The three budget fields must land on server-enforced divisibility grids
+  // (tuner_cli.run.validate_objective_options / tasks.validate_cycle_endpoint):
+  // validation_pair_budget must be a multiple of finalists, and
+  // validation_pair_budget/finalists plus production_validation_pairs must
+  // each be a multiple of the opponent panel's total weight. The panel
+  // weight is only known once the run plan resolves it; until then these
+  // fall back to weight 1 (every value divides it), which is also correct
+  // for the common case of an unweighted panel.
+  const panelWeight = createMemo(() => {
+    const total = runPlan().opponents.reduce((sum, o) => sum + o.weight, 0);
+    return total > 0 ? total : 1;
+  });
+  const effectiveFinalists = createMemo(() => optInt(finalists()) ?? DEFAULT_FINALISTS);
+  const effectiveCohortSize = createMemo(() => optInt(cohortSize()) ?? DEFAULT_COHORT_SIZE);
+  const validationStep = createMemo(() => effectiveFinalists() * panelWeight());
+  const productionStep = createMemo(() => panelWeight());
+  const tuningFloor = createMemo(() => effectiveCohortSize() * TUNING_PAIRS);
+
+  /** Rounds a typed value up to the nearest positive multiple of `step`, so
+   * a number input's native spinner -- wired to the same `step` via its
+   * `step`/`min` attributes -- and manual typing both land on valid values
+   * instead of the operator having to compute the multiple by hand. */
+  function snapUpToMultiple(raw: string, step: number): string {
+    const n = optInt(raw);
+    if (n === undefined || step <= 0) return raw;
+    return String(Math.max(step, Math.round(n / step) * step));
+  }
+  function snapToFloor(raw: string, floor: number): string {
+    const n = optInt(raw);
+    if (n === undefined) return raw;
+    return String(Math.max(floor, n));
+  }
+
   /** The launch request for the current form values, or `null` if a required
    * field is missing / not a positive integer. */
   const buildRequest = (): TunerLaunchRequest | null => {
@@ -461,30 +503,59 @@ export const LaunchForm: Component<{
           Task seed
           <input type="number" value={taskSeed()} onInput={(e) => setTaskSeed(e.currentTarget.value)} />
         </label>
-        <label>
-          Tuning pair budget
-          <input
-            type="number"
-            value={tuningBudget()}
-            onInput={(e) => setTuningBudget(e.currentTarget.value)}
-          />
-        </label>
-        <label>
-          Validation pair budget
-          <input
-            type="number"
-            value={validationBudget()}
-            onInput={(e) => setValidationBudget(e.currentTarget.value)}
-          />
-        </label>
-        <label>
-          Production validation pairs
-          <input
-            type="number"
-            value={productionPairs()}
-            onInput={(e) => setProductionPairs(e.currentTarget.value)}
-          />
-        </label>
+        <div class="tuner-launch-field">
+          <label>
+            Tuning pair budget
+            <input
+              type="number"
+              min={tuningFloor()}
+              step={effectiveCohortSize()}
+              value={tuningBudget()}
+              onInput={(e) => setTuningBudget(e.currentTarget.value)}
+              onBlur={() => setTuningBudget(snapToFloor(tuningBudget(), tuningFloor()))}
+            />
+          </label>
+          <p class="tuner-launch-field-hint">
+            At least {tuningFloor()} (cohort {effectiveCohortSize()} × {TUNING_PAIRS} pairs).
+          </p>
+        </div>
+        <div class="tuner-launch-field">
+          <label>
+            Validation pair budget
+            <input
+              type="number"
+              min={validationStep()}
+              step={validationStep()}
+              value={validationBudget()}
+              onInput={(e) => setValidationBudget(e.currentTarget.value)}
+              onBlur={() =>
+                setValidationBudget(snapUpToMultiple(validationBudget(), validationStep()))
+              }
+            />
+          </label>
+          <p class="tuner-launch-field-hint">
+            Multiple of {validationStep()} (finalists {effectiveFinalists()} × panel weight{" "}
+            {panelWeight()}).
+          </p>
+        </div>
+        <div class="tuner-launch-field">
+          <label>
+            Production validation pairs
+            <input
+              type="number"
+              min={productionStep()}
+              step={productionStep()}
+              value={productionPairs()}
+              onInput={(e) => setProductionPairs(e.currentTarget.value)}
+              onBlur={() =>
+                setProductionPairs(snapUpToMultiple(productionPairs(), productionStep()))
+              }
+            />
+          </label>
+          <p class="tuner-launch-field-hint">
+            Multiple of {productionStep()} (opponent panel weight).
+          </p>
+        </div>
       </div>
 
       <button
@@ -500,22 +571,32 @@ export const LaunchForm: Component<{
             Proposer seed
             <input type="number" value={seed()} onInput={(e) => setSeed(e.currentTarget.value)} />
           </label>
-          <label>
-            Cohort size
-            <input
-              type="number"
-              value={cohortSize()}
-              onInput={(e) => setCohortSize(e.currentTarget.value)}
-            />
-          </label>
-          <label>
-            Finalists
-            <input
-              type="number"
-              value={finalists()}
-              onInput={(e) => setFinalists(e.currentTarget.value)}
-            />
-          </label>
+          <div class="tuner-launch-field">
+            <label>
+              Cohort size
+              <input
+                type="number"
+                value={cohortSize()}
+                onInput={(e) => setCohortSize(e.currentTarget.value)}
+              />
+            </label>
+            <p class="tuner-launch-field-hint">
+              Default {DEFAULT_COHORT_SIZE}. Sets the tuning pair budget's floor.
+            </p>
+          </div>
+          <div class="tuner-launch-field">
+            <label>
+              Finalists
+              <input
+                type="number"
+                value={finalists()}
+                onInput={(e) => setFinalists(e.currentTarget.value)}
+              />
+            </label>
+            <p class="tuner-launch-field-hint">
+              Default {DEFAULT_FINALISTS}. Sets the validation pair budget's step.
+            </p>
+          </div>
           <label>
             Evaluator workers
             <input
