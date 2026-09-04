@@ -263,13 +263,13 @@ impl<M: MoveEncoding> SimulatePolicy<DruidGame<M>> for DruidHeuristic<M> {
 }
 
 /// Pairs `DruidHeuristic`-guided playouts (wrapped in `DecisiveMove` +
-/// `EpsilonGreedy`, same nesting Strong/Master's `RaveMastDm` uses for
-/// `Mast`) with `RaveMastDm`'s exact select/backprop/final-action
-/// configuration (`select::Rave`, `backprop::Classic`, `select::RobustChild`)
-/// -- so a search built from this type differs from the already-tuner tuned
-/// `RaveMastDm` config in server/main.rs's Strong/Master presets *only* in
-/// playout policy (`DruidHeuristic` in place of `Mast`), keeping the
-/// validation isolated to exactly that one change.
+/// `EpsilonGreedy`, the same nesting Strong/Master's Rave+Mast+DecisiveMove
+/// search uses for `Mast`) with that search's exact select/backprop/
+/// final-action configuration (`select::Rave`, `backprop::Classic`,
+/// `select::RobustChild`) -- so a search built from this type differs from the
+/// already-tuner-tuned Rave/Mast config in server/main.rs's Strong/Master
+/// presets *only* in playout policy (`DruidHeuristic` in place of `Mast`),
+/// keeping the validation isolated to exactly that one change.
 #[derive(Clone, Copy, Default)]
 pub struct RaveDecisiveHeuristic<M: MoveEncoding = Split>(PhantomData<M>);
 

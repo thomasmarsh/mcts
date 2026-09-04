@@ -12,8 +12,9 @@
 //! into a `config_ir::SearchSpec`; `tuner_info.rs` reports the same shape as
 //! the per-run schema.
 //!
-//! `strategy.rs`'s `QuasiBestFirst` is deliberately not exposed. Its
-//! opening-book fallback runs a nested `TreeSearch::choose_action` during
+//! The quasi-best-first opening-book search (`select::QuasiBestFirst`, as
+//! composed in `games/gonnect/src/book.rs`) is deliberately not exposed. Its
+//! fallback runs a nested `TreeSearch::choose_action` during
 //! every outer-search descent when no book entry exists, while this harness
 //! uses a shared many-iteration outer budget. It is designed for an outer
 //! `max_iterations: 1`, unlike the configurations represented here.

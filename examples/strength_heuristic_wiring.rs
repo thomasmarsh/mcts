@@ -38,7 +38,7 @@ fn tuned_select() -> select::Rave {
         .schedule(select::RaveSchedule::MinMSE { bias: 5.2866714 })
 }
 
-// Previously-shipped Strong config: RaveMastDm (Mast-guided playouts).
+// Previously-shipped Strong config: Rave + DecisiveMove(EpsilonGreedy(Mast)).
 fn old_config(
     name: &str,
 ) -> TreeSearch<

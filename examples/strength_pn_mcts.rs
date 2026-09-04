@@ -113,7 +113,7 @@ fn main() {
     }
     println!();
 
-    // Medium: 2s budget, Ucb1PnMast
+    // Medium: 2s budget, UCT-PN + Mast
     let medium_rounds = 10; // 20 games, each 2s/move => ~hours, still meaningful
     println!(
         "--- Medium (2s) : c_pn=0.0 vs c_pn=1.0, {} rounds ({} games) ---",
