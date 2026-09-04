@@ -1,7 +1,7 @@
 //! A JSON description of `config_ir`'s four axes (`select`/`simulate`/
 //! `backprop`/`final_action`), for a generic client (the UI's interactive
 //! "Custom" strategy builder) to render a form without hand-coding any
-//! per-family knowledge of its own. Unlike `tuner_info.rs`'s
+//! per-variant knowledge of its own. Unlike `tuner_info.rs`'s
 //! `TunerParameter`/`TunerCondition` (a *flat* description: the `algorithm`
 //! categorical plus each policy axis's variants as sibling parameters), this
 //! describes `config_ir`'s actual
@@ -133,7 +133,7 @@ fn gpn_bias_enum() -> Value {
     bare_en("max", &["max", "sum", "rank"])
 }
 
-/// `BaseSelectSpec`'s variants -- every `select` family except
+/// `BaseSelectSpec`'s variants -- every `select` variant except
 /// `EpsilonGreedy`, which wraps one of these (see `config_ir.rs`'s own doc
 /// comment on why the wrapped inner spec is this narrower, non-recursive
 /// set rather than a full `SelectSpec` again).

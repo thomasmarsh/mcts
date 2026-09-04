@@ -49,7 +49,7 @@ const SEEDS: Record<string, JsonValue> = {
         weight: 2,
         config: {
           source: "inline",
-          value: { c: 1.414, family: "ucb1", final_action: "robust_child", q_init: "Infinity" },
+          value: { c: 1.414, algorithm: "ucb1", final_action: "robust_child", q_init: "Infinity" },
         },
       },
       {
@@ -62,7 +62,7 @@ const SEEDS: Record<string, JsonValue> = {
           value: {
             c: 1.414,
             epsilon: 0.3,
-            family: "ucb1_dm_nst",
+            algorithm: "ucb1_dm_nst",
             final_action: "robust_child",
             nst_backoff_threshold: 5,
             q_init: "Infinity",
@@ -190,15 +190,15 @@ describe("validateDraft", () => {
     expect(validateDraft(d, schema).some((e) => /unknown parameter "bogus"/.test(e))).toBe(true);
   });
 
-  it("flags a family config missing a parameter the binary would require", () => {
+  it("flags an algorithm config missing a parameter the binary would require", () => {
     const d = good();
-    d.opponents[1]!.configText = '{"family":"ucb1","q_init":"Parent"}';
+    d.opponents[1]!.configText = '{"algorithm":"ucb1","q_init":"Parent"}';
     const schema: TunerInfo = {
       id: "s",
       baselines: [],
       eval_rounds: 1,
       parameters: [
-        { name: "family", type: "categorical", choices: ["ucb1"], default: "ucb1" },
+        { name: "algorithm", type: "categorical", choices: ["ucb1"], default: "ucb1" },
         { name: "q_init", type: "categorical", choices: ["Parent", "Infinity"], default: "Infinity" },
         { name: "c", type: "float", bounds: [0, 3], default: 1.4 },
         {
@@ -209,8 +209,8 @@ describe("validateDraft", () => {
         },
       ],
       conditions: [
-        { if: { family: "ucb1" }, then: ["c"] },
-        { if: { family: "ucb1" }, then: ["final_action"] },
+        { if: { algorithm: "ucb1" }, then: ["c"] },
+        { if: { algorithm: "ucb1" }, then: ["final_action"] },
       ],
       game_config: {},
     };
@@ -225,17 +225,17 @@ describe("activeParamNames", () => {
     baselines: [],
     eval_rounds: 1,
     parameters: [
-      { name: "family", type: "categorical", choices: ["ucb1", "ucb1_dm_nst"], default: "ucb1" },
+      { name: "algorithm", type: "categorical", choices: ["ucb1", "ucb1_dm_nst"], default: "ucb1" },
       { name: "c", type: "float", bounds: [0, 3], default: 1.4 },
       { name: "nst_backoff_threshold", type: "int", bounds: [1, 10], default: 5 },
     ],
-    conditions: [{ if: { family: "ucb1_dm_nst" }, then: ["nst_backoff_threshold"] }],
+    conditions: [{ if: { algorithm: "ucb1_dm_nst" }, then: ["nst_backoff_threshold"] }],
     game_config: {},
   };
 
   it("gates a conditioned parameter on its parent value", () => {
     expect(activeParamNames(schema, {}).has("nst_backoff_threshold")).toBe(false);
-    expect(activeParamNames(schema, { family: "ucb1_dm_nst" }).has("nst_backoff_threshold")).toBe(
+    expect(activeParamNames(schema, { algorithm: "ucb1_dm_nst" }).has("nst_backoff_threshold")).toBe(
       true,
     );
     expect(activeParamNames(schema, {}).has("c")).toBe(true);

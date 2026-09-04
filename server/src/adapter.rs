@@ -127,8 +127,9 @@ pub trait GameAdapter: Send + Sync {
         budget_ms: Option<u64>,
     ) -> Result<Analysis, AdapterError>;
 
-    /// Tunable strategy search-space metadata (families, their parameters,
-    /// and the conditions gating which parameters apply to which family).
+    /// Tunable strategy search-space metadata (the `algorithm` and policy
+    /// axes, their parameters, and the conditions gating which parameters
+    /// apply to which variant).
     /// `None` for a game with no tuner support.
     fn tuner(&self) -> Option<TunerInfo>;
 }

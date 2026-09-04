@@ -173,7 +173,7 @@ pub fn validate_search_spec<G: Game + 'static>(spec: &SearchSpec) -> Result<(), 
     Ok(())
 }
 
-/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- reuses
+/// Resolves `spec` to a single `DynSelect<G>`, regardless of variant -- reuses
 /// `select.rs`'s own erasure machinery directly rather than duplicating it,
 /// since `final_action` erases the identical `SelectPolicy<G>` trait
 /// `select` does (see `DynSelect`'s doc comment for why `build_search` wants

@@ -9,7 +9,7 @@ const proposalSearch = {
       random_reserve: 2,
       cohorts: 2,
       retained_elites: 2,
-      excluded_families: [],
+      excluded_algorithms: [],
     },
     actual_source_attempts: {
       schema_default: 1,
@@ -53,7 +53,7 @@ describe("deriveProposalFunnel", () => {
     expect(f.kpis).toContainEqual({ label: "Model", value: "smac-2.4-public-ask-v1" });
     expect(f.kpis).toContainEqual({ label: "Cohorts", value: "2" });
     expect(f.kpis).toContainEqual({ label: "Final frontier", value: "c3f2baf765fe" });
-    expect(f.kpis).toContainEqual({ label: "Excluded families", value: "none" });
+    expect(f.kpis).toContainEqual({ label: "Excluded algorithms", value: "none" });
   });
 
   it("is absent when the report has no proposal_search", () => {

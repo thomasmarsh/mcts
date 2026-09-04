@@ -17,7 +17,7 @@ const resolved: RunPlan = {
       role: "default",
       weight: 1,
       source: "schema_default",
-      config: '{"family":"rave"}',
+      config: '{"select":"rave"}',
       fingerprint: "abc",
     },
     {
@@ -25,7 +25,7 @@ const resolved: RunPlan = {
       role: "historical_reference",
       weight: 1,
       source: "inline",
-      config: '{"family":"mcts"}',
+      config: '{"algorithm":"mcts"}',
     },
   ],
   space: {
@@ -75,7 +75,7 @@ describe("summarizeRunPlan", () => {
     const s = summarizeRunPlan(resolved);
     expect(s.resolved).toBe(true);
     const def = s.opponents.find((o) => o.id === "schema-default");
-    expect(def?.config).toBe('{"family":"rave"}');
+    expect(def?.config).toBe('{"select":"rave"}');
     expect(s.algorithms).toEqual(["mcts", "flat_mc"]);
     expect(s.narrowedVariants).toEqual([{ name: "select", values: ["ucb1", "rave"] }]);
     expect(s.effortKpis.map((k) => k.value)).toEqual([

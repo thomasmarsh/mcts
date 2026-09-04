@@ -205,7 +205,7 @@ pub(super) fn seeded_app_with_state_and_signaller(
                 "opponents".into(),
                 serde_json::json!([{
                     "id": "schema-default", "role": "default", "weight": 1,
-                    "source": "schema_default", "config": "{\"family\":\"a\"}"
+                    "source": "schema_default", "config": "{\"algorithm\":\"a\"}"
                 }]),
             );
             resolved.insert("budgets".into(), serde_json::json!({"cohort_size": 8}));

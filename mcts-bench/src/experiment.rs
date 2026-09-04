@@ -828,12 +828,12 @@ mod tests {
             baseline: NamedStrategyConfig {
                 id: "base".into(),
                 label: "Baseline".into(),
-                config: serde_json::json!({"family":"ucb1"}),
+                config: serde_json::json!({"select":"ucb1"}),
             },
             variants: vec![NamedStrategyConfig {
                 id: "candidate".into(),
                 label: "Candidate".into(),
-                config: serde_json::json!({"family":"ucb1"}),
+                config: serde_json::json!({"select":"ucb1"}),
             }],
             budgets: vec![budget],
             rounds_per_cell: 1,
@@ -866,23 +866,23 @@ mod tests {
             baseline: NamedStrategyConfig {
                 id: "baseline".into(),
                 label: "Baseline".into(),
-                config: serde_json::json!({"family": "ucb1"}),
+                config: serde_json::json!({"select":"ucb1"}),
             },
             variants: vec![
                 NamedStrategyConfig {
                     id: "v1".into(),
                     label: "Variant 1".into(),
-                    config: serde_json::json!({"family": "rave"}),
+                    config: serde_json::json!({"select":"rave"}),
                 },
                 NamedStrategyConfig {
                     id: "v2".into(),
                     label: "Variant 2".into(),
-                    config: serde_json::json!({"family": "ucb1"}),
+                    config: serde_json::json!({"select":"ucb1"}),
                 },
                 NamedStrategyConfig {
                     id: "v3".into(),
                     label: "Variant 3".into(),
-                    config: serde_json::json!({"family": "random"}),
+                    config: serde_json::json!({"algorithm":"random"}),
                 },
             ],
             budgets: vec![
@@ -986,8 +986,8 @@ mod tests {
             serde_json::json!({"board": "distinct-board", "size": 17}),
             Budget::Iterations { value: 37 },
         );
-        value.baseline.config = serde_json::json!({"c": 1.75, "family": "ucb1"});
-        value.variants[0].config = serde_json::json!({"family": "rave", "threshold": 913});
+        value.baseline.config = serde_json::json!({"c": 1.75, "select":"ucb1"});
+        value.variants[0].config = serde_json::json!({"select":"rave", "threshold": 913});
         value.rounds_per_cell = 13;
         value.base_seed = 8_765;
         let plan = value.expand().unwrap();

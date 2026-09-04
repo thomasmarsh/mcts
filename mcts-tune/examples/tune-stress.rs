@@ -38,8 +38,8 @@ fn main() {
 
 fn meta_mcts_round_trips() {
     // Algorithm-native param shape: the `algorithm` categorical plus the
-    // `mcts` policy-axis categoricals, not a `family` name. The legacy
-    // `meta_mcts` row pinned its final action to `max_avg`.
+    // `mcts` policy-axis categoricals, rather than one opaque composition
+    // name. The `meta_mcts` composition pins its final action to `max_avg`.
     let params = json!({
         "algorithm": "mcts",
         "select": "ucb1",

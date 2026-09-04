@@ -18,8 +18,10 @@
       "config": {
         "source": "inline",
         "value": {
+          "algorithm": "mcts",
           "c": 1.4142135623730951,
-          "family": "ucb1",
+          "select": "ucb1",
+          "simulate": "uniform",
           "final_action": "robust_child",
           "q_init": "Loss"
         }

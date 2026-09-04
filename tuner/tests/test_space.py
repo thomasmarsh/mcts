@@ -23,7 +23,7 @@ def test_configspace_preserves_zero_defaults_and_active_values() -> None:
     assert values == {"algorithm": "a", "zero": 0.0, "enabled": False, "fixed": "yes"}
 
 
-def test_constrained_default_uses_first_allowed_family_and_active_children() -> None:
+def test_constrained_default_uses_first_allowed_algorithm_and_active_children() -> None:
     from tuner_cli.constraints import constrained_schema, decode_constraints
 
     schema = TuningSchema(

@@ -2,7 +2,7 @@
 name = "mcts-tune"
 version = "0.1.0"
 edition = "2021"
-description = "Generic multi-family strategy-tuning harness shared across game crates"
+description = "Generic multi-algorithm strategy-tuning harness shared across game crates"
 publish = false
 
 [dependencies]

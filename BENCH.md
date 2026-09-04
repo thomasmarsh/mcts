@@ -113,7 +113,7 @@ A run must explicitly select at least one baseline. Scenario instances are the u
 - discovered configurations and the repository's `flat_mc`/`random` floor baselines use `--baseline-config <json>`;
 - actual game presets use `--baseline <name>`.
 
-That distinction is semantic. Passing a floor family as though it were a named game preset turns evaluation errors into apparent cost `1.0` results.
+That distinction is semantic. Passing a floor baseline as though it were a named game preset turns evaluation errors into apparent cost `1.0` results.
 
 The Python target function invokes one game-binary subprocess per tuner evaluation and returns the trailing JSON `cost`. Timeouts, nonzero exits, and missing cost output are scored as `1.0` and diagnosed in `stdout.log`.
 

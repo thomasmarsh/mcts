@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn build_custom_resolves_a_free_axis_composition_not_reachable_via_any_family() {
+    fn build_custom_resolves_a_free_axis_composition_not_reachable_via_any_named_preset() {
         // `epsilon_greedy`-wrapped `ucb1` on the `select` axis, with a
         // `final_action` independently chosen -- given as a `SearchSpec`
         // directly rather than through the `params` axis categoricals, so
@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    fn build_custom_resolves_a_named_family_via_params() {
+    fn build_custom_resolves_a_named_algorithm_via_params() {
         // `params` gives a search-config object (including a non-MCTS
         // `algorithm` such as `"random"`) rather than a `SearchSpec` by
         // hand -- proof `build_custom` routes it through the same
@@ -658,11 +658,11 @@ mod tests {
     /// any of them directly (e.g. a "baseline"/"random" preset), same as an
     /// MCTS configuration. This is the proof: nothing about the preset layer
     /// restricts the `algorithm` to `mcts`. `negamax`'s `max_depth` is kept
-    /// tight (see `tests.rs`'s `test_family_negamax_round_trips`) since
+    /// tight (see `tests.rs`'s `test_variant_negamax_round_trips`) since
     /// `Nim`'s splittable heaps make its game tree deeper than a fixed-heap
     /// Nim.
     #[test]
-    fn build_resolves_non_composable_direct_families() {
+    fn build_resolves_non_composable_direct_algorithms() {
         let table = PresetTable::from_json(
             r#"[
                 {"id": "random", "label": "Random", "description": "", "params": {"algorithm": "random", "q_init": "Infinity"}, "max_iterations": 1},

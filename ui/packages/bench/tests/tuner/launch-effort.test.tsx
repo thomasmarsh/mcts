@@ -27,7 +27,7 @@ const KIND: TunableGame = {
     baselines: ["strong"],
     eval_rounds: 1,
     parameters: [
-      { name: "family", type: "categorical", choices: ["ucb1", "rave", "negamax"] },
+      { name: "algorithm", type: "categorical", choices: ["ucb1", "rave", "negamax"] },
     ],
     conditions: [],
     game_config: {},

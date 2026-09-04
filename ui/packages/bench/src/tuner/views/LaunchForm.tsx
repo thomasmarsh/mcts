@@ -610,7 +610,7 @@ export const LaunchForm: Component<{
           <OpponentPanelTable opponents={runPlan().opponents} testid="run-plan-opponents" />
 
           <h5>Tuning space</h5>
-          <p class="tuner-launch-hint" data-testid="run-plan-families">
+          <p class="tuner-launch-hint" data-testid="run-plan-tuning-space">
             algorithm: {runPlan().algorithms.join(", ") || "—"}
             <For each={runPlan().narrowedVariants}>
               {(v) => (

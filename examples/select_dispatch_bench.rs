@@ -13,7 +13,7 @@
 //! `backprop` is fixed to `Classic` in both builds for the same reason.
 //!
 //! Reports iterations/sec, mean and standard deviation over several seeds
-//! per (game, select family) pair, single-threaded, at a fixed iteration
+//! per (game, select variant) pair, single-threaded, at a fixed iteration
 //! budget per game. Run with `cargo run --release --example
 //! select_dispatch_bench`; an optional argument overrides every game's
 //! default iteration budget: `cargo run --release --example
@@ -75,9 +75,9 @@ fn mean_stddev(samples: &[f64]) -> (f64, f64) {
     (mean, variance.sqrt())
 }
 
-/// Runs both the static and erased builds of one (game, select family) pair
+/// Runs both the static and erased builds of one (game, select variant) pair
 /// across `SEEDS` and prints the comparison. `make_static` constructs a
-/// fresh concrete `S1` per seed; `spec` names the same family/parameters for
+/// fresh concrete `S1` per seed; `spec` names the same variant/parameters for
 /// `resolve_select` to erase into a `DynSelect<G>` per seed.
 fn compare<G, S1>(
     game: &str,

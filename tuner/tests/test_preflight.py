@@ -60,7 +60,7 @@ def test_validation_budget_relationship_failure_is_reported(tmp_path: Path) -> N
 
 def test_panel_opponent_rejected_by_binary_is_reported(tmp_path: Path) -> None:
     # A historical-reference config the binary's `compare validate` rejects
-    # (e.g. a half-specified family config) must fail preflight, not launch --
+    # (e.g. a half-specified config) must fail preflight, not launch --
     # this is the `preflight_default` stage.
     class RejectingTarget(FakeTarget):  # type: ignore[misc,valid-type]
         def validate(self, candidates, opponent, game_config):  # type: ignore[no-untyped-def]

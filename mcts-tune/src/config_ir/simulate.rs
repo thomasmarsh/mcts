@@ -128,7 +128,7 @@ macro_rules! register_simulate {
         }
 
         /// The config-IR node for the `simulate` axis: every
-        /// `BaseSimulateSpec` family, plus `EpsilonGreedy`/`DecisiveMove`
+        /// `BaseSimulateSpec` variant, plus `EpsilonGreedy`/`DecisiveMove`
         /// each wrapping one of them.
         ///
         /// `Serialize`/`Deserialize` are hand-implemented below rather than
@@ -539,7 +539,7 @@ impl<G: Game + 'static> SimulateCont<G> for EraseSimulateCont<G> {
     }
 }
 
-/// Resolves `spec` to a single `DynSimulate<G>`, regardless of family --
+/// Resolves `spec` to a single `DynSimulate<G>`, regardless of variant --
 /// see `DynSimulate`'s doc comment for why `build_search` uses this instead
 /// of routing `S2` generically through its whole stage chain.
 pub fn resolve_simulate<G: Game + 'static>(spec: &SimulateSpec) -> DynSimulate<G> {

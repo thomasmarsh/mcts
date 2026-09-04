@@ -25,7 +25,7 @@ const KIND: TunableGame = {
     id: "atari-go",
     baselines: ["strong"],
     eval_rounds: 1,
-    parameters: [{ name: "family", type: "categorical", choices: ["mcts", "rave"] }],
+    parameters: [{ name: "algorithm", type: "categorical", choices: ["mcts", "rave"] }],
     conditions: [],
     game_config: {},
   },
@@ -45,14 +45,14 @@ const PLAN: RunPlan = {
       role: "default",
       weight: 1,
       source: "schema_default",
-      config: '{"family":"rave"}',
+      config: '{"select":"rave"}',
     },
     {
       id: "historical",
       role: "historical_reference",
       weight: 1,
       source: "inline",
-      config: '{"family":"mcts"}',
+      config: '{"algorithm":"mcts"}',
     },
   ],
   space: {
@@ -124,8 +124,8 @@ describe("LaunchForm — Run plan panel", () => {
 
     await vi.waitFor(() => expect(planRun).toHaveBeenCalled());
     const table = await screen.findByTestId("run-plan-opponents");
-    expect(table).toHaveTextContent('{"family":"rave"}');
-    const space = screen.getByTestId("run-plan-families");
+    expect(table).toHaveTextContent('{"select":"rave"}');
+    const space = screen.getByTestId("run-plan-tuning-space");
     expect(space).toHaveTextContent("algorithm: mcts, flat_mc");
     expect(space).toHaveTextContent("variants: select ∈ [ucb1, rave]");
     expect(screen.getByTestId("run-plan-budgets")).toHaveTextContent("32 pairs");

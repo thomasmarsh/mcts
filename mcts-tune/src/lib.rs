@@ -1,4 +1,4 @@
-//! Generic multi-family MCTS strategy tuning harness shared by every game
+//! Generic multi-algorithm MCTS strategy tuning harness shared by every game
 //! crate that opts into hyperparameter search. Everything here is generic
 //! over `G: Game`: picking a concrete game, a baseline preset, and whether
 //! that game has a real `zobrist_hash` is the only per-game glue. See

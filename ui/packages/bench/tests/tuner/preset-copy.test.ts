@@ -6,7 +6,7 @@ describe("buildPreset", () => {
     const r = buildPreset({
       candidateId: "candidate-0123456789abcdef00",
       gameKind: "nim",
-      config: { family: "b", c: 1.7 },
+      config: { select: "b", c: 1.7 },
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -14,7 +14,7 @@ describe("buildPreset", () => {
       id: "tuned-nim-0123456789ab",
       label: "Tuned nim (0123456789ab)",
       game: "nim",
-      params: { family: "b", c: 1.7 },
+      params: { select: "b", c: 1.7 },
     });
     expect(JSON.parse(r.text)).toEqual(r.preset);
   });

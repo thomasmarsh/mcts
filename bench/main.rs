@@ -900,7 +900,7 @@ mod tests {
 
     #[test]
     fn test_build_tuner_command_forwards_baseline_configs() {
-        let baseline_configs = vec![r#"ladder1={"family":"ucb1"}"#.to_string()];
+        let baseline_configs = vec![r#"ladder1={"select":"ucb1"}"#.to_string()];
         let cmd = build_tuner_command(
             None,
             &[],
@@ -921,7 +921,7 @@ mod tests {
             .iter()
             .position(|a| a == "--baseline-config")
             .expect("--baseline-config flag present");
-        assert_eq!(cmd[idx + 1], r#"ladder1={"family":"ucb1"}"#);
+        assert_eq!(cmd[idx + 1], r#"ladder1={"select":"ucb1"}"#);
     }
 
     #[test]

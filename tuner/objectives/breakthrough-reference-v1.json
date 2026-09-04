@@ -18,8 +18,10 @@
       "config": {
         "source": "inline",
         "value": {
+          "algorithm": "mcts",
           "c": 1.414,
-          "family": "ucb1",
+          "select": "ucb1",
+          "simulate": "uniform",
           "final_action": "robust_child",
           "q_init": "Infinity"
         }
@@ -33,9 +35,12 @@
       "config": {
         "source": "inline",
         "value": {
+          "algorithm": "mcts",
           "c": 1.414,
           "epsilon": 0.3,
-          "family": "ucb1_dm_nst",
+          "select": "ucb1",
+          "simulate": "decisive_move_nst",
+          "decisive_move_mode": "win",
           "final_action": "robust_child",
           "nst_backoff_threshold": 5,
           "q_init": "Infinity"

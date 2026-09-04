@@ -1,6 +1,6 @@
 // launch-constraints.test.tsx — component test for the schema-driven
-// constraint editor wired into LaunchForm (replacing the old excluded-families
-// checklist and the free-text "Constrain parameters" textarea). Real
+// constraint editor wired into LaunchForm (replacing the old categorical
+// exclusion checklist and the free-text "Constrain parameters" textarea). Real
 // `createStore`, mocked `TunerEnv`, no live server (AGENTS.md).
 
 import { afterEach, describe, expect, it, vi } from "vitest";

@@ -204,7 +204,7 @@ pub fn strategy_tuner_info_with_mcgs(
             // variant parameter's bounds and default. `final_action` is
             // re-declared above as a four-choice axis categorical (its
             // `register_field!` row predates `max_robust_child` being
-            // reachable outside a hard-fixed family row), so its table row
+            // reachable outside a hard-fixed variant row), so its table row
             // is dropped here.
             parameters.extend(
                 tunable_field_parameters()

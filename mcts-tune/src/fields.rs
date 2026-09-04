@@ -137,7 +137,7 @@ register_field! {
     max_rollout_depth: u32 => json!({"type": "int", "bounds": [1, 1000], "default": 100}),
     // Chooses between `flat_mc`'s two move-selection rules: plain win-rate
     // comparison, or a UCB1 bandit over the same per-move samples (reusing
-    // the `c` field every other UCB1-flavored family already has, rather
+    // the `c` field every other UCB1-flavored variant already has, rather
     // than adding a near-duplicate exploration-constant field).
     flat_mc_selection: String => json!({"type": "categorical", "choices": ["win_rate", "ucb1"], "default": "win_rate"}),
     // `negamax::NegamaxOptions`'s iterative-deepening ceiling and

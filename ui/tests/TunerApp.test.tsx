@@ -248,7 +248,7 @@ function completedRunEnv() {
         {
           candidate_id: "candidate-aaaa1111",
           fingerprint: "aaaa1111",
-          canonical_config: { family: "b" },
+          canonical_config: { select: "b" },
           cohort_index: 0,
           cohort_slot: 0,
           source: "smac_model",

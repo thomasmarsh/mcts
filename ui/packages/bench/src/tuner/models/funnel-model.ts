@@ -85,7 +85,7 @@ export function deriveProposalFunnel(
     rejected: asNumber(rejections[source]) ?? 0,
   })).filter((s) => s.attempted > 0 || (s.configured ?? 0) > 0 || s.accepted > 0);
 
-  const excluded = asStringArray(configured?.["excluded_families"]);
+  const excluded = asStringArray(configured?.["excluded_algorithms"]);
   const frontier = asString(ps["final_frontier_id"]);
   const kpis: { label: string; value: string }[] = [
     { label: "Model", value: asString(ps["model_version"]) ?? "—" },
@@ -93,7 +93,7 @@ export function deriveProposalFunnel(
     { label: "Retained elites", value: String(asNumber(configured?.["retained_elites"]) ?? "—") },
     { label: "Final observations", value: String(asNumber(ps["final_observation_count"]) ?? "—") },
     { label: "Final frontier", value: frontier ? shortId(frontier) : "—" },
-    { label: "Excluded families", value: excluded.length ? excluded.join(", ") : "none" },
+    { label: "Excluded algorithms", value: excluded.length ? excluded.join(", ") : "none" },
   ];
 
   const totalAttempts = stages.reduce((a, s) => a + s.attempted, 0);

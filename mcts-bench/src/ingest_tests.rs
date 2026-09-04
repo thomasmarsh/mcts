@@ -620,12 +620,12 @@ fn test_ingest_incumbent_upserts_latest() {
         // overwrite the first rather than both landing as separate rows.
         let records = vec![
             LogRecord::Incumbent {
-                config: serde_json::json!({"family": "ucb1", "c": 1.0}),
+                config: serde_json::json!({"select":"ucb1", "c": 1.0}),
                 cost: 0.5,
                 extra: None,
             },
             LogRecord::Incumbent {
-                config: serde_json::json!({"family": "rave", "c": 0.7}),
+                config: serde_json::json!({"select":"rave", "c": 0.7}),
                 cost: 0.2,
                 extra: Some(serde_json::json!({"hash": "abc123"})),
             },
@@ -663,7 +663,7 @@ fn test_ingest_incumbent_upserts_latest() {
         .unwrap();
     assert!((cost - 0.2).abs() < 1e-9);
     let config: serde_json::Value = serde_json::from_str(&config_str).unwrap();
-    assert_eq!(config["family"], "rave");
+    assert_eq!(config["select"], "rave");
     let extra: serde_json::Value = serde_json::from_str(&extra_str.unwrap()).unwrap();
     assert_eq!(extra["hash"], "abc123");
 }

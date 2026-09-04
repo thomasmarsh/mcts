@@ -157,7 +157,7 @@ export type RaveUcb =
 /** `mcts::simulate::DecisiveMoveMode`'s wire form. */
 export type DecisiveMoveMode = "win" | "win_loss" | "win_loss_draw" | "anti_decisive";
 
-/** `config_ir::BaseSelectSpec` -- the families an `EpsilonGreedy` may wrap. */
+/** `config_ir::BaseSelectSpec` -- the variants an `EpsilonGreedy` may wrap. */
 export type BaseSelectSpec =
   | { kind: "ucb1"; c: number }
   | { kind: "ucb1_tuned"; c: number }
@@ -168,12 +168,12 @@ export type BaseSelectSpec =
   | { kind: "bayes_uct1"; c: number }
   | { kind: "bayes_uct2"; c: number };
 
-/** `config_ir::SelectSpec` -- `BaseSelectSpec`'s families plus the
+/** `config_ir::SelectSpec` -- `BaseSelectSpec`'s variants plus the
  * `epsilon_greedy` wrapper. */
 export type SelectSpec =
   BaseSelectSpec | { kind: "epsilon_greedy"; epsilon: number; inner: BaseSelectSpec };
 
-/** `config_ir::BaseSimulateSpec` -- the families `epsilon_greedy`/
+/** `config_ir::BaseSimulateSpec` -- the variants `epsilon_greedy`/
  * `decisive_move` may wrap. */
 export type BaseSimulateSpec =
   | { kind: "uniform" }
@@ -183,7 +183,7 @@ export type BaseSimulateSpec =
   | { kind: "lgr2" }
   | { kind: "lgr2_mast" };
 
-/** `config_ir::SimulateSpec` -- `BaseSimulateSpec`'s families plus its
+/** `config_ir::SimulateSpec` -- `BaseSimulateSpec`'s variants plus its
  * wrappers and fixed-shape two-level leaves (`decisive_move_mast`/
  * `decisive_move_nst`/`meta_mcts`, none of which carry a `wraps` schema key
  * -- see `config_ir.rs`'s doc comment on why they're flat, not recursive). */
@@ -234,8 +234,9 @@ export interface SearchSpec {
 /** `mcts_tune::presets::CustomStrategySpec` -- `search` and `params` are
  * mutually exclusive, matching the Rust side's own `Option`/`Option`
  * contract: `search` is free composition of the four axes, `params` is a
- * named family's flat parameter dict (`{family: "ucb1", c: 1.41, ...}`,
- * exactly `TrialParams`' wire shape) for picking a family by name instead. */
+ * flat parameter dict (`{algorithm: "mcts", select: "ucb1", c: 1.41, ...}`,
+ * exactly `TrialParams`' wire shape) naming the algorithm and axis
+ * categoricals directly instead. */
 export interface CustomStrategySpec {
   search?: SearchSpec;
   params?: Record<string, unknown>;

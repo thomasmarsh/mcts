@@ -252,7 +252,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
 
 // Bounded, unlike production `baseline_build` callers (which always pass
 // a real budgeted preset): the missing-field/unknown-value rejection
-// tests below never reach real play, but the family round-trip tests do,
+// tests below never reach real play, but the variant round-trip tests do,
 // and `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
 fn baseline() -> Box<dyn Search<G = Nim>> {
     Box::new(
@@ -714,7 +714,7 @@ fn test_tune_eval_rejects_the_retired_family_key() {
     assert!(err.message.contains("family"), "{}", err.message);
 }
 
-/// One hand-verified construction+round-trip test per new family arm,
+/// One hand-verified construction+round-trip test per named variant,
 /// each playing a single round of `Nim` (fast, deterministic) to prove
 /// the concrete type actually builds and the declared params round-trip
 /// through `make_candidate` without error. `cost_from_losses` itself is
@@ -722,7 +722,7 @@ fn test_tune_eval_rejects_the_retired_family_key() {
 /// candidate is bounded to the same small iteration count as `baseline`
 /// rather than left on `SearchBudget::default()`'s `MAX_ITER` (10,000),
 /// which made each of these tests a real multi-second search.
-fn assert_family_round_trips(mut params: Value) {
+fn assert_variant_round_trips(mut params: Value) {
     params["q_init"] = json!("Infinity");
     let candidate_budget = SearchBudget {
         max_iterations: Some(50),
@@ -747,42 +747,42 @@ fn assert_family_round_trips(mut params: Value) {
 }
 
 #[test]
-fn test_family_ucb1_round_trips() {
-    assert_family_round_trips(compose("ucb1", json!({
+fn test_variant_ucb1_round_trips() {
+    assert_variant_round_trips(compose("ucb1", json!({
         "c": 1.4, "final_action": "robust_child",
     })));
 }
 
-/// Unlike every other family exercised here, `random` resolves to
-/// `FamilySpec::Direct` and is built by `direct_search::build_direct`
-/// rather than `config_ir::build_search` -- this proves it still round-trips
-/// through the exact same `strategy_tune_eval` pipeline every `Compose`
-/// family does, with no special-cased caller-side handling.
+/// Unlike every other variant exercised here, `random` is a non-MCTS
+/// `algorithm` built by `direct_search::build_direct` rather than
+/// `config_ir::build_search` -- this proves it still round-trips
+/// through the exact same `strategy_tune_eval` pipeline every composed
+/// MCTS variant does, with no special-cased caller-side handling.
 #[test]
-fn test_family_random_round_trips() {
-    assert_family_round_trips(compose("random", json!({})));
+fn test_variant_random_round_trips() {
+    assert_variant_round_trips(compose("random", json!({})));
 }
 
-/// Like `random`, `flat_mc` resolves to `FamilySpec::Direct`. This exercises
-/// its default win-rate move rule; `test_family_flat_mc_ucb1_round_trips`
+/// Like `random`, `flat_mc` is a non-MCTS `algorithm`. This exercises
+/// its default win-rate move rule; `test_variant_flat_mc_ucb1_round_trips`
 /// below covers the UCB1 branch `flat_mc_selection` also allows.
 #[test]
-fn test_family_flat_mc_round_trips() {
-    assert_family_round_trips(compose("flat_mc", json!({
+fn test_variant_flat_mc_round_trips() {
+    assert_variant_round_trips(compose("flat_mc", json!({
         "samples_per_move": 20, "max_rollout_depth": 50,
         "flat_mc_selection": "win_rate",
     })));
 }
 
 #[test]
-fn test_family_flat_mc_ucb1_round_trips() {
-    assert_family_round_trips(compose("flat_mc", json!({
+fn test_variant_flat_mc_ucb1_round_trips() {
+    assert_variant_round_trips(compose("flat_mc", json!({
         "samples_per_move": 20, "max_rollout_depth": 50,
         "flat_mc_selection": "ucb1", "c": 1.4,
     })));
 }
 
-/// Like `random`/`flat_mc`, `negamax` resolves to `FamilySpec::Direct`.
+/// Like `random`/`flat_mc`, `negamax` is a non-MCTS `algorithm`.
 /// `max_depth`/`table_bits` are kept small: `Nim`'s heaps allow arbitrary
 /// splits, so its game tree is not the trivially shallow one a fixed-heap
 /// take-only Nim would be, and an unbounded iterative-deepening search
@@ -790,8 +790,8 @@ fn test_family_flat_mc_ucb1_round_trips() {
 /// multi-second search rather than a fast round-trip check -- see
 /// `AGENTS.md`'s "keep `cargo test --lib` fast" rule.
 #[test]
-fn test_family_negamax_round_trips() {
-    assert_family_round_trips(compose("negamax", json!({
+fn test_variant_negamax_round_trips() {
+    assert_variant_round_trips(compose("negamax", json!({
         "max_depth": 3, "table_bits": 10,
         "negamax_replacement": "depth_preferred",
         "principal_variation_search": true, "history_heuristic": true,
@@ -801,8 +801,8 @@ fn test_family_negamax_round_trips() {
 }
 
 #[test]
-fn test_family_negamax_aspiration_round_trips() {
-    assert_family_round_trips(compose("negamax", json!({
+fn test_variant_negamax_aspiration_round_trips() {
+    assert_variant_round_trips(compose("negamax", json!({
         "max_depth": 3, "table_bits": 10,
         "negamax_replacement": "two_tier",
         "principal_variation_search": true, "history_heuristic": true,
@@ -812,124 +812,124 @@ fn test_family_negamax_aspiration_round_trips() {
 }
 
 #[test]
-fn test_family_ucb1_dm_round_trips() {
-    assert_family_round_trips(compose("ucb1_dm", json!({
+fn test_variant_ucb1_dm_round_trips() {
+    assert_variant_round_trips(compose("ucb1_dm", json!({
         "c": 1.4, "final_action": "max_avg",
     })));
 }
 
 #[test]
-fn test_family_ucb1_adm_round_trips() {
-    assert_family_round_trips(compose("ucb1_adm", json!({
+fn test_variant_ucb1_adm_round_trips() {
+    assert_variant_round_trips(compose("ucb1_adm", json!({
         "c": 1.4, "final_action": "max_avg",
     })));
 }
 
 #[test]
-fn test_family_ucb1_mast_round_trips() {
-    assert_family_round_trips(compose("ucb1_mast", json!({
+fn test_variant_ucb1_mast_round_trips() {
+    assert_variant_round_trips(compose("ucb1_mast", json!({
         "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_lgr_round_trips() {
-    assert_family_round_trips(compose("ucb1_lgr", json!({
+fn test_variant_ucb1_lgr_round_trips() {
+    assert_variant_round_trips(compose("ucb1_lgr", json!({
         "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_lgr2_round_trips() {
-    assert_family_round_trips(compose("ucb1_lgr2", json!({
+fn test_variant_ucb1_lgr2_round_trips() {
+    assert_variant_round_trips(compose("ucb1_lgr2", json!({
         "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_lgr2_mast_round_trips() {
-    assert_family_round_trips(compose("ucb1_lgr2_mast", json!({
+fn test_variant_ucb1_lgr2_mast_round_trips() {
+    assert_variant_round_trips(compose("ucb1_lgr2_mast", json!({
         "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_nst_round_trips() {
-    assert_family_round_trips(compose("ucb1_nst", json!({
+fn test_variant_ucb1_nst_round_trips() {
+    assert_variant_round_trips(compose("ucb1_nst", json!({
         "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_progressive_history_round_trips() {
-    assert_family_round_trips(compose("ucb1_progressive_history", json!({
+fn test_variant_ucb1_progressive_history_round_trips() {
+    assert_variant_round_trips(compose("ucb1_progressive_history", json!({
         "c": 1.4, "ph_weight": 0.5,
         "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_max_robust_round_trips() {
-    assert_family_round_trips(compose("ucb1_max_robust", json!({
+fn test_variant_ucb1_max_robust_round_trips() {
+    assert_variant_round_trips(compose("ucb1_max_robust", json!({
         "c": 1.4,
     })));
 }
 
 #[test]
-fn test_family_amaf_round_trips() {
-    assert_family_round_trips(compose("amaf", json!({
+fn test_variant_amaf_round_trips() {
+    assert_variant_round_trips(compose("amaf", json!({
         "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
     })));
 }
 
 #[test]
-fn test_family_amaf_mast_round_trips() {
-    assert_family_round_trips(compose("amaf_mast", json!({
+fn test_variant_amaf_mast_round_trips() {
+    assert_variant_round_trips(compose("amaf_mast", json!({
         "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
         "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_tuned_round_trips() {
-    assert_family_round_trips(compose("ucb1_tuned", json!({
+fn test_variant_ucb1_tuned_round_trips() {
+    assert_variant_round_trips(compose("ucb1_tuned", json!({
         "c": 1.4, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_tuned_mast_round_trips() {
-    assert_family_round_trips(compose("ucb1_tuned_mast", json!({
+fn test_variant_ucb1_tuned_mast_round_trips() {
+    assert_variant_round_trips(compose("ucb1_tuned_mast", json!({
         "c": 1.4, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_tuned_dm_round_trips() {
-    assert_family_round_trips(compose("ucb1_tuned_dm", json!({
+fn test_variant_ucb1_tuned_dm_round_trips() {
+    assert_variant_round_trips(compose("ucb1_tuned_dm", json!({
         "c": 1.4, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_tuned_dm_mast_round_trips() {
-    assert_family_round_trips(compose("ucb1_tuned_dm_mast", json!({
+fn test_variant_ucb1_tuned_dm_mast_round_trips() {
+    assert_variant_round_trips(compose("ucb1_tuned_dm_mast", json!({
         "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_dm_nst_round_trips() {
-    assert_family_round_trips(compose("ucb1_dm_nst", json!({
+fn test_variant_ucb1_dm_nst_round_trips() {
+    assert_variant_round_trips(compose("ucb1_dm_nst", json!({
         "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
     })));
 }
 
 #[test]
-fn test_family_ucb1_adm_nst_round_trips() {
-    assert_family_round_trips(compose("ucb1_adm_nst", json!({
+fn test_variant_ucb1_adm_nst_round_trips() {
+    assert_variant_round_trips(compose("ucb1_adm_nst", json!({
         "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
     })));
@@ -937,23 +937,23 @@ fn test_family_ucb1_adm_nst_round_trips() {
 
 // `meta_mcts`'s round trip is proven in `examples/tune-stress.rs` instead of here:
 // its inner nested search makes even one candidate-vs-baseline game
-// noticeably slower than every other family's (multi-second, not the
+// noticeably slower than every other variant's (multi-second, not the
 // sub-second every sibling test above runs in), so it belongs in the
 // slow/stress suite `cargo test --lib` never compiles, not this fast one.
 
 #[test]
-fn test_family_rave_round_trips() {
-    assert_family_round_trips(rave_params());
+fn test_variant_rave_round_trips() {
+    assert_variant_round_trips(rave_params());
 }
 
 #[test]
-fn test_family_ucb1_pn_round_trips() {
-    assert_family_round_trips(pn_params());
+fn test_variant_ucb1_pn_round_trips() {
+    assert_variant_round_trips(pn_params());
 }
 
 #[test]
-fn test_family_ucb1_pn_mast_round_trips() {
-    assert_family_round_trips(compose("ucb1_pn_mast", json!({
+fn test_variant_ucb1_pn_mast_round_trips() {
+    assert_variant_round_trips(compose("ucb1_pn_mast", json!({
         "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
         "final_action": "robust_child", "solver_loss_threshold": 5,
         "contempt": "on", "contempt_factor": -0.5,
@@ -992,27 +992,27 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
     assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
 }
 
-/// `random` is a plain `fields.rs` row (a `DirectFamily`, built by
-/// `direct_search::build_direct` rather than `config_ir::build_search`, but
-/// otherwise reachable exactly like any other family) -- `build_search`
-/// resolves it from just `family`/`q_init`, the same as an MCTS family with
-/// no other required params (`ucb1_max_robust`, `meta_mcts`).
+/// `random` is a non-MCTS `algorithm` (built by `direct_search::build_direct`
+/// rather than `config_ir::build_search`, but otherwise reachable exactly
+/// like any other variant) -- `build_search` resolves it from just
+/// `algorithm`/`q_init`, the same as an MCTS variant with no other required
+/// params (`ucb1_max_robust`, `meta_mcts`).
 #[test]
-fn test_build_search_builds_random_family() {
+fn test_build_search_builds_random_algorithm() {
     build_search::<Nim>(
         &compose("random", json!({"q_init": "Infinity"})),
         0,
         false,
         &SearchBudget::default(),
     )
-    .expect("random should build with just family/q_init");
+    .expect("random should build with just algorithm/q_init");
 }
 
 /// `flat_mc` is a plain `fields.rs` row like `random`, just one
 /// with its own tunable fields (`samples_per_move`/`max_rollout_depth`/
 /// `flat_mc_selection`) rather than none.
 #[test]
-fn test_build_search_builds_flat_mc_family() {
+fn test_build_search_builds_flat_mc_algorithm() {
     build_search::<Nim>(
         &compose("flat_mc", json!({
             "samples_per_move": 20, "max_rollout_depth": 50,
@@ -1025,13 +1025,13 @@ fn test_build_search_builds_flat_mc_family() {
     .expect("flat_mc should build from its own required params");
 }
 
-/// `negamax` is a `DirectFamily` row too, built by
+/// `negamax` is a non-MCTS `algorithm` too, built by
 /// `direct_search::build_direct` rather than `config_ir::build_search`, and
 /// (unlike `random`/`flat_mc`) actually reads `SearchBudget` (`threads`/
 /// `max_time`) -- this only proves it builds, so `max_depth` doesn't need to
 /// be tight here (`choose_action` is never called).
 #[test]
-fn test_build_search_builds_negamax_family() {
+fn test_build_search_builds_negamax_algorithm() {
     build_search::<Nim>(
         &compose("negamax", json!({
             "max_depth": 8, "table_bits": 16,
@@ -1128,31 +1128,26 @@ fn test_build_search_rejects_unknown_select() {
     assert!(err.message.contains("select"));
 }
 
-/// The parameter set each family's `make_candidate` arm actually
+/// The parameter set each variant's `make_candidate` arm actually
 /// requires -- mirrors the literals already passed to
-/// `assert_family_round_trips` above, plus `meta_mcts` (whose own
+/// `assert_variant_round_trips` above, plus `meta_mcts` (whose own
 /// round-trip lives in `examples/tune-stress.rs` for cost reasons, but this
 /// check is pure metadata with no MCTS search, so it's cheap to include
 /// here too).
 ///
 /// Deliberately still hand-written rather than generated from
-/// `register_family!`'s per-row field lists (`family_conditions()`):
-/// those rows only name *which* top-level fields a family reads, not
-/// concrete values, so they can't exercise the nested conditions this
-/// test also needs to cover -- `rave`'s `schedule`/`rave_ucb`-gated
-/// fields, `final_action: secure_child`'s `a`, `contempt: on`'s
-/// `contempt_factor` -- all of which are hand-written conditions
-/// `strategy_tuner_info_with_mcgs` appends precisely because they
-/// depend on a *child* field's own sampled value, not on `family`
-/// alone (see `fields.rs`).
+/// `register_field!`'s per-row field lists: those rows only name *which*
+/// top-level fields a variant reads, not concrete values, so they can't
+/// exercise the nested conditions this test also needs to cover --
+/// `rave`'s `schedule`/`rave_ucb`-gated fields, `final_action:
+/// secure_child`'s `a`, `contempt: on`'s `contempt_factor` -- all of which
+/// are hand-written conditions `strategy_tuner_info_with_mcgs` appends
+/// precisely because they depend on a *child* field's own sampled value,
+/// not on the axis categorical alone (see `fields.rs`).
 /// Generating a fixture from the field-name list alone would only be
-/// able to assert "this field is active", which `family_conditions()`
-/// already guarantees by construction -- a tautology, not a check.
-/// What would still silently drift is a *new* family being added to
-/// `register_family!` without a matching entry here; that's covered by
-/// `test_family_required_params_covers_every_registered_family` below
-/// instead, which needs no concrete values.
-fn family_required_params() -> Vec<(&'static str, Value)> {
+/// able to assert "this field is active", which the declared conditions
+/// already guarantee by construction -- a tautology, not a check.
+fn variant_required_params() -> Vec<(&'static str, Value)> {
     vec![
         (
             "ucb1",
@@ -1333,7 +1328,7 @@ fn algorithm_native_specs_match_search_spec_goldens() {
     let goldens: serde_json::Map<String, Value> =
         serde_json::from_str(include_str!("testdata/search_spec_goldens.json")).unwrap();
     let mut checked = std::collections::HashSet::new();
-    for (name, params) in family_required_params() {
+    for (name, params) in variant_required_params() {
         let Some(golden) = goldens.get(name) else {
             continue;
         };
@@ -1535,7 +1530,7 @@ fn test_tuner_info_conditions_cover_every_axis_native_param_dispatch_needs() {
     // reachable as "active" from `strategy_tuner_info`'s declared conditions
     // given that exact assignment.
     let tuner = strategy_tuner_info(&["strong"], 1);
-    for (name, params) in family_required_params() {
+    for (name, params) in variant_required_params() {
         let active = active_params(&tuner, &params);
         for key in params.as_object().unwrap().keys() {
             assert!(

@@ -186,7 +186,7 @@ fn wire_search_report<A>(
 /// META_MCTS_INNER_ITERATIONS` -- a few dozen iterations is enough for the
 /// inner search to be more informed than a uniform rollout without making
 /// every `meta_mcts` trial two orders of magnitude more expensive than every
-/// other family's. Still real work, though -- see `examples/tune-stress.rs`
+/// other variant's. Still real work, though -- see `examples/tune-stress.rs`
 /// for why its round-trip check doesn't live in this file's fast suite.
 pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 
@@ -205,7 +205,7 @@ pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// here pits a single-threaded, tree-discarding-per-move, fixed-iteration
 /// search against a multi-core, tree-persisting, time-budgeted one -- a
 /// mismatch severe enough to produce a near-100%-loss streak on its own,
-/// independent of which family/hyperparameters tuner samples. A game's own
+/// independent of which algorithm/hyperparameters tuner samples. A game's own
 /// `tune_eval` is responsible for building a `SearchBudget` that mirrors
 /// whatever named preset it's dispatching to in that case (see
 /// `games/druid/src/main.rs`'s `tune_eval`).

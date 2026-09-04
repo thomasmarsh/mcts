@@ -132,7 +132,7 @@ async fn test_get_run_includes_incumbent_when_present() {
         default_seed(conn, dir);
         conn.execute(
             "INSERT INTO incumbents (run_id, ts, config, cost) \
-             VALUES (?1, '2026-01-01T00:00:40Z', '{\"family\":\"rave\",\"c\":0.7}', 0.2)",
+             VALUES (?1, '2026-01-01T00:00:40Z', '{\"select\":\"rave\",\"c\":0.7}', 0.2)",
             duckdb::params![DEFAULT_RUN_ID],
         )
         .unwrap();
@@ -143,7 +143,7 @@ async fn test_get_run_includes_incumbent_when_present() {
     let run = body_json(&body);
 
     assert_eq!(run["incumbent"]["cost"], 0.2);
-    assert_eq!(run["incumbent"]["config"]["family"], "rave");
+    assert_eq!(run["incumbent"]["config"]["select"], "rave");
 }
 
 #[tokio::test]

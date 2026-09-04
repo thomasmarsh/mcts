@@ -5,7 +5,7 @@ import type { ProjectionCandidate, ProjectionValidation } from "../../src/tuner/
 const cand = (over: Partial<ProjectionCandidate>): ProjectionCandidate => ({
   candidate_id: "candidate-aaaa",
   fingerprint: "aaaa",
-  canonical_config: { family: "b" },
+  canonical_config: { select: "b" },
   cohort_index: 0,
   cohort_slot: 0,
   source: "smac_model",
@@ -57,7 +57,7 @@ describe("deriveVerdict", () => {
       report: undefined,
     });
     expect(v.finalist?.candidateId).toBe("candidate-aaaa");
-    expect(v.finalist?.config).toEqual({ family: "b" });
+    expect(v.finalist?.config).toEqual({ select: "b" });
     expect(v.finalist?.source).toBe("smac_model");
     expect(v.runnerUp?.candidateId).toBe("candidate-bbbb");
     expect(v.ranked.map((r) => r.rank)).toEqual([1, 2]);

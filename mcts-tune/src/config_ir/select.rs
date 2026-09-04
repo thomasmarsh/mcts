@@ -19,7 +19,7 @@ pub trait SelectCont<G: Game> {
 
 /// `register_select!`'s table, expanded into `BaseSelectSpec`/`SelectSpec`
 /// and their dispatchers together so none of them can silently omit a
-/// family the others still know about.
+/// variant the others still know about.
 ///
 /// Each row is `Variant { field: ty, ... } => expr`, where `expr` is
 /// evaluated with the row's fields bound by value (see `with_select`'s
@@ -122,7 +122,7 @@ macro_rules! register_select {
         }
 
         /// The config-IR node for the `select` axis: every `BaseSelectSpec`
-        /// family, plus `EpsilonGreedy` wrapping one of them.
+        /// variant, plus `EpsilonGreedy` wrapping one of them.
         ///
         /// `Serialize`/`Deserialize` are hand-implemented below rather than
         /// `#[derive]`d -- see `register_backprop!`'s doc comment in
@@ -296,14 +296,14 @@ pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
 /// and `DynSelect` rather than defining its own copy, since both axes erase
 /// the identical `SelectPolicy<G>` trait.
 /// `score_child`/`unvisited_value` aren't part of this shadow: whichever
-/// concrete family a `DynSelect` box holds still runs its own per-child
+/// concrete variant a `DynSelect` box holds still runs its own per-child
 /// scoring loop inside its own `best_child` (the default implementation in
 /// `mcts::select::SelectPolicy`), fully statically dispatched there --
 /// only the one per-node call into the box is erased, not the per-child
 /// comparisons inside it. Unlike `SelectPolicy` itself, this shadow is
 /// object-safe (no `Self`-by-value `Default`/`Clone`, no associated `Score`/
 /// `Aux` types in its signature), which is what lets `DynSelect` below erase
-/// every concrete family `with_select` can produce into one type.
+/// every concrete variant `with_select` can produce into one type.
 /// Blanket-implemented over every real `SelectPolicy`, so nothing here can
 /// drift from `register_select!`'s table.
 trait ErasedSelectPolicy<G: Game>: Send + Sync {
@@ -341,7 +341,7 @@ where
 /// `dyn` call once per tree-descent step rather than one of ~16 statically
 /// monomorphized bodies, collapsing that axis's contribution to
 /// `build_search`'s output to a single `TreeSearch` shape per game
-/// regardless of which `select` family a config names. `Score`/`Aux` are
+/// regardless of which `select` variant a config names. `Score`/`Aux` are
 /// fixed to `()`: nothing outside `best_child`'s own delegated call ever
 /// reads them, since `best_child` is always overridden here rather than
 /// falling back to the trait's default (which is the only thing that would
@@ -405,7 +405,7 @@ impl<G: Game + 'static> SelectCont<G> for EraseSelectCont<G> {
     }
 }
 
-/// Resolves `spec` to a single `DynSelect<G>`, regardless of family -- see
+/// Resolves `spec` to a single `DynSelect<G>`, regardless of variant -- see
 /// `DynSelect`'s doc comment for why `build_search` uses this instead of
 /// routing `S1` generically through its whole stage chain.
 pub fn resolve_select<G: Game + 'static>(spec: &SelectSpec) -> DynSelect<G> {

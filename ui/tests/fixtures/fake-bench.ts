@@ -101,19 +101,19 @@ export const fakePhysicalTunerRun: RunDetail = {
   game: "traffic-lights",
   config: {
     overrides: ["optimizer.n_trials=50", 'target.baselines=["flat_mc"]'],
-    baseline_settings: { flat_mc: { family: "flat_mc", q_init: "Infinity" } },
+    baseline_settings: { flat_mc: { algorithm: "flat_mc", q_init: "Infinity" } },
   },
   trial_count: 3,
-  incumbent: { config: { family: "rave", c: 0.7 }, cost: 0.2 },
+  incumbent: { config: { select: "rave", c: 0.7 }, cost: 0.2 },
 };
 
-// Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `family` is a
-// top-level categorical gating other parameters via two levels of
-// `TunerCondition`s (family -> schedule -> rave, family -> rave_ucb -> c),
-// not a single fixed family's flat schema. Trimmed to a handful of
-// families/params rather than the full ~14-family catalog -- enough to
-// exercise multi-level conditions and a non-RAVE best trial (see
-// fakeTrialRows below).
+// Mirrors `mcts_tune::strategy_tuner_info`'s real shape: `algorithm` is the
+// always-active root categorical and `select` a policy-axis categorical,
+// with other parameters gated via two levels of `TunerCondition`s
+// (select -> schedule -> rave, select -> rave_ucb -> c), not a single fixed
+// variant's flat schema. Trimmed to a handful of variants/params rather than
+// the full catalog -- enough to exercise multi-level conditions and a
+// non-RAVE best trial (see fakeTrialRows below).
 export const fakeTunableGames: TunableGame[] = [
   {
     game: "traffic-lights",
@@ -123,7 +123,13 @@ export const fakeTunableGames: TunableGame[] = [
       eval_rounds: 20,
       parameters: [
         {
-          name: "family",
+          name: "algorithm",
+          type: "categorical",
+          choices: ["mcts", "random", "flat_mc", "negamax"],
+          default: "mcts",
+        },
+        {
+          name: "select",
           type: "categorical",
           choices: ["ucb1", "ucb1_tuned", "rave"],
           default: "rave",
@@ -151,9 +157,10 @@ export const fakeTunableGames: TunableGame[] = [
         },
       ],
       conditions: [
-        { if: { family: ["ucb1", "ucb1_tuned", "rave"] }, then: ["final_action"] },
-        { if: { family: ["ucb1_tuned", "rave"] }, then: ["epsilon"] },
-        { if: { family: "rave" }, then: ["schedule", "rave_ucb"] },
+        { if: { algorithm: "mcts" }, then: ["select"] },
+        { if: { select: ["ucb1", "ucb1_tuned", "rave"] }, then: ["final_action"] },
+        { if: { select: ["ucb1_tuned", "rave"] }, then: ["epsilon"] },
+        { if: { select: "rave" }, then: ["schedule", "rave_ucb"] },
         { if: { schedule: "threshold" }, then: ["rave"] },
         { if: { rave_ucb: ["ucb1", "tuned"] }, then: ["c"] },
       ],
@@ -171,7 +178,8 @@ export const fakeTunableGames: TunableGame[] = [
       baselines: ["strong", "master"],
       eval_rounds: 20,
       parameters: [
-        { name: "family", type: "categorical", choices: ["ucb1", "rave"], default: "rave" },
+        { name: "algorithm", type: "categorical", choices: ["mcts"], default: "mcts" },
+        { name: "select", type: "categorical", choices: ["ucb1", "rave"], default: "rave" },
       ],
       conditions: [],
       game_config: { size: { w: 5, h: 5 } },
@@ -179,15 +187,15 @@ export const fakeTunableGames: TunableGame[] = [
   },
 ];
 
-// Best trial (#2, cost 0.3) is deliberately `family: "ucb1_tuned"`, unlike
+// Best trial (#2, cost 0.3) is deliberately `select: "ucb1_tuned"`, unlike
 // the run's `flat_mc` baseline -- proves the run-detail baseline comparison
-// and the trial table's Family column work across different configs.
+// and the trial table work across different configs.
 export const fakeTrialRows: TrialRow[] = [
   {
     trial_id: 1,
     ts: "2026-03-01T00:00:01Z",
     config: {
-      family: "rave",
+      select: "rave",
       final_action: "robust_child",
       epsilon: 0.1,
       schedule: "threshold",
@@ -202,7 +210,7 @@ export const fakeTrialRows: TrialRow[] = [
   {
     trial_id: 2,
     ts: "2026-03-01T00:01:00Z",
-    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
+    config: { select: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
     seed: 0,
     cost: 0.3,
     extra: null,
@@ -210,7 +218,7 @@ export const fakeTrialRows: TrialRow[] = [
   {
     trial_id: 3,
     ts: "2026-03-01T00:02:00Z",
-    config: { family: "ucb1", final_action: "robust_child" },
+    config: { select: "ucb1", final_action: "robust_child" },
     seed: 0,
     cost: 0.4,
     extra: null,
@@ -263,7 +271,7 @@ export const fakeTrialRowsWithRepeats: TrialRow[] = [
   {
     trial_id: 4,
     ts: "2026-03-01T00:03:00Z",
-    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
+    config: { select: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
     seed: 1,
     cost: 0.25,
     extra: null,
@@ -271,7 +279,7 @@ export const fakeTrialRowsWithRepeats: TrialRow[] = [
   {
     trial_id: 5,
     ts: "2026-03-01T00:04:00Z",
-    config: { family: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
+    config: { select: "ucb1_tuned", final_action: "max_avg", epsilon: 0.2 },
     seed: 2,
     cost: 0.35,
     extra: null,
@@ -289,7 +297,7 @@ export const fakeTrialRowsMultiInstance: TrialRow[] = [
     trial_id: 1,
     ts: "2026-03-01T00:00:01Z",
     config: {
-      family: "rave",
+      select: "rave",
       final_action: "robust_child",
       epsilon: 0.1,
       schedule: "threshold",
@@ -305,7 +313,7 @@ export const fakeTrialRowsMultiInstance: TrialRow[] = [
     trial_id: 2,
     ts: "2026-03-01T00:01:00Z",
     config: {
-      family: "rave",
+      select: "rave",
       final_action: "robust_child",
       epsilon: 0.1,
       schedule: "threshold",

@@ -15,7 +15,7 @@ pub trait BackpropCont {
 /// the *only* type in the whole workspace implementing `BackpropPolicy` --
 /// a macro rather than a hand-written enum mainly so a second
 /// `BackpropPolicy` impl slots in the same way a new `select`/`simulate`
-/// family does, without inventing a new pattern. `BayesGaussian`/
+/// variant does, without inventing a new pattern. `BayesGaussian`/
 /// `BayesNumeric` are the first strategies to actually exercise that: they
 /// exist specifically to pair with `select::BayesUct1`/`BayesUct2`
 /// (`config::Requirements::needs_posterior`), the first real select<->
