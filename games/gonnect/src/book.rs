@@ -10,7 +10,8 @@
 //! structure. This module supplies the game-specific plumbing for both
 //! directions: building a book (`build`, below) and consulting one during
 //! live play (`BookIndex`/`BookAugmented`, at the bottom of this file) --
-//! a `TreeSearch<Gonnect, strategy::QuasiBestFirst>` configured the way
+//! a `TreeSearch<Gonnect, _>` over an epsilon-greedy-wrapped Quasi-Best-First
+//! selection policy (see `BookBuild` below), configured the way
 //! `TreeSearch::make_book_entry` requires (`expand_threshold: 0`,
 //! `max_iterations: 1`), driven in a loop that folds each finished game
 //! back into the book before the next one starts.
@@ -20,20 +21,38 @@ use mcts::game::Game;
 use mcts::game::PlayerIndex;
 use mcts::algorithms::mcts::book::OpeningBook;
 use mcts::algorithms::mcts::index;
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{
+    backprop, node::QInit, select, simulate, strategy::Compose, SearchConfig, TreeSearch,
+};
 use mcts::algorithms::{ActionReport, RootReport, Search};
 use std::collections::HashMap;
+
+/// The lower-level rollout search QBF falls back to: plain UCB1 selection with
+/// epsilon-greedy MAST simulations (classic backprop, robust-child final move).
+type BookInner = Compose<select::Ucb1, simulate::EpsilonGreedy<Gonnect, simulate::Mast>>;
+
+/// The book-building search: Quasi-Best-First selection wrapped in a top-level
+/// epsilon-greedy exploration layer, uniform simulations, classic backprop, and
+/// a highest-average-score final-move rule.
+type BookBuild = Compose<
+    select::EpsilonGreedy<Gonnect, select::QuasiBestFirst<Gonnect, BookInner>>,
+    simulate::Uniform,
+    backprop::Classic,
+    select::MaxAvgScore,
+>;
 
 #[derive(Clone, Debug)]
 pub struct BookBuildConfig {
     /// Number of self-play games to fold into the book.
     pub rounds: u32,
-    /// Iteration budget for the lower-level `Ucb1Mast` search QBF falls
+    /// Iteration budget for the lower-level UCB1 + MAST search (`BookInner`)
+    /// QBF falls
     /// back to whenever the book doesn't yet have a confident opinion at
     /// the current position (see `select::quasi`'s "MoGoChoice").
     pub inner_iterations: usize,
     /// Top-level uniform-random exploration rate, wrapping QBF itself
-    /// (`strategy::QuasiBestFirst`'s `EpsilonGreedy` layer) -- distinct
+    /// (the `select::EpsilonGreedy` layer around `select::QuasiBestFirst`
+    /// in `BookBuild`) -- distinct
     /// from `select::QuasiBestFirst`'s own `epsilon` field, which instead
     /// governs how eagerly the *lower-level* search's choice overrides an
     /// under-confident book score.
@@ -109,7 +128,7 @@ pub fn build(
                 .wrapping_add((worker as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
 
             handles.push(scope.spawn(move || {
-                let inner_search = TreeSearch::<Gonnect, strategy::Ucb1Mast>::new().config(
+                let inner_search = TreeSearch::<Gonnect, BookInner>::new().config(
                     SearchConfig::new()
                         .name("gonnect/book-inner")
                         .expand_threshold(1)
@@ -117,7 +136,7 @@ pub fn build(
                         .q_init(QInit::Infinity),
                 );
 
-                let qbf = select::QuasiBestFirst::<Gonnect, strategy::Ucb1Mast>::new()
+                let qbf = select::QuasiBestFirst::<Gonnect, BookInner>::new()
                     .search(inner_search);
 
                 let mut top_select = select::EpsilonGreedy::<Gonnect, _>::new()
@@ -127,7 +146,7 @@ pub fn build(
                     top_select.inner.book = seed_book.clone();
                 }
 
-                let mut search = TreeSearch::<Gonnect, strategy::QuasiBestFirst>::new().config(
+                let mut search = TreeSearch::<Gonnect, BookBuild>::new().config(
                     SearchConfig::new()
                         .name("gonnect/book-build")
                         .select(top_select)
