@@ -332,17 +332,20 @@ impl Requirements {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
+pub trait PolicyProfile<G: Game>: Clone + Sync + Send + Default {
     type Select: select::SelectPolicy<G>;
     type Simulate: simulate::SimulatePolicy<G>;
     type Backprop: backprop::BackpropPolicy;
     type FinalAction: select::SelectPolicy<G>;
 
-    // Override new to provide strategy specific defaults
+    // Override new to provide profile-specific defaults
     fn config() -> SearchConfig<G, Self> {
         SearchConfig::default()
     }
 }
+
+/// Transitional alias for the pre-rename trait name. Migrating.
+pub use PolicyProfile as Strategy;
 
 #[derive(Clone)]
 pub struct SearchConfig<G, S>

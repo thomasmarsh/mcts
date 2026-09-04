@@ -7,7 +7,8 @@ pub mod util;
 pub mod zobrist;
 
 pub use algorithms::mcts::{
-    backprop, index, node, prior, search, select, simulate, stack, strategy, table, GraphSearch,
+    backprop, index, node, prior, profile, search, select, simulate, stack, strategy, table,
+    GraphSearch,
     GraphStats, McgsCorrection, Requirements, SearchConfig, SearchContext, Shared,
     TranspositionKeying, TreeSearch,
 };

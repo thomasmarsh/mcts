@@ -10,8 +10,11 @@ pub mod search;
 pub mod select;
 pub mod simulate;
 pub mod stack;
-pub mod strategy;
+pub mod profile;
 pub mod table;
+
+/// Transitional alias for the pre-rename module name. Migrating.
+pub use profile as strategy;
 
 pub use config::*;
 pub use search::*;

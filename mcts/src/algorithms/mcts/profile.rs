@@ -2,16 +2,17 @@ use super::*;
 use crate::game::Game;
 use std::marker::PhantomData;
 
-/// Name a composed search by its four `Strategy` axes instead of a bespoke
-/// marker type. `TreeSearch<G, Compose<select::Ucb1, simulate::Mast>>` is the
-/// fully static equivalent of a hand-written `struct` + `impl Strategy<G>`
-/// (still monomorphized -- `Compose` carries no runtime state, just the four
-/// type parameters). `Backprop`/`FinalAction` default to the common
-/// `Classic`/`RobustChild` pair; name them explicitly to override either.
+/// Name a composed search by its four `PolicyProfile` axes instead of a bespoke
+/// marker type. `TreeSearch<G, Mcts<select::Ucb1, simulate::Mast>>` is the
+/// fully static equivalent of a hand-written `struct` + `impl PolicyProfile<G>`
+/// (still monomorphized -- `Mcts` carries no runtime state, just the four
+/// type parameters). Every axis defaults: `Mcts::default()` (no type params
+/// named) is plain UCT -- UCB1 selection, uniform-random playouts, classic
+/// backprop, robust-child final move -- and each parameter named explicitly
+/// overrides just that axis.
 ///
-/// `Compose` (or, on the tune path, a `config_ir::SearchSpec` built from it)
-/// is *the* way to spell a composed search. The only named `Strategy` impl
-/// the core library still ships is `Ucb1`; convenience bundles for a specific
+/// `Mcts` (or, on the tune path, a `config_ir::SearchSpec` built from it)
+/// is *the* way to spell a composed search. Convenience bundles for a specific
 /// experiment belong next to that experiment as a local `type` alias, not a
 /// `pub struct` in `mcts`.
 ///
@@ -34,11 +35,14 @@ use std::marker::PhantomData;
 /// `.final_action()`) recompute this name in place; an explicit `.name(..)`
 /// freezes it.
 #[derive(Clone, Copy, Default)]
-pub struct Compose<Sel, Sim, Bp = backprop::Classic, FA = select::RobustChild>(
-    PhantomData<(Sel, Sim, Bp, FA)>,
-);
+pub struct Mcts<
+    Sel = select::Ucb1,
+    Sim = simulate::Uniform,
+    Bp = backprop::Classic,
+    FA = select::RobustChild,
+>(PhantomData<(Sel, Sim, Bp, FA)>);
 
-impl<G, Sel, Sim, Bp, FA> Strategy<G> for Compose<Sel, Sim, Bp, FA>
+impl<G, Sel, Sim, Bp, FA> PolicyProfile<G> for Mcts<Sel, Sim, Bp, FA>
 where
     G: Game,
     Sel: select::SelectPolicy<G>,
@@ -52,15 +56,8 @@ where
     type FinalAction = FA;
 }
 
-/// Plain UCT with nothing added: UCB1 selection, uniform-random playouts,
-/// classic backprop, robust-child final move. The do-nothing baseline and the
-/// default `S` type parameter of `SearchConfig<G, S>` / `TreeSearch<G, S>`.
-#[derive(Clone, Default)]
-pub struct Ucb1;
+/// Transitional alias for the pre-`profile` name. Migrating.
+pub use Mcts as Compose;
 
-impl<G: Game> Strategy<G> for Ucb1 {
-    type Select = select::Ucb1;
-    type Simulate = simulate::Uniform;
-    type Backprop = backprop::Classic;
-    type FinalAction = select::RobustChild;
-}
+/// Transitional alias: plain UCT is now `Mcts` with all default type params.
+pub type Ucb1 = Mcts;
