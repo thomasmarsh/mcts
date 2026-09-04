@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deriveProposalFunnel } from "../../src/tuner/models/funnel-model.js";
+import type { JsonValue } from "../../src/types.js";
 
 const proposalSearch = {
   proposal_search: {
@@ -9,7 +10,7 @@ const proposalSearch = {
       random_reserve: 2,
       cohorts: 2,
       retained_elites: 2,
-      excluded_algorithms: [],
+      constraints: [],
     },
     actual_source_attempts: {
       schema_default: 1,
@@ -53,7 +54,25 @@ describe("deriveProposalFunnel", () => {
     expect(f.kpis).toContainEqual({ label: "Model", value: "smac-2.4-public-ask-v1" });
     expect(f.kpis).toContainEqual({ label: "Cohorts", value: "2" });
     expect(f.kpis).toContainEqual({ label: "Final frontier", value: "c3f2baf765fe" });
-    expect(f.kpis).toContainEqual({ label: "Excluded algorithms", value: "none" });
+    expect(f.kpis).toContainEqual({ label: "Algorithm choices", value: "all" });
+  });
+
+  it("surfaces the residual algorithm domain from an unconditional `choices` constraint", () => {
+    const withConstraint: JsonValue = {
+      proposal_search: {
+        ...proposalSearch.proposal_search,
+        configured: {
+          ...proposalSearch.proposal_search.configured,
+          constraints: [
+            { set: { algorithm: { choices: ["mcts", "negamax"] } } },
+            // Predicated on another axis -- doesn't narrow the algorithm domain itself.
+            { when: { algorithm: ["mcts"] }, set: { select: { choices: ["ucb1"] } } },
+          ],
+        },
+      },
+    };
+    const f = deriveProposalFunnel(withConstraint);
+    expect(f.kpis).toContainEqual({ label: "Algorithm choices", value: "mcts, negamax" });
   });
 
   it("is absent when the report has no proposal_search", () => {

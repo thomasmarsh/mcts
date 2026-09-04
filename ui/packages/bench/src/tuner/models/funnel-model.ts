@@ -45,6 +45,23 @@ export interface ProposalFunnel {
   present: boolean;
 }
 
+/** The residual `algorithm` domain, when `configured.constraints` (the real
+ * wire field -- exclusion is expressed as a `choices` narrowing, there is no
+ * dedicated exclusion field) carries an unconditional `choices` narrowing of
+ * `algorithm`. `null` when the algorithm domain isn't constrained (or is
+ * narrowed only conditionally, e.g. `when: {algorithm: [...]}` guarding some
+ * other parameter -- that doesn't narrow `algorithm` itself). */
+function algorithmChoicesFrom(configured: Record<string, JsonValue> | null): string[] | null {
+  for (const raw of asArray(configured?.["constraints"])) {
+    const constraint = asObject(raw);
+    if (!constraint || constraint["when"] != null) continue;
+    const algorithm = asObject(asObject(constraint["set"])?.["algorithm"]);
+    const choices = asStringArray(algorithm?.["choices"]);
+    if (choices.length) return choices;
+  }
+  return null;
+}
+
 function configuredFor(source: string, configured: Record<string, JsonValue> | null): number | null {
   if (source === "schema_default") return 1;
   if (!configured) return null;
@@ -85,7 +102,7 @@ export function deriveProposalFunnel(
     rejected: asNumber(rejections[source]) ?? 0,
   })).filter((s) => s.attempted > 0 || (s.configured ?? 0) > 0 || s.accepted > 0);
 
-  const excluded = asStringArray(configured?.["excluded_algorithms"]);
+  const algorithmChoices = algorithmChoicesFrom(configured);
   const frontier = asString(ps["final_frontier_id"]);
   const kpis: { label: string; value: string }[] = [
     { label: "Model", value: asString(ps["model_version"]) ?? "—" },
@@ -93,7 +110,7 @@ export function deriveProposalFunnel(
     { label: "Retained elites", value: String(asNumber(configured?.["retained_elites"]) ?? "—") },
     { label: "Final observations", value: String(asNumber(ps["final_observation_count"]) ?? "—") },
     { label: "Final frontier", value: frontier ? shortId(frontier) : "—" },
-    { label: "Excluded algorithms", value: excluded.length ? excluded.join(", ") : "none" },
+    { label: "Algorithm choices", value: algorithmChoices ? algorithmChoices.join(", ") : "all" },
   ];
 
   const totalAttempts = stages.reduce((a, s) => a + s.attempted, 0);
