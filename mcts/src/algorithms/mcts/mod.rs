@@ -13,8 +13,5 @@ pub mod stack;
 pub mod profile;
 pub mod table;
 
-/// Transitional alias for the pre-rename module name. Migrating.
-pub use profile as strategy;
-
 pub use config::*;
 pub use search::*;

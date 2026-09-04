@@ -55,9 +55,3 @@ where
     type Backprop = Bp;
     type FinalAction = FA;
 }
-
-/// Transitional alias for the pre-`profile` name. Migrating.
-pub use Mcts as Compose;
-
-/// Transitional alias: plain UCT is now `Mcts` with all default type params.
-pub type Ucb1 = Mcts;

@@ -344,9 +344,6 @@ pub trait PolicyProfile<G: Game>: Clone + Sync + Send + Default {
     }
 }
 
-/// Transitional alias for the pre-rename trait name. Migrating.
-pub use PolicyProfile as Strategy;
-
 #[derive(Clone)]
 pub struct SearchConfig<G, S>
 where
