@@ -61,7 +61,7 @@ export const mockFetchStrategySchema = (): Promise<AxisSchema> =>
 // No fixture game in these tests exposes a tuner, so the default mock mirrors
 // that: every `GameShell` test drives the free-composition-only path unless a
 // test overrides this itself.
-export const mockFetchStrategyFamilies = (): Promise<TunerInfo | null> => Promise.resolve(null);
+export const mockFetchStrategyAlgorithms = (): Promise<TunerInfo | null> => Promise.resolve(null);
 
 // Every `Env` method stubbed to a no-op effect -- individual tests override
 // just the methods their scenario needs (same shape as pb's `mockEnv`).

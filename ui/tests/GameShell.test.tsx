@@ -44,7 +44,7 @@ import {
   createTestStore,
   fixtureAxisSchema,
   mockEnv,
-  mockFetchStrategyFamilies,
+  mockFetchStrategyAlgorithms,
   mockFetchStrategySchema,
 } from "./helpers.js";
 import {
@@ -188,7 +188,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
 
@@ -221,7 +221,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -244,7 +244,7 @@ describe("GameShell autoplay/history bugs (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -279,7 +279,7 @@ describe("GameShell autoplay: a failing aiMove must not retry forever (fake game
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -305,7 +305,7 @@ describe("GameShell New Game dialog: 'Custom…' seat option (fake game, no real
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -353,7 +353,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -396,7 +396,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -418,7 +418,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -444,7 +444,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -486,7 +486,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={partial.store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -509,7 +509,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={unavailable.store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());
@@ -541,7 +541,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
     await vi.waitFor(() => expect(screen.getByTestId("fake-board")).toBeInTheDocument());

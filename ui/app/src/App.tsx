@@ -86,7 +86,7 @@ const App = () => {
         <GameShell
           store={store}
           fetchStrategySchema={() => api.fetchStrategySchema()}
-          fetchStrategyFamilies={(kind) => api.fetchStrategyFamilies(kind)}
+          fetchStrategyAlgorithms={(kind) => api.fetchStrategyAlgorithms(kind)}
         />
       </Show>
 

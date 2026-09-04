@@ -156,39 +156,40 @@ describe("StrategyConfigEditor", () => {
     renderEditor(fixtureDefaultConfig() as unknown as CustomStrategySpec, null);
 
     expect(screen.queryByRole("tablist")).toBeNull();
-    expect(screen.queryByText("Named family")).toBeNull();
+    expect(screen.queryByText("By algorithm")).toBeNull();
     expect(screen.getByLabelText("Select")).toBeTruthy();
   });
 
-  describe("named-family mode", () => {
-    it("switching to Named family seeds family at its schema default plus every immediately-active field's default", () => {
+  describe("by-algorithm mode", () => {
+    it("switching to By algorithm seeds algorithm at its schema default plus every immediately-active field's default", () => {
       const { getLatest } = renderEditor(
         fixtureDefaultConfig() as unknown as CustomStrategySpec,
         fixtureTunerInfo,
       );
 
-      fireEvent.click(screen.getByText("Named family"));
+      fireEvent.click(screen.getByText("By algorithm"));
 
       expect(getLatest().search).toBeUndefined();
       expect(getLatest().params).toEqual({
-        family: "ucb1",
-        c: 1.4142135623730951,
+        algorithm: "mcts",
+        select: "ucb1",
         contempt: "off",
+        c: 1.4142135623730951,
       });
     });
 
-    it("picking a different family fully replaces params, dropping the old family's now-irrelevant fields", () => {
+    it("picking a different algorithm fully replaces params, dropping the old algorithm's now-irrelevant fields", () => {
       const { getLatest } = renderEditor(
         fixtureDefaultConfig() as unknown as CustomStrategySpec,
         fixtureTunerInfo,
       );
-      fireEvent.click(screen.getByText("Named family"));
+      fireEvent.click(screen.getByText("By algorithm"));
       expect(getLatest().params).toHaveProperty("c");
 
-      const familySelect = screen.getByLabelText("family") as HTMLSelectElement;
-      fireEvent.change(familySelect, { target: { value: "random" } });
+      const algorithmSelect = screen.getByLabelText("algorithm") as HTMLSelectElement;
+      fireEvent.change(algorithmSelect, { target: { value: "random" } });
 
-      expect(getLatest().params).toEqual({ family: "random", contempt: "off" });
+      expect(getLatest().params).toEqual({ algorithm: "random" });
     });
 
     it("editing a field that reveals another shows the newly-active field with a filled-in default, without disturbing already-set fields", () => {
@@ -196,7 +197,7 @@ describe("StrategyConfigEditor", () => {
         fixtureDefaultConfig() as unknown as CustomStrategySpec,
         fixtureTunerInfo,
       );
-      fireEvent.click(screen.getByText("Named family"));
+      fireEvent.click(screen.getByText("By algorithm"));
       expect(screen.queryByLabelText("contempt_factor")).toBeNull();
 
       const contemptSelect = screen.getByLabelText("contempt") as HTMLSelectElement;
@@ -204,7 +205,8 @@ describe("StrategyConfigEditor", () => {
 
       expect(screen.getByLabelText("contempt_factor")).toBeTruthy();
       expect(getLatest().params).toMatchObject({
-        family: "ucb1",
+        algorithm: "mcts",
+        select: "ucb1",
         c: 1.4142135623730951,
         contempt: "on",
         contempt_factor: 0,
@@ -216,28 +218,28 @@ describe("StrategyConfigEditor", () => {
         fixtureDefaultConfig() as unknown as CustomStrategySpec,
         fixtureTunerInfo,
       );
-      fireEvent.click(screen.getByText("Named family"));
-      // `family: ucb1` alone already activates `c` per the first condition.
+      fireEvent.click(screen.getByText("By algorithm"));
+      // `select: ucb1` alone already activates `c` per the first condition.
       expect(screen.getByLabelText("c")).toBeTruthy();
 
-      const familySelect = screen.getByLabelText("family") as HTMLSelectElement;
-      fireEvent.change(familySelect, { target: { value: "rave_ucb" } });
+      const selectSelect = screen.getByLabelText("select") as HTMLSelectElement;
+      fireEvent.change(selectSelect, { target: { value: "rave" } });
 
-      // `family: rave_ucb` no longer satisfies the first `c` condition, but
+      // `select: rave` no longer satisfies the first `c` condition, but
       // activates `rave_ucb`, whose own default (`ucb1`) satisfies the
       // second `c` condition instead.
       expect(screen.getByLabelText("c")).toBeTruthy();
       expect(getLatest().params).toMatchObject({ rave_ucb: "ucb1", c: 1.4142135623730951 });
     });
 
-    it("switching Named family -> Free composition and back round-trips, each direction clearing the other side's field", () => {
+    it("switching By algorithm -> Free composition and back round-trips, each direction clearing the other side's field", () => {
       const { getLatest } = renderEditor(
         fixtureDefaultConfig() as unknown as CustomStrategySpec,
         fixtureTunerInfo,
       );
       const initialSearch = getLatest().search;
 
-      fireEvent.click(screen.getByText("Named family"));
+      fireEvent.click(screen.getByText("By algorithm"));
       expect(getLatest().search).toBeUndefined();
       expect(getLatest().params).toBeDefined();
 

@@ -53,7 +53,7 @@ export interface ApiClient {
     budgetMs?: number,
   ): Promise<Analysis<M>>;
   fetchStrategySchema(): Promise<AxisSchema>;
-  fetchStrategyFamilies(kind: string): Promise<TunerInfo | null>;
+  fetchStrategyAlgorithms(kind: string): Promise<TunerInfo | null>;
 }
 
 /** The server (`AdapterError`'s `IntoResponse` impl, `server/adapters/mod.rs`)
@@ -162,8 +162,8 @@ export function createApiClient(
     async fetchStrategySchema(): Promise<AxisSchema> {
       return fetchJson(url("/api/strategy-schema"));
     },
-    async fetchStrategyFamilies(kind: string): Promise<TunerInfo | null> {
-      return fetchJson(url(`/api/games/${kindPath(kind)}/strategy-families`));
+    async fetchStrategyAlgorithms(kind: string): Promise<TunerInfo | null> {
+      return fetchJson(url(`/api/games/${kindPath(kind)}/strategy-algorithms`));
     },
   };
 }

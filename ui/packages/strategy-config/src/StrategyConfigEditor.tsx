@@ -7,7 +7,7 @@
 //
 // Entirely schema-driven off `AxisSchema` (`GET /api/strategy-schema`,
 // `mcts_tune::config_ir_schema::axis_schema()`) rather than hand-coding any
-// per-family knowledge -- the same variant-picker logic renders a top-level
+// per-algorithm knowledge -- the same variant-picker logic renders a top-level
 // axis (`select`/`simulate`/`backprop`/`final_action`), a wrapped inner spec
 // (`epsilon_greedy`'s `inner: BaseSelectSpec`), and a nested non-axis enum
 // field (`RaveSchedule`/`RaveUcb`/`DecisiveMoveMode`) -- because all three
@@ -34,7 +34,7 @@ import type {
   TunerInfo,
   TunerParameter,
 } from "@mcts/game";
-import { activeNames, withDefaultsFilled } from "./family-activation.js";
+import { activeNames, withDefaultsFilled } from "./axis-activation.js";
 
 /** A variant value as this editor manipulates it -- `kind` plus whatever
  * fields that variant's schema entry declares, generically. Each concrete
@@ -79,7 +79,7 @@ function buildDefaultFieldValue(field: AxisFieldSchema, schema: AxisSchema): unk
 
 /** A freshly-defaulted `SearchSpec` -- each axis seeded from its schema's
  * first listed variant. Shared by `defaultCustomStrategySpec` (initial
- * config) and by switching from named-family mode back to free composition
+ * config) and by switching from by-algorithm mode back to free composition
  * (same reset-to-first-variant behavior either way). */
 function buildDefaultSearchSpec(schema: AxisSchema): SearchSpec {
   return {
@@ -308,7 +308,7 @@ const ScalarField: Component<{
   );
 };
 
-/** One `TunerParameter` rendered by type, generically -- covers every family
+/** One `TunerParameter` rendered by type, generically -- covers every axis variant
  * and every conditioned field (`q_init`, `mcgs`, `rave_ucb`, `c`, ...) with
  * one control per wire type rather than per field name, since `TunerInfo`
  * carries no more structure than name/type/bounds-or-choices/default. */
@@ -378,18 +378,23 @@ const TunerFieldControl: Component<{
   );
 };
 
-/** Named-family mode's own fields: the `family` picker (always first, always
- * a root) plus every other currently-active parameter, in `info.parameters`
- * declaration order. Picking a `family` fully replaces `values` (discarding
- * every other field, same "changing the kind rebuilds the value" precedent
- * `VariantPicker` sets for axis variants); editing any other field merges the
- * edit into `values` and fills in defaults for anything it newly reveals. */
-const FamilyFields: Component<{
+/** By-algorithm mode's own fields: the `algorithm` picker (always first,
+ * always the root categorical) plus every other currently-active parameter --
+ * the four MCTS axis categoricals (`select`/`simulate`/`backprop`/
+ * `final_action`) and their per-variant knobs -- in `info.parameters`
+ * declaration order. Picking an `algorithm` fully replaces `values`
+ * (discarding every other field, same "changing the kind rebuilds the value"
+ * precedent `VariantPicker` sets for axis variants); editing any other field
+ * merges the edit into `values` and fills in defaults for anything it newly
+ * reveals. */
+const AlgorithmFields: Component<{
   info: TunerInfo;
   values: Record<string, unknown>;
   onChange: (values: Record<string, unknown>) => void;
 }> = (props) => {
-  const familyParam = createMemo(() => props.info.parameters.find((p) => p.name === "family")!);
+  const algorithmParam = createMemo(
+    () => props.info.parameters.find((p) => p.name === "algorithm")!,
+  );
   const active = createMemo(() =>
     activeNames(props.info.parameters, props.info.conditions, props.values),
   );
@@ -404,17 +409,19 @@ const FamilyFields: Component<{
   }
 
   return (
-    <div class="strategy-family-fields">
+    <div class="strategy-algorithm-fields">
       <TunerFieldControl
-        param={familyParam()}
-        value={props.values.family}
+        param={algorithmParam()}
+        value={props.values.algorithm}
         onChange={(value) =>
           props.onChange(
-            withDefaultsFilled(props.info.parameters, props.info.conditions, { family: value }),
+            withDefaultsFilled(props.info.parameters, props.info.conditions, { algorithm: value }),
           )
         }
       />
-      <For each={props.info.parameters.filter((p) => p.name !== "family" && active().has(p.name))}>
+      <For
+        each={props.info.parameters.filter((p) => p.name !== "algorithm" && active().has(p.name))}
+      >
         {(param) => (
           <TunerFieldControl
             param={param}
@@ -439,10 +446,10 @@ interface BudgetEnabled {
 export const StrategyConfigEditor: Component<{
   schema: AxisSchema;
   config: CustomStrategySpec;
-  /** The game's named-family catalog (`GET /api/games/{kind}/strategy-
-   * families`), `null` for a game with no tuning support. Drives the mode
-   * toggle below `null` hides it entirely, leaving free composition as the
-   * only mode, exactly today's behavior. */
+  /** The game's tuner algorithm/axis catalog (`GET /api/games/{kind}/
+   * strategy-algorithms`), `null` for a game with no tuning support. Drives
+   * the mode toggle below `null` hides it entirely, leaving free composition
+   * as the only mode, exactly today's behavior. */
   tunerInfo: TunerInfo | null;
   onChange: (config: CustomStrategySpec) => void;
 }> = (props) => {
@@ -474,11 +481,13 @@ export const StrategyConfigEditor: Component<{
   }
 
   function switchToNamed(info: TunerInfo) {
-    const family = info.parameters.find((p) => p.name === "family")!;
+    const algorithm = info.parameters.find((p) => p.name === "algorithm")!;
     props.onChange({
       ...props.config,
       search: undefined,
-      params: withDefaultsFilled(info.parameters, info.conditions, { family: family.default }),
+      params: withDefaultsFilled(info.parameters, info.conditions, {
+        algorithm: algorithm.default,
+      }),
     });
   }
 
@@ -526,7 +535,7 @@ export const StrategyConfigEditor: Component<{
               classList={{ active: mode() === "params" }}
               onClick={() => switchToNamed(info())}
             >
-              Named family
+              By algorithm
             </button>
           </div>
         )}
@@ -565,7 +574,7 @@ export const StrategyConfigEditor: Component<{
 
       <Show when={mode() === "params" && props.tunerInfo}>
         {(info) => (
-          <FamilyFields
+          <AlgorithmFields
             info={info()}
             values={props.config.params ?? {}}
             onChange={(params) => props.onChange({ ...props.config, params })}
@@ -665,8 +674,8 @@ export const StrategyConfigEditor: Component<{
         </label>
 
         {/* `q_init`/`mcgs`/`state_only_keying` are ordinary conditioned
-            `TunerParameter`s in named-family mode, rendered generically by
-            `FamilyFields` above -- these hand-written rows write to
+            `TunerParameter`s in by-algorithm mode, rendered generically by
+            `AlgorithmFields` above -- these hand-written rows write to
             `CustomStrategySpec`'s top-level fields, which the `params`
             branch of `build_custom` never reads for these three names, so
             showing both would be redundant and silently ignored. */}

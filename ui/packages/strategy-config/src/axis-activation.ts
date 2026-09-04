@@ -1,5 +1,5 @@
-// family-activation.ts — the parent/child activation walk over a
-// `TunerInfo`'s `parameters`/`conditions`, used by named-family mode to
+// axis-activation.ts — the parent/child activation walk over a
+// `TunerInfo`'s `parameters`/`conditions`, used by by-algorithm mode to
 // decide which fields are currently visible and to fill in defaults for
 // newly-revealed ones. Conditions form a shallow DAG (parent -> child, never
 // a cycle) but may be more than one level deep, so both functions below
@@ -63,12 +63,12 @@ export function activeNames(
 /** `values` merged with schema defaults for every currently-active
  * parameter that has no value yet -- never overwrites a value already
  * present, so it's safe to call after every single field edit (only fills
- * in newly-revealed fields) or with a fresh `{family: x}` seed (full reset
- * on a family change). Fills defaults as activation is discovered rather
- * than after the fact, so a child gated on a grandparent's *default* value
- * (e.g. picking a family activates `rave_ucb`, whose own default in turn
- * activates `c`) resolves in one call instead of needing a second pass from
- * the caller. */
+ * in newly-revealed fields) or with a fresh `{algorithm: x}` seed (full
+ * reset on an algorithm change). Fills defaults as activation is discovered
+ * rather than after the fact, so a child gated on a grandparent's *default*
+ * value (e.g. picking `select` activates `rave_ucb`, whose own default in
+ * turn activates `c`) resolves in one call instead of needing a second pass
+ * from the caller. */
 export function withDefaultsFilled(
   parameters: TunerParameter[],
   conditions: TunerCondition[],

@@ -183,7 +183,7 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
     expect(result).toEqual(schema);
   });
 
-  it("fetchStrategyFamilies GETs /api/games/{kind}/strategy-families", async () => {
+  it("fetchStrategyAlgorithms GETs /api/games/{kind}/strategy-algorithms", async () => {
     const info = {
       id: "druid",
       baselines: [],
@@ -195,17 +195,17 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
     const calls = stubFetch(info);
     const api = createApiClient();
 
-    const result = await api.fetchStrategyFamilies("druid");
+    const result = await api.fetchStrategyAlgorithms("druid");
 
-    expect(calls[0]!.url).toBe("/api/games/druid/strategy-families");
+    expect(calls[0]!.url).toBe("/api/games/druid/strategy-algorithms");
     expect(result).toEqual(info);
   });
 
-  it("fetchStrategyFamilies passes through a null response", async () => {
+  it("fetchStrategyAlgorithms passes through a null response", async () => {
     stubFetch(null);
     const api = createApiClient();
 
-    const result = await api.fetchStrategyFamilies("traffic-lights");
+    const result = await api.fetchStrategyAlgorithms("traffic-lights");
 
     expect(result).toBeNull();
   });

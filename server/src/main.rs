@@ -169,7 +169,7 @@ async fn get_ai_presets(
     Ok(Json(adapter.ai_presets()))
 }
 
-async fn get_strategy_families(
+async fn get_strategy_algorithms(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
 ) -> Result<Json<Option<TunerInfo>>, AdapterError> {
@@ -281,8 +281,8 @@ fn api_router(app_state: Arc<AppState>) -> Router {
         .route("/api/games/{kind}/apply", post(post_apply))
         .route("/api/games/{kind}/ai_presets", get(get_ai_presets))
         .route(
-            "/api/games/{kind}/strategy-families",
-            get(get_strategy_families),
+            "/api/games/{kind}/strategy-algorithms",
+            get(get_strategy_algorithms),
         );
 
     // Explicitly scoped, not wildcard -- there's no cross-origin need today
@@ -1037,8 +1037,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_ttt_strategy_families_lists_algorithm_and_axis_choices() {
-        let (status, body) = http_get(test_app(), "/api/games/ttt/strategy-families").await;
+    async fn test_ttt_strategy_algorithms_lists_algorithm_and_axis_choices() {
+        let (status, body) = http_get(test_app(), "/api/games/ttt/strategy-algorithms").await;
         assert_eq!(status, HttpStatusCode::OK);
         let body = body_json(&body);
         let choices = |name: &str| -> Vec<String> {

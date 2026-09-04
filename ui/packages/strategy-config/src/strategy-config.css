@@ -44,7 +44,7 @@
 }
 
 .strategy-variant-picker,
-.strategy-family-fields {
+.strategy-algorithm-fields {
   background: #24252c;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
@@ -57,7 +57,7 @@
 /* The axis-name label ("Select"/"Simulate"/"Backprop"/"Final action") is
    always the variant picker's own direct-child `<label>` -- every other
    label lives one level down, inside `.strategy-variant-fields` or (for
-   named-family mode) `.strategy-family-fields`'s own field controls. */
+   by-algorithm mode) `.strategy-algorithm-fields`'s own field controls. */
 .strategy-variant-picker > label {
   font-size: 11px;
   font-weight: 600;
@@ -69,7 +69,7 @@
   gap: 4px;
 }
 
-.strategy-family-fields {
+.strategy-algorithm-fields {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 8px;
@@ -96,7 +96,7 @@
 }
 
 .strategy-variant-fields label,
-.strategy-family-fields label {
+.strategy-algorithm-fields label {
   display: flex;
   flex-direction: column;
   gap: 4px;

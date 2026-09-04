@@ -15,7 +15,7 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { createStore, Effect } from "@mcts/core";
 import { appReducer, initialAppState, type Env } from "@mcts/game";
 import { GameShell } from "../app/src/GameShell.js";
-import { mockFetchStrategyFamilies, mockFetchStrategySchema } from "./helpers.js";
+import { mockFetchStrategyAlgorithms, mockFetchStrategySchema } from "./helpers.js";
 
 // Track moves dispatched through env.apply
 let capturedMoves: unknown[] = [];
@@ -90,7 +90,7 @@ describe("TrafficLights GameShell integration", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
 
@@ -187,7 +187,7 @@ describe("TrafficLights GameShell integration", () => {
       <GameShell
         store={store}
         fetchStrategySchema={mockFetchStrategySchema}
-        fetchStrategyFamilies={mockFetchStrategyFamilies}
+        fetchStrategyAlgorithms={mockFetchStrategyAlgorithms}
       />
     ));
 

@@ -322,7 +322,7 @@ export interface TunerCondition {
   then: string[];
 }
 
-/** `GET /api/games/{kind}/strategy-families` response -- `game_host::
+/** `GET /api/games/{kind}/strategy-algorithms` response -- `game_host::
  * TunerInfo`. `null` for a game with no tuning support. */
 export interface TunerInfo {
   id: string;
