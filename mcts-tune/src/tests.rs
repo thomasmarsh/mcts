@@ -692,7 +692,10 @@ fn test_tune_eval_rejects_unknown_select() {
 }
 
 #[test]
-fn test_tune_eval_rejects_the_retired_family_key() {
+fn test_tune_eval_rejects_a_config_missing_algorithm() {
+    // A stale `{family: ...}` params object (or any config missing the
+    // required `algorithm` key) is rejected as malformed, the same as any
+    // other missing required field -- no `family`-specific message.
     let mut params = comparison_params();
     params.as_object_mut().unwrap().remove("algorithm");
     params["family"] = json!("ucb1");
@@ -710,8 +713,8 @@ fn test_tune_eval_rejects_the_retired_family_key() {
         None,
         &mut |_| Ok(()),
     )
-    .expect_err("a `family` params object must be rejected post-cutover");
-    assert!(err.message.contains("family"), "{}", err.message);
+    .expect_err("a config missing `algorithm` must be rejected");
+    assert!(err.message.contains("algorithm"), "{}", err.message);
 }
 
 /// One hand-verified construction+round-trip test per named variant,

@@ -340,11 +340,6 @@ pub(crate) fn read_q_init(cfg: &Value) -> Result<QInit, HostError> {
 
 /// Resolves the top-level `algorithm` categorical.
 pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError> {
-    if cfg.get("algorithm").is_none() && cfg.get("family").is_some() {
-        return Err(HostError::bad_request(
-            "`family` is no longer accepted; specify `algorithm` plus the policy-axis categoricals",
-        ));
-    }
     match req_str(cfg, "algorithm")? {
         "mcts" => Ok(AlgorithmSpec::Mcts(to_search_spec(cfg)?)),
         "random" => Ok(AlgorithmSpec::Random),
