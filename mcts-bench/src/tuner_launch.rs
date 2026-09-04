@@ -737,11 +737,21 @@ pub fn records(root: &Path) -> io::Result<Vec<TunerLaunchRecord>> {
 /// it), then best-effort remove the run directory. Errors `NotFound` if no
 /// record exists for `run_id`, and `InvalidInput` if the run is still live
 /// (stop it first).
+///
+/// A run directory can outlive `launches.jsonl` -- the journal only started
+/// recording launches partway through this project's life, and a run
+/// started by a raw `tuner_cli` invocation (a bake-off shell script, manual
+/// exploration) was never launched through [`spawn_and_journal`] at all. For
+/// either case there is no journal record to look up, so fall back to
+/// [`delete_orphan`]: it treats `<root>/<run_id>` as the run directory
+/// directly, gated on it unambiguously looking like a finished run
+/// (`report.json` present -- a run still in progress leaves no `report.json`
+/// until it completes, and this path has no pid to check liveness against).
 pub fn delete(root: &Path, run_id: &str) -> io::Result<()> {
-    let record = records(root)?
-        .into_iter()
-        .find(|record| record.run_id == run_id)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no such tuner run"))?;
+    let record = records(root)?.into_iter().find(|r| r.run_id == run_id);
+    let Some(record) = record else {
+        return delete_orphan(root, run_id);
+    };
     if record.terminal_outcome.is_none() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -756,6 +766,32 @@ pub fn delete(root: &Path, run_id: &str) -> io::Result<()> {
         },
     )?;
     match fs::remove_dir_all(&record.run_dir) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Delete a run directory that has no `launches.jsonl` record of its own
+/// (see [`delete`]). There is no journal entry to tombstone -- [`records`]
+/// already can't see this run -- so this only ever has to remove the
+/// directory itself.
+fn delete_orphan(root: &Path, run_id: &str) -> io::Result<()> {
+    if !safe_run_id(run_id) {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no such tuner run"));
+    }
+    let run_dir = root.join(run_id);
+    if !run_dir.join("manifest.json").is_file() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no such tuner run"));
+    }
+    if !run_dir.join("report.json").is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "run has no launches.jsonl record and no report.json yet -- can't confirm it's \
+             finished; if it's actually dead, remove its directory manually",
+        ));
+    }
+    match fs::remove_dir_all(&run_dir) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
@@ -1047,6 +1083,61 @@ mod tests {
             io::ErrorKind::NotFound
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_finished_orphan_run_removes_the_dir_with_no_journal_record() {
+        // A run directory with no `launches.jsonl` entry at all -- predates
+        // the journal, or was started by a raw `tuner_cli` invocation outside
+        // the server. Deletable once it looks finished (`report.json`).
+        let root = scratch("delete-orphan-finished");
+        let run_dir = root.join("orphan-done");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join("manifest.json"), "{}").unwrap();
+        fs::write(run_dir.join("report.json"), "{}").unwrap();
+
+        delete(&root, "orphan-done").unwrap();
+
+        assert!(!run_dir.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_unfinished_orphan_run_rejected() {
+        // A directory-only run with no `report.json` yet has no pid to check
+        // liveness against, so it's refused rather than guessed at.
+        let root = scratch("delete-orphan-unfinished");
+        let run_dir = root.join("orphan-busy");
+        fs::create_dir_all(&run_dir).unwrap();
+        fs::write(run_dir.join("manifest.json"), "{}").unwrap();
+
+        let err = delete(&root, "orphan-busy").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(run_dir.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn delete_orphan_rejects_path_traversal_run_ids() {
+        let root = scratch("delete-orphan-traversal");
+        fs::create_dir_all(&root).unwrap();
+        // A sibling directory that *does* look like a finished run, reached
+        // only by escaping `root` -- must never be reachable via `run_id`.
+        let escape_dir = root.parent().unwrap().join("delete-orphan-traversal-escape");
+        fs::create_dir_all(&escape_dir).unwrap();
+        fs::write(escape_dir.join("manifest.json"), "{}").unwrap();
+        fs::write(escape_dir.join("report.json"), "{}").unwrap();
+
+        for run_id in ["../delete-orphan-traversal-escape", "a/../../escape", ".."] {
+            assert_eq!(
+                delete(&root, run_id).unwrap_err().kind(),
+                io::ErrorKind::NotFound,
+                "run_id {run_id:?} should have been rejected"
+            );
+        }
+        assert!(escape_dir.exists());
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&escape_dir);
     }
 
     #[test]
