@@ -30,17 +30,18 @@ const resolved: RunPlan = {
   ],
   space: {
     schema_id: "strategy",
-    families: ["mcts", "rave"],
-    excluded_families: ["negamax"],
+    algorithms: ["mcts", "flat_mc"],
+    residual_categoricals: { algorithm: ["mcts", "flat_mc"], select: ["ucb1", "rave"] },
+    constraints: [{ set: { select: { choices: ["ucb1", "rave"] } } }],
     parameters: [
       {
-        name: "family",
+        name: "select",
         kind: "categorical",
         bounds: null,
-        choices: ["mcts", "rave"],
-        default: "mcts",
+        choices: ["ucb1", "rave"],
+        default: "ucb1",
         constant_value: null,
-        active_when: null,
+        active_when: "algorithm in ['mcts']",
       },
     ],
   },
@@ -75,8 +76,8 @@ describe("summarizeRunPlan", () => {
     expect(s.resolved).toBe(true);
     const def = s.opponents.find((o) => o.id === "schema-default");
     expect(def?.config).toBe('{"family":"rave"}');
-    expect(s.families).toEqual(["mcts", "rave"]);
-    expect(s.excludedFamilies).toEqual(["negamax"]);
+    expect(s.algorithms).toEqual(["mcts", "flat_mc"]);
+    expect(s.narrowedVariants).toEqual([{ name: "select", values: ["ucb1", "rave"] }]);
     expect(s.effortKpis.map((k) => k.value)).toEqual([
       "1000 iters",
       "10000 iters",

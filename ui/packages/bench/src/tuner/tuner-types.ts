@@ -194,8 +194,13 @@ export interface RunPlanParameter {
 
 export interface RunPlanSpace {
   schema_id: string;
-  families: (string | number | boolean | null)[];
-  excluded_families: string[];
+  /** Residual domain of the root `algorithm` categorical after constraints. */
+  algorithms: (string | number | boolean | null)[];
+  /** Residual domain of every categorical / bool / constant axis, keyed by
+   * axis name (`select`, `simulate`, …) — a narrowed entry means a variant
+   * set was restricted for this run. */
+  residual_categoricals: Record<string, (string | number | boolean | null)[]>;
+  constraints: unknown[];
   parameters: RunPlanParameter[];
 }
 

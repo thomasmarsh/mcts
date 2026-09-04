@@ -57,17 +57,18 @@ const PLAN: RunPlan = {
   ],
   space: {
     schema_id: "strategy",
-    families: ["mcts", "rave"],
-    excluded_families: [],
+    algorithms: ["mcts", "flat_mc"],
+    residual_categoricals: { algorithm: ["mcts", "flat_mc"], select: ["ucb1", "rave"] },
+    constraints: [{ set: { select: { choices: ["ucb1", "rave"] } } }],
     parameters: [
       {
-        name: "family",
+        name: "select",
         kind: "categorical",
         bounds: null,
-        choices: ["mcts", "rave"],
-        default: "mcts",
+        choices: ["ucb1", "rave"],
+        default: "ucb1",
         constant_value: null,
-        active_when: null,
+        active_when: "algorithm in ['mcts']",
       },
     ],
   },
@@ -124,7 +125,9 @@ describe("LaunchForm — Run plan panel", () => {
     await vi.waitFor(() => expect(planRun).toHaveBeenCalled());
     const table = await screen.findByTestId("run-plan-opponents");
     expect(table).toHaveTextContent('{"family":"rave"}');
-    expect(screen.getByTestId("run-plan-families")).toHaveTextContent("mcts, rave");
+    const space = screen.getByTestId("run-plan-families");
+    expect(space).toHaveTextContent("algorithm: mcts, flat_mc");
+    expect(space).toHaveTextContent("variants: select ∈ [ucb1, rave]");
     expect(screen.getByTestId("run-plan-budgets")).toHaveTextContent("32 pairs");
   });
 

@@ -14,9 +14,11 @@ export interface RunPlanSummary {
   gameKind: string | null;
   objectiveId: string | null;
   opponents: RunPlanOpponent[];
-  /** The effective `family` choice set after exclusions / overrides. */
-  families: string[];
-  excludedFamilies: string[];
+  /** Residual domain of the root `algorithm` categorical after constraints. */
+  algorithms: string[];
+  /** Categorical axes (`select`, `simulate`, …) whose domain was narrowed for
+   * this run, as `name → residual values`. Axes left at full width are omitted. */
+  narrowedVariants: { name: string; values: string[] }[];
   parameters: RunPlanParameter[];
   gameConfig: string | null;
   gameConfigIsOverride: boolean;
@@ -31,8 +33,8 @@ const EMPTY: RunPlanSummary = {
   gameKind: null,
   objectiveId: null,
   opponents: [],
-  families: [],
-  excludedFamilies: [],
+  algorithms: [],
+  narrowedVariants: [],
   parameters: [],
   gameConfig: null,
   gameConfigIsOverride: false,
@@ -40,6 +42,22 @@ const EMPTY: RunPlanSummary = {
   effortKpis: [],
   budgetKpis: [],
 };
+
+/** A `set` constraint that pins a non-`algorithm` categorical axis to a
+ * `choices` subset is exactly the "this run narrows a variant set" signal. */
+function narrowedVariants(constraints: unknown[]): { name: string; values: string[] }[] {
+  const out: { name: string; values: string[] }[] = [];
+  for (const entry of constraints) {
+    const set = (entry as { set?: Record<string, unknown> } | null)?.set;
+    if (!set || typeof set !== "object") continue;
+    for (const [axis, spec] of Object.entries(set)) {
+      if (axis === "algorithm") continue;
+      const choices = (spec as { choices?: unknown } | null)?.choices;
+      if (Array.isArray(choices)) out.push({ name: axis, values: choices.map((c) => String(c)) });
+    }
+  }
+  return out;
+}
 
 function effort(value: { kind: string; value: number } | undefined): string {
   if (!value) return "default";
@@ -55,8 +73,8 @@ export function summarizeRunPlan(plan: RunPlan | undefined): RunPlanSummary {
     gameKind: plan.game_kind ?? null,
     objectiveId: plan.objective_id ?? null,
     opponents: plan.opponents ?? [],
-    families: (plan.space?.families ?? []).map((f) => String(f)),
-    excludedFamilies: plan.space?.excluded_families ?? [],
+    algorithms: (plan.space?.algorithms ?? []).map((a) => String(a)),
+    narrowedVariants: narrowedVariants(plan.space?.constraints ?? []),
     parameters: plan.space?.parameters ?? [],
     gameConfig: plan.game_config ?? null,
     gameConfigIsOverride: plan.game_config_is_override ?? false,

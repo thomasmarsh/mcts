@@ -611,11 +611,15 @@ export const LaunchForm: Component<{
 
           <h5>Tuning space</h5>
           <p class="tuner-launch-hint" data-testid="run-plan-families">
-            families: {runPlan().families.join(", ") || "—"}
-            <Show when={runPlan().excludedFamilies.length > 0}>
-              {" "}
-              (excluded: {runPlan().excludedFamilies.join(", ")})
-            </Show>
+            algorithm: {runPlan().algorithms.join(", ") || "—"}
+            <For each={runPlan().narrowedVariants}>
+              {(v) => (
+                <>
+                  <br />
+                  variants: {v.name} ∈ [{v.values.join(", ")}]
+                </>
+              )}
+            </For>
           </p>
           <ul class="tuner-run-plan-params">
             <For each={runPlan().parameters}>

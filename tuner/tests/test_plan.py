@@ -56,7 +56,6 @@ def test_space_reflects_constraints(tmp_path: Path) -> None:
     # narrowing, which the plan then reports as the residual `family` domain.
     options = _options(tmp_path, exclude_family=("d", "e", "f", "g", "h"))
     plan = plan_launch(options, target=FakeTarget())
-    assert plan["space"]["families"] == ["a", "b", "c"]
     assert plan["space"]["residual_categoricals"]["family"] == ["a", "b", "c"]
     assert plan["space"]["constraints"] == [{"set": {"family": {"choices": ["a", "b", "c"]}}}]
     family = next(p for p in plan["space"]["parameters"] if p["name"] == "family")

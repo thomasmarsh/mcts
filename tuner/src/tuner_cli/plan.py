@@ -155,7 +155,6 @@ def _space_summary(schema: TuningSchema, constraints: Constraints) -> JsonObject
     return {
         "schema_id": constrained.id,
         "algorithms": _residual_domain(constrained, "algorithm"),
-        "families": _residual_domain(constrained, "family"),
         "residual_categoricals": {
             parameter.name: _domain_of(parameter)
             for parameter in constrained.parameters
