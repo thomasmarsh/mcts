@@ -30,6 +30,10 @@ impl Default for Ucb1 {
 }
 
 impl<G: Game> SelectPolicy<G> for Ucb1 {
+    fn label(&self) -> String {
+        "ucb1".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

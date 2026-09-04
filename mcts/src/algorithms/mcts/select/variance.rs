@@ -75,6 +75,10 @@ pub(crate) fn ucb1_tuned(
 }
 
 impl<G: Game> SelectPolicy<G> for Ucb1Tuned {
+    fn label(&self) -> String {
+        "ucb1_tuned".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 
@@ -160,6 +164,10 @@ pub(crate) fn ucb_v(c: f64, exploit: f64, variance: f64, ln_n: f64, n: f64) -> f
 }
 
 impl<G: Game> SelectPolicy<G> for UcbV {
+    fn label(&self) -> String {
+        "ucb_v".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 
@@ -278,6 +286,10 @@ impl KlUcb {
 }
 
 impl<G: Game> SelectPolicy<G> for KlUcb {
+    fn label(&self) -> String {
+        "kl_ucb".into()
+    }
+
     type Score = f64;
     type Aux = (f64, f64); // (ln_n, ln_ln_n)
 

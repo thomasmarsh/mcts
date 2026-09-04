@@ -178,6 +178,15 @@ pub trait SelectPolicy<G: Game>: Sized + Clone + Sync + Send + Default {
     fn requirements(&self) -> config::Requirements {
         config::Requirements::from_backprop_flags(self.backprop_flags())
     }
+
+    /// Short, stable identifier for this policy, used to compose a
+    /// `SearchConfig::name` from its four axes (see the `Compose` doc
+    /// comment). Hand-written per impl (`"ucb1"`, `"uct_pn"`, ...); wrapper
+    /// policies fold in their inner label (`"eps_greedy(ucb1)"`). Takes
+    /// `&self` so it stays object-safe -- `DynSelect` forwards to its box.
+    fn label(&self) -> String {
+        "select".into()
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -269,6 +278,10 @@ where
     /// `simulate::EpsilonGreedy::requirements`'s doc comment for why.
     fn requirements(&self) -> config::Requirements {
         self.inner.requirements()
+    }
+
+    fn label(&self) -> String {
+        format!("eps_greedy({})", self.inner.label())
     }
 }
 

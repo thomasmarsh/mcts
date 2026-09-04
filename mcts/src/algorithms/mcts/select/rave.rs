@@ -194,6 +194,10 @@ impl Rave {
 }
 
 impl<G: Game> SelectPolicy<G> for Rave {
+    fn label(&self) -> String {
+        "rave".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

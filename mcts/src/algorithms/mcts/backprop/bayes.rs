@@ -274,6 +274,10 @@ impl BayesGaussian {
 }
 
 impl BackpropPolicy for BayesGaussian {
+    fn label(&self) -> String {
+        "bayes_gaussian".into()
+    }
+
     fn provides_posterior(&self) -> bool {
         true
     }
@@ -353,6 +357,10 @@ impl BayesNumeric {
 }
 
 impl BackpropPolicy for BayesNumeric {
+    fn label(&self) -> String {
+        "bayes_numeric".into()
+    }
+
     fn provides_posterior(&self) -> bool {
         true
     }

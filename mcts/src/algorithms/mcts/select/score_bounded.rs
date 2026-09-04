@@ -63,6 +63,10 @@ impl Default for ScoreBoundedUct {
 }
 
 impl<G: Game> SelectPolicy<G> for ScoreBoundedUct {
+    fn label(&self) -> String {
+        "score_bounded_uct".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

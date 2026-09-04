@@ -453,6 +453,7 @@ trait ErasedSimulatePolicy<G: Game>: Send + Sync {
         rng: &mut SmallRng,
     ) -> Trial<G>;
     fn backprop_flags(&self) -> BackpropFlags;
+    fn label(&self) -> String;
     fn clone_box(&self) -> Box<dyn ErasedSimulatePolicy<G>>;
 }
 
@@ -474,6 +475,10 @@ where
 
     fn backprop_flags(&self) -> BackpropFlags {
         SimulatePolicy::backprop_flags(self)
+    }
+
+    fn label(&self) -> String {
+        SimulatePolicy::label(self)
     }
 
     fn clone_box(&self) -> Box<dyn ErasedSimulatePolicy<G>> {
@@ -521,6 +526,10 @@ impl<G: Game> SimulatePolicy<G> for DynSimulate<G> {
 
     fn backprop_flags(&self) -> BackpropFlags {
         self.0.backprop_flags()
+    }
+
+    fn label(&self) -> String {
+        self.0.label()
     }
 }
 

@@ -62,6 +62,10 @@ impl ProgressiveHistory {
 }
 
 impl<G: Game> SelectPolicy<G> for ProgressiveHistory {
+    fn label(&self) -> String {
+        "progressive_history".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

@@ -236,6 +236,10 @@ impl<M: MoveEncoding> DruidHeuristic<M> {
 }
 
 impl<M: MoveEncoding> SimulatePolicy<DruidGame<M>> for DruidHeuristic<M> {
+    fn label(&self) -> String {
+        "druid_heuristic".into()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
@@ -281,8 +285,4 @@ impl<M: MoveEncoding> Strategy<DruidGame<M>> for RaveDecisiveHeuristic<M> {
     >;
     type Backprop = backprop::Classic;
     type FinalAction = select::RobustChild;
-
-    fn friendly_name() -> String {
-        "rave+decisive+druid_heuristic".into()
-    }
 }

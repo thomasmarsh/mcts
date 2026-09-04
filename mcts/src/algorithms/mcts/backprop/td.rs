@@ -67,6 +67,10 @@ impl TdBackprop {
 }
 
 impl BackpropPolicy for TdBackprop {
+    fn label(&self) -> String {
+        "td".into()
+    }
+
     fn td_lambda(&self) -> Option<(f64, bool)> {
         // lambda == 1 is exactly the mean backup; return None so `update`
         // takes the untouched `Classic` path and stays bit-identical.

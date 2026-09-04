@@ -338,10 +338,6 @@ pub trait Strategy<G: Game>: Clone + Sync + Send + Default {
     type Backprop: backprop::BackpropPolicy;
     type FinalAction: select::SelectPolicy<G>;
 
-    fn friendly_name() -> String {
-        "unknown".into()
-    }
-
     // Override new to provide strategy specific defaults
     fn config() -> SearchConfig<G, Self> {
         SearchConfig::default()
@@ -423,6 +419,12 @@ where
     pub rng: SmallRng,
     pub verbose: bool,
     pub name: String,
+
+    /// `true` while `name` is still the value composed from the four axes'
+    /// `label()`s (see `strategy::Compose`). The axis setters (`.select()`
+    /// etc.) recompute `name` only while this holds; an explicit `.name(..)`
+    /// call clears it and freezes the name.
+    pub(crate) name_is_auto: bool,
 
     /// Number of independent trees to search in parallel ("root
     /// parallelism"): each thread runs its own full `TreeSearch` to
@@ -622,17 +624,67 @@ pub enum IsmctsMode {
     MultiTree,
 }
 
+/// Composes a search's `name` from its four axes' `label()`s, in the format
+/// documented on `strategy::Compose`:
+///
+/// - always `mcts[<select>]`;
+/// - `+<simulate>` appended when the simulate label isn't `"uniform"`;
+/// - switching to `/`-separated positional form
+///   `mcts[<select>/<simulate>/<backprop>]` once `backprop` or
+///   `final_action` is non-default, with `/<final_action>` appended when the
+///   final-action label isn't `"robust_child"`.
+pub(crate) fn compose_search_name<G, Sel, Sim, Bp, FA>(
+    select: &Sel,
+    simulate: &Sim,
+    backprop: &Bp,
+    final_action: &FA,
+) -> String
+where
+    G: Game,
+    Sel: select::SelectPolicy<G>,
+    Sim: simulate::SimulatePolicy<G>,
+    Bp: backprop::BackpropPolicy,
+    FA: select::SelectPolicy<G>,
+{
+    let sel = select.label();
+    let sim = simulate.label();
+    let bp = backprop.label();
+    let fa = final_action.label();
+
+    if bp == "classic" && fa == "robust_child" {
+        if sim == "uniform" {
+            format!("mcts[{sel}]")
+        } else {
+            format!("mcts[{sel}+{sim}]")
+        }
+    } else if fa == "robust_child" {
+        format!("mcts[{sel}/{sim}/{bp}]")
+    } else {
+        format!("mcts[{sel}/{sim}/{bp}/{fa}]")
+    }
+}
+
 impl<G, S> Default for SearchConfig<G, S>
 where
     G: Game,
     S: Strategy<G> + Default,
 {
     fn default() -> Self {
+        let select: S::Select = Default::default();
+        let simulate: S::Simulate = Default::default();
+        let backprop: S::Backprop = Default::default();
+        let final_action: S::FinalAction = Default::default();
+        let name = compose_search_name::<G, _, _, _, _>(
+            &select,
+            &simulate,
+            &backprop,
+            &final_action,
+        );
         Self {
-            select: Default::default(),
-            simulate: Default::default(),
-            backprop: Default::default(),
-            final_action: Default::default(),
+            select,
+            simulate,
+            backprop,
+            final_action,
             q_init: QInit::default(),
             expand_threshold: 1,
             max_playout_depth: usize::MAX,
@@ -647,7 +699,8 @@ where
             solver_loss_threshold: 0,
             rng: SmallRng::from_entropy(),
             verbose: false,
-            name: format!("mcts[{}]", S::friendly_name()),
+            name,
+            name_is_auto: true,
             num_threads: 1,
             determinize_root: false,
             num_rollouts_per_leaf: 1,
@@ -921,23 +974,44 @@ where
         Self::default()
     }
 
+    /// The `name` composed from this config's four axes -- see
+    /// `compose_search_name`.
+    fn auto_name(&self) -> String {
+        compose_search_name::<G, _, _, _, _>(
+            &self.select,
+            &self.simulate,
+            &self.backprop,
+            &self.final_action,
+        )
+    }
+
+    fn refresh_auto_name(&mut self) {
+        if self.name_is_auto {
+            self.name = self.auto_name();
+        }
+    }
+
     pub fn select(mut self, select: S::Select) -> Self {
         self.select = select;
+        self.refresh_auto_name();
         self
     }
 
     pub fn simulate(mut self, simulate: S::Simulate) -> Self {
         self.simulate = simulate;
+        self.refresh_auto_name();
         self
     }
 
     pub fn backprop(mut self, backprop: S::Backprop) -> Self {
         self.backprop = backprop;
+        self.refresh_auto_name();
         self
     }
 
     pub fn final_action(mut self, final_action: S::FinalAction) -> Self {
         self.final_action = final_action;
+        self.refresh_auto_name();
         self
     }
 
@@ -1013,6 +1087,7 @@ where
 
     pub fn name(mut self, name: &str) -> Self {
         self.name = name.to_string();
+        self.name_is_auto = false;
         self
     }
 
@@ -1485,5 +1560,57 @@ mod search_config_validate_tests {
             SimulatePolicy::<ThreePlayerGame>::requirements(&inner).max_players,
             Some(2)
         );
+    }
+
+    #[test]
+    fn composed_name_is_built_from_the_four_axis_labels() {
+        // Plain UCT: simulate/backprop/final_action all at default -> bare select.
+        assert_eq!(
+            SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().name,
+            "mcts[ucb1]"
+        );
+
+        // Non-default simulate, wrapper folds its inner label in.
+        type Ucb1EgMast =
+            strategy::Compose<select::Ucb1, simulate::EpsilonGreedy<ThreePlayerGame, simulate::Mast>>;
+        assert_eq!(
+            SearchConfig::<ThreePlayerGame, Ucb1EgMast>::default().name,
+            "mcts[ucb1+eps_greedy(mast)]"
+        );
+
+        // Non-default backprop switches to the positional form.
+        type MentsSoftmax = strategy::Compose<
+            select::Ments,
+            simulate::Uniform,
+            backprop::SoftmaxBackprop,
+        >;
+        assert_eq!(
+            SearchConfig::<ThreePlayerGame, MentsSoftmax>::default().name,
+            "mcts[ments/uniform/softmax]"
+        );
+
+        // Non-default final_action is appended.
+        type Ucb1MaxAvg = strategy::Compose<
+            select::Ucb1,
+            simulate::Uniform,
+            backprop::Classic,
+            select::MaxAvgScore,
+        >;
+        assert_eq!(
+            SearchConfig::<ThreePlayerGame, Ucb1MaxAvg>::default().name,
+            "mcts[ucb1/uniform/classic/max_avg_score]"
+        );
+    }
+
+    #[test]
+    fn axis_setters_refresh_the_auto_name_but_an_explicit_name_freezes_it() {
+        let refreshed = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+            .simulate(simulate::Uniform);
+        assert_eq!(refreshed.name, "mcts[ucb1]");
+
+        let frozen = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+            .name("my-search")
+            .simulate(simulate::Uniform);
+        assert_eq!(frozen.name, "my-search");
     }
 }

@@ -41,6 +41,10 @@ impl SoftmaxBackprop {
 }
 
 impl BackpropPolicy for SoftmaxBackprop {
+    fn label(&self) -> String {
+        "softmax".into()
+    }
+
     fn provides_softmax_value(&self) -> bool {
         true
     }

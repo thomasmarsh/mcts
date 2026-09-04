@@ -52,6 +52,10 @@ impl Default for UctPn {
 }
 
 impl<G: Game> SelectPolicy<G> for UctPn {
+    fn label(&self) -> String {
+        "uct_pn".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

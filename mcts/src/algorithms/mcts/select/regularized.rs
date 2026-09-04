@@ -75,6 +75,10 @@ pub(crate) fn e2w_weights(logits: &[f64], epsilon: f64) -> Vec<f64> {
 }
 
 impl<G: Game> SelectPolicy<G> for Ments {
+    fn label(&self) -> String {
+        "ments".into()
+    }
+
     type Score = f64;
     type Aux = ();
 
@@ -281,6 +285,10 @@ impl GrillAct {
 }
 
 impl<G: Game> SelectPolicy<G> for GrillAct {
+    fn label(&self) -> String {
+        "grill_act".into()
+    }
+
     type Score = f64;
     type Aux = ();
 

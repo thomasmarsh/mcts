@@ -139,6 +139,10 @@ where
     type Score = f64;
     type Aux = ();
 
+    fn label(&self) -> String {
+        "quasi_best_first".into()
+    }
+
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize {
         let current = ctx.index.get(ctx.stack.current_id());
         let available = current.children();

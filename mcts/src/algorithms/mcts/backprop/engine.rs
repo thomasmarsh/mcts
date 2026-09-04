@@ -101,6 +101,13 @@ pub trait BackpropPolicy: Clone + Sync + Send + Default {
         None
     }
 
+    /// Short, stable identifier for this policy -- see
+    /// `select::SelectPolicy::label`. Used to compose a `SearchConfig::name`
+    /// from its four axes.
+    fn label(&self) -> String {
+        "backprop".into()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn update<G>(
         &self,

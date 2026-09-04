@@ -309,6 +309,7 @@ pub fn requirements_of<G: Game + 'static>(spec: &SelectSpec) -> Requirements {
 trait ErasedSelectPolicy<G: Game>: Send + Sync {
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, rng: &mut SmallRng) -> usize;
     fn backprop_flags(&self) -> BackpropFlags;
+    fn label(&self) -> String;
     fn clone_box(&self) -> Box<dyn ErasedSelectPolicy<G>>;
 }
 
@@ -323,6 +324,10 @@ where
 
     fn backprop_flags(&self) -> BackpropFlags {
         SelectPolicy::backprop_flags(self)
+    }
+
+    fn label(&self) -> String {
+        SelectPolicy::label(self)
     }
 
     fn clone_box(&self) -> Box<dyn ErasedSelectPolicy<G>> {
@@ -387,6 +392,10 @@ impl<G: Game> SelectPolicy<G> for DynSelect<G> {
 
     fn backprop_flags(&self) -> BackpropFlags {
         self.0.backprop_flags()
+    }
+
+    fn label(&self) -> String {
+        self.0.label()
     }
 }
 

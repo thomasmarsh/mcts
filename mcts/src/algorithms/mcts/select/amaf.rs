@@ -45,6 +45,10 @@ impl Default for Amaf {
 }
 
 impl<G: Game> SelectPolicy<G> for Amaf {
+    fn label(&self) -> String {
+        "amaf".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

@@ -58,6 +58,10 @@ impl PowerMeanBackprop {
 }
 
 impl BackpropPolicy for PowerMeanBackprop {
+    fn label(&self) -> String {
+        "power_mean".into()
+    }
+
     fn recompute_depth(&self) -> u32 {
         // p == 1, alpha == 0 is exactly the arithmetic mean; skip the pass
         // entirely so the strategy is bit-identical to `Classic` there (and

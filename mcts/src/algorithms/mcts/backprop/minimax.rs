@@ -37,6 +37,10 @@ impl MinimaxBackprop {
 }
 
 impl BackpropPolicy for MinimaxBackprop {
+    fn label(&self) -> String {
+        "minimax".into()
+    }
+
     fn recompute_depth(&self) -> u32 {
         self.depth
     }

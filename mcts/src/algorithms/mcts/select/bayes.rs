@@ -34,6 +34,10 @@ impl BayesUct1 {
 }
 
 impl<G: Game> SelectPolicy<G> for BayesUct1 {
+    fn label(&self) -> String {
+        "bayes_uct1".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 
@@ -99,6 +103,10 @@ impl BayesUct2 {
 }
 
 impl<G: Game> SelectPolicy<G> for BayesUct2 {
+    fn label(&self) -> String {
+        "bayes_uct2".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 

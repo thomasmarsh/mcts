@@ -152,6 +152,13 @@ where
     fn requirements(&self) -> config::Requirements {
         config::Requirements::from_backprop_flags(self.backprop_flags())
     }
+
+    /// Short, stable identifier for this policy -- see
+    /// `select::SelectPolicy::label`. Wrapper policies fold in their inner
+    /// label; `DynSimulate` forwards to its box.
+    fn label(&self) -> String {
+        "simulate".into()
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -160,6 +167,10 @@ where
 pub struct Uniform;
 
 impl<G: Game> SimulatePolicy<G> for Uniform {
+    fn label(&self) -> String {
+        "uniform".into()
+    }
+
     /// Overrides the default `playout` (rather than just `select_move`) so
     /// each ply can skip materializing the full `available` action list via
     /// `G::generate_actions` -- `Uniform::select_move` would just pick
@@ -299,6 +310,10 @@ where
     G: Game,
     E: Evaluator<G> + Default,
 {
+    fn label(&self) -> String {
+        "minimax_rollout".into()
+    }
+
     fn playout(
         &mut self,
         mut state: G::S,
@@ -440,6 +455,10 @@ where
     E: Evaluator<G> + Default + Clone,
     S: SimulatePolicy<G> + Default,
 {
+    fn label(&self) -> String {
+        format!("evaluated_cutoff({})", self.inner.label())
+    }
+
     fn playout(
         &mut self,
         state: G::S,
@@ -540,6 +559,10 @@ where
     G: Game,
     S: SimulatePolicy<G>,
 {
+    fn label(&self) -> String {
+        format!("eps_greedy({})", self.inner.label())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
@@ -760,6 +783,10 @@ where
     G: Game,
     S: SimulatePolicy<G> + Default,
 {
+    fn label(&self) -> String {
+        format!("dm({})", self.inner.label())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,
@@ -831,6 +858,10 @@ impl<G> SimulatePolicy<G> for Mast
 where
     G: Game,
 {
+    fn label(&self) -> String {
+        "mast".into()
+    }
+
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(GLOBAL)
     }
@@ -899,6 +930,10 @@ impl<G> SimulatePolicy<G> for Nst
 where
     G: Game,
 {
+    fn label(&self) -> String {
+        "nst".into()
+    }
+
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(GLOBAL | NST)
     }
@@ -989,6 +1024,10 @@ where
     G: Game,
     S: SimulatePolicy<G> + Default,
 {
+    fn label(&self) -> String {
+        "lgr".into()
+    }
+
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(LGR) | self.inner.backprop_flags()
     }
@@ -1103,6 +1142,10 @@ where
     G: Game,
     S: SimulatePolicy<G> + Default,
 {
+    fn label(&self) -> String {
+        "lgr2".into()
+    }
+
     fn backprop_flags(&self) -> BackpropFlags {
         BackpropFlags(LGR2) | self.inner.backprop_flags()
     }
@@ -1171,6 +1214,10 @@ where
     G: Game,
     S: Strategy<G>,
 {
+    fn label(&self) -> String {
+        "meta_mcts".into()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn select_move<'a>(
         &mut self,

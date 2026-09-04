@@ -15,6 +15,10 @@ use rand::rngs::SmallRng;
 pub struct RobustChild;
 
 impl<G: Game> SelectPolicy<G> for RobustChild {
+    fn label(&self) -> String {
+        "robust_child".into()
+    }
+
     type Score = (i64, f64);
     type Aux = ();
 
@@ -51,6 +55,10 @@ impl<G: Game> SelectPolicy<G> for RobustChild {
 pub struct MaxAvgScore;
 
 impl<G: Game> SelectPolicy<G> for MaxAvgScore {
+    fn label(&self) -> String {
+        "max_avg_score".into()
+    }
+
     type Score = f64;
     type Aux = ();
 
@@ -132,6 +140,10 @@ impl MaxRobustChild {
 }
 
 impl<G: Game> SelectPolicy<G> for MaxRobustChild {
+    fn label(&self) -> String {
+        "max_robust_child".into()
+    }
+
     type Score = (bool, f64);
     type Aux = Option<usize>;
 
@@ -180,6 +192,10 @@ impl Default for SecureChild {
 }
 
 impl<G: Game> SelectPolicy<G> for SecureChild {
+    fn label(&self) -> String {
+        "secure_child".into()
+    }
+
     type Score = f64;
     type Aux = ();
 
@@ -215,6 +231,10 @@ impl<G: Game> SelectPolicy<G> for SecureChild {
 pub struct ThompsonSampling;
 
 impl<G: Game> SelectPolicy<G> for ThompsonSampling {
+    fn label(&self) -> String {
+        "thompson_sampling".into()
+    }
+
     type Score = f64;
     type Aux = ();
 

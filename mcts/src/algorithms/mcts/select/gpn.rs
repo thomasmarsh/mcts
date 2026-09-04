@@ -119,6 +119,10 @@ pub(crate) fn pnsum(pn: u32, sum_f: u64) -> f64 {
 }
 
 impl<G: Game> SelectPolicy<G> for GpnUct {
+    fn label(&self) -> String {
+        "gpn_uct".into()
+    }
+
     type Score = f64;
     type Aux = f64;
 
