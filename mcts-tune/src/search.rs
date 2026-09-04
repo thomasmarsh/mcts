@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use game_host::{
     Analysis, AnalysisAction, HostError, SearchActionReport, SearchGraphMode, SearchReport,
     SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
@@ -293,36 +291,6 @@ fn mcts_settings(
     })
 }
 
-/// Rewrites a pre-cutover `{ "family": "..." }` params object with no
-/// `algorithm` key into its `algorithm` + axis categoricals (the family's
-/// own scalar params are left untouched), so `dispatch::to_algorithm_spec`
-/// can resolve it. New runs always carry `algorithm` and take the borrowed
-/// fast path. This is the sole remaining consumer of
-/// `dispatch::legacy_family_to_axes`, and exists only so baseline/opponent
-/// configs and on-disk `evidence.jsonl` records that still use the old
-/// `family` key keep resolving.
-fn resolve_axis_params(params: &Value) -> Result<Cow<'_, Value>, HostError> {
-    let Some(obj) = params.as_object() else {
-        return Ok(Cow::Borrowed(params));
-    };
-    if obj.contains_key("algorithm") {
-        return Ok(Cow::Borrowed(params));
-    }
-    let Some(family) = obj.get("family").and_then(Value::as_str) else {
-        // Neither key: let `to_algorithm_spec` raise the missing-`algorithm`
-        // error itself.
-        return Ok(Cow::Borrowed(params));
-    };
-    let axes = dispatch::legacy_family_to_axes(family)
-        .ok_or_else(|| HostError::bad_request(format!("unknown family: {family}")))?;
-    let mut merged = obj.clone();
-    merged.remove("family");
-    for (key, value) in axes.as_object().expect("legacy_family_to_axes returns an object") {
-        merged.insert(key.clone(), value.clone());
-    }
-    Ok(Cow::Owned(Value::Object(merged)))
-}
-
 /// Derives `SearchSettings`'s `use_transpositions`/`reuse_tree`/
 /// `graph_search`/`transposition_keying` from a requested `mcgs` flag and
 /// whether the game supports transpositions at all -- the one place "`mcgs`
@@ -396,16 +364,12 @@ pub fn build_search<G: Game + 'static>(
 /// into a runnable `Box<dyn Search<G>>`. An `mcts` configuration goes through
 /// `config_ir::build_search` (the type-erased `Dyn*` axis path);
 /// `random`/`flat_mc`/`negamax` go through `direct_search::build_direct`.
-/// A pre-cutover `{ "family": "..." }` object is first rewritten by
-/// `resolve_axis_params`.
 pub(crate) fn make_candidate<G: Game + 'static>(
     params: &Value,
     seed: u64,
     use_transpositions: bool,
     budget: &SearchBudget,
 ) -> Result<Box<dyn Search<G = G>>, HostError> {
-    let params = resolve_axis_params(params)?;
-    let params: &Value = &params;
     match dispatch::to_algorithm_spec(params)? {
         AlgorithmSpec::Mcts(spec) => {
             let settings = mcts_settings(params, seed, use_transpositions, budget)?;

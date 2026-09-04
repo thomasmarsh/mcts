@@ -7,13 +7,6 @@
 //! for `mcts`, or the parameter set one of the three standalone `Search`
 //! impls needs. It is a `match` per axis rather than a row per named
 //! composition; `search.rs` and `tuner_info.rs` are the callers.
-//!
-//! [`legacy_family_to_axes`] is the one backward-compatibility seam: it maps
-//! every pre-cutover `family` name onto its `algorithm` + axis categoricals
-//! so `evidence.jsonl` replay and older baseline/opponent configs still
-//! resolve. `algorithm_native_specs_match_family_goldens` pins every such
-//! mapping to the exact `SearchSpec` that `family` row produced before the
-//! catalog was retired.
 
 use std::str::FromStr;
 
@@ -347,6 +340,11 @@ pub(crate) fn read_q_init(cfg: &Value) -> Result<QInit, HostError> {
 
 /// Resolves the top-level `algorithm` categorical.
 pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError> {
+    if cfg.get("algorithm").is_none() && cfg.get("family").is_some() {
+        return Err(HostError::bad_request(
+            "`family` is no longer accepted; specify `algorithm` plus the policy-axis categoricals",
+        ));
+    }
     match req_str(cfg, "algorithm")? {
         "mcts" => Ok(AlgorithmSpec::Mcts(to_search_spec(cfg)?)),
         "random" => Ok(AlgorithmSpec::Random),
@@ -396,99 +394,3 @@ pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError>
     }
 }
 
-/// Rewrites a pre-cutover `{ "family": "..." }` config into the equivalent
-/// `algorithm` + axis categoricals, for replay/resume of `evidence.jsonl`
-/// and objective snapshots written before the catalog was retired. New runs
-/// never take this path; the Python + wire migration owns translating
-/// on-disk history, and this shim is removed once no run predates the
-/// cutover.
-pub(crate) fn legacy_family_to_axes(family: &str) -> Option<Value> {
-    use serde_json::json;
-    let axes = match family {
-        "random" => json!({ "algorithm": "random" }),
-        "flat_mc" => json!({ "algorithm": "flat_mc" }),
-        "negamax" => json!({ "algorithm": "negamax" }),
-        "ucb1" => json!({ "select": "ucb1", "simulate": "uniform" }),
-        "ucb1_tuned" => json!({ "select": "ucb1_tuned", "simulate": "uniform" }),
-        "ucb_v" => json!({ "select": "ucb_v", "simulate": "uniform" }),
-        "kl_ucb" => json!({ "select": "kl_ucb", "simulate": "uniform" }),
-        "grill_act" => json!({ "select": "grill_act", "simulate": "uniform" }),
-        // `ucb1_max_robust`/`meta_mcts` hard-fixed their final action rather
-        // than reading the `final_action` param; the axis-native form makes
-        // that an explicit categorical.
-        "ucb1_max_robust" => json!({
-            "select": "ucb1", "simulate": "uniform", "final_action": "max_robust_child",
-        }),
-        "meta_mcts" => json!({
-            "select": "ucb1", "simulate": "meta_mcts", "final_action": "max_avg",
-        }),
-        "ucb1_dm" => json!({
-            "select": "ucb1", "simulate": "decisive_move", "decisive_move_mode": "win",
-        }),
-        "ucb1_adm" => json!({
-            "select": "ucb1", "simulate": "decisive_move", "decisive_move_mode": "anti_decisive",
-        }),
-        "ucb1_tuned_dm" => json!({
-            "select": "ucb1_tuned", "simulate": "decisive_move", "decisive_move_mode": "win",
-        }),
-        "ucb1_mast" => json!({
-            "select": "ucb1", "simulate": "mast", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_lgr" => json!({
-            "select": "ucb1", "simulate": "lgr", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_lgr2" => json!({
-            "select": "ucb1", "simulate": "lgr2", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_lgr2_mast" => json!({
-            "select": "ucb1", "simulate": "lgr2_mast", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_nst" => json!({
-            "select": "ucb1", "simulate": "nst", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_dm_nst" => json!({
-            "select": "ucb1", "simulate": "decisive_move_nst", "decisive_move_mode": "win",
-        }),
-        "ucb1_adm_nst" => json!({
-            "select": "ucb1", "simulate": "decisive_move_nst",
-            "decisive_move_mode": "anti_decisive",
-        }),
-        "ucb1_progressive_history" => {
-            json!({ "select": "progressive_history", "simulate": "uniform" })
-        }
-        "amaf" => json!({ "select": "amaf", "simulate": "uniform" }),
-        "amaf_mast" => json!({
-            "select": "amaf", "simulate": "mast", "simulate_epsilon_greedy": true,
-        }),
-        "ucb1_tuned_mast" => json!({ "select": "ucb1_tuned", "simulate": "mast" }),
-        "ucb1_tuned_dm_mast" => json!({
-            "select": "ucb1_tuned", "simulate": "decisive_move_mast",
-            "decisive_move_mode": "win",
-        }),
-        "rave" => json!({
-            "select": "rave", "simulate": "decisive_move_mast",
-            "decisive_move_mode": "win_loss",
-        }),
-        "ucb1_pn" => json!({ "select": "uct_pn", "simulate": "uniform" }),
-        "ucb1_pn_mast" => json!({
-            "select": "uct_pn", "simulate": "mast", "simulate_epsilon_greedy": true,
-        }),
-        "ments" => json!({ "select": "ments", "simulate": "uniform" }),
-        "score_bounded_uct" => json!({ "select": "score_bounded_uct", "simulate": "uniform" }),
-        "gpn" => json!({ "select": "gpn", "simulate": "uniform" }),
-        "bayes_uct1_gaussian" => json!({ "select": "bayes_uct1", "simulate": "uniform" }),
-        "bayes_uct2_numeric" => json!({ "select": "bayes_uct2", "simulate": "uniform" }),
-        "power_uct" => json!({
-            "select": "ucb1", "simulate": "uniform", "backprop": "power_mean",
-        }),
-        "td_uct" => json!({ "select": "ucb1", "simulate": "uniform", "backprop": "td" }),
-        _ => return None,
-    };
-    let mut axes = axes;
-    if axes.get("algorithm").is_none() {
-        axes.as_object_mut()
-            .unwrap()
-            .insert("algorithm".to_string(), Value::String("mcts".to_string()));
-    }
-    Some(axes)
-}

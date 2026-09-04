@@ -183,7 +183,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
             .unwrap()
             .as_nanos()
     ));
-    let params = json!({"family": "random", "q_init": "Infinity"});
+    let params = compose("random", json!({"q_init": "Infinity"}));
     let budget = SearchBudget {
         max_iterations: Some(1),
         ..Default::default()
@@ -260,9 +260,109 @@ fn baseline() -> Box<dyn Search<G = Nim>> {
     )
 }
 
+/// The axis-native categoricals for each named composition the round-trip
+/// and golden fixtures below exercise -- the expansion the retired `family`
+/// categorical used to perform. Test-only: production dispatch reads
+/// `algorithm` plus the policy axes straight off the params object.
+fn axis_native(name: &str) -> Value {
+    let axes = match name {
+        "random" => json!({"algorithm": "random"}),
+        "flat_mc" => json!({"algorithm": "flat_mc"}),
+        "negamax" => json!({"algorithm": "negamax"}),
+        "ucb1" => json!({"select": "ucb1", "simulate": "uniform"}),
+        "ucb1_tuned" => json!({"select": "ucb1_tuned", "simulate": "uniform"}),
+        "ucb_v" => json!({"select": "ucb_v", "simulate": "uniform"}),
+        "kl_ucb" => json!({"select": "kl_ucb", "simulate": "uniform"}),
+        "grill_act" => json!({"select": "grill_act", "simulate": "uniform"}),
+        "ucb1_max_robust" => {
+            json!({"select": "ucb1", "simulate": "uniform", "final_action": "max_robust_child"})
+        }
+        "meta_mcts" => {
+            json!({"select": "ucb1", "simulate": "meta_mcts", "final_action": "max_avg"})
+        }
+        "ucb1_dm" => {
+            json!({"select": "ucb1", "simulate": "decisive_move", "decisive_move_mode": "win"})
+        }
+        "ucb1_adm" => json!({
+            "select": "ucb1", "simulate": "decisive_move", "decisive_move_mode": "anti_decisive",
+        }),
+        "ucb1_tuned_dm" => json!({
+            "select": "ucb1_tuned", "simulate": "decisive_move", "decisive_move_mode": "win",
+        }),
+        "ucb1_mast" => {
+            json!({"select": "ucb1", "simulate": "mast", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_lgr" => {
+            json!({"select": "ucb1", "simulate": "lgr", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_lgr2" => {
+            json!({"select": "ucb1", "simulate": "lgr2", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_lgr2_mast" => {
+            json!({"select": "ucb1", "simulate": "lgr2_mast", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_nst" => {
+            json!({"select": "ucb1", "simulate": "nst", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_dm_nst" => json!({
+            "select": "ucb1", "simulate": "decisive_move_nst", "decisive_move_mode": "win",
+        }),
+        "ucb1_adm_nst" => json!({
+            "select": "ucb1", "simulate": "decisive_move_nst",
+            "decisive_move_mode": "anti_decisive",
+        }),
+        "ucb1_progressive_history" => {
+            json!({"select": "progressive_history", "simulate": "uniform"})
+        }
+        "amaf" => json!({"select": "amaf", "simulate": "uniform"}),
+        "amaf_mast" => {
+            json!({"select": "amaf", "simulate": "mast", "simulate_epsilon_greedy": true})
+        }
+        "ucb1_tuned_mast" => json!({"select": "ucb1_tuned", "simulate": "mast"}),
+        "ucb1_tuned_dm_mast" => json!({
+            "select": "ucb1_tuned", "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win",
+        }),
+        "rave" => json!({
+            "select": "rave", "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
+        }),
+        "ucb1_pn" => json!({"select": "uct_pn", "simulate": "uniform"}),
+        "ucb1_pn_mast" => {
+            json!({"select": "uct_pn", "simulate": "mast", "simulate_epsilon_greedy": true})
+        }
+        "ments" => json!({"select": "ments", "simulate": "uniform"}),
+        "score_bounded_uct" => json!({"select": "score_bounded_uct", "simulate": "uniform"}),
+        "gpn" => json!({"select": "gpn", "simulate": "uniform"}),
+        "bayes_uct1_gaussian" => json!({"select": "bayes_uct1", "simulate": "uniform"}),
+        "bayes_uct2_numeric" => json!({"select": "bayes_uct2", "simulate": "uniform"}),
+        "power_uct" => {
+            json!({"select": "ucb1", "simulate": "uniform", "backprop": "power_mean"})
+        }
+        "td_uct" => json!({"select": "ucb1", "simulate": "uniform", "backprop": "td"}),
+        other => panic!("no axis_native mapping for {other}"),
+    };
+    let mut axes = axes;
+    let obj = axes.as_object_mut().unwrap();
+    obj.entry("algorithm")
+        .or_insert_with(|| Value::String("mcts".to_string()));
+    axes
+}
+
+/// `axis_native(name)` with `extra`'s scalar parameters merged over it.
+fn compose(name: &str, extra: Value) -> Value {
+    let mut base = axis_native(name);
+    let obj = base.as_object_mut().unwrap();
+    if let Value::Object(extra) = extra {
+        for (key, value) in extra {
+            obj.insert(key, value);
+        }
+    }
+    base
+}
+
 fn rave_params() -> Value {
-    json!({
-        "family": "rave",
+    compose("rave", json!({
         "threshold": 700,
         "c": 0.3,
         "epsilon": 0.1,
@@ -271,28 +371,26 @@ fn rave_params() -> Value {
         "schedule": "threshold",
         "rave": 700,
         "rave_ucb": "tuned",
-    })
+    }))
 }
 
 fn pn_params() -> Value {
-    json!({
-        "family": "ucb1_pn",
+    compose("ucb1_pn", json!({
         "q_init": "Infinity",
         "c": 1.4,
         "c_pn": 1.0,
         "final_action": "robust_child",
         "solver_loss_threshold": 5,
         "contempt": "off",
-    })
+    }))
 }
 
 fn comparison_params() -> Value {
-    json!({
-        "family": "ucb1",
+    compose("ucb1", json!({
         "c": 1.4,
         "q_init": "Infinity",
         "final_action": "robust_child",
-    })
+    }))
 }
 
 #[test]
@@ -572,9 +670,9 @@ fn test_tune_eval_rejects_contempt_on_missing_contempt_factor() {
 }
 
 #[test]
-fn test_tune_eval_rejects_unknown_family() {
+fn test_tune_eval_rejects_unknown_select() {
     let mut params = rave_params();
-    params["family"] = json!("not_a_real_family");
+    params["select"] = json!("not_a_real_select");
     let err = strategy_tune_eval::<Nim>(
         &params,
         1,
@@ -589,8 +687,31 @@ fn test_tune_eval_rejects_unknown_family() {
         None,
         &mut |_| Ok(()),
     )
-    .expect_err("unknown family must be rejected");
-    assert!(err.message.contains("family"));
+    .expect_err("unknown select must be rejected");
+    assert!(err.message.contains("select"));
+}
+
+#[test]
+fn test_tune_eval_rejects_the_retired_family_key() {
+    let mut params = comparison_params();
+    params.as_object_mut().unwrap().remove("algorithm");
+    params["family"] = json!("ucb1");
+    let err = strategy_tune_eval::<Nim>(
+        &params,
+        1,
+        Some(0),
+        false,
+        SearchBudget::default(),
+        baseline,
+        <Nim as Game>::S::default(),
+        nim_trace_state_value,
+        nim_trace_move_value,
+        None,
+        None,
+        &mut |_| Ok(()),
+    )
+    .expect_err("a `family` params object must be rejected post-cutover");
+    assert!(err.message.contains("family"), "{}", err.message);
 }
 
 /// One hand-verified construction+round-trip test per new family arm,
@@ -621,20 +742,15 @@ fn assert_family_round_trips(mut params: Value) {
         None,
         &mut |_| Ok(()),
     )
-    .unwrap_or_else(|e| {
-        panic!(
-            "family {:?} should round-trip: {}",
-            params["family"], e.message
-        )
-    });
+    .unwrap_or_else(|e| panic!("{params} should round-trip: {}", e.message));
     assert!(outcome.wins + outcome.losses + outcome.draws == 2);
 }
 
 #[test]
 fn test_family_ucb1_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1", "c": 1.4, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1", json!({
+        "c": 1.4, "final_action": "robust_child",
+    })));
 }
 
 /// Unlike every other family exercised here, `random` resolves to
@@ -644,7 +760,7 @@ fn test_family_ucb1_round_trips() {
 /// family does, with no special-cased caller-side handling.
 #[test]
 fn test_family_random_round_trips() {
-    assert_family_round_trips(json!({"family": "random"}));
+    assert_family_round_trips(compose("random", json!({})));
 }
 
 /// Like `random`, `flat_mc` resolves to `FamilySpec::Direct`. This exercises
@@ -652,18 +768,18 @@ fn test_family_random_round_trips() {
 /// below covers the UCB1 branch `flat_mc_selection` also allows.
 #[test]
 fn test_family_flat_mc_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+    assert_family_round_trips(compose("flat_mc", json!({
+        "samples_per_move": 20, "max_rollout_depth": 50,
         "flat_mc_selection": "win_rate",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_flat_mc_ucb1_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+    assert_family_round_trips(compose("flat_mc", json!({
+        "samples_per_move": 20, "max_rollout_depth": 50,
         "flat_mc_selection": "ucb1", "c": 1.4,
-    }));
+    })));
 }
 
 /// Like `random`/`flat_mc`, `negamax` resolves to `FamilySpec::Direct`.
@@ -675,148 +791,148 @@ fn test_family_flat_mc_ucb1_round_trips() {
 /// `AGENTS.md`'s "keep `cargo test --lib` fast" rule.
 #[test]
 fn test_family_negamax_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "negamax", "max_depth": 3, "table_bits": 10,
+    assert_family_round_trips(compose("negamax", json!({
+        "max_depth": 3, "table_bits": 10,
         "negamax_replacement": "depth_preferred",
         "principal_variation_search": true, "history_heuristic": true,
         "singular_extension": true, "countermove_heuristic": true,
         "negamax_aspiration": "off",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_negamax_aspiration_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "negamax", "max_depth": 3, "table_bits": 10,
+    assert_family_round_trips(compose("negamax", json!({
+        "max_depth": 3, "table_bits": 10,
         "negamax_replacement": "two_tier",
         "principal_variation_search": true, "history_heuristic": true,
         "singular_extension": true, "countermove_heuristic": true,
         "negamax_aspiration": "on", "aspiration_window": 50,
-    }));
+    })));
 }
 
 #[test]
 fn test_family_ucb1_dm_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_dm", "c": 1.4, "final_action": "max_avg",
-    }));
+    assert_family_round_trips(compose("ucb1_dm", json!({
+        "c": 1.4, "final_action": "max_avg",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_adm_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_adm", "c": 1.4, "final_action": "max_avg",
-    }));
+    assert_family_round_trips(compose("ucb1_adm", json!({
+        "c": 1.4, "final_action": "max_avg",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_mast", json!({
+        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_lgr_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_lgr", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_lgr", json!({
+        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_lgr2_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_lgr2", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_lgr2", json!({
+        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_lgr2_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_lgr2_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_lgr2_mast", json!({
+        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_nst_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_nst", "c": 1.4, "epsilon": 0.2,
+    assert_family_round_trips(compose("ucb1_nst", json!({
+        "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_ucb1_progressive_history_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_progressive_history", "c": 1.4, "ph_weight": 0.5,
+    assert_family_round_trips(compose("ucb1_progressive_history", json!({
+        "c": 1.4, "ph_weight": 0.5,
         "final_action": "robust_child",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_ucb1_max_robust_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_max_robust", "c": 1.4,
-    }));
+    assert_family_round_trips(compose("ucb1_max_robust", json!({
+        "c": 1.4,
+    })));
 }
 
 #[test]
 fn test_family_amaf_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "amaf", "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
-    }));
+    assert_family_round_trips(compose("amaf", json!({
+        "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
+    })));
 }
 
 #[test]
 fn test_family_amaf_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "amaf_mast", "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
+    assert_family_round_trips(compose("amaf_mast", json!({
+        "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
         "final_action": "robust_child",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_ucb1_tuned_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_tuned", json!({
+        "c": 1.4, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_tuned_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_tuned_mast", json!({
+        "c": 1.4, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_tuned_dm_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_tuned_dm", "c": 1.4, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_tuned_dm", json!({
+        "c": 1.4, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_tuned_dm_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    }));
+    assert_family_round_trips(compose("ucb1_tuned_dm_mast", json!({
+        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+    })));
 }
 
 #[test]
 fn test_family_ucb1_dm_nst_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2,
+    assert_family_round_trips(compose("ucb1_dm_nst", json!({
+        "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
-    }));
+    })));
 }
 
 #[test]
 fn test_family_ucb1_adm_nst_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_adm_nst", "c": 1.4, "epsilon": 0.2,
+    assert_family_round_trips(compose("ucb1_adm_nst", json!({
+        "c": 1.4, "epsilon": 0.2,
         "nst_backoff_threshold": 3, "final_action": "robust_child",
-    }));
+    })));
 }
 
 // `meta_mcts`'s round trip is proven in `examples/tune-stress.rs` instead of here:
@@ -837,11 +953,11 @@ fn test_family_ucb1_pn_round_trips() {
 
 #[test]
 fn test_family_ucb1_pn_mast_round_trips() {
-    assert_family_round_trips(json!({
-        "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+    assert_family_round_trips(compose("ucb1_pn_mast", json!({
+        "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
         "final_action": "robust_child", "solver_loss_threshold": 5,
         "contempt": "on", "contempt_factor": -0.5,
-    }));
+    })));
 }
 
 
@@ -852,9 +968,9 @@ fn test_family_ucb1_pn_mast_round_trips() {
 /// candidate for one round.
 #[test]
 fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
-    let baseline_params = json!({
-        "family": "ucb1", "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
-    });
+    let baseline_params = compose("ucb1", json!({
+        "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
+    }));
     let outcome = strategy_tune_eval::<Nim>(
         &rave_params(),
         1,
@@ -876,7 +992,7 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
     assert_eq!(outcome.wins + outcome.losses + outcome.draws, 2);
 }
 
-/// `random` is an ordinary `family_catalog` row (a `DirectFamily`, built by
+/// `random` is a plain `fields.rs` row (a `DirectFamily`, built by
 /// `direct_search::build_direct` rather than `config_ir::build_search`, but
 /// otherwise reachable exactly like any other family) -- `build_search`
 /// resolves it from just `family`/`q_init`, the same as an MCTS family with
@@ -884,7 +1000,7 @@ fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
 #[test]
 fn test_build_search_builds_random_family() {
     build_search::<Nim>(
-        &json!({"family": "random", "q_init": "Infinity"}),
+        &compose("random", json!({"q_init": "Infinity"})),
         0,
         false,
         &SearchBudget::default(),
@@ -892,16 +1008,16 @@ fn test_build_search_builds_random_family() {
     .expect("random should build with just family/q_init");
 }
 
-/// `flat_mc` is an ordinary `family_catalog` row like `random`, just one
+/// `flat_mc` is a plain `fields.rs` row like `random`, just one
 /// with its own tunable fields (`samples_per_move`/`max_rollout_depth`/
 /// `flat_mc_selection`) rather than none.
 #[test]
 fn test_build_search_builds_flat_mc_family() {
     build_search::<Nim>(
-        &json!({
-            "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+        &compose("flat_mc", json!({
+            "samples_per_move": 20, "max_rollout_depth": 50,
             "flat_mc_selection": "win_rate",
-        }),
+        })),
         0,
         false,
         &SearchBudget::default(),
@@ -917,13 +1033,13 @@ fn test_build_search_builds_flat_mc_family() {
 #[test]
 fn test_build_search_builds_negamax_family() {
     build_search::<Nim>(
-        &json!({
-            "family": "negamax", "max_depth": 8, "table_bits": 16,
+        &compose("negamax", json!({
+            "max_depth": 8, "table_bits": 16,
             "negamax_replacement": "depth_preferred",
             "principal_variation_search": true, "history_heuristic": true,
             "singular_extension": true, "countermove_heuristic": true,
             "negamax_aspiration": "off",
-        }),
+        })),
         0,
         false,
         &SearchBudget::default(),
@@ -1000,16 +1116,16 @@ fn test_tuner_info_gates_axes_and_q_init_to_mcts_only() {
 }
 
 #[test]
-fn test_build_search_rejects_unknown_family() {
+fn test_build_search_rejects_unknown_select() {
     let mut params = rave_params();
-    params["family"] = json!("not_a_real_family");
+    params["select"] = json!("not_a_real_select");
     // `Box<dyn Search<G>>` isn't `Debug`, so `Result::expect_err` doesn't
     // apply here -- match instead.
     let err = match build_search::<Nim>(&params, 0, false, &SearchBudget::default()) {
         Err(e) => e,
-        Ok(_) => panic!("unknown family must be rejected"),
+        Ok(_) => panic!("unknown select must be rejected"),
     };
-    assert!(err.message.contains("family"));
+    assert!(err.message.contains("select"));
 }
 
 /// The parameter set each family's `make_candidate` arm actually
@@ -1028,7 +1144,7 @@ fn test_build_search_rejects_unknown_family() {
 /// `contempt_factor` -- all of which are hand-written conditions
 /// `strategy_tuner_info_with_mcgs` appends precisely because they
 /// depend on a *child* field's own sampled value, not on `family`
-/// alone (see `family_catalog.rs`'s `register_family!` doc comment).
+/// alone (see `fields.rs`).
 /// Generating a fixture from the field-name list alone would only be
 /// able to assert "this field is active", which `family_conditions()`
 /// already guarantees by construction -- a tautology, not a check.
@@ -1040,214 +1156,205 @@ fn family_required_params() -> Vec<(&'static str, Value)> {
     vec![
         (
             "ucb1",
-            json!({"family": "ucb1", "c": 1.4, "final_action": "robust_child"}),
+            compose("ucb1", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "ucb1_dm",
-            json!({"family": "ucb1_dm", "c": 1.4, "final_action": "max_avg"}),
+            compose("ucb1_dm", json!({"c": 1.4, "final_action": "max_avg"})),
         ),
         (
             "ucb1_adm",
-            json!({"family": "ucb1_adm", "c": 1.4, "final_action": "max_avg"}),
+            compose("ucb1_adm", json!({"c": 1.4, "final_action": "max_avg"})),
         ),
         (
             "ucb1_mast",
-            json!({"family": "ucb1_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("ucb1_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         (
             "ucb1_lgr",
-            json!({"family": "ucb1_lgr", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("ucb1_lgr", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         (
             "ucb1_lgr2",
-            json!({"family": "ucb1_lgr2", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("ucb1_lgr2", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         (
             "ucb1_lgr2_mast",
-            json!({"family": "ucb1_lgr2_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("ucb1_lgr2_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         (
             "ucb1_nst",
-            json!({"family": "ucb1_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            compose("ucb1_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
         ),
         (
             "ucb1_progressive_history",
-            json!({"family": "ucb1_progressive_history", "c": 1.4, "ph_weight": 0.5, "final_action": "robust_child"}),
+            compose("ucb1_progressive_history", json!({"c": 1.4, "ph_weight": 0.5, "final_action": "robust_child"})),
         ),
         (
             "ucb1_max_robust",
-            json!({"family": "ucb1_max_robust", "c": 1.4}),
+            compose("ucb1_max_robust", json!({"c": 1.4})),
         ),
         (
             "amaf",
-            json!({"family": "amaf", "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0}),
+            compose("amaf", json!({"c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0})),
         ),
         (
             "amaf_mast",
-            json!({"family": "amaf_mast", "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("amaf_mast", json!({"c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         (
             "ucb1_tuned",
-            json!({"family": "ucb1_tuned", "c": 1.4, "final_action": "robust_child"}),
+            compose("ucb1_tuned", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "ucb_v",
-            json!({"family": "ucb_v", "c": 1.4, "final_action": "robust_child"}),
+            compose("ucb_v", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "kl_ucb",
-            json!({"family": "kl_ucb", "c": 1.4, "final_action": "robust_child"}),
+            compose("kl_ucb", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "ucb1_tuned_mast",
-            json!({"family": "ucb1_tuned_mast", "c": 1.4, "final_action": "robust_child"}),
+            compose("ucb1_tuned_mast", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "ucb1_tuned_dm",
-            json!({"family": "ucb1_tuned_dm", "c": 1.4, "final_action": "robust_child"}),
+            compose("ucb1_tuned_dm", json!({"c": 1.4, "final_action": "robust_child"})),
         ),
         (
             "ucb1_tuned_dm_mast",
-            json!({"family": "ucb1_tuned_dm_mast", "c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            compose("ucb1_tuned_dm_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
         ),
         ("rave", rave_params()),
         (
             "ucb1_dm_nst",
-            json!({"family": "ucb1_dm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            compose("ucb1_dm_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
         ),
         (
             "ucb1_adm_nst",
-            json!({"family": "ucb1_adm_nst", "c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            compose("ucb1_adm_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
         ),
-        ("meta_mcts", json!({"family": "meta_mcts", "c": 1.4})),
+        ("meta_mcts", compose("meta_mcts", json!({"c": 1.4}))),
         ("ucb1_pn", pn_params()),
         (
             "ucb1_pn_mast",
-            json!({
-                "family": "ucb1_pn_mast", "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+            compose("ucb1_pn_mast", json!({
+                "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
                 "final_action": "robust_child", "solver_loss_threshold": 5,
                 "contempt": "on", "contempt_factor": -0.5,
-            }),
+            })),
         ),
         (
             "bayes_uct1_gaussian",
-            json!({
-                "family": "bayes_uct1_gaussian", "c": 1.0, "prior_variance": 1.0,
+            compose("bayes_uct1_gaussian", json!({
+                "c": 1.0, "prior_variance": 1.0,
                 "obs_variance": 1.0, "final_action": "robust_child",
-            }),
+            })),
         ),
         (
             "bayes_uct2_numeric",
-            json!({
-                "family": "bayes_uct2_numeric", "c": 1.0, "prior_variance": 1.0,
+            compose("bayes_uct2_numeric", json!({
+                "c": 1.0, "prior_variance": 1.0,
                 "obs_variance": 1.0, "value_lo": -1.0, "value_hi": 1.0,
                 "final_action": "robust_child",
-            }),
+            })),
         ),
         (
             "power_uct",
-            json!({
-                "family": "power_uct", "c": 1.4, "p": 4.0, "alpha": 0.5,
+            compose("power_uct", json!({
+                "c": 1.4, "p": 4.0, "alpha": 0.5,
                 "final_action": "robust_child",
-            }),
+            })),
         ),
         (
             "td_uct",
-            json!({
-                "family": "td_uct", "c": 1.4, "lambda": 0.8, "td_max_child": 0,
+            compose("td_uct", json!({
+                "c": 1.4, "lambda": 0.8, "td_max_child": 0,
                 "final_action": "robust_child",
-            }),
+            })),
         ),
         (
             "ments",
-            json!({
-                "family": "ments", "tau": 1.0, "epsilon": 0.1,
+            compose("ments", json!({
+                "tau": 1.0, "epsilon": 0.1,
                 "final_action": "robust_child",
-            }),
+            })),
         ),
         (
             "grill_act",
-            json!({
-                "family": "grill_act", "c": 1.4, "final_action": "robust_child",
-            }),
+            compose("grill_act", json!({
+                "c": 1.4, "final_action": "robust_child",
+            })),
         ),
         (
             "score_bounded_uct",
-            json!({
-                "family": "score_bounded_uct", "c": 1.4, "gamma": 0.1, "delta": 0.1,
+            compose("score_bounded_uct", json!({
+                "c": 1.4, "gamma": 0.1, "delta": 0.1,
                 "final_action": "robust_child", "solver_loss_threshold": 5,
                 "contempt": "off",
-            }),
+            })),
         ),
         (
             "gpn",
-            json!({
-                "family": "gpn", "c": 1.4, "c_pn": 1.0, "gpn_bias": "max",
+            compose("gpn", json!({
+                "c": 1.4, "c_pn": 1.0, "gpn_bias": "max",
                 "final_action": "robust_child", "solver_loss_threshold": 5,
                 "contempt": "off",
-            }),
+            })),
         ),
-        ("random", json!({"family": "random"})),
+        ("random", compose("random", json!({}))),
         (
             "flat_mc",
-            json!({
-                "family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50,
+            compose("flat_mc", json!({
+                "samples_per_move": 20, "max_rollout_depth": 50,
                 "flat_mc_selection": "win_rate",
-            }),
+            })),
         ),
         (
             "negamax",
-            json!({
-                "family": "negamax", "max_depth": 8, "table_bits": 16,
+            compose("negamax", json!({
+                "max_depth": 8, "table_bits": 16,
                 "negamax_replacement": "depth_preferred",
                 "principal_variation_search": true, "history_heuristic": true,
                 "singular_extension": true, "countermove_heuristic": true,
                 "negamax_aspiration": "on", "aspiration_window": 50,
-            }),
+            })),
         ),
     ]
 }
 
-/// The algorithm-native `dispatch::to_search_spec` path, fed the axis
-/// categoricals `legacy_family_to_axes` maps each pre-cutover `family` name
-/// onto (merged over that family's own scalar-param fixture), must reproduce
-/// the exact `SearchSpec` -- and the two PN-only `SearchSettings` knobs --
-/// captured in `family_goldens.json`. This also exercises
-/// `legacy_family_to_axes` itself for every composable family.
+/// The algorithm-native `dispatch::to_search_spec` path, fed each named
+/// composition's axis-native fixture, must reproduce the exact `SearchSpec`
+/// -- and the two PN-only `SearchSettings` knobs -- captured in
+/// `search_spec_goldens.json`.
 #[test]
-fn algorithm_native_specs_match_family_goldens() {
+fn algorithm_native_specs_match_search_spec_goldens() {
     let goldens: serde_json::Map<String, Value> =
-        serde_json::from_str(include_str!("testdata/family_goldens.json")).unwrap();
+        serde_json::from_str(include_str!("testdata/search_spec_goldens.json")).unwrap();
     let mut checked = std::collections::HashSet::new();
-    for (name, mut params) in family_required_params() {
+    for (name, params) in family_required_params() {
         let Some(golden) = goldens.get(name) else {
             continue;
         };
-        let axes = crate::dispatch::legacy_family_to_axes(name)
-            .unwrap_or_else(|| panic!("no legacy_family_to_axes mapping for {name}"));
-        let obj = params.as_object_mut().unwrap();
-        obj.remove("family");
-        for (key, value) in axes.as_object().unwrap() {
-            obj.insert(key.clone(), value.clone());
-        }
         let spec = crate::dispatch::to_search_spec(&params)
             .unwrap_or_else(|e| panic!("{name}: {}", e.message));
         assert_eq!(
             serde_json::to_value(&spec).unwrap(),
             golden["spec"],
-            "family {name}: axis-native SearchSpec must match its pre-cutover golden"
+            "{name}: axis-native SearchSpec must match its golden"
         );
         let (solver_loss_threshold, contempt_factor) =
             crate::dispatch::mcts_engine_overrides(&params).unwrap();
         assert_eq!(
             json!(solver_loss_threshold),
             golden["solver_loss_threshold"],
-            "family {name}: solver_loss_threshold"
+            "{name}: solver_loss_threshold"
         );
         assert_eq!(
             json!(contempt_factor),
             golden["contempt_factor"],
-            "family {name}: contempt_factor"
+            "{name}: contempt_factor"
         );
         checked.insert(name);
     }
@@ -1255,7 +1362,7 @@ fn algorithm_native_specs_match_family_goldens() {
         goldens.keys().map(String::as_str).collect();
     assert_eq!(
         checked, golden_names,
-        "every composable family in family_goldens.json must be checked against the axis-native path"
+        "every composition in search_spec_goldens.json must be checked against the axis-native path"
     );
 }
 
@@ -1275,13 +1382,11 @@ fn schema_default_params() -> serde_json::Map<String, Value> {
 }
 
 /// Every `preset_catalog` entry: parses, carries only axis/mode categoricals
-/// (never a scalar hyperparameter), transcribes exactly the
-/// `legacy_family_to_axes` mapping for the same-named pre-cutover family
-/// (which `algorithm_native_specs_match_family_goldens` pins to a golden
-/// `SearchSpec`), reaches "active" in the tuner schema, and resolves to a
-/// legal `AlgorithmSpec` once merged over the schema defaults.
+/// (never a scalar hyperparameter), reaches "active" in the tuner schema,
+/// and resolves to a legal `AlgorithmSpec` once merged over the schema
+/// defaults.
 #[test]
-fn every_preset_matches_its_legacy_family_axes_and_resolves() {
+fn preset_axis_compositions_resolve() {
     let tuner = strategy_tuner_info_with_mcgs(&["strong"], 1, true);
     let declared: std::collections::HashSet<&str> =
         tuner.parameters.iter().map(|p| p.name.as_str()).collect();
@@ -1312,17 +1417,6 @@ fn every_preset_matches_its_legacy_family_axes_and_resolves() {
                 preset.id
             );
         }
-
-        // Exact parity with the pre-cutover family this preset replaces.
-        let mut legacy = crate::dispatch::legacy_family_to_axes(&preset.id)
-            .unwrap_or_else(|| panic!("{}: no legacy_family_to_axes mapping", preset.id));
-        legacy.as_object_mut().unwrap().remove("algorithm");
-        assert_eq!(
-            Value::Object(preset.params.clone()),
-            legacy,
-            "{}: preset params must match legacy_family_to_axes",
-            preset.id
-        );
 
         // Merged over the defaults, it is a legal, fully-active config.
         let mut merged = base.clone();
@@ -1436,21 +1530,12 @@ fn test_tuner_info_conditions_cover_every_axis_native_param_dispatch_needs() {
     // arm always required `epsilon`, but the tuner schema's conditions
     // never activated `epsilon` for that config -- so a real tuner search
     // built from this metadata could (and did) sample seemingly valid
-    // configs the binary then rejected as missing a param. Each
-    // pre-cutover family's round-trip fixture, translated into its
-    // `algorithm` + axis assignment by `legacy_family_to_axes`, must have
-    // every key it supplies reachable as "active" from
-    // `strategy_tuner_info`'s declared conditions given that exact
-    // assignment.
+    // configs the binary then rejected as missing a param. Every key each
+    // composition's axis-native round-trip fixture supplies must be
+    // reachable as "active" from `strategy_tuner_info`'s declared conditions
+    // given that exact assignment.
     let tuner = strategy_tuner_info(&["strong"], 1);
-    for (name, mut params) in family_required_params() {
-        let axes = crate::dispatch::legacy_family_to_axes(name)
-            .unwrap_or_else(|| panic!("no legacy_family_to_axes mapping for {name}"));
-        let obj = params.as_object_mut().unwrap();
-        obj.remove("family");
-        for (key, value) in axes.as_object().unwrap() {
-            obj.insert(key.clone(), value.clone());
-        }
+    for (name, params) in family_required_params() {
         let active = active_params(&tuner, &params);
         for key in params.as_object().unwrap().keys() {
             assert!(

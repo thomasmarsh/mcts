@@ -20,7 +20,7 @@
 //! `SelectSpec`/`SimulateSpec`/`BackpropSpec`/`FinalActionSpec` fails to
 //! compile here until this file's schema gains a matching entry.
 //!
-//! Field bounds/defaults are reused from `family_catalog.rs`'s
+//! Field bounds/defaults are reused from `fields.rs`'s
 //! `register_field!` table by field name (`c`, `epsilon`, `amaf_alpha`,
 //! `ph_weight`, ...) wherever the same tunable knob appears in both places,
 //! so the two schemas agree on what a sane default `c` or `epsilon` is
@@ -82,7 +82,7 @@ fn wrapping_variant(kind: &str, fields: Vec<Value>, wraps: &str) -> Value {
 }
 
 // Shared leaf-field bounds/defaults, kept in sync by name with
-// `family_catalog.rs`'s `register_field!` table (see this module's doc
+// `fields.rs`'s `register_field!` table (see this module's doc
 // comment on why they're duplicated here rather than imported directly --
 // `register_field!` builds a `TunerParameter` whose bounds live inside a
 // `serde_json::Value`, not a standalone constant this module could reuse

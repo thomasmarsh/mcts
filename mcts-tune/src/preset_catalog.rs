@@ -1,6 +1,6 @@
-//! The preset catalog: named *partial* configurations that replace the
-//! curated pre-cutover `family` rows whose shape was more than a single
-//! axis swap away from the `mcts`/`ucb1`/`uniform`/`classic`/`robust_child`
+//! The preset catalog: named *partial* configurations for axis
+//! compositions whose shape is more than a single categorical swap away
+//! from the `mcts`/`ucb1`/`uniform`/`classic`/`robust_child`
 //! baseline (`ucb1_dm_nst`, `rave`, `power_uct`, ...). A trivial one-axis
 //! composition -- `ucb1_tuned`, `ments`, `gpn`, ... -- needs no preset; it
 //! is reached by setting the `select` categorical alone.
@@ -15,10 +15,10 @@
 //! build time. The data is `config_ir::SearchSpec`-adjacent but not itself
 //! a full spec: `dispatch::to_search_spec` resolves the overlay (merged
 //! over the schema defaults) the same way it resolves any params object.
-//! `every_preset_matches_its_legacy_family_axes` in `tests.rs` pins every
-//! entry to the `dispatch::legacy_family_to_axes` mapping for the
-//! same-named pre-cutover family, which `algorithm_native_specs_match_family_goldens`
-//! in turn pins to the exact `SearchSpec` that `family` row produced.
+//! `preset_axis_compositions_resolve` in `tests.rs` checks every entry
+//! parses, stays axis-only, and resolves to a legal `mcts` configuration;
+//! `algorithm_native_specs_match_search_spec_goldens` pins the composed
+//! `SearchSpec` for each named composition to a golden.
 
 use game_host::HostError;
 use serde::Deserialize;

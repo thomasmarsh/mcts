@@ -31,9 +31,9 @@ mod direct_search;
 // this module rather than a per-composition catalog table.
 mod dispatch;
 mod evaluation;
-mod family_catalog;
-// Named partial configurations (`rave`, `power_uct`, ...) that replace the
-// pre-cutover `family` rows whose shape was more than a single axis swap.
+mod fields;
+// Named partial configurations (`rave`, `power_uct`, ...) for axis
+// compositions whose shape is more than a single categorical swap.
 pub mod preset_catalog;
 pub mod presets;
 mod search;

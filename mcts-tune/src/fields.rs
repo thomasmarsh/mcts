@@ -4,8 +4,8 @@
 //! while declaring the schema's own shape -- the `algorithm` categorical
 //! and the four policy axes -- directly.
 //!
-//! There is no per-composition catalog here anymore: `dispatch.rs` builds a
-//! `config_ir::SearchSpec` straight from the axis categoricals, so the only
+//! `dispatch.rs` builds a `config_ir::SearchSpec` straight from the axis
+//! categoricals, so the only
 //! thing this table still owns is field metadata, not construction.
 //! `algorithm`/`select`/`simulate`/`backprop`/`final_action`/`q_init`/`mcgs`/
 //! `state_only_keying` are declared by hand in `tuner_info.rs`.

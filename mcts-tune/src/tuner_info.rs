@@ -35,7 +35,7 @@ pub fn dimensions_board_config_schema(
     }
 }
 
-use crate::family_catalog::{condition, param, tunable_field_parameters};
+use crate::fields::{condition, param, tunable_field_parameters};
 
 /// Every `select`-axis categorical choice, in `config_ir_schema::axis_schema`
 /// order. The `epsilon_greedy` wrap is a separate `select_epsilon_greedy`
