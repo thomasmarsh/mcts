@@ -428,6 +428,20 @@ export const DruidRenderer: Component<GameRendererProps<GameState, Move, GameVie
   function buildGhost(move: Move | null): void {
     clearGroup(ghostGroup);
     if (!move || props.busy) return;
+    try {
+      buildGhostUnchecked(move);
+    } catch (err) {
+      // `move` here is whatever the caller's `hoveredMove` last held --
+      // for an analysis candidate that's `AnalysisPanel`'s `report.actions`,
+      // which for a move-split game (see `games/druid/src/moves.rs`'s
+      // `Split` encoding) are root-search sub-actions, not the whole-turn
+      // `Move` this function expects. Rather than crash the renderer over a
+      // hover preview, drop the ghost and say why on the console.
+      console.warn("Druid: could not preview hovered move", move, err);
+    }
+  }
+
+  function buildGhostUnchecked(move: Move): void {
     const { w } = props.state.size;
     const color = props.state.player === "Black" ? BLACK_COLOR : WHITE_COLOR;
     const mat = new THREE.MeshStandardMaterial({

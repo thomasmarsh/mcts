@@ -104,6 +104,25 @@ describe("SearchInspector", () => {
     expect(screen.getAllByText('{"move":"a"}').length).toBeGreaterThan(0);
   });
 
+  // Regression: a move-split game's search report carries root-search
+  // sub-actions in a different shape than the game's own public move type
+  // (see games/druid/src/moves.rs's `Split` encoding vs. the whole-turn
+  // `PlacedPiece` -- e.g. `{ Cell: 13 }` where `formatMove` expects
+  // `[piece, index]`). A `formatMove` written against the public shape then
+  // throws when handed a search-report action. That must degrade to the raw
+  // JSON fallback, not take down the panel.
+  it("falls back to raw JSON when formatMove throws on a mismatched move shape", () => {
+    const throwingFormat = (move: Move, _before: { turn: number }): string => {
+      const [piece] = move as unknown as [string, number];
+      return piece;
+    };
+    render(() => (
+      <SearchInspector report={report()} before={{ turn: 3 }} formatMove={throwingFormat} />
+    ));
+
+    expect(screen.getAllByText('{"move":"a"}').length).toBeGreaterThan(0);
+  });
+
   it("plots the selected metric with gaps and provides exact per-ply values", () => {
     const points: SearchInspectorPoint<Move>[] = [
       {

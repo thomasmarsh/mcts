@@ -71,6 +71,37 @@ export function moveEquals<M>(a: M, b: M): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** Calls a game's `formatMove`, falling back to raw JSON instead of
+ * propagating an exception -- a defensive boundary, not a routine path.
+ * `formatMove` is written against one game's own wire shape for `M` (e.g.
+ * Druid's whole-turn `[Piece, index]`), but callers like `SearchInspector`
+ * also feed it moves from a `SearchReport`, which for a move-split game (see
+ * `games/druid/src/moves.rs`'s `Split` encoding) are root-search sub-actions
+ * in a *different* shape than the public move type. Rather than require
+ * every `formatMove` to defensively type-check its input against shapes that
+ * belong to a different layer, this keeps a formatter crash from taking out
+ * the whole page: the raw JSON fallback is still diagnostic, just unpolished. */
+export function safeFormatMove<S, M>(
+  formatMove: ((move: M, before: S) => string) | undefined,
+  move: M,
+  before: S,
+): string {
+  if (!formatMove) return rawMoveLabel(move);
+  try {
+    return formatMove(move, before);
+  } catch {
+    return rawMoveLabel(move);
+  }
+}
+
+function rawMoveLabel<M>(move: M): string {
+  try {
+    return JSON.stringify(move) ?? String(move);
+  } catch {
+    return String(move);
+  }
+}
+
 /** True when `tree.currentId` has no children -- the live frontier of play,
  * as opposed to a node reached by navigating back into history (undo/redo/
  * jumpTo). `GameShell`'s autoplay effect gates on this before driving the

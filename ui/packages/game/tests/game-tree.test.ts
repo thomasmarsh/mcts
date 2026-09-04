@@ -1,7 +1,7 @@
 // tests/game-tree.test.ts — Tests for the pure GameTree undo/redo/branch reducer.
 
 import { describe, it, expect } from "vitest";
-import { gameTreeReducer, initialGameTree, isFrontier } from "../src/game-tree.js";
+import { gameTreeReducer, initialGameTree, isFrontier, safeFormatMove } from "../src/game-tree.js";
 import type { SearchReport } from "../src/types.js";
 
 // Test-only state/move types: state is just "how many moves deep", move is a
@@ -267,5 +267,28 @@ describe("isFrontier", () => {
     const tree = initialGameTree<S, M>(0);
     tree.currentId = "does-not-exist";
     expect(isFrontier(tree)).toBe(false);
+  });
+});
+
+describe("safeFormatMove", () => {
+  it("returns formatMove's result when it succeeds", () => {
+    const label = safeFormatMove((move: string, before: number) => `${move}@${before}`, "a", 1);
+    expect(label).toBe("a@1");
+  });
+
+  it("falls back to raw JSON when no formatMove is given", () => {
+    expect(safeFormatMove(undefined, { a: 1 }, 0)).toBe('{"a":1}');
+  });
+
+  it("falls back to raw JSON when formatMove throws", () => {
+    // Mirrors a move-split game's search-report actions arriving in a
+    // different shape than the game's own public move type -- a
+    // `formatMove` written against the public shape throws when destructuring
+    // one of these (see games/druid/src/moves.rs's `Split` encoding).
+    const throwing = () => {
+      const [piece] = { Cell: 13 } as unknown as [string];
+      return piece;
+    };
+    expect(safeFormatMove(throwing, { Cell: 13 }, 0)).toBe('{"Cell":13}');
   });
 });

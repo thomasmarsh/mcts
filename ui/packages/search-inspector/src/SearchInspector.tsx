@@ -1,5 +1,5 @@
 import { createMemo, createSignal, createUniqueId, For, Show, type JSX } from "solid-js";
-import { moveEquals, type SearchReport, type SearchWarning } from "@mcts/game";
+import { moveEquals, safeFormatMove, type SearchReport, type SearchWarning } from "@mcts/game";
 
 export interface SearchInspectorPoint<M> {
   ply: number;
@@ -227,7 +227,7 @@ export const SearchInspector = <S, M>(props: SearchInspectorProps<S, M>) => {
       format: currentMetric.format,
     }));
   });
-  const actionLabel = (move: M) => props.formatMove?.(move, props.before) ?? rawMoveLabel(move);
+  const actionLabel = (move: M) => safeFormatMove(props.formatMove, move, props.before);
   const pvLabel = (move: M, index: number) =>
     index === 0 ? actionLabel(move) : rawMoveLabel(move);
 

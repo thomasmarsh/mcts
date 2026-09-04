@@ -11,6 +11,7 @@
 
 import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import type { GameTree, GameTreeNode } from "@mcts/game";
+import { safeFormatMove } from "@mcts/game";
 
 type S = unknown;
 type M = unknown;
@@ -40,9 +41,7 @@ export const MoveListPanel: Component<{
       node: n,
       ply: i,
       label:
-        i === 0
-          ? "Start"
-          : (props.formatMove?.(n.move as M, chain[i - 1]!.state) ?? JSON.stringify(n.move)),
+        i === 0 ? "Start" : safeFormatMove(props.formatMove, n.move as M, chain[i - 1]!.state),
     }));
   });
 
@@ -85,9 +84,7 @@ export const MoveListPanel: Component<{
                       {(childId) => {
                         const child = props.tree.nodes[childId];
                         if (!child) return null;
-                        const label =
-                          props.formatMove?.(child.move as M, row.node.state) ??
-                          JSON.stringify(child.move);
+                        const label = safeFormatMove(props.formatMove, child.move as M, row.node.state);
                         return (
                           <li>
                             <button

@@ -14,7 +14,7 @@
 
 import { type Component, createMemo, For, Show } from "solid-js";
 import type { AiPresetInfo, Analysis } from "@mcts/game";
-import { moveEquals } from "@mcts/game";
+import { moveEquals, safeFormatMove } from "@mcts/game";
 import type { JobPollState } from "@mcts/core";
 import { SearchInspector } from "@mcts/search-inspector";
 
@@ -54,7 +54,7 @@ export const AnalysisPanel: Component<{
       .sort((a, b) => b.visits - a.visits)
       .map((c) => ({
         move: c.action,
-        label: props.formatMove?.(c.action, props.before) ?? JSON.stringify(c.action),
+        label: safeFormatMove(props.formatMove, c.action, props.before),
         visitShare: c.visits / total,
         meanValue: c.mean_value,
         isProven: c.is_proven,
@@ -71,9 +71,7 @@ export const AnalysisPanel: Component<{
     const r = result();
     if (!r || r.principal_variation.length === 0) return null;
     return r.principal_variation
-      .map((m, i) =>
-        i === 0 ? (props.formatMove?.(m, props.before) ?? JSON.stringify(m)) : JSON.stringify(m),
-      )
+      .map((m, i) => (i === 0 ? safeFormatMove(props.formatMove, m, props.before) : JSON.stringify(m)))
       .join(" → ");
   });
 
