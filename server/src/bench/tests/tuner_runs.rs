@@ -201,25 +201,6 @@ async fn plan_route_returns_the_resolved_summary_and_surfaces_preflight_errors()
 }
 
 #[tokio::test]
-async fn launch_rejects_a_malformed_space_override() {
-    let (app, root) = seeded_app(default_seed);
-    let (status, body) = http_post_json(
-        app,
-        "/api/bench/tuner/runs",
-        json!({
-            "game_binary": "/games/nim", "objective_file": "/objectives/nim.yaml",
-            "run_id": "so-bad", "task_seed": 1,
-            "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4,
-            "space_overrides": { "c": { "range": [2.0, 1.0] } }
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body_json(&body)["error"].as_str().unwrap().contains("range narrowing"));
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[tokio::test]
 async fn launch_rejects_a_malformed_constraint() {
     let (app, root) = seeded_app(default_seed);
     let (status, body) = http_post_json(

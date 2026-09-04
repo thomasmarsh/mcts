@@ -133,16 +133,11 @@ export interface TunerLaunchRequest {
   diagnostic_pair_budget?: number | null;
   evaluator_workers?: number | null;
   proposer_policy?: string | null;
-  exclude_family?: string[];
-  /** Run-scoped tuning-space overrides: a map from parameter name to one of
-   * `{ fix }`, `{ range: [lo, hi] }`, or `{ choices: [...] }`. Constrains, never
-   * widens, the game's declared schema. The server preflight is authoritative;
-   * the form only blocks obvious local errors. */
-  space_overrides?: Record<string, SpaceOverride> | null;
   /** Unified run-scoped tuning-space constraints — an array of {@link Constraint}
    * entries or the bare `{ name: SpaceOverride }` map as sugar. Serialised to a
-   * single `--constraint <json>`. Supersedes `exclude_family` + `space_overrides`,
-   * both still accepted until the constraint editor lands. */
+   * single `--constraint <json>`. Constrains, never widens, the game's declared
+   * schema; the server preflight is authoritative and the form only blocks
+   * obvious local errors. */
   constraints?: Constraint[] | Record<string, SpaceOverride> | null;
   /** Per-phase search effort. Each phase accepts iterations *or* time, never
    * both; omitting a pair falls back to the tuner CLI default. Names match
@@ -184,8 +179,8 @@ export interface RunPlanOpponent {
   fingerprint?: string;
 }
 
-/** One parameter in a resolved plan's tuning space, after `--exclude-family`
- * and `space_overrides` have been applied. */
+/** One parameter in a resolved plan's tuning space, after `constraints` have
+ * been applied. */
 export interface RunPlanParameter {
   name: string;
   kind: string;
@@ -193,7 +188,7 @@ export interface RunPlanParameter {
   choices: (string | number | boolean | null)[] | null;
   default: string | number | boolean | null;
   constant_value: string | number | boolean | null;
-  /** Human-readable activation condition, e.g. `family in ['rave']`. */
+  /** Human-readable activation condition, e.g. `select in ['rave']`. */
   active_when: string | null;
 }
 

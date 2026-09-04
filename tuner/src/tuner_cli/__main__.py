@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .codec import JsonValue, strict_json
+from .codec import strict_json
 from .constraints import Constraints, decode_constraints
 from .domain import SearchEffort
 from .run import RunOptions, run_foreground
@@ -50,8 +50,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--shadow-halving-spare-margin", type=float, default=0.0)
     parser.add_argument("--active-elimination-audit-probability", type=float)
-    parser.add_argument("--exclude-family", action="append", default=[], metavar="FAMILY")
-    _add_space_override_arguments(parser)
     parser.add_argument(
         "--constraint",
         action="append",
@@ -76,55 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _add_space_override_arguments(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_argument_group(
-        "tuning-space overrides", "constrain (never widen) the declared schema for this run"
-    )
-    group.add_argument("--fix", action="append", default=[], metavar="NAME=VALUE")
-    group.add_argument("--param-range", action="append", default=[], metavar="NAME=LO,HI")
-    group.add_argument("--param-choices", action="append", default=[], metavar="NAME=A,B,C")
-
-
-def _scalar_token(text: str) -> JsonValue:
-    """A CLI override token: a JSON literal when it parses, else a bare string."""
-    try:
-        return strict_json(text, "override value")
-    except ValueError:
-        return text
-
-
-def _split_once(item: str, flag: str) -> tuple[str, str]:
-    name, sep, payload = item.partition("=")
-    if not sep or not name:
-        raise ValueError(f"{flag} must be NAME=VALUE, got {item!r}")
-    return name, payload
-
-
 def _constraints(args: argparse.Namespace) -> Constraints:
-    """The unified run-scoped ``constraints`` built from every space-control flag.
+    """The unified run-scoped ``constraints`` from every ``--constraint`` flag.
 
-    ``--fix`` / ``--param-range`` / ``--param-choices`` are sugar for one
-    un-predicated constraint; ``--constraint`` carries the full wire form
-    (predicated ``when`` included). ``--exclude-family`` is threaded separately
-    on :class:`RunOptions` and folded against the resolved schema.
+    Each ``--constraint`` carries the full wire form -- an array of
+    ``{"when"?: {...}, "set": {...}}`` entries or the bare
+    ``{name: {fix|range|choices}}`` map as sugar for one un-predicated entry.
     """
-    flags: dict[str, JsonValue] = {}
-    for item in args.fix:
-        name, payload = _split_once(item, "--fix")
-        flags[name] = {"fix": _scalar_token(payload)}
-    for item in args.param_range:
-        name, payload = _split_once(item, "--param-range")
-        parts = payload.split(",")
-        if len(parts) != 2:
-            raise ValueError(f"--param-range must be NAME=LO,HI, got {item!r}")
-        flags[name] = {"range": [_scalar_token(parts[0]), _scalar_token(parts[1])]}
-    for item in args.param_choices:
-        name, payload = _split_once(item, "--param-choices")
-        flags[name] = {"choices": [_scalar_token(token) for token in payload.split(",")]}
-    flag_entries = len(args.fix) + len(args.param_range) + len(args.param_choices)
-    if len(flags) != flag_entries:
-        raise ValueError("a parameter may carry only one fix/range/choices flag")
-    constraints: Constraints = decode_constraints(flags) if flags else ()
+    constraints: Constraints = ()
     for text in args.constraint:
         value = strict_json(text, "--constraint value")
         if isinstance(value, dict) and ("set" in value or "when" in value):
@@ -168,7 +125,6 @@ def _options(args: argparse.Namespace) -> RunOptions:
         shadow_policy=args.shadow_policy,
         shadow_halving_spare_margin=args.shadow_halving_spare_margin,
         active_elimination_audit_probability=args.active_elimination_audit_probability,
-        exclude_family=tuple(args.exclude_family),
         constraints=_constraints(args),
         proposer_policy=args.proposer_policy,
         resume=args.resume,

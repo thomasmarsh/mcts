@@ -183,7 +183,7 @@ _CLI_BASE = [
 ]
 
 
-def test_space_control_flags_assemble_into_constraints() -> None:
+def test_constraint_flag_carries_the_full_wire_form() -> None:
     parser = build_parser()
     from tuner_cli.constraints import encode_constraints
 
@@ -192,50 +192,22 @@ def test_space_control_flags_assemble_into_constraints() -> None:
         parser.parse_args(
             _CLI_BASE
             + [
-                "--fix",
-                "schedule=threshold",
-                "--param-range",
-                "c=1.2,1.8",
-                "--param-choices",
-                "q_init=Zero,Infinity",
-            ]
-        )
-    )
-    assert encode_constraints(options.constraints) == [
-        {
-            "set": {
-                "c": {"range": [1.2, 1.8]},
-                "q_init": {"choices": ["Zero", "Infinity"]},
-                "schedule": {"fix": "threshold"},
-            }
-        }
-    ]
-    with pytest.raises(ValueError):
-        _options(parser.parse_args(_CLI_BASE + ["--fix", "bogus"]))
-    with pytest.raises(ValueError):
-        _options(parser.parse_args(_CLI_BASE + ["--fix", "c=1", "--param-range", "c=1,2"]))
-
-
-def test_constraint_flag_carries_the_full_wire_form() -> None:
-    parser = build_parser()
-    from tuner_cli.constraints import encode_constraints
-
-    options = _options(
-        parser.parse_args(
-            _CLI_BASE
-            + [
                 "--constraint",
                 '{"set": {"c": {"range": [1.2, 1.8]}}}',
                 "--constraint",
                 '{"select": {"choices": ["ucb1", "rave"]}}',
+                # The bare `{name: {fix|range|choices}}` map is accepted as sugar.
+                "--constraint",
+                '{"schedule": {"fix": "threshold"}}',
             ]
         )
     )
     assert encode_constraints(options.constraints) == [
         {"set": {"c": {"range": [1.2, 1.8]}}},
         {"set": {"select": {"choices": ["ucb1", "rave"]}}},
+        {"set": {"schedule": {"fix": "threshold"}}},
     ]
-    # A `when`-predicated constraint now flows through end to end.
+    # A `when`-predicated constraint flows through end to end.
     predicated = _options(
         parser.parse_args(
             _CLI_BASE
@@ -243,6 +215,3 @@ def test_constraint_flag_carries_the_full_wire_form() -> None:
         )
     )
     assert predicated.constraints[0].when == (("select", ("ucb1",)),)
-    # `--exclude-family` is threaded raw for schema-time folding.
-    excluded = _options(parser.parse_args(_CLI_BASE + ["--exclude-family", "rave"]))
-    assert excluded.exclude_family == ("rave",)

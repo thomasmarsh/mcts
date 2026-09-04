@@ -131,17 +131,6 @@ pub struct TunerLaunchRequest {
     pub production_max_iterations: Option<u64>,
     #[serde(default)]
     pub production_max_time_ms: Option<u64>,
-    #[serde(default)]
-    pub exclude_family: Vec<String>,
-    /// Run-scoped tuning-space overrides: a map from parameter name to one of
-    /// `{"fix": <value>}`, `{"range": [lo, hi]}`, or `{"choices": [<subset>]}`.
-    /// Serialised to `--fix` / `--param-range` / `--param-choices`; the Python
-    /// preflight is the authority on whether they are valid for the schema.
-    ///
-    /// A pre-taxonomy field, still accepted from the UI until the constraint
-    /// editor lands; new callers use `constraints`.
-    #[serde(default)]
-    pub space_overrides: Option<serde_json::Value>,
     /// Unified run-scoped tuning-space constraints: a JSON array of
     /// `{"when"?: {...}, "set": {...}}` entries, or the bare
     /// `{name: {fix|range|choices}}` map as sugar for one un-predicated entry.
@@ -195,22 +184,7 @@ impl TunerLaunchRequest {
                 ));
             }
         }
-        self.validate_space_overrides()?;
         self.validate_constraints()?;
-        Ok(())
-    }
-
-    fn validate_space_overrides(&self) -> io::Result<()> {
-        let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, msg.to_string());
-        let Some(value) = &self.space_overrides else {
-            return Ok(());
-        };
-        let entries = value
-            .as_object()
-            .ok_or_else(|| invalid("space_overrides must be a JSON object"))?;
-        for (name, spec) in entries {
-            validate_narrowing_spec(name, spec)?;
-        }
         Ok(())
     }
 
@@ -357,29 +331,6 @@ impl TunerLaunchRequest {
             "--production-max-time-ms",
             self.production_max_time_ms.map(|v| v.to_string()),
         );
-        for family in &self.exclude_family {
-            argv.push("--exclude-family".into());
-            argv.push(family.clone());
-        }
-        if let Some(serde_json::Value::Object(entries)) = &self.space_overrides {
-            for (name, spec) in entries {
-                if let Some(value) = spec.get("fix") {
-                    argv.push("--fix".into());
-                    argv.push(format!("{name}={value}"));
-                } else if let Some(serde_json::Value::Array(bounds)) = spec.get("range") {
-                    argv.push("--param-range".into());
-                    argv.push(format!("{name}={},{}", bounds[0], bounds[1]));
-                } else if let Some(serde_json::Value::Array(choices)) = spec.get("choices") {
-                    let joined = choices
-                        .iter()
-                        .map(render_override_token)
-                        .collect::<Vec<_>>()
-                        .join(",");
-                    argv.push("--param-choices".into());
-                    argv.push(format!("{name}={joined}"));
-                }
-            }
-        }
         if let Some(value) = &self.constraints {
             argv.push("--constraint".into());
             argv.push(value.to_string());
@@ -520,8 +471,8 @@ pub fn extend(
 }
 
 /// Reject a per-parameter narrowing (`{"fix": v}` / `{"range": [lo, hi]}` /
-/// `{"choices": [..]}`) whose shape `tuner_cli` could not parse. Shared by the
-/// legacy `space_overrides` map and the unified `constraints` `set` blocks.
+/// `{"choices": [..]}`) whose shape `tuner_cli` could not parse. Shared by every
+/// `set` block of the unified `constraints` wire form.
 fn validate_narrowing_spec(name: &str, spec: &serde_json::Value) -> io::Result<()> {
     let invalid = |msg: &str| io::Error::new(io::ErrorKind::InvalidInput, msg.to_string());
     let spec = spec
@@ -553,16 +504,6 @@ fn validate_narrowing_spec(name: &str, spec: &serde_json::Value) -> io::Result<(
         _ => Err(invalid(&format!(
             "narrowing {name:?} needs exactly one of fix/range/choices"
         ))),
-    }
-}
-
-/// Render one categorical-choice token for `--param-choices`: a bare string
-/// (the tuner CLI treats an unparseable token as a string), otherwise the JSON
-/// literal.
-fn render_override_token(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::String(text) => text.clone(),
-        other => other.to_string(),
     }
 }
 
@@ -890,8 +831,6 @@ mod tests {
             validation_max_time_ms: None,
             production_max_iterations: None,
             production_max_time_ms: None,
-            exclude_family: vec![],
-            space_overrides: None,
             constraints: None,
         }
     }
@@ -937,7 +876,6 @@ mod tests {
         request.seed = Some(99);
         request.proposer_policy = Some("random".into());
         request.tuning_max_iterations = Some(1000);
-        request.exclude_family = vec!["ucb".into(), "grave".into()];
         let argv = request.argv();
         assert!(argv.windows(2).any(|pair| pair == ["--seed", "99"]));
         assert!(argv
@@ -946,31 +884,6 @@ mod tests {
         assert!(argv
             .windows(2)
             .any(|pair| pair == ["--tuning-max-iterations", "1000"]));
-        assert_eq!(
-            argv.iter().filter(|arg| *arg == "--exclude-family").count(),
-            2
-        );
-    }
-
-    #[test]
-    fn argv_space_overrides_serialise_to_the_matching_flags() {
-        let mut request = base_request(&PathBuf::from("runs"), "run_13g");
-        request.space_overrides = Some(serde_json::json!({
-            "q_init": {"fix": "Infinity"},
-            "c": {"range": [1.2, 1.8]},
-            "schedule": {"choices": ["threshold", "visit"]},
-        }));
-        request.validate().unwrap();
-        let argv = request.argv();
-        assert!(argv
-            .windows(2)
-            .any(|pair| pair == ["--fix", "q_init=\"Infinity\""]));
-        assert!(argv
-            .windows(2)
-            .any(|pair| pair == ["--param-range", "c=1.2,1.8"]));
-        assert!(argv
-            .windows(2)
-            .any(|pair| pair == ["--param-choices", "schedule=threshold,visit"]));
     }
 
     #[test]
@@ -998,17 +911,6 @@ mod tests {
         request.constraints = Some(serde_json::json!([{ "when": { "select": [] }, "set": { "c": { "fix": 1 } } }]));
         assert!(request.validate().is_err());
         request.constraints = Some(serde_json::json!([{ "select": { "choices": [] } }]));
-        assert!(request.validate().is_err());
-    }
-
-    #[test]
-    fn validate_rejects_a_malformed_space_override() {
-        let mut request = base_request(&PathBuf::from("runs"), "run_13g");
-        request.space_overrides = Some(serde_json::json!({"c": {"range": [2.0, 1.0]}}));
-        assert!(request.validate().is_err());
-        request.space_overrides = Some(serde_json::json!({"c": {"fix": 1, "range": [1, 2]}}));
-        assert!(request.validate().is_err());
-        request.space_overrides = Some(serde_json::json!({"c": {"choices": []}}));
         assert!(request.validate().is_err());
     }
 

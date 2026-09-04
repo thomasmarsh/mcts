@@ -298,8 +298,8 @@ def game_spec(target: Target, binary: Path) -> GameSpec:
 
 
 def resolved_constraints(spec: GameSpec, options: RunOptions) -> Constraints:
-    """Fold the legacy ``--exclude-family`` launch sugar into ``options.constraints``
-    and validate the result against the resolved schema."""
+    """Fold the ``options.exclude_family`` bake-off sugar into
+    ``options.constraints`` and validate the result against the resolved schema."""
     legacy = family_exclusion_constraint(spec.tuning, options.exclude_family)
     constraints = (legacy, *options.constraints) if legacy is not None else options.constraints
     validate_constraints(spec.tuning, constraints)

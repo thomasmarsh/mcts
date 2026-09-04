@@ -23,7 +23,7 @@ uv run --project tuner tuner \
   --run-dir /tmp/mcts-tuner-druid \
   --seed 7 --task-seed 11 --cohort-size 8 --finalists 2 \
   --bootstrap-candidates 3 --random-reserve-candidates 2 \
-  --exclude-family meta_mcts \
+  --constraint '{"select": {"choices": ["ucb1", "ucb1_tuned", "rave"]}}' \
   --tuning-pairs 6 --tuning-pair-budget 132 --diagnostic-pair-budget 8 --validation-pair-budget 12 \
   --production-validation-pairs 12 \
   --tuning-max-iterations 16 --validation-max-iterations 32 \
@@ -50,9 +50,12 @@ Panel weights produce a deterministic weighted-fair task order. Every task
 names the exact panel opponent, canonical configuration fingerprint, seed, and
 start stratum it uses. `--seed` controls proposal streams only;
 `--task-seed` controls the disjoint tuning and held-out validation corpora.
-`--exclude-family FAMILY` may be repeated to remove named families from candidate
-proposals only. Its normalized set is frozen for resume; it does not change
-schema-default or inline objective opponents.
+`--constraint JSON` may be repeated to restrict the tuning space for this run —
+an array of `{"when"?: {...}, "set": {...}}` entries, or the bare
+`{name: {fix|range|choices}}` map as sugar for one un-predicated entry. Each
+narrowing may only constrain (never widen) the declared schema. Constraints
+apply to candidate proposals only; the frozen set is validated for resume and
+does not change schema-default or inline objective opponents.
 All configured task counts must be complete panel weight cycles. `--tuning-pairs`
 is the maximum tuning prefix: the tuner evaluates every accepted candidate on
 each cumulative complete-cycle prefix before deepening the full cohort, with no
@@ -187,7 +190,7 @@ uv run --project tuner tuner \
   --run-dir /tmp/mcts-tuner-druid --resume \
   --seed 7 --task-seed 11 --cohort-size 8 --finalists 2 \
   --bootstrap-candidates 3 --random-reserve-candidates 2 \
-  --exclude-family meta_mcts \
+  --constraint '{"select": {"choices": ["ucb1", "ucb1_tuned", "rave"]}}' \
   --tuning-pairs 6 --tuning-pair-budget 132 --validation-pair-budget 12 \
   --production-validation-pairs 12 \
   --tuning-max-time-ms 16 --validation-max-time-ms 32 \

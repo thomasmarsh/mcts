@@ -78,8 +78,6 @@ describe("LaunchForm — constraint editor", () => {
     await vi.waitFor(() => expect(launchRun).toHaveBeenCalled());
     const body = launchRun.mock.calls[0]![0] as TunerLaunchRequest;
     expect(body.constraints).toEqual([{ set: { algorithm: { choices: ["mcts", "random"] } } }]);
-    expect(body.exclude_family).toBeUndefined();
-    expect(body.space_overrides).toBeUndefined();
   });
 
   it("omits `constraints` when every row is free", async () => {

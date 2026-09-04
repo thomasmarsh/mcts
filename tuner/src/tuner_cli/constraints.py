@@ -82,18 +82,18 @@ def no_constraints() -> Constraints:
 def family_exclusion_constraint(
     schema: TuningSchema, excluded_families: tuple[str, ...]
 ) -> Constraint | None:
-    """Lower a legacy ``--exclude-family`` list to a ``choices`` narrowing.
+    """Lower an ``excluded_families`` list to a ``choices`` narrowing.
 
-    "Exclude family X" is a pre-taxonomy launch surface (the UI now emits the
-    residual choice set directly). It maps to a ``choices`` narrowing of the
-    ``family`` categorical keeping every value not named -- ``None`` when the
-    list is empty.
+    "Exclude family X" is a bake-off launch convenience (the tuner UI/CLI now
+    emit the residual choice set directly as a ``constraints`` entry). It maps
+    to a ``choices`` narrowing of the ``family`` categorical keeping every value
+    not named -- ``None`` when the list is empty.
     """
     if not excluded_families:
         return None
     family = next((p for p in schema.parameters if p.name == "family"), None)
     if family is None or family.kind != "categorical" or family.choices is None:
-        raise ValueError("--exclude-family needs a categorical 'family' parameter")
+        raise ValueError("family exclusion needs a categorical 'family' parameter")
     unknown = sorted(set(excluded_families) - {str(c) for c in family.choices})
     if unknown:
         raise ValueError(f"unknown excluded family: {unknown[0]}")
