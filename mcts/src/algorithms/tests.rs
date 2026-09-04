@@ -114,7 +114,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     );
 }
 
-// A `Strategy` that never sets `Requirements.amaf` must not pay for the
+// A `PolicyProfile` that never sets `Requirements.amaf` must not pay for the
 // per-(child, player) AMAF side table at all -- not just leave it logically
 // unused. `heap_bytes_estimate` excluding the `ActionStats` term is the
 // observable proxy for "the `Vec` was never allocated" from outside
@@ -500,7 +500,7 @@ mod converge_game_tests {
     use crate::algorithms::mcts::config::IsmctsMode;
     use crate::algorithms::mcts::node::NodeState;
     use crate::algorithms::mcts::select;
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{
         GraphSearch, GraphStats, McgsCorrection, SearchConfig, TranspositionKeying, TreeSearch,
@@ -634,7 +634,7 @@ mod converge_game_tests {
         }
     }
 
-    type TS = TreeSearch<ConvergeGame, Ucb1>;
+    type TS = TreeSearch<ConvergeGame, Mcts>;
 
     fn legal(state: &State) -> Vec<Action> {
         let mut actions = Vec::new();
@@ -783,7 +783,7 @@ mod converge_game_tests {
 
     #[test]
     fn state_only_keying_is_rejected_only_with_unbounded_playout_depth() {
-        let base = SearchConfig::<ConvergeGame, Ucb1>::default()
+        let base = SearchConfig::<ConvergeGame, Mcts>::default()
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .transposition_keying(TranspositionKeying::StateOnly);
 
@@ -805,7 +805,7 @@ mod converge_game_tests {
             "StateOnly requires a finite max_playout_depth to bound descent under cycles"
         );
         assert!(
-            SearchConfig::<ConvergeGame, Ucb1>::default()
+            SearchConfig::<ConvergeGame, Mcts>::default()
                 .graph_search(GraphSearch::Dag(GraphStats::Both))
                 .transposition_keying(TranspositionKeying::PerPly)
                 .validate()
@@ -1058,7 +1058,7 @@ mod converge_game_tests {
         // `plain_errors`, and lands *below* `plain_errors` at every budget
         // tested. `rave_blend_correction` (`correction.rs`) never gates
         // descent or backprop the way `residual_correction` does -- it only
-        // ever adjusts the score `Ucb1::score_child` uses to pick a child,
+        // ever adjusts the score `select::Ucb1::score_child` uses to pick a child,
         // decaying its influence as the edge's own visit count grows -- so
         // the merged node's edge keeps accumulating real samples every
         // iteration regardless of how the blend leans. This is a genuine
@@ -1101,7 +1101,7 @@ mod mo_converge_game_tests {
     use crate::algorithms::mcts::config::IsmctsMode;
     use crate::algorithms::mcts::node::NodeState;
     use crate::algorithms::mcts::select;
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{SearchConfig, TreeSearch};
     use rand::rngs::SmallRng;
@@ -1230,7 +1230,7 @@ mod mo_converge_game_tests {
         }
     }
 
-    type TS = TreeSearch<MoConvergeGame, Ucb1>;
+    type TS = TreeSearch<MoConvergeGame, Mcts>;
 
     fn legal(state: &State) -> Vec<Action> {
         let mut actions = Vec::new();
@@ -1533,7 +1533,7 @@ mod mo_converge_game_tests {
 
 mod cycle_game_tests {
     use crate::game::{Game, PlayerIndex};
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
@@ -1612,7 +1612,7 @@ mod cycle_game_tests {
     #[test]
     fn state_only_keying_descent_guard_terminates_on_a_two_cycle() {
         let state = State::default();
-        let mut search = TreeSearch::<CycleGame, Ucb1>::default().config(
+        let mut search = TreeSearch::<CycleGame, Mcts>::default().config(
             SearchConfig::default()
                 .max_iterations(50)
                 .expand_threshold(0)
@@ -1636,7 +1636,7 @@ mod cycle_game_tests {
 // same-ply ones, already covered by `converge_game_tests`).
 mod reversible_game_tests {
     use crate::game::{Game, PlayerIndex};
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
@@ -1742,7 +1742,7 @@ mod reversible_game_tests {
         }
     }
 
-    fn count_nodes_with_hash(search: &TreeSearch<ReversibleGame, Ucb1>, hash: u64) -> usize {
+    fn count_nodes_with_hash(search: &TreeSearch<ReversibleGame, Mcts>, hash: u64) -> usize {
         let mut count = 0;
         search.index.for_each(|node| {
             if node.hash == hash {
@@ -1757,7 +1757,7 @@ mod reversible_game_tests {
         let state = State::default();
         let target_hash = 0b111u64;
 
-        let mut state_only = TreeSearch::<ReversibleGame, Ucb1>::default().config(
+        let mut state_only = TreeSearch::<ReversibleGame, Mcts>::default().config(
             SearchConfig::default()
                 .max_iterations(500)
                 .expand_threshold(0)
@@ -1768,7 +1768,7 @@ mod reversible_game_tests {
         );
         state_only.choose_action(&state);
 
-        let mut per_ply = TreeSearch::<ReversibleGame, Ucb1>::default().config(
+        let mut per_ply = TreeSearch::<ReversibleGame, Mcts>::default().config(
             SearchConfig::default()
                 .max_iterations(500)
                 .expand_threshold(0)
@@ -1802,7 +1802,7 @@ mod reversible_game_tests {
 // subtree reaches `D` by a different route than the one that created it.
 mod diamond_game_tests {
     use crate::game::{Game, PlayerIndex};
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
@@ -1876,7 +1876,7 @@ mod diamond_game_tests {
         }
     }
 
-    fn ply_for_hash(search: &TreeSearch<DiamondGame, Ucb1>, hash: u64) -> u32 {
+    fn ply_for_hash(search: &TreeSearch<DiamondGame, Mcts>, hash: u64) -> u32 {
         let mut found = None;
         search.index.for_each(|node| {
             if node.hash == hash {
@@ -1886,7 +1886,7 @@ mod diamond_game_tests {
         found.unwrap_or_else(|| panic!("no arena node with hash {hash}"))
     }
 
-    fn contains_hash(search: &TreeSearch<DiamondGame, Ucb1>, hash: u64) -> bool {
+    fn contains_hash(search: &TreeSearch<DiamondGame, Mcts>, hash: u64) -> bool {
         let mut found = false;
         search.index.for_each(|node| {
             if node.hash == hash {
@@ -1896,7 +1896,7 @@ mod diamond_game_tests {
         found
     }
 
-    fn node_count(search: &TreeSearch<DiamondGame, Ucb1>) -> usize {
+    fn node_count(search: &TreeSearch<DiamondGame, Mcts>) -> usize {
         let mut count = 0;
         search.index.for_each(|_| count += 1);
         count
@@ -1909,7 +1909,7 @@ mod diamond_game_tests {
         let p2_state = State { node: 2 };
         let d_hash = DiamondGame::zobrist_hash(&State { node: 4 });
 
-        let mut search = TreeSearch::<DiamondGame, Ucb1>::default().config(
+        let mut search = TreeSearch::<DiamondGame, Mcts>::default().config(
             SearchConfig::default()
                 .max_iterations(20)
                 .expand_threshold(0)

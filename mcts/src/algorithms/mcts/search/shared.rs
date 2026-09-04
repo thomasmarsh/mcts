@@ -217,7 +217,7 @@ pub struct Shared<'a, G: Game> {
     pub max_playout_depth: usize,
     pub solver_loss_threshold: u32,
     /// From `SearchConfig::requirements().amaf` -- whether the active
-    /// `Strategy` reads per-child AMAF stats, gating whether newly created
+    /// `PolicyProfile` reads per-child AMAF stats, gating whether newly created
     /// `Node`/`ChildArray`s allocate their AMAF side table at all.
     pub has_amaf: bool,
     /// See `McgsCorrection`'s doc comment -- only ever consulted in
@@ -235,7 +235,7 @@ pub struct Shared<'a, G: Game> {
     /// that iteration's legal children, scored with availability counts
     /// instead of a shared parent-visit count. `SearchConfig::validate`
     /// requires either `IsmctsMode` variant to be paired only with
-    /// `strategy::Ucb1` and a single-threaded, DAG-free, solver-free,
+    /// `profile::Mcts` (plain UCT) and a single-threaded, DAG-free, solver-free,
     /// reuse-free tree -- see its doc comment for why each of those is
     /// required.
     pub use_ismcts: bool,

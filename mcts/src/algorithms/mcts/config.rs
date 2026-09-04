@@ -351,7 +351,7 @@ pub use PolicyProfile as Strategy;
 pub struct SearchConfig<G, S>
 where
     G: Game,
-    S: Strategy<G> + Default,
+    S: PolicyProfile<G> + Default,
 {
     pub select: S::Select,
     pub simulate: S::Simulate,
@@ -424,7 +424,7 @@ where
     pub name: String,
 
     /// `true` while `name` is still the value composed from the four axes'
-    /// `label()`s (see `strategy::Compose`). The axis setters (`.select()`
+    /// `label()`s (see `profile::Mcts`). The axis setters (`.select()`
     /// etc.) recompute `name` only while this holds; an explicit `.name(..)`
     /// call clears it and freezes the name.
     pub(crate) name_is_auto: bool,
@@ -526,7 +526,7 @@ where
     /// default) keeps every existing search's untouched `QInit`-driven
     /// `unvisited_value` behavior. See `prior`'s module doc comment for why
     /// this is a boxed trait object rather than a third generic parameter on
-    /// `Strategy<G>`/`TreeSearch<G, S>`.
+    /// `PolicyProfile<G>`/`TreeSearch<G, S>`.
     pub prior: Option<Box<dyn prior::PriorPolicyDyn<G>>>,
 
     /// ISMCTS (Cowling, Powley & Whitehouse, IEEE ToCIAIG 2012): every
@@ -628,7 +628,7 @@ pub enum IsmctsMode {
 }
 
 /// Composes a search's `name` from its four axes' `label()`s, in the format
-/// documented on `strategy::Compose`:
+/// documented on `profile::Mcts`:
 ///
 /// - always `mcts[<select>]`;
 /// - `+<simulate>` appended when the simulate label isn't `"uniform"`;
@@ -670,7 +670,7 @@ where
 impl<G, S> Default for SearchConfig<G, S>
 where
     G: Game,
-    S: Strategy<G> + Default,
+    S: PolicyProfile<G> + Default,
 {
     fn default() -> Self {
         let select: S::Select = Default::default();
@@ -720,7 +720,7 @@ where
 impl<G, S> SearchConfig<G, S>
 where
     G: Game,
-    S: Strategy<G> + Default,
+    S: PolicyProfile<G> + Default,
 {
     pub(crate) fn graph_stats(&self) -> Option<GraphStats> {
         match self.graph_search {
@@ -1275,19 +1275,19 @@ mod search_config_validate_tests {
     #[test]
     fn validate_accepts_use_mcts_solver_for_more_than_two_players() {
         let config =
-            SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().use_mcts_solver(true);
+            SearchConfig::<ThreePlayerGame, profile::Mcts>::default().use_mcts_solver(true);
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_accepts_use_mcts_solver_off_for_more_than_two_players() {
-        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default();
+        let config = SearchConfig::<ThreePlayerGame, profile::Mcts>::default();
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_a_two_player_only_prior_for_more_than_two_players() {
-        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()
             .with_prior(prior::EvaluatorPrior::<ThreePlayerGame>::new());
         assert!(config.validate().is_err());
     }
@@ -1328,7 +1328,7 @@ mod search_config_validate_tests {
     fn validate_rejects_ments_select_with_classic_backprop() {
         let config = SearchConfig::<
             ThreePlayerGame,
-            strategy::Compose<select::Ments, simulate::Uniform, backprop::Classic>,
+            profile::Mcts<select::Ments, simulate::Uniform, backprop::Classic>,
         >::default();
         let err = config.validate().unwrap_err();
         assert!(err.contains("softmax"), "{err}");
@@ -1338,35 +1338,35 @@ mod search_config_validate_tests {
     fn validate_accepts_ments_select_with_softmax_backprop() {
         let config = SearchConfig::<
             ThreePlayerGame,
-            strategy::Compose<select::Ments, simulate::Uniform, backprop::SoftmaxBackprop>,
+            profile::Mcts<select::Ments, simulate::Uniform, backprop::SoftmaxBackprop>,
         >::default();
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_ismcts_mode_without_hidden_information() {
-        let config = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree);
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_accepts_ismcts_mode_with_ucb1_and_hidden_information() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree);
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_accepts_multi_tree_ismcts_mode_with_ucb1_and_hidden_information() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree);
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn validate_accepts_multi_tree_ismcts_mode_with_root_parallelism() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .num_threads(2);
         assert!(config.validate().is_ok());
@@ -1374,7 +1374,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_accepts_ismcts_mode_with_root_parallelism() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .num_threads(2);
         assert!(config.validate().is_ok());
@@ -1382,7 +1382,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_tree_parallelism() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .num_tree_threads(2);
         assert!(config.validate().is_err());
@@ -1390,7 +1390,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_multi_tree_ismcts_mode_with_tree_parallelism() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .num_tree_threads(2);
         assert!(config.validate().is_err());
@@ -1398,7 +1398,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_hybrid_root_and_tree_parallelism() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .num_threads(2)
             .num_tree_threads(2);
@@ -1407,7 +1407,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_determinize_root() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .num_threads(2)
             .determinize_root(true);
@@ -1416,7 +1416,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_multi_tree_ismcts_mode_with_determinize_root() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .num_threads(2)
             .determinize_root(true);
@@ -1425,7 +1425,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_transpositions() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .use_transpositions(true);
         assert!(config.validate().is_err());
@@ -1433,7 +1433,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_accepts_ismcts_mode_with_dag_both_and_residual_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
@@ -1442,7 +1442,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_accepts_ismcts_mode_with_dag_both_and_rave_blend_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::RaveBlend {
@@ -1453,7 +1453,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_dag_edges_even_with_rave_blend_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Edges))
             .mcgs_correction(McgsCorrection::RaveBlend {
@@ -1464,7 +1464,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_multi_tree_ismcts_mode_with_dag_both_and_rave_blend_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::RaveBlend {
@@ -1475,7 +1475,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_dag_both_but_no_residual_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both));
         assert!(config.validate().is_err());
@@ -1483,7 +1483,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_dag_edges_even_with_residual_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Edges))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
@@ -1492,7 +1492,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_dag_nodes_even_with_residual_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .graph_search(GraphSearch::Dag(GraphStats::Nodes))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
@@ -1505,7 +1505,7 @@ mod search_config_validate_tests {
         // (merging alone). `SingleTree`'s corrections have not been validated
         // against a per-player tree's own convergence, so pairing `MultiTree`
         // with `Residual` stays rejected.
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both))
             .mcgs_correction(McgsCorrection::Residual { epsilon: 0.1 });
@@ -1514,7 +1514,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_accepts_multi_tree_ismcts_mode_with_dag_both_and_disabled_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .graph_search(GraphSearch::Dag(GraphStats::Both));
         assert!(config.validate().is_ok());
@@ -1522,7 +1522,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_multi_tree_ismcts_mode_with_dag_nodes_and_disabled_correction() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::MultiTree)
             .graph_search(GraphSearch::Dag(GraphStats::Nodes));
         assert!(config.validate().is_err());
@@ -1530,7 +1530,7 @@ mod search_config_validate_tests {
 
     #[test]
     fn validate_rejects_ismcts_mode_with_reuse_tree() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .reuse_tree(true);
         assert!(config.validate().is_err());
@@ -1539,13 +1539,13 @@ mod search_config_validate_tests {
     #[test]
     fn validate_rejects_ismcts_redeterminize_without_ismcts_mode() {
         let config =
-            SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default().ismcts_redeterminize(true);
+            SearchConfig::<HiddenInfoGame, profile::Mcts>::default().ismcts_redeterminize(true);
         assert!(config.validate().is_err());
     }
 
     #[test]
     fn validate_accepts_ismcts_redeterminize_with_ismcts_mode() {
-        let config = SearchConfig::<HiddenInfoGame, strategy::Ucb1>::default()
+        let config = SearchConfig::<HiddenInfoGame, profile::Mcts>::default()
             .ismcts_mode(IsmctsMode::SingleTree)
             .ismcts_redeterminize(true);
         assert!(config.validate().is_ok());
@@ -1569,20 +1569,20 @@ mod search_config_validate_tests {
     fn composed_name_is_built_from_the_four_axis_labels() {
         // Plain UCT: simulate/backprop/final_action all at default -> bare select.
         assert_eq!(
-            SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default().name,
+            SearchConfig::<ThreePlayerGame, profile::Mcts>::default().name,
             "mcts[ucb1]"
         );
 
         // Non-default simulate, wrapper folds its inner label in.
         type Ucb1EgMast =
-            strategy::Compose<select::Ucb1, simulate::EpsilonGreedy<ThreePlayerGame, simulate::Mast>>;
+            profile::Mcts<select::Ucb1, simulate::EpsilonGreedy<ThreePlayerGame, simulate::Mast>>;
         assert_eq!(
             SearchConfig::<ThreePlayerGame, Ucb1EgMast>::default().name,
             "mcts[ucb1+eps_greedy(mast)]"
         );
 
         // Non-default backprop switches to the positional form.
-        type MentsSoftmax = strategy::Compose<
+        type MentsSoftmax = profile::Mcts<
             select::Ments,
             simulate::Uniform,
             backprop::SoftmaxBackprop,
@@ -1593,7 +1593,7 @@ mod search_config_validate_tests {
         );
 
         // Non-default final_action is appended.
-        type Ucb1MaxAvg = strategy::Compose<
+        type Ucb1MaxAvg = profile::Mcts<
             select::Ucb1,
             simulate::Uniform,
             backprop::Classic,
@@ -1607,11 +1607,11 @@ mod search_config_validate_tests {
 
     #[test]
     fn axis_setters_refresh_the_auto_name_but_an_explicit_name_freezes_it() {
-        let refreshed = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+        let refreshed = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()
             .simulate(simulate::Uniform);
         assert_eq!(refreshed.name, "mcts[ucb1]");
 
-        let frozen = SearchConfig::<ThreePlayerGame, strategy::Ucb1>::default()
+        let frozen = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()
             .name("my-search")
             .simulate(simulate::Uniform);
         assert_eq!(frozen.name, "my-search");

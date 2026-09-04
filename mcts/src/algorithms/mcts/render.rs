@@ -3,9 +3,9 @@ use crate::game::Real;
 use crate::symmetry::incoming_sym;
 
 use super::node::real_action;
-use super::{index, table::TranspositionTable, Strategy, TreeIndex, TreeSearch};
+use super::{index, table::TranspositionTable, PolicyProfile, TreeIndex, TreeSearch};
 
-pub fn render<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>)
+pub fn render<G: Game, S: PolicyProfile<G>>(search: &TreeSearch<G, S>)
 where
     G::S: NodeRender,
 {
@@ -13,7 +13,7 @@ where
     print::<G>(&search.index, search.root_id, canonicalizes);
 }
 
-pub fn render_trans<G: Game, S: Strategy<G>>(search: &TreeSearch<G, S>, state: &G::S)
+pub fn render_trans<G: Game, S: PolicyProfile<G>>(search: &TreeSearch<G, S>, state: &G::S)
 where
     G::S: NodeRender,
 {

@@ -180,7 +180,7 @@ pub trait SelectPolicy<G: Game>: Sized + Clone + Sync + Send + Default {
     }
 
     /// Short, stable identifier for this policy, used to compose a
-    /// `SearchConfig::name` from its four axes (see the `Compose` doc
+    /// `SearchConfig::name` from its four axes (see the `Mcts` doc
     /// comment). Hand-written per impl (`"ucb1"`, `"uct_pn"`, ...); wrapper
     /// policies fold in their inner label (`"eps_greedy(ucb1)"`). Takes
     /// `&self` so it stays object-safe -- `DynSelect` forwards to its box.

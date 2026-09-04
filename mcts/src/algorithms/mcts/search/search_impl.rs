@@ -49,7 +49,7 @@ fn finite(value: f64) -> f64 {
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: crate::algorithms::mcts::Strategy<G>,
+    S: crate::algorithms::mcts::PolicyProfile<G>,
     crate::algorithms::mcts::SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {
@@ -115,7 +115,7 @@ where
 impl<G, S> Search for TreeSearch<G, S>
 where
     G: Game,
-    S: crate::algorithms::mcts::Strategy<G>,
+    S: crate::algorithms::mcts::PolicyProfile<G>,
     crate::algorithms::mcts::SearchConfig<G, S>: Default,
     G::S: std::fmt::Display,
 {

@@ -135,7 +135,7 @@ fn determinize_non_terminal<G: Game>(state: &G::S, rng: &mut SmallRng) -> G::S {
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: crate::algorithms::mcts::Strategy<G>,
+    S: crate::algorithms::mcts::PolicyProfile<G>,
     crate::algorithms::mcts::SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {
@@ -450,7 +450,7 @@ where
 mod tests {
     use super::{merge_root_parallel_workers, RootParallelWorker};
     use crate::game::{Game, PlayerIndex};
-    use crate::algorithms::mcts::strategy::Ucb1;
+    use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
     use crate::{SearchConfig, TreeSearch};
     use rand::rngs::SmallRng;
@@ -532,7 +532,7 @@ mod tests {
     // root-level share.
     fn run_and_count_determinize_calls(num_threads: usize, determinize_root: bool) -> usize {
         DETERMINIZE_CALLS.store(0, Relaxed);
-        let mut search = TreeSearch::<Coin, Ucb1>::new().config(
+        let mut search = TreeSearch::<Coin, Mcts>::new().config(
             SearchConfig::new()
                 .max_iterations(4)
                 .num_threads(num_threads)

@@ -12,8 +12,8 @@
 //! `SelectPolicy` otherwise shares.
 //!
 //! Deliberately its own pluggable component -- not a fifth associated type on
-//! `config::Strategy<G>` -- since that trait already has ~20 concrete impls
-//! plus the generic `strategy::Compose` escape hatch used broadly across
+//! `config::PolicyProfile<G>` -- since that trait already has ~20 concrete impls
+//! plus the generic `profile::Mcts` escape hatch used broadly across
 //! `mcts-bench`/`mcts-tune`/examples, and Rust has no stable way to give an
 //! existing trait's associated type a default that every one of those impls
 //! would otherwise have to grow by hand. `SearchConfig::prior` instead stores

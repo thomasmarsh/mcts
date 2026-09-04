@@ -5,7 +5,7 @@
 //! Negamax only makes sense for deterministic, perfect-information,
 //! two-player zero-sum games (the whole formulation relies on
 //! `value(state) == -value(state_after_opponents_best_reply)`), so this is
-//! a separate `Search` implementation rather than another `mcts::Strategy`
+//! a separate `Search` implementation rather than another `mcts::PolicyProfile`
 //! -- it shares `Game` with the MCTS side, but nothing else.
 //!
 //! `Game` has no compile-time marker for "deterministic" or "perfect

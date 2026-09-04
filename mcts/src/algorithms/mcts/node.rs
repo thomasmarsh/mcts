@@ -170,7 +170,7 @@ struct NodeStatsData {
     player: Vec<PlayerStats>,
     // Side table, parallel to `player`. Only populated (length
     // `player.len()`) when `has_amaf` is set on the owning `NodeStats`;
-    // left empty otherwise so a `Strategy` that never requests AMAF doesn't
+    // left empty otherwise so a `PolicyProfile` that never requests AMAF doesn't
     // pay for it.
     amaf: Vec<ActionStats>,
 }
@@ -394,7 +394,7 @@ struct ChildArrayData {
     player: Vec<PlayerStats>,
     // Side table, parallel to `player`. Only populated (same length as
     // `player`) when `has_amaf` is set on the owning `ChildArray`; left
-    // empty otherwise so a `Strategy` that never requests AMAF doesn't pay
+    // empty otherwise so a `PolicyProfile` that never requests AMAF doesn't pay
     // for it -- this is the actually-multiplied structure (num_children *
     // num_players), so this is the real payoff of gating on `has_amaf`.
     amaf: Vec<ActionStats>,

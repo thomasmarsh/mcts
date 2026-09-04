@@ -314,7 +314,7 @@ fn select_multi_tree<G: Game>(
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: crate::algorithms::mcts::Strategy<G>,
+    S: crate::algorithms::mcts::PolicyProfile<G>,
     crate::algorithms::mcts::SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {

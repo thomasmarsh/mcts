@@ -1,6 +1,6 @@
 use super::super::book;
 use super::super::config::SearchConfig;
-use super::super::config::Strategy;
+use super::super::config::PolicyProfile;
 use super::super::index::Id;
 use super::super::node::real_action;
 use super::super::node::ChildArray;
@@ -60,7 +60,7 @@ use rand::rngs::SmallRng;
 /// end while
 /// ```
 #[derive(Clone)]
-pub struct QuasiBestFirst<G: Game, S: Strategy<G>> {
+pub struct QuasiBestFirst<G: Game, S: PolicyProfile<G>> {
     pub book: book::OpeningBook<G::A>,
     pub search: TreeSearch<G, S>,
     pub epsilon: f64,
@@ -71,7 +71,7 @@ pub struct QuasiBestFirst<G: Game, S: Strategy<G>> {
 impl<G, S> QuasiBestFirst<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     TreeSearch<G, S>: Default,
 {
     pub fn new() -> Self {
@@ -107,7 +107,7 @@ where
 impl<G, S> Default for QuasiBestFirst<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     TreeSearch<G, S>: Default,
 {
     fn default() -> Self {
@@ -133,7 +133,7 @@ where
 impl<G, S> SelectPolicy<G> for QuasiBestFirst<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     SearchConfig<G, S>: Default,
 {
     type Score = f64;

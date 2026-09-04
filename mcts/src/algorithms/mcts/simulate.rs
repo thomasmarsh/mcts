@@ -1193,14 +1193,14 @@ where
 ////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Clone)]
-pub struct MetaMcts<G: Game, S: Strategy<G>> {
+pub struct MetaMcts<G: Game, S: PolicyProfile<G>> {
     pub inner: TreeSearch<G, S>,
 }
 
 impl<G, S> Default for MetaMcts<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
 {
     fn default() -> Self {
         Self {
@@ -1212,7 +1212,7 @@ where
 impl<G, S> SimulatePolicy<G> for MetaMcts<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
 {
     fn label(&self) -> String {
         "meta_mcts".into()

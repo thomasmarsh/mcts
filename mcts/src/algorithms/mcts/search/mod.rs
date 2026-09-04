@@ -15,7 +15,7 @@ pub use shared::TreeIndex;
 pub use shared::TreeStats;
 
 use super::config::SearchConfig;
-use super::config::Strategy;
+use super::config::PolicyProfile;
 use super::index;
 use super::index::Id;
 use super::node::Node;
@@ -66,7 +66,7 @@ pub(crate) struct RootParallelReport<A> {
 pub struct TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     SearchConfig<G, S>: Sync + Send,
     G::S: std::fmt::Display,
 {
@@ -116,7 +116,7 @@ where
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     G::S: std::fmt::Display,
 {
     pub fn config(mut self, config: SearchConfig<G, S>) -> Self {
@@ -128,7 +128,7 @@ where
 impl<G, S> Default for TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     SearchConfig<G, S>: Default,
     G::S: std::fmt::Display,
 {
@@ -140,7 +140,7 @@ where
 impl<G, S> TreeSearch<G, S>
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     SearchConfig<G, S>: Default,
     G::S: std::fmt::Display,
 {
