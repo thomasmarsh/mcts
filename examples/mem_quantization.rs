@@ -15,7 +15,7 @@
 //
 // Usage: cargo run --release --example mem_quantization
 use game_druid::{Druid, HashedState};
-use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
 const ITERATIONS: usize = 20_000;
@@ -45,13 +45,14 @@ fn main() {
             .q_init(QInit::Infinity)
             .max_iterations(ITERATIONS),
     );
-    let mut amaf_on = TreeSearch::<Druid, strategy::Amaf>::new().config(
-        SearchConfig::new()
-            .name("amaf-on")
-            .expand_threshold(1)
-            .q_init(QInit::Infinity)
-            .max_iterations(ITERATIONS),
-    );
+    let mut amaf_on =
+        TreeSearch::<Druid, strategy::Compose<select::Amaf, simulate::Uniform>>::new().config(
+            SearchConfig::new()
+                .name("amaf-on")
+                .expand_threshold(1)
+                .q_init(QInit::Infinity)
+                .max_iterations(ITERATIONS),
+        );
     let state = HashedState::default();
     amaf_off.choose_action(&state);
     amaf_on.choose_action(&state);

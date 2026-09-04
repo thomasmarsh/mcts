@@ -32,7 +32,7 @@
 use std::time::Duration;
 
 use game_knightthrough::Knightthrough;
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -54,7 +54,10 @@ fn baseline(budget: Duration, name: &str) -> TreeSearch<KT, strategy::Ucb1> {
     )
 }
 
-fn fsu(budget: Duration, name: &str) -> TreeSearch<KT, strategy::Ucb1Pn> {
+fn fsu(
+    budget: Duration,
+    name: &str,
+) -> TreeSearch<KT, strategy::Compose<select::UctPn, simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

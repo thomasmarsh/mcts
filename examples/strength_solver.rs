@@ -38,7 +38,10 @@ fn medium_config(
     use_solver: bool,
     budget: Duration,
     name: &str,
-) -> TreeSearch<Druid, strategy::Ucb1Mast> {
+) -> TreeSearch<
+    Druid,
+    strategy::Compose<select::Ucb1, simulate::EpsilonGreedy<Druid, simulate::Mast>>,
+> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

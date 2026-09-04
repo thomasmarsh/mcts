@@ -28,7 +28,7 @@ fn easy_config(
     c_pn: Option<f64>,
     budget: Duration,
     name: &str,
-) -> TreeSearch<Druid, strategy::Ucb1Pn> {
+) -> TreeSearch<Druid, strategy::Compose<select::UctPn, simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -45,7 +45,10 @@ fn medium_config(
     c_pn: Option<f64>,
     budget: Duration,
     name: &str,
-) -> TreeSearch<Druid, strategy::Ucb1PnMast> {
+) -> TreeSearch<
+    Druid,
+    strategy::Compose<select::UctPn, simulate::EpsilonGreedy<Druid, simulate::Mast>>,
+> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

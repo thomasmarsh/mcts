@@ -21,9 +21,9 @@
 use std::time::Duration;
 
 use game_ingenious::{Ingenious, State};
-use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use mcts::util::AnySearch;
 use mcts_bench::tournament::Result as GameResult;
 
@@ -43,7 +43,9 @@ fn plain_seat(seed: u64) -> TreeSearch<Ingenious<2>, strategy::Ucb1> {
     )
 }
 
-fn score_bounded_seat(seed: u64) -> TreeSearch<Ingenious<2>, strategy::Ucb1ScoreBounded> {
+fn score_bounded_seat(
+    seed: u64,
+) -> TreeSearch<Ingenious<2>, strategy::Compose<select::ScoreBoundedUct, simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)

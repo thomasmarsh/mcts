@@ -39,7 +39,15 @@ fn tuned_select() -> select::Rave {
 }
 
 // Previously-shipped Strong config: RaveMastDm (Mast-guided playouts).
-fn old_config(name: &str) -> TreeSearch<Druid, strategy::RaveMastDm<Druid>> {
+fn old_config(
+    name: &str,
+) -> TreeSearch<
+    Druid,
+    strategy::Compose<
+        select::Rave,
+        simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Mast>>,
+    >,
+> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
