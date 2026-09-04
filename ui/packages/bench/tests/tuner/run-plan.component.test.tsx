@@ -14,12 +14,12 @@ import {
 import { LaunchForm } from "../../src/tuner/views/LaunchForm.js";
 import { mockTunerEnv } from "./mock-tuner-env.js";
 import type { TunerEnv } from "../../src/tuner/tuner-env.js";
-import type { TunerGameInfo } from "../../src/types.js";
+import type { TunableGame } from "../../src/types.js";
 import type { RunPlan, TunerLaunchRequest } from "../../src/tuner/tuner-types.js";
 
 afterEach(cleanup);
 
-const KIND: TunerGameInfo = {
+const KIND: TunableGame = {
   game: "atari-go",
   tuner: {
     id: "atari-go",
@@ -98,7 +98,7 @@ function setup(over: Partial<TunerEnv> = {}) {
     tunerReducer,
     mockTunerEnv(over),
   );
-  store.dispatch({ tag: "kindsLoaded", kinds: [KIND] });
+  store.dispatch({ tag: "tunableGamesLoaded", tunableGames: [KIND] });
   store.dispatch({
     tag: "objectivesLoaded",
     objectives: [

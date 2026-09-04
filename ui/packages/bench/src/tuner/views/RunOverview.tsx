@@ -146,7 +146,7 @@ export const RunOverview: Component<{
     () => detail()?.manifest?.game_kind ?? projectionRow()?.game_kind ?? null,
   );
   const baseConfig = createMemo(() => {
-    const info = (peek(state().kinds) ?? []).find((k) => k.game === gameKind());
+    const info = (peek(state().tunableGames) ?? []).find((k) => k.game === gameKind());
     return info ? schemaDefaults(info.tuner.parameters) : {};
   });
   const verdict = createMemo(() =>

@@ -21,7 +21,7 @@ export function runView(over: Partial<TunerRunView> = {}): TunerRunView {
 
 export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
   const base: TunerEnv = {
-    listKinds: () => Effect.send([]),
+    listTunableGames: () => Effect.send([]),
     listObjectives: () => Effect.send([]),
     getObjective: () =>
       Effect.send({ key: "o1", content: {}, updated_at: null, is_seed: false }),

@@ -9,7 +9,7 @@ import type {
   RunDetail,
   RunFilters,
   RunSummary,
-  TunerGameInfo,
+  TunableGame,
   TrialRow,
   GameTraceSummary,
 } from "./types.js";
@@ -68,7 +68,7 @@ export interface BenchState {
   /** Per-game tuner metadata for every tuner-tunable game, loaded on mount
    * — populates the tuner launch fields' game picker and the run-detail
    * baseline parameter comparison. */
-  tunerKinds: JobPollState<TunerGameInfo[]>;
+  tunableGames: JobPollState<TunableGame[]>;
 }
 
 export function initialBenchState(): BenchState {
@@ -81,6 +81,6 @@ export function initialBenchState(): BenchState {
     stopError: null,
     deleteError: null,
     showLaunchForm: false,
-    tunerKinds: initialJobPollState<TunerGameInfo[]>(),
+    tunableGames: initialJobPollState<TunableGame[]>(),
   };
 }

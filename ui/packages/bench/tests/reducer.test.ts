@@ -26,7 +26,7 @@ import type {
   RunDetail,
   RunFilters,
   RunSummary,
-  TunerGameInfo,
+  TunableGame,
 } from "../src/types.js";
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -89,7 +89,7 @@ const mockEnv: BenchEnv = {
   getRunStdout: () => Effect.none(),
   launchRun: () => Effect.none(),
   stopRun: () => Effect.none(),
-  getTunerKinds: () => Effect.none(),
+  getTunableGames: () => Effect.none(),
   // Unlike the others, every tailTick's Promise.all includes a trials fetch
   // unconditionally (see reducer.ts) -- Effect.none() here would never
   // resolve and hang every tailing test, so the default must actually send.
@@ -495,8 +495,8 @@ describe("benchReducer / log tail", () => {
 
 // ── tuner kinds ─────────────────────────────────────────────────────────────
 
-describe("benchReducer / tunerKinds", () => {
-  const tlKind: TunerGameInfo = {
+describe("benchReducer / tunableGames", () => {
+  const tlKind: TunableGame = {
     game: "traffic-lights",
     tuner: {
       id: "rave",
@@ -509,23 +509,23 @@ describe("benchReducer / tunerKinds", () => {
   };
 
   it("request -> submitted('done') populates the tuner metadata", () => {
-    const env: BenchEnv = { ...mockEnv, getTunerKinds: () => Effect.send([tlKind]) };
+    const env: BenchEnv = { ...mockEnv, getTunableGames: () => Effect.send([tlKind]) };
     const ts = createTestStore(benchReducer, env, initialBenchState());
 
-    ts.send({ tag: "tunerKinds", action: { tag: "request" } }, (s) => {
-      s.tunerKinds.status = "pending";
+    ts.send({ tag: "tunableGames", action: { tag: "request" } }, (s) => {
+      s.tunableGames.status = "pending";
     });
     ts.receive(
       {
-        tag: "tunerKinds",
+        tag: "tunableGames",
         action: {
           tag: "job",
           action: { tag: "submitted", result: { status: "done", result: [tlKind] } },
         },
       },
       (s) => {
-        s.tunerKinds.status = "done";
-        s.tunerKinds.result = [tlKind];
+        s.tunableGames.status = "done";
+        s.tunableGames.result = [tlKind];
       },
     );
   });

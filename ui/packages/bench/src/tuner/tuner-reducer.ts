@@ -49,7 +49,7 @@ import type {
   TunerObjectiveFile,
   TunerRunView,
 } from "./tuner-types.js";
-import type { JsonValue, TunerGameInfo } from "../types.js";
+import type { JsonValue, TunableGame } from "../types.js";
 
 /** Fixed cadence for the open run's launch-log tail. */
 export const LOG_TAIL_MS = 3_000;
@@ -90,7 +90,7 @@ export interface TunerState {
   runs: RemoteData<TunerRunView[]>;
   /** Completed / failed runs from the projection (science list). */
   projectionRuns: RemoteData<ProjectionRunListItem[]>;
-  kinds: RemoteData<TunerGameInfo[]>;
+  tunableGames: RemoteData<TunableGame[]>;
   objectives: RemoteData<TunerObjectiveFile[]>;
   /** The objective the editor has open (`null` in create mode), keyed so a
    * stale detail response for a previously-open objective is ignored. */
@@ -199,7 +199,7 @@ export function initialTunerState(): TunerState {
   return {
     runs: idle(),
     projectionRuns: idle(),
-    kinds: idle(),
+    tunableGames: idle(),
     objectives: idle(),
     openObjectiveKey: null,
     objectiveDetail: idle(),
@@ -253,8 +253,8 @@ export function initialTunerState(): TunerState {
 
 export type TunerAction =
   | { tag: "init" }
-  | { tag: "kindsLoaded"; kinds: TunerGameInfo[] }
-  | { tag: "kindsFailed"; error: string }
+  | { tag: "tunableGamesLoaded"; tunableGames: TunableGame[] }
+  | { tag: "tunableGamesFailed"; error: string }
   | { tag: "objectivesLoaded"; objectives: TunerObjectiveFile[] }
   | { tag: "objectivesFailed"; error: string }
   | { tag: "openObjective"; key: string | null }
@@ -589,27 +589,27 @@ export function tunerReducer(
 ): Effect<TunerAction> | null {
   switch (action.tag) {
     case "init": {
-      draft.kinds = toLoading(draft.kinds);
+      draft.tunableGames = toLoading(draft.tunableGames);
       draft.objectives = toLoading(draft.objectives);
       draft.runs = toLoading(draft.runs);
       draft.projectionRuns = toLoading(draft.projectionRuns);
       draft.journalGeneration += 1;
       return Effect.merge(
         env
-          .listKinds()
-          .map((kinds): TunerAction => ({ tag: "kindsLoaded", kinds }))
-          .catch((e): TunerAction => ({ tag: "kindsFailed", error: String(e) })),
+          .listTunableGames()
+          .map((tunableGames): TunerAction => ({ tag: "tunableGamesLoaded", tunableGames }))
+          .catch((e): TunerAction => ({ tag: "tunableGamesFailed", error: String(e) })),
         fetchObjectives(env),
         fetchJournal(env),
         fetchProjection(env),
       );
     }
 
-    case "kindsLoaded":
-      draft.kinds = toOk(action.kinds, Date.now());
+    case "tunableGamesLoaded":
+      draft.tunableGames = toOk(action.tunableGames, Date.now());
       return null;
-    case "kindsFailed":
-      draft.kinds = toErr(action.error, draft.kinds);
+    case "tunableGamesFailed":
+      draft.tunableGames = toErr(action.error, draft.tunableGames);
       return null;
     case "objectivesLoaded":
       draft.objectives = toOk(action.objectives, Date.now());

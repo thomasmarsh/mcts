@@ -80,11 +80,11 @@ describe("createBenchApiClient", () => {
     expect(calls[0]!.init?.method).toBe("POST");
   });
 
-  it("getTunerKinds hits the tuner/kinds route", async () => {
+  it("getTunableGames hits the tuner/kinds route", async () => {
     const calls = stubFetch([]);
     const client = createBenchApiClient();
 
-    await client.getTunerKinds();
+    await client.getTunableGames();
     expect(calls[0]!.url).toBe("/api/bench/tuner/kinds");
   });
 

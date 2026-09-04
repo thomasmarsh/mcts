@@ -225,7 +225,7 @@ export interface TunerInfo {
 }
 
 /** `GET /api/bench/tuner/kinds` element — one tunable game. */
-export interface TunerGameInfo {
+export interface TunableGame {
   game: string;
   tuner: TunerInfo;
 }

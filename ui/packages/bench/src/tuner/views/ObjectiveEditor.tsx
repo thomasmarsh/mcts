@@ -64,9 +64,9 @@ export const ObjectiveEditor: Component<{
     if (!keyEdited()) setKeyText(slugKey(draft().objectiveId));
   });
 
-  const kinds = createMemo(() => peek(state().kinds) ?? []);
+  const tunableGames = createMemo(() => peek(state().tunableGames) ?? []);
   const schema = createMemo<TunerInfo | null>(
-    () => kinds().find((k) => k.game === draft().gameKind)?.tuner ?? null,
+    () => tunableGames().find((k) => k.game === draft().gameKind)?.tuner ?? null,
   );
   const clientErrors = createMemo(() => validateDraft(draft(), schema()));
   const hasInlineConfig = createMemo(() =>
@@ -281,7 +281,7 @@ export const ObjectiveEditor: Component<{
             <Show when={draft().gameKind === ""}>
               <option value="">(pick a game)</option>
             </Show>
-            <For each={kinds()}>{(k) => <option value={k.game}>{k.game}</option>}</For>
+            <For each={tunableGames()}>{(k) => <option value={k.game}>{k.game}</option>}</For>
           </select>
         </label>
         <Show when={isCreate()}>

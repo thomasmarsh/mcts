@@ -10,7 +10,7 @@ import type {
   RunSummary,
   LaunchResponse,
   StopResponse,
-  TunerGameInfo,
+  TunableGame,
   TrialRow,
   GameTraceSummary,
   GameMove,
@@ -114,7 +114,7 @@ export const fakePhysicalTunerRun: RunDetail = {
 // families/params rather than the full ~14-family catalog -- enough to
 // exercise multi-level conditions and a non-RAVE best trial (see
 // fakeTrialRows below).
-export const fakeTunerKinds: TunerGameInfo[] = [
+export const fakeTunableGames: TunableGame[] = [
   {
     game: "traffic-lights",
     tuner: {
@@ -336,7 +336,7 @@ export function createMockBenchEnv(overrides?: Partial<BenchEnv>): BenchEnv {
       Effect.send({ run_id: "new-run-123", pid: 99999, log_path: "/tmp/new/log.jsonl" }),
     stopRun: (_runId: string): Effect<StopResponse> =>
       Effect.send({ run_id: "stopped-run", message: "stopped" }),
-    getTunerKinds: () => Effect.send(fakeTunerKinds),
+    getTunableGames: () => Effect.send(fakeTunableGames),
     getRunTrials: (_runId: string, _limit?: number): Effect<TrialRow[]> =>
       Effect.send(fakeTrialRows),
     getRunGames: (): Effect<GameTraceSummary[]> => Effect.send(fakeGameTraces),

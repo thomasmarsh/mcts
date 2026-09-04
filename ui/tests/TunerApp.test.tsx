@@ -44,7 +44,7 @@ describe("TunerApp fleet", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([]),
           listProjectionRuns: () =>
@@ -79,7 +79,7 @@ describe("TunerApp fleet", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () =>
             Effect.send([
@@ -109,7 +109,7 @@ describe("TunerApp fleet", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([]),
           launchRun,
@@ -143,7 +143,7 @@ describe("TunerApp fleet", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([]),
           launchRun,
@@ -190,7 +190,7 @@ const projectionRun = {
 
 function completedRunEnv() {
   return mockTunerEnv({
-    listKinds: () => Effect.send(kinds),
+    listTunableGames: () => Effect.send(kinds),
     listObjectives: () => Effect.send(objectives),
     listRuns: () => Effect.send([]),
     listProjectionRuns: () => Effect.send([projectionRun]),
@@ -280,7 +280,7 @@ describe("TunerApp objective manager", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(corpus),
           listRuns: () => Effect.send([]),
           deleteObjective: (key) => {
@@ -313,7 +313,7 @@ describe("TunerApp objective manager", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send([objectiveRow("nim-v1")]),
           listRuns: () => Effect.send([]),
           getObjective: () =>
@@ -379,7 +379,7 @@ describe("TunerApp objective editor", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send([objectiveRow]),
           listRuns: () => Effect.send([]),
           getObjective: () =>
@@ -469,7 +469,7 @@ describe("TunerApp objective editor — game setup", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(gameConfigKinds),
+          listTunableGames: () => Effect.send(gameConfigKinds),
           listObjectives: () => Effect.send([]),
           listRuns: () => Effect.send([]),
           ...over,
@@ -787,7 +787,7 @@ describe("TunerApp live run", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([runView({ run_id: "live-1", status: "live" })]),
           listProjectionRuns: () => Effect.send([]),
@@ -840,7 +840,7 @@ describe("TunerApp live science from projection rows", () => {
     render(() => (
       <TunerApp
         env={mockTunerEnv({
-          listKinds: () => Effect.send(kinds),
+          listTunableGames: () => Effect.send(kinds),
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([runView({ run_id: "live-1", status: "live" })]),
           listProjectionRuns: () => Effect.send([]),

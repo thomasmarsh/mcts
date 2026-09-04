@@ -24,7 +24,7 @@ export const CandidateDrawer: Component<{
   const gameKind = createMemo(() => peek(state().projectionDetail)?.manifest?.game_kind ?? null);
   const baseConfig = createMemo(() => {
     const kind = gameKind();
-    const info = (peek(state().kinds) ?? []).find((k) => k.game === kind);
+    const info = (peek(state().tunableGames) ?? []).find((k) => k.game === kind);
     return info ? schemaDefaults(info.tuner.parameters) : {};
   });
   const candidate = createMemo(() =>

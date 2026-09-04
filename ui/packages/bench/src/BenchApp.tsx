@@ -36,7 +36,7 @@ export const BenchApp: Component<{ Spectator?: Component<BenchSpectatorProps> }>
   const showLaunchForm = () => state().showLaunchForm;
 
   onMount(() => {
-    store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
+    store.dispatch({ tag: "tunableGames", action: { tag: "request" } });
     store.dispatch({ tag: "runs", action: { tag: "request" } });
     const onHash = (): void => {
       setShowTuner(isTunerHash());

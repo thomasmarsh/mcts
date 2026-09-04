@@ -33,7 +33,7 @@ import {
   type RunFilters,
   type RunLogResponse,
   type RunSummary,
-  type TunerGameInfo,
+  type TunableGame,
   type StopResponse,
   type TrialRow,
   type GameTraceSummary,
@@ -54,7 +54,7 @@ export interface BenchEnv {
   launchRun(kind: string, game: string, config?: unknown): Effect<LaunchResponse>;
   stopRun(runId: string): Effect<StopResponse>;
   /** Per-game tuner metadata for every tuner-tunable game. */
-  getTunerKinds(): Effect<TunerGameInfo[]>;
+  getTunableGames(): Effect<TunableGame[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit: number): Effect<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Effect<GameTraceSummary[]>;
@@ -113,11 +113,11 @@ export type BenchAction =
   | { tag: "deleteFinished"; runId: string }
   | { tag: "deleteFailed"; runId: string; error: string }
   /** Load per-game tuner tuner metadata for the launch form + run detail. */
-  | { tag: "tunerKinds"; action: TunerKindsAction }
+  | { tag: "tunableGames"; action: TunableGamesAction }
   | { tag: "setShowLaunchForm"; show: boolean };
 
-export type TunerKindsAction =
-  { tag: "request" } | { tag: "job"; action: JobPollAction<TunerGameInfo[]> };
+export type TunableGamesAction =
+  { tag: "request" } | { tag: "job"; action: JobPollAction<TunableGame[]> };
 
 /** Runs an `Effect` for its single value, as a `Promise` — lets the tick
  * branch combine `getRunLog` + `getRun` with `Promise.all` while still
@@ -373,32 +373,32 @@ export function benchReducer(
     return null;
   }
 
-  if (action.tag === "tunerKinds") {
+  if (action.tag === "tunableGames") {
     const ka = action.action;
     if (ka.tag === "request") {
-      const jobEnv: JobPollEnv<TunerGameInfo[]> = {
+      const jobEnv: JobPollEnv<TunableGame[]> = {
         submitJob: () =>
-          env.getTunerKinds().map((result): JobSubmitResult<TunerGameInfo[]> => ({
+          env.getTunableGames().map((result): JobSubmitResult<TunableGame[]> => ({
             status: "done",
             result,
           })),
         pollJob: () => {
-          throw new Error("unreachable: tunerKinds resolves synchronously (see submitJob above)");
+          throw new Error("unreachable: tunableGames resolves synchronously (see submitJob above)");
         },
       };
-      const eff = jobPollReduce(draft.tunerKinds, { tag: "start" }, jobEnv);
+      const eff = jobPollReduce(draft.tunableGames, { tag: "start" }, jobEnv);
       return eff
-        ? eff.map((a): BenchAction => ({ tag: "tunerKinds", action: { tag: "job", action: a } }))
+        ? eff.map((a): BenchAction => ({ tag: "tunableGames", action: { tag: "job", action: a } }))
         : null;
     }
     const eff = jobPollReduce(
-      draft.tunerKinds,
+      draft.tunableGames,
       ka.action,
-      unreachableJobEnv("unreachable: a forwarded tunerKinds/job action never re-submits or polls"),
+      unreachableJobEnv("unreachable: a forwarded tunableGames/job action never re-submits or polls"),
     );
     return eff
       ? eff.map((a): BenchAction => ({
-          tag: "tunerKinds",
+          tag: "tunableGames",
           action: { tag: "job", action: a },
         }))
       : null;

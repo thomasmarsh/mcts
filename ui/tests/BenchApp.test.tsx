@@ -28,7 +28,7 @@ function createTestStore(envOverrides?: Partial<BenchEnv>) {
   const env = createMockBenchEnv(envOverrides);
   const store = createStore<BenchState, BenchAction>(initialBenchState(), benchReducer, env);
   // Pre-fetch tuner kinds and runs so the UI shows data immediately.
-  store.dispatch({ tag: "tunerKinds", action: { tag: "request" } });
+  store.dispatch({ tag: "tunableGames", action: { tag: "request" } });
   store.dispatch({ tag: "runs", action: { tag: "request" } });
   return { store, env };
 }

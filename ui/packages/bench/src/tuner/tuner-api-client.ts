@@ -47,11 +47,11 @@ export interface EvidenceStreamHandlers {
 export interface EvidenceSubscription {
   close(): void;
 }
-import type { JsonValue, TunerGameInfo } from "../types.js";
+import type { JsonValue, TunableGame } from "../types.js";
 
 export interface TunerApiClient {
   // Launch metadata.
-  listKinds(): Promise<TunerGameInfo[]>;
+  listTunableGames(): Promise<TunableGame[]>;
   listObjectives(): Promise<TunerObjectiveFile[]>;
   getObjective(key: string): Promise<TunerObjectiveDetail>;
   putObjective(key: string, content: JsonValue): Promise<TunerObjectiveDetail>;
@@ -170,7 +170,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
   const objectivePath = (key: string): string =>
     `/api/bench/tuner/objectives/${encodeURIComponent(key)}`;
   return {
-    listKinds: () => fetchJson(url("/api/bench/tuner/kinds")),
+    listTunableGames: () => fetchJson(url("/api/bench/tuner/kinds")),
     listObjectives: () => fetchJson(url("/api/bench/tuner/objectives")),
     getObjective: (key) => fetchJson(url(objectivePath(key))),
     putObjective: (key, content) => sendJson(url(objectivePath(key)), "PUT", content),

@@ -32,10 +32,10 @@ import type {
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
-import type { JsonValue, TunerGameInfo } from "../types.js";
+import type { JsonValue, TunableGame } from "../types.js";
 
 export interface TunerEnv {
-  listKinds(): Effect<TunerGameInfo[]>;
+  listTunableGames(): Effect<TunableGame[]>;
   listObjectives(): Effect<TunerObjectiveFile[]>;
   getObjective(key: string): Effect<TunerObjectiveDetail>;
   putObjective(key: string, content: JsonValue): Effect<TunerObjectiveDetail>;
@@ -78,7 +78,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
   // Only one evidence stream is ever open: opening the next closes this.
   let activeStream: { close(): void } | null = null;
   return {
-    listKinds: () => lift(() => api.listKinds()),
+    listTunableGames: () => lift(() => api.listTunableGames()),
     listObjectives: () => lift(() => api.listObjectives()),
     getObjective: (key) => lift(() => api.getObjective(key)),
     putObjective: (key, content) => lift(() => api.putObjective(key, content)),

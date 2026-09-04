@@ -18,7 +18,7 @@ import type {
   RunFilters,
   RunLogResponse,
   RunSummary,
-  TunerGameInfo,
+  TunableGame,
   StopResponse,
   TrialRow,
   GameTraceSummary,
@@ -41,7 +41,7 @@ export interface BenchApiClient {
   launchRun(kind: string, game: string, config?: unknown): Promise<LaunchResponse>;
   stopRun(runId: string): Promise<StopResponse>;
   /** Per-game tuner metadata for every game that supports tuner tuning. */
-  getTunerKinds(): Promise<TunerGameInfo[]>;
+  getTunableGames(): Promise<TunableGame[]>;
   /** Trial rows for one run, oldest first. */
   getRunTrials(runId: string, limit?: number): Promise<TrialRow[]>;
   getRunGames(runId: string, limit?: number, cellId?: string | null): Promise<GameTraceSummary[]>;
@@ -158,7 +158,7 @@ export function createBenchApiClient(baseUrl = ""): BenchApiClient {
     async stopRun(runId: string): Promise<StopResponse> {
       return postJson(url(`/api/bench/runs/${encodeURIComponent(runId)}/stop`));
     },
-    async getTunerKinds(): Promise<TunerGameInfo[]> {
+    async getTunableGames(): Promise<TunableGame[]> {
       return fetchJson(url("/api/bench/tuner/kinds"));
     },
     async getRunTrials(runId: string, limit?: number): Promise<TrialRow[]> {
@@ -196,7 +196,7 @@ export function createBenchEnv(api: BenchApiClient): BenchEnv {
     launchRun: (kind: string, game: string, config?: unknown) =>
       lift(() => api.launchRun(kind, game, config)),
     stopRun: (runId: string) => lift(() => api.stopRun(runId)),
-    getTunerKinds: () => lift(() => api.getTunerKinds()),
+    getTunableGames: () => lift(() => api.getTunableGames()),
     getRunTrials: (runId: string, limit?: number) => lift(() => api.getRunTrials(runId, limit)),
     getRunGames: (runId: string, limit?: number, cellId?: string | null) =>
       lift(() => api.getRunGames(runId, limit, cellId)),

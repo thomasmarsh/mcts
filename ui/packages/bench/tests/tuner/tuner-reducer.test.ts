@@ -29,7 +29,7 @@ function ok<T>(value: T): RemoteData<T> {
 }
 
 const loadingAll = (s: TunerState): void => {
-  s.kinds = { status: "loading" };
+  s.tunableGames = { status: "loading" };
   s.objectives = { status: "loading" };
   s.runs = { status: "loading" };
   s.projectionRuns = { status: "loading" };
@@ -37,8 +37,8 @@ const loadingAll = (s: TunerState): void => {
 };
 
 const drainInit = (ts: ReturnType<typeof store>): void => {
-  ts.receive({ tag: "kindsLoaded", kinds: [] }, (s) => {
-    s.kinds = ok([]);
+  ts.receive({ tag: "tunableGamesLoaded", tunableGames: [] }, (s) => {
+    s.tunableGames = ok([]);
   });
   ts.receive({ tag: "objectivesLoaded", objectives: [] }, (s) => {
     s.objectives = ok([]);

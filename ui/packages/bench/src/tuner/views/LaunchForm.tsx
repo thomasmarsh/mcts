@@ -65,7 +65,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   const state = props.store.getState();
   const dispatch = props.store.dispatch;
 
-  const kinds = createMemo(() => peek(state().kinds) ?? []);
+  const tunableGames = createMemo(() => peek(state().tunableGames) ?? []);
   const objectives = createMemo(() => peek(state().objectives) ?? []);
 
   const [gameKind, setGameKind] = createSignal("");
@@ -107,7 +107,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
   // from the schema already shipped in `GET /api/bench/tuner/kinds`. Empty
   // when the game has no `family` axis (nothing to exclude).
   const familyChoices = createMemo(() => {
-    const info = kinds().find((k) => k.game === gameKind());
+    const info = tunableGames().find((k) => k.game === gameKind());
     const param = info?.tuner.parameters.find((p) => p.name === "family");
     return param?.choices ?? [];
   });
@@ -214,7 +214,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
 
   // Default the game/objective once the metadata loads.
   createEffect(() => {
-    if (gameKind() === "" && kinds().length > 0) setGameKind(kinds()[0]!.game);
+    if (gameKind() === "" && tunableGames().length > 0) setGameKind(tunableGames()[0]!.game);
   });
   createEffect(() => {
     const opts = matchingObjectives();
@@ -345,7 +345,7 @@ export const LaunchForm: Component<{ store: Store<TunerState, TunerAction> }> = 
           onInput={(e) => setGameKind(e.currentTarget.value)}
           disabled={busy()}
         >
-          <For each={kinds()}>{(k) => <option value={k.game}>{k.game}</option>}</For>
+          <For each={tunableGames()}>{(k) => <option value={k.game}>{k.game}</option>}</For>
         </select>
       </label>
 

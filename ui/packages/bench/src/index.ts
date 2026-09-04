@@ -9,7 +9,7 @@ export type {
   TunerParameter,
   TunerCondition,
   TunerInfo,
-  TunerGameInfo,
+  TunableGame,
   TrialRow,
   IncumbentInfo,
   GameTraceSummary,
@@ -29,7 +29,7 @@ export type {
   BenchAction,
   RunsAction,
   LaunchAction,
-  TunerKindsAction,
+  TunableGamesAction,
 } from "./reducer.js";
 export {
   benchReducer,
