@@ -56,6 +56,13 @@ pub struct BenchState {
     /// any stem not already present in `tuner_objectives_dir` is copied over;
     /// user edits then live only in the writable dir.
     pub tuner_seed_objectives_dir: PathBuf,
+    /// Writable directory of launch-profile JSON files — the saved
+    /// `{game, objective, constraints, efforts, budgets}` bundles the launch
+    /// form starts runs from. Keyed by filename stem like the objectives dir.
+    pub tuner_profiles_dir: PathBuf,
+    /// Read-only corpus of launch-profile files shipped with the repo, seeded
+    /// into `tuner_profiles_dir` on start-up (never overwriting a user edit).
+    pub tuner_seed_profiles_dir: PathBuf,
     /// Validates an objective file out of band (production: shells out to
     /// `python -m tuner_cli validate-objective`; tests inject a stub).
     pub tuner_objective_validator: ObjectiveValidator,

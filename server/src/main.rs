@@ -359,6 +359,14 @@ async fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| bench_runs_dir.join("tuner-objectives"));
     bench::seed_tuner_objectives(&tuner_seed_objectives_dir, &tuner_objectives_dir);
+    // Launch-profile JSON files, seeded and overridden the same way.
+    let tuner_seed_profiles_dir = std::env::var_os("MCTS_TUNER_PROFILES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("tuner/profiles"));
+    let tuner_profiles_dir = std::env::var_os("MCTS_TUNER_USER_PROFILES_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bench_runs_dir.join("tuner-profiles"));
+    bench::seed_tuner_profiles(&tuner_seed_profiles_dir, &tuner_profiles_dir);
     let bench_state = Arc::new(bench::BenchState {
         #[cfg(test)]
         db: bench::TestDatabase::unavailable(),
@@ -368,6 +376,8 @@ async fn main() {
         bench_runs_dir,
         tuner_objectives_dir,
         tuner_seed_objectives_dir,
+        tuner_profiles_dir,
+        tuner_seed_profiles_dir,
         tuner_objective_validator: Arc::new(bench::shell_validate_objective),
         process_group_signaller: Arc::new(bench::signal_process_group),
         tuner_projection_db,

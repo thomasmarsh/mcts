@@ -32,6 +32,10 @@ use super::{
     traces::*,
     tuner_api,
     tuner_evidence::{evidence_stream, evidence_tail},
+    tuner_profiles::{
+        delete_tuner_profile, get_tuner_profile, list_tuner_profiles, put_tuner_profile,
+        validate_tuner_profile,
+    },
     tuner_runs::{
         delete_tuner_objective, delete_tuner_run, extend_tuner_run, get_tuner_objective,
         get_tuner_run, get_tuner_run_log, launch_tuner_run, list_tuner_objectives, list_tuner_runs,
@@ -81,6 +85,17 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route(
             "/api/bench/tuner/objectives/{key}/validate",
             post(validate_tuner_objective).layer(launch_timeout),
+        )
+        .route("/api/bench/tuner/profiles", get(list_tuner_profiles))
+        .route(
+            "/api/bench/tuner/profiles/{key}",
+            get(get_tuner_profile)
+                .put(put_tuner_profile)
+                .delete(delete_tuner_profile),
+        )
+        .route(
+            "/api/bench/tuner/profiles/{key}/validate",
+            post(validate_tuner_profile).layer(launch_timeout),
         )
         .route(
             "/api/bench/tuner/runs",

@@ -130,7 +130,8 @@ pub(crate) struct ObjectiveFileDetail {
 }
 
 /// `key` must be a bare filename stem — no path separators or traversal.
-fn valid_objective_key(key: &str) -> bool {
+/// Shared by the objective and launch-profile routes.
+pub(super) fn valid_file_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= 128
         && !key.contains("..")
@@ -139,7 +140,7 @@ fn valid_objective_key(key: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
-fn seed_stems(seed_dir: &std::path::Path) -> std::collections::HashSet<String> {
+pub(super) fn seed_stems(seed_dir: &std::path::Path) -> std::collections::HashSet<String> {
     std::fs::read_dir(seed_dir)
         .into_iter()
         .flatten()
@@ -149,7 +150,7 @@ fn seed_stems(seed_dir: &std::path::Path) -> std::collections::HashSet<String> {
         .collect()
 }
 
-fn file_updated_at(path: &std::path::Path) -> Option<String> {
+pub(super) fn file_updated_at(path: &std::path::Path) -> Option<String> {
     std::fs::metadata(path)
         .and_then(|meta| meta.modified())
         .ok()
@@ -195,9 +196,10 @@ fn read_objective_files(dir: &std::path::Path, seed_dir: &std::path::Path) -> Ve
     files
 }
 
-/// Copy every seed objective whose stem is not already a file in the writable
+/// Copy every seed `*.json` whose stem is not already a file in the writable
 /// dir. Never overwrites — a user's edits outlive a repo update to the seed.
-pub fn seed_tuner_objectives(seed_dir: &std::path::Path, user_dir: &std::path::Path) {
+/// Shared by the objective and launch-profile corpora.
+pub(super) fn seed_json_files(seed_dir: &std::path::Path, user_dir: &std::path::Path) {
     if std::fs::create_dir_all(user_dir).is_err() {
         return;
     }
@@ -217,21 +219,26 @@ pub fn seed_tuner_objectives(seed_dir: &std::path::Path, user_dir: &std::path::P
     }
 }
 
+/// Seed the writable frozen-objective directory from the read-only corpus.
+pub fn seed_tuner_objectives(seed_dir: &std::path::Path, user_dir: &std::path::Path) {
+    seed_json_files(seed_dir, user_dir);
+}
+
 fn objective_path(state: &BenchState, key: &str) -> Result<std::path::PathBuf, BenchError> {
-    if !valid_objective_key(key) {
+    if !valid_file_key(key) {
         return Err(bad_request(format!("invalid objective key '{key}'")));
     }
     Ok(state.tuner_objectives_dir.join(format!("{key}.json")))
 }
 
-fn bad_request(message: String) -> BenchError {
+pub(super) fn bad_request(message: String) -> BenchError {
     BenchError {
         status: StatusCode::BAD_REQUEST,
         message,
     }
 }
 
-fn not_found(message: String) -> BenchError {
+pub(super) fn not_found(message: String) -> BenchError {
     BenchError {
         status: StatusCode::NOT_FOUND,
         message,
@@ -412,7 +419,7 @@ pub fn shell_validate_objective(
 /// Fill `runs_root` and resolve the caller-friendly `game_kind` /
 /// `objective_key` to absolute paths, so no filesystem path is ever part of
 /// the API contract. Shared by launch and preflight.
-fn resolve_launch_request(
+pub(super) fn resolve_launch_request(
     state: &BenchState,
     request: &mut TunerLaunchRequest,
 ) -> Result<(), BenchError> {
@@ -431,7 +438,7 @@ fn resolve_launch_request(
             .objective_key
             .as_deref()
             .ok_or_else(|| bad_request("objective_key or objective_file is required".into()))?;
-        if !valid_objective_key(key) {
+        if !valid_file_key(key) {
             return Err(bad_request(format!("invalid objective_key '{key}'")));
         }
         let candidate = state.tuner_objectives_dir.join(format!("{key}.json"));

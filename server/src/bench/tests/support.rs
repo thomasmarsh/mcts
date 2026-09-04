@@ -159,6 +159,8 @@ pub(super) fn seeded_app_with_state_and_signaller(
         bench_runs_dir,
         tuner_objectives_dir: tmp_dir.join("objectives"),
         tuner_seed_objectives_dir: tmp_dir.join("seed-objectives"),
+        tuner_profiles_dir: tmp_dir.join("profiles"),
+        tuner_seed_profiles_dir: tmp_dir.join("seed-profiles"),
         // Canned validator: any objective declaring `game_kind: "reject"` fails,
         // everything else passes. A test can still write its own file directly.
         tuner_objective_validator: Arc::new(|_binary, objective_file| {
