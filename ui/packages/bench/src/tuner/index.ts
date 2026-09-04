@@ -5,6 +5,7 @@ export { FleetDashboard } from "./views/FleetDashboard.js";
 export { LaunchForm as TunerLaunchForm } from "./views/LaunchForm.js";
 export { ObjectiveManager } from "./views/ObjectiveManager.js";
 export { ObjectiveEditor } from "./views/ObjectiveEditor.js";
+export { ProfileManager } from "./views/ProfileManager.js";
 export { ConstraintEditor } from "./views/ConstraintEditor.js";
 export { RunOverview } from "./views/RunOverview.js";
 export { RunScience } from "./views/RunScience.js";

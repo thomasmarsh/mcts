@@ -29,6 +29,8 @@ import type {
   RunPlan,
   TunerObjectiveDetail,
   TunerObjectiveFile,
+  TunerProfileDetail,
+  TunerProfileFile,
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
@@ -41,6 +43,11 @@ export interface TunerEnv {
   putObjective(key: string, content: JsonValue): Effect<TunerObjectiveDetail>;
   deleteObjective(key: string): Effect<void>;
   validateObjective(key: string, content: JsonValue): Effect<ObjectiveValidationResult>;
+  listProfiles(): Effect<TunerProfileFile[]>;
+  getProfile(key: string): Effect<TunerProfileDetail>;
+  putProfile(key: string, content: JsonValue): Effect<TunerProfileDetail>;
+  deleteProfile(key: string): Effect<void>;
+  validateProfile(key: string, content: JsonValue): Effect<LaunchPreflightResult>;
   listRuns(): Effect<TunerRunView[]>;
   getRun(runId: string): Effect<TunerRunView>;
   launchRun(body: TunerLaunchRequest): Effect<TunerRunView>;
@@ -84,6 +91,11 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     putObjective: (key, content) => lift(() => api.putObjective(key, content)),
     deleteObjective: (key) => lift(() => api.deleteObjective(key)),
     validateObjective: (key, content) => lift(() => api.validateObjective(key, content)),
+    listProfiles: () => lift(() => api.listProfiles()),
+    getProfile: (key) => lift(() => api.getProfile(key)),
+    putProfile: (key, content) => lift(() => api.putProfile(key, content)),
+    deleteProfile: (key) => lift(() => api.deleteProfile(key)),
+    validateProfile: (key, content) => lift(() => api.validateProfile(key, content)),
     listRuns: () => lift(() => api.listRuns()),
     getRun: (runId) => lift(() => api.getRun(runId)),
     launchRun: (body) => lift(() => api.launchRun(body)),

@@ -71,6 +71,32 @@ export interface ObjectiveValidationResult {
   panel_fingerprint?: string;
 }
 
+/** One launch-profile file the server offers, keyed by its filename stem.
+ * `GET /api/bench/tuner/profiles`. A launch profile is a saved bundle
+ * `{game, objective, constraints, efforts, budgets}` a run is started from;
+ * it is not an objective — it only references an `objective_key`. */
+export interface TunerProfileFile {
+  key: string;
+  profile_id: string | null;
+  game_kind: string | null;
+  objective_key: string | null;
+  /** Number of `constraints` entries the profile carries. */
+  constraint_count: number;
+  /** File mtime, RFC3339; null if the file's metadata could not be read. */
+  updated_at: string | null;
+  /** The same stem is also shipped in the read-only seed corpus. */
+  is_seed: boolean;
+}
+
+/** `GET /api/bench/tuner/profiles/{key}` — the profile JSON verbatim plus
+ * its metadata. */
+export interface TunerProfileDetail {
+  key: string;
+  content: JsonValue;
+  updated_at: string | null;
+  is_seed: boolean;
+}
+
 /** Body of `POST /api/bench/tuner/runs`. The server resolves `game_kind` to
  * a built-in `game-<kind>` binary and `objective_key` to a file in its
  * configured objectives directory, so no filesystem path is part of the

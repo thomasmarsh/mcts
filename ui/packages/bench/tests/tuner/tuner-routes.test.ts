@@ -12,6 +12,15 @@ describe("tuner-routes", () => {
     expect(parseTunerHash("#/tuner/launch")).toEqual({ view: "launch" });
   });
 
+  it("parses the profile routes", () => {
+    expect(parseTunerHash("#/tuner/profiles")).toEqual({ view: "profiles" });
+    expect(parseTunerHash("#/tuner/profiles/new")).toEqual({ view: "profile", key: null });
+    expect(parseTunerHash("#/tuner/profiles/nim%2Fsweep")).toEqual({
+      view: "profile",
+      key: "nim/sweep",
+    });
+  });
+
   it("parses a run route with its tab, decoding the id", () => {
     expect(parseTunerHash("#/tuner/run/nim%2Fabc")).toEqual({
       view: "run",
@@ -49,6 +58,9 @@ describe("tuner-routes", () => {
     for (const route of [
       { view: "fleet" as const },
       { view: "launch" as const },
+      { view: "profiles" as const },
+      { view: "profile" as const, key: null },
+      { view: "profile" as const, key: "nim/sweep" },
       { view: "run" as const, runId: "r/1", tab: "overview" as const },
       { view: "run" as const, runId: "r1", tab: "evidence" as const },
       { view: "run" as const, runId: "r1", tab: "overview" as const, candidate: "candidate-x/y" },

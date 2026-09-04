@@ -47,6 +47,8 @@ import type {
   TunerLaunchRequest,
   TunerObjectiveDetail,
   TunerObjectiveFile,
+  TunerProfileDetail,
+  TunerProfileFile,
   TunerRunView,
 } from "./tuner-types.js";
 import type { JsonValue, TunableGame } from "../types.js";
@@ -101,6 +103,18 @@ export interface TunerState {
   /** Key of the objective currently being deleted, or null. */
   objectiveMutating: string | null;
   objectiveMutateError: string | null;
+  /** Saved launch profiles — the launch-form counterpart to the objective
+   * corpus. Same reducer shape as the objective block. */
+  profiles: RemoteData<TunerProfileFile[]>;
+  /** The profile the editor has open (`null` in create mode), keyed so a
+   * stale detail response for a previously-open profile is ignored. */
+  openProfileKey: string | null;
+  profileDetail: RemoteData<TunerProfileDetail>;
+  profileSave: { status: "idle" | "pending" | "done" | "error"; error: string | null };
+  profileValidation: RemoteData<LaunchPreflightResult>;
+  /** Key of the profile currently being deleted, or null. */
+  profileMutating: string | null;
+  profileMutateError: string | null;
   launch: TunerLaunchState;
   preflight: TunerPreflightState;
   /** Bumped on every preflight request so a stale response is dropped. */
@@ -207,6 +221,13 @@ export function initialTunerState(): TunerState {
     objectiveValidation: idle(),
     objectiveMutating: null,
     objectiveMutateError: null,
+    profiles: idle(),
+    openProfileKey: null,
+    profileDetail: idle(),
+    profileSave: { status: "idle", error: null },
+    profileValidation: idle(),
+    profileMutating: null,
+    profileMutateError: null,
     launch: { status: "idle", error: null, lastRunId: null },
     preflight: { status: "idle", errors: [], error: null },
     preflightGeneration: 0,
@@ -270,6 +291,21 @@ export type TunerAction =
   | { tag: "validateObjective"; key: string; content: JsonValue }
   | { tag: "validateObjectiveOk"; result: ObjectiveValidationResult }
   | { tag: "validateObjectiveFailed"; error: string }
+  | { tag: "profilesLoaded"; profiles: TunerProfileFile[] }
+  | { tag: "profilesFailed"; error: string }
+  | { tag: "openProfile"; key: string | null }
+  | { tag: "closeProfile" }
+  | { tag: "profileDetailLoaded"; key: string; detail: TunerProfileDetail }
+  | { tag: "profileDetailFailed"; key: string; error: string }
+  | { tag: "saveProfile"; key: string; content: JsonValue }
+  | { tag: "saveProfileOk"; detail: TunerProfileDetail }
+  | { tag: "saveProfileFailed"; error: string }
+  | { tag: "deleteProfile"; key: string }
+  | { tag: "deleteProfileOk" }
+  | { tag: "deleteProfileFailed"; error: string }
+  | { tag: "validateProfile"; key: string; content: JsonValue }
+  | { tag: "validateProfileOk"; result: LaunchPreflightResult }
+  | { tag: "validateProfileFailed"; error: string }
   | { tag: "journalTick"; generation: number }
   | { tag: "runsLoaded"; runs: TunerRunView[] }
   | { tag: "runsFailed"; error: string }
@@ -470,6 +506,13 @@ function fetchObjectives(env: TunerEnv): Effect<TunerAction> {
     .catch((e): TunerAction => ({ tag: "objectivesFailed", error: String(e) }));
 }
 
+function fetchProfiles(env: TunerEnv): Effect<TunerAction> {
+  return env
+    .listProfiles()
+    .map((profiles): TunerAction => ({ tag: "profilesLoaded", profiles }))
+    .catch((e): TunerAction => ({ tag: "profilesFailed", error: String(e) }));
+}
+
 function fetchProjection(env: TunerEnv): Effect<TunerAction> {
   return env
     .listProjectionRuns()
@@ -591,6 +634,7 @@ export function tunerReducer(
     case "init": {
       draft.tunableGames = toLoading(draft.tunableGames);
       draft.objectives = toLoading(draft.objectives);
+      draft.profiles = toLoading(draft.profiles);
       draft.runs = toLoading(draft.runs);
       draft.projectionRuns = toLoading(draft.projectionRuns);
       draft.journalGeneration += 1;
@@ -600,6 +644,7 @@ export function tunerReducer(
           .map((tunableGames): TunerAction => ({ tag: "tunableGamesLoaded", tunableGames }))
           .catch((e): TunerAction => ({ tag: "tunableGamesFailed", error: String(e) })),
         fetchObjectives(env),
+        fetchProfiles(env),
         fetchJournal(env),
         fetchProjection(env),
       );
@@ -699,6 +744,96 @@ export function tunerReducer(
       return null;
     case "validateObjectiveFailed":
       draft.objectiveValidation = toErr(action.error, draft.objectiveValidation);
+      return null;
+
+    case "profilesLoaded":
+      draft.profiles = toOk(action.profiles, Date.now());
+      return null;
+    case "profilesFailed":
+      draft.profiles = toErr(action.error, draft.profiles);
+      return null;
+
+    case "openProfile": {
+      draft.openProfileKey = action.key;
+      draft.profileSave = { status: "idle", error: null };
+      draft.profileValidation = idle();
+      draft.profileMutateError = null;
+      if (action.key === null) {
+        draft.profileDetail = idle();
+        return null;
+      }
+      draft.profileDetail = toLoading(draft.profileDetail);
+      const key = action.key;
+      return env
+        .getProfile(key)
+        .map((detail): TunerAction => ({ tag: "profileDetailLoaded", key, detail }))
+        .catch((e): TunerAction => ({ tag: "profileDetailFailed", key, error: String(e) }));
+    }
+    case "closeProfile":
+      draft.openProfileKey = null;
+      draft.profileDetail = idle();
+      draft.profileSave = { status: "idle", error: null };
+      draft.profileValidation = idle();
+      draft.profileMutateError = null;
+      return null;
+    case "profileDetailLoaded":
+      if (action.key !== draft.openProfileKey) return null;
+      draft.profileDetail = toOk(action.detail, Date.now());
+      return null;
+    case "profileDetailFailed":
+      if (action.key !== draft.openProfileKey) return null;
+      draft.profileDetail = toErr(action.error, draft.profileDetail);
+      return null;
+
+    case "saveProfile": {
+      if (draft.profileSave.status === "pending") return null;
+      draft.profileSave = { status: "pending", error: null };
+      const { key, content } = action;
+      return env
+        .putProfile(key, content)
+        .map((detail): TunerAction => ({ tag: "saveProfileOk", detail }))
+        .catch((e): TunerAction => ({ tag: "saveProfileFailed", error: String(e) }));
+    }
+    case "saveProfileOk":
+      draft.profileSave = { status: "done", error: null };
+      draft.openProfileKey = action.detail.key;
+      draft.profileDetail = toOk(action.detail, Date.now());
+      // Re-list so the manager and launch form reflect the change immediately.
+      return fetchProfiles(env);
+    case "saveProfileFailed":
+      draft.profileSave = { status: "error", error: action.error };
+      return null;
+
+    case "deleteProfile": {
+      if (draft.profileMutating) return null;
+      draft.profileMutating = action.key;
+      draft.profileMutateError = null;
+      return env
+        .deleteProfile(action.key)
+        .map((): TunerAction => ({ tag: "deleteProfileOk" }))
+        .catch((e): TunerAction => ({ tag: "deleteProfileFailed", error: String(e) }));
+    }
+    case "deleteProfileOk":
+      draft.profileMutating = null;
+      return fetchProfiles(env);
+    case "deleteProfileFailed":
+      draft.profileMutating = null;
+      draft.profileMutateError = action.error;
+      return null;
+
+    case "validateProfile": {
+      draft.profileValidation = toLoading(draft.profileValidation);
+      const { key, content } = action;
+      return env
+        .validateProfile(key, content)
+        .map((result): TunerAction => ({ tag: "validateProfileOk", result }))
+        .catch((e): TunerAction => ({ tag: "validateProfileFailed", error: String(e) }));
+    }
+    case "validateProfileOk":
+      draft.profileValidation = toOk(action.result, Date.now());
+      return null;
+    case "validateProfileFailed":
+      draft.profileValidation = toErr(action.error, draft.profileValidation);
       return null;
 
     case "journalTick": {

@@ -29,6 +29,13 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
       Effect.send({ key, content, updated_at: null, is_seed: false }),
     deleteObjective: () => Effect.send(undefined),
     validateObjective: () => Effect.send({ ok: true, errors: [] }),
+    listProfiles: () => Effect.send([]),
+    getProfile: () =>
+      Effect.send({ key: "p1", content: {}, updated_at: null, is_seed: false }),
+    putProfile: (key, content) =>
+      Effect.send({ key, content, updated_at: null, is_seed: false }),
+    deleteProfile: () => Effect.send(undefined),
+    validateProfile: () => Effect.send({ ok: true, errors: [] }),
     listRuns: () => Effect.send([]),
     getRun: () => Effect.send(runView()),
     launchRun: () => Effect.send(runView()),

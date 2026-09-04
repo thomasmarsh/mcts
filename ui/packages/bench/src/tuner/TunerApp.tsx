@@ -29,6 +29,7 @@ import { FleetDashboard } from "./views/FleetDashboard.js";
 import { LaunchForm } from "./views/LaunchForm.js";
 import { ObjectiveManager } from "./views/ObjectiveManager.js";
 import { ObjectiveEditor } from "./views/ObjectiveEditor.js";
+import { ProfileManager } from "./views/ProfileManager.js";
 import { RunOverview } from "./views/RunOverview.js";
 import { RunScience } from "./views/RunScience.js";
 import { RunEvidence } from "./views/RunEvidence.js";
@@ -52,6 +53,10 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
   const objectiveRoute = createMemo(() => {
     const r = route();
     return r.view === "objective" ? r : null;
+  });
+  const profileRoute = createMemo(() => {
+    const r = route();
+    return r.view === "profile" ? r : null;
   });
 
   function navigate(next: TunerRoute): void {
@@ -95,6 +100,23 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
     if (r.key === lastObjective) return;
     lastObjective = r.key;
     store.dispatch({ tag: "openObjective", key: r.key });
+  });
+
+  // Keep the reducer's open-profile aligned with the route so the editor
+  // loads (and reloads) the right file.
+  let lastProfile: string | null | undefined = undefined;
+  createEffect(() => {
+    const r = profileRoute();
+    if (!r) {
+      if (lastProfile !== undefined) {
+        lastProfile = undefined;
+        store.dispatch({ tag: "closeProfile" });
+      }
+      return;
+    }
+    if (r.key === lastProfile) return;
+    lastProfile = r.key;
+    store.dispatch({ tag: "openProfile", key: r.key });
   });
 
   // Mirror the `?candidate=` param into the reducer so the drawer's subject
@@ -148,6 +170,17 @@ export const TunerApp: Component<{ env?: TunerEnv }> = (props) => {
               navigate={navigate}
             />
           )}
+        </Match>
+        <Match when={route().view === "profiles"}>
+          <ProfileManager store={store} navigate={navigate} />
+        </Match>
+        <Match when={profileRoute()}>
+          <div class="tuner-launch-pane">
+            <button class="tuner-back" onClick={() => navigate({ view: "profiles" })}>
+              ← Profiles
+            </button>
+            <p class="tuner-fleet-empty">The profile editor is not built yet.</p>
+          </div>
         </Match>
         <Match when={runRoute()}>
           {(r) => (

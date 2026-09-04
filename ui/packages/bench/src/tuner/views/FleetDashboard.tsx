@@ -103,6 +103,7 @@ export const FleetDashboard: Component<{
             {state().refreshing ? "Refreshing…" : "Refresh science"}
           </button>
           <button onClick={() => props.navigate({ view: "objectives" })}>Manage objectives</button>
+          <button onClick={() => props.navigate({ view: "profiles" })}>Manage profiles</button>
           <button class="tuner-fleet-new" onClick={() => props.navigate({ view: "launch" })}>
             New run
           </button>

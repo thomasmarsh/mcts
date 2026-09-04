@@ -31,6 +31,7 @@ function ok<T>(value: T): RemoteData<T> {
 const loadingAll = (s: TunerState): void => {
   s.tunableGames = { status: "loading" };
   s.objectives = { status: "loading" };
+  s.profiles = { status: "loading" };
   s.runs = { status: "loading" };
   s.projectionRuns = { status: "loading" };
   s.journalGeneration = 1;
@@ -42,6 +43,9 @@ const drainInit = (ts: ReturnType<typeof store>): void => {
   });
   ts.receive({ tag: "objectivesLoaded", objectives: [] }, (s) => {
     s.objectives = ok([]);
+  });
+  ts.receive({ tag: "profilesLoaded", profiles: [] }, (s) => {
+    s.profiles = ok([]);
   });
 };
 
@@ -681,6 +685,80 @@ describe("tunerReducer objectives", () => {
     });
     ts.receive({ tag: "validateObjectiveOk", result }, (s) => {
       s.objectiveValidation = ok(result);
+    });
+  });
+});
+
+describe("tunerReducer profiles", () => {
+  const file = {
+    key: "nim-sweep",
+    profile_id: "nim-sweep",
+    game_kind: "nim",
+    objective_key: "nim-v1",
+    constraint_count: 2,
+    updated_at: null,
+    is_seed: false,
+  };
+  const detail = { key: "nim-sweep", content: { profile_id: "nim-sweep" }, updated_at: null, is_seed: false };
+
+  it("opens a profile and loads its detail", () => {
+    const ts = store(mockTunerEnv({ getProfile: () => Effect.send(detail) }));
+    ts.send({ tag: "openProfile", key: "nim-sweep" }, (s) => {
+      s.openProfileKey = "nim-sweep";
+      s.profileDetail = { status: "loading" };
+    });
+    ts.receive({ tag: "profileDetailLoaded", key: "nim-sweep", detail }, (s) => {
+      s.openProfileKey = "nim-sweep";
+      s.profileDetail = ok(detail);
+    });
+  });
+
+  it("saves a profile and re-lists the corpus", () => {
+    const ts = store(
+      mockTunerEnv({
+        putProfile: () => Effect.send(detail),
+        listProfiles: () => Effect.send([file]),
+      }),
+    );
+    ts.send({ tag: "saveProfile", key: "nim-sweep", content: { profile_id: "nim-sweep" } }, (s) => {
+      s.profileSave = { status: "pending", error: null };
+    });
+    ts.receive({ tag: "saveProfileOk", detail }, (s) => {
+      s.profileSave = { status: "done", error: null };
+      s.openProfileKey = "nim-sweep";
+      s.profileDetail = ok(detail);
+    });
+    ts.receive({ tag: "profilesLoaded", profiles: [file] }, (s) => {
+      s.profiles = ok([file]);
+    });
+  });
+
+  it("deletes a profile and re-lists the corpus", () => {
+    const ts = store(
+      mockTunerEnv({
+        deleteProfile: () => Effect.send(undefined),
+        listProfiles: () => Effect.send([]),
+      }),
+    );
+    ts.send({ tag: "deleteProfile", key: "nim-sweep" }, (s) => {
+      s.profileMutating = "nim-sweep";
+    });
+    ts.receive({ tag: "deleteProfileOk" }, (s) => {
+      s.profileMutating = null;
+    });
+    ts.receive({ tag: "profilesLoaded", profiles: [] }, (s) => {
+      s.profiles = ok([]);
+    });
+  });
+
+  it("runs a server-side launch preflight dry run", () => {
+    const result = { ok: false, errors: ["objective file does not exist"] };
+    const ts = store(mockTunerEnv({ validateProfile: () => Effect.send(result) }));
+    ts.send({ tag: "validateProfile", key: "nim-sweep", content: { profile_id: "nim-sweep" } }, (s) => {
+      s.profileValidation = { status: "loading" };
+    });
+    ts.receive({ tag: "validateProfileOk", result }, (s) => {
+      s.profileValidation = ok(result);
     });
   });
 });

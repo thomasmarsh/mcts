@@ -28,6 +28,8 @@ import type {
   TunerLaunchRequest,
   TunerObjectiveDetail,
   TunerObjectiveFile,
+  TunerProfileDetail,
+  TunerProfileFile,
   TunerRunLog,
   TunerRunView,
 } from "./tuner-types.js";
@@ -57,6 +59,11 @@ export interface TunerApiClient {
   putObjective(key: string, content: JsonValue): Promise<TunerObjectiveDetail>;
   deleteObjective(key: string): Promise<void>;
   validateObjective(key: string, content: JsonValue): Promise<ObjectiveValidationResult>;
+  listProfiles(): Promise<TunerProfileFile[]>;
+  getProfile(key: string): Promise<TunerProfileDetail>;
+  putProfile(key: string, content: JsonValue): Promise<TunerProfileDetail>;
+  deleteProfile(key: string): Promise<void>;
+  validateProfile(key: string, content: JsonValue): Promise<LaunchPreflightResult>;
   // Operational journal.
   listRuns(): Promise<TunerRunView[]>;
   getRun(runId: string): Promise<TunerRunView>;
@@ -169,6 +176,8 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     `/api/bench/tuner/projection/runs/${encodeURIComponent(runId)}`;
   const objectivePath = (key: string): string =>
     `/api/bench/tuner/objectives/${encodeURIComponent(key)}`;
+  const profilePath = (key: string): string =>
+    `/api/bench/tuner/profiles/${encodeURIComponent(key)}`;
   return {
     listTunableGames: () => fetchJson(url("/api/bench/tuner/kinds")),
     listObjectives: () => fetchJson(url("/api/bench/tuner/objectives")),
@@ -177,6 +186,12 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     deleteObjective: (key) => sendNoContent(url(objectivePath(key)), "DELETE"),
     validateObjective: (key, content) =>
       sendJson(url(`${objectivePath(key)}/validate`), "POST", content),
+    listProfiles: () => fetchJson(url("/api/bench/tuner/profiles")),
+    getProfile: (key) => fetchJson(url(profilePath(key))),
+    putProfile: (key, content) => sendJson(url(profilePath(key)), "PUT", content),
+    deleteProfile: (key) => sendNoContent(url(profilePath(key)), "DELETE"),
+    validateProfile: (key, content) =>
+      sendJson(url(`${profilePath(key)}/validate`), "POST", content),
     listRuns: () => fetchJson(url("/api/bench/tuner/runs")),
     getRun: (runId) => fetchJson(url(runPath(runId))),
     launchRun: (body) => sendJson(url("/api/bench/tuner/runs"), "POST", body),

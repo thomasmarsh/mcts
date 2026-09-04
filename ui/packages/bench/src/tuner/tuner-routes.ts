@@ -11,6 +11,8 @@ export type TunerRoute =
   | { view: "launch" }
   | { view: "objectives" }
   | { view: "objective"; key: string | null; game?: string }
+  | { view: "profiles" }
+  | { view: "profile"; key: string | null }
   | { view: "run"; runId: string; tab: RunTab; candidate?: string };
 
 const RUN_TABS: RunTab[] = ["overview", "science", "evidence"];
@@ -31,6 +33,11 @@ export function parseTunerHash(hash: string): TunerRoute {
     }
     if (parts[2]) return { view: "objective", key: decodeURIComponent(parts[2]) };
     return { view: "objectives" };
+  }
+  if (parts[1] === "profiles") {
+    if (parts[2] === "new") return { view: "profile", key: null };
+    if (parts[2]) return { view: "profile", key: decodeURIComponent(parts[2]) };
+    return { view: "profiles" };
   }
   if (parts[1] === "run" && parts[2]) {
     const runId = decodeURIComponent(parts[2]);
@@ -57,6 +64,12 @@ export function tunerHash(route: TunerRoute): string {
       }
       return `#/tuner/objectives/${encodeURIComponent(route.key)}`;
     }
+    case "profiles":
+      return "#/tuner/profiles";
+    case "profile":
+      return route.key === null
+        ? "#/tuner/profiles/new"
+        : `#/tuner/profiles/${encodeURIComponent(route.key)}`;
     case "run": {
       let base = `#/tuner/run/${encodeURIComponent(route.runId)}`;
       if (route.tab !== "overview") base = `${base}/${route.tab}`;
