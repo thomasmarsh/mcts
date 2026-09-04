@@ -293,10 +293,16 @@ mod tests {
     use rustc_hash::FxHashSet;
 
     use super::{HashedPosition, Move, TicTacToe};
+
+    // Vanilla UCT + decisive-move rollouts.
+    type Ucb1DM = strategy::Compose<select::Ucb1, simulate::DecisiveMove<TicTacToe>>;
+    // Vanilla UCT + PN-MCTS's UCT-PN selection formula.
+    type Ucb1Pn = strategy::Compose<select::UctPn, simulate::Uniform>;
+
     use mcts::{
         game::Game,
         algorithms::{
-            mcts::{node::QInit, render, select, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, render, select, simulate, strategy, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },
         util::random_play,
@@ -511,7 +517,7 @@ mod tests {
 
     #[test]
     fn test_ucb1dm_finds_forced_block() {
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1DM>;
+        type TS = TreeSearch<TicTacToe, Ucb1DM>;
         let state = must_block_position();
         let mut ts = TS::default().config(
             SearchConfig::default()
@@ -584,7 +590,7 @@ mod tests {
     // has already proven necessary.
     #[test]
     fn test_uctpn_finds_forced_block() {
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1Pn>;
+        type TS = TreeSearch<TicTacToe, Ucb1Pn>;
         let state = must_block_position();
 
         let mut ts = TS::default().config(

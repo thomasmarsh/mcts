@@ -4,6 +4,18 @@ use mcts::game::Transform;
 use mcts::algorithms::parallel_test_guard;
 use mcts::algorithms::Search;
 
+use mcts::{backprop, select, simulate, strategy::Compose};
+
+// Local convenience aliases for the axis compositions these tests exercise,
+// each mirroring the associated types of the retired named markers.
+type Amaf = Compose<select::Amaf, simulate::Uniform>;
+type Ucb1Nst<G> = Compose<select::Ucb1, simulate::EpsilonGreedy<G, simulate::Nst>>;
+type Ucb1ProgressiveHistory = Compose<select::ProgressiveHistory, simulate::Uniform>;
+type Ucb1MaxRobust =
+    Compose<select::Ucb1, simulate::Uniform, backprop::Classic, select::MaxRobustChild>;
+type RaveMastDm<G> =
+    Compose<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;
+
 #[test]
 fn test_expand0() {
     use game_ttt::*;
@@ -375,7 +387,7 @@ fn test_tree_parallel_with_grave_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::RaveMastDm<G>>;
+    type TS = mcts::TreeSearch<G, RaveMastDm<G>>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(300)
@@ -534,7 +546,7 @@ fn test_basics() {
     };
 
     // Configure new MCTS
-    type TS = mcts::TreeSearch<G, mcts::strategy::Amaf>;
+    type TS = mcts::TreeSearch<G, Amaf>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .expand_threshold(1)
@@ -954,7 +966,7 @@ fn test_nst_bigram_table_populated_by_backprop() {
     };
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1Nst>;
+    type TS = mcts::TreeSearch<G, Ucb1Nst<G>>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().seed(7));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
@@ -2319,7 +2331,7 @@ fn test_progressive_history_global_table_populated_by_backprop() {
     };
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1ProgressiveHistory>;
+    type TS = mcts::TreeSearch<G, Ucb1ProgressiveHistory>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().seed(7));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
@@ -2357,7 +2369,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1ProgressiveHistory>;
+    type TS = mcts::TreeSearch<G, Ucb1ProgressiveHistory>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
@@ -2474,7 +2486,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1MaxRobust>;
+    type TS = mcts::TreeSearch<G, Ucb1MaxRobust>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
