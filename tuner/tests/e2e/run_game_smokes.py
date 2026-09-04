@@ -94,7 +94,7 @@ def _check_game(
         )
         command.extend(effort_flags)
         excluded_constraint = (
-            {"set": {"algorithm": {"choices": ["mcts", "flat_mc", "random"]}}}
+            {"set": {"algorithm": {"choices": ["mcts", "bandit", "random"]}}}
             if excluded_algorithm == "negamax"
             else None
         )

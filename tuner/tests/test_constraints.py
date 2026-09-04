@@ -25,7 +25,7 @@ def _schema() -> TuningSchema:
         1,
         (
             ParameterSpec(
-                "algorithm", "categorical", None, ("mcts", "flat_mc", "random"), "mcts", None
+                "algorithm", "categorical", None, ("mcts", "bandit", "random"), "mcts", None
             ),
             ParameterSpec(
                 "select", "categorical", None, ("ucb1", "ucb1_tuned", "rave"), "ucb1", None
@@ -147,7 +147,7 @@ def test_residual_domain_must_be_non_empty() -> None:
     schema = _schema()
     with pytest.raises(ValueError):
         validate_constraints(
-            schema, decode_constraints({"algorithm": {"choices": ["mcts", "flat_mc", "random"]}})
+            schema, decode_constraints({"algorithm": {"choices": ["mcts", "bandit", "random"]}})
         )
 
 

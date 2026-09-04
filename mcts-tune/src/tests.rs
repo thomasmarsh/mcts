@@ -267,7 +267,7 @@ fn baseline() -> Box<dyn Search<G = Nim>> {
 fn axis_native(name: &str) -> Value {
     let axes = match name {
         "random" => json!({"algorithm": "random"}),
-        "flat_mc" => json!({"algorithm": "flat_mc"}),
+        "bandit" => json!({"algorithm": "bandit"}),
         "negamax" => json!({"algorithm": "negamax"}),
         "ucb1" => json!({"select": "ucb1", "simulate": "uniform"}),
         "ucb1_tuned" => json!({"select": "ucb1_tuned", "simulate": "uniform"}),
@@ -766,26 +766,27 @@ fn test_variant_random_round_trips() {
     assert_variant_round_trips(compose("random", json!({})));
 }
 
-/// Like `random`, `flat_mc` is a non-MCTS `algorithm`. This exercises
-/// its default win-rate move rule; `test_variant_flat_mc_ucb1_round_trips`
-/// below covers the UCB1 branch `flat_mc_selection` also allows.
+/// Like `random`, `bandit` is a non-MCTS `algorithm`. This exercises the
+/// zero-extra-param `random` arm-selection policy;
+/// `test_variant_bandit_ucb1_round_trips` below covers a branch with its own
+/// extra param (`c`).
 #[test]
-fn test_variant_flat_mc_round_trips() {
-    assert_variant_round_trips(compose("flat_mc", json!({
-        "samples_per_move": 20, "max_rollout_depth": 50,
-        "flat_mc_selection": "win_rate",
+fn test_variant_bandit_round_trips() {
+    assert_variant_round_trips(compose("bandit", json!({
+        "budget": 20, "max_rollout_depth": 50,
+        "bandit_policy": "random",
     })));
 }
 
 #[test]
-fn test_variant_flat_mc_ucb1_round_trips() {
-    assert_variant_round_trips(compose("flat_mc", json!({
-        "samples_per_move": 20, "max_rollout_depth": 50,
-        "flat_mc_selection": "ucb1", "c": 1.4,
+fn test_variant_bandit_ucb1_round_trips() {
+    assert_variant_round_trips(compose("bandit", json!({
+        "budget": 20, "max_rollout_depth": 50,
+        "bandit_policy": "ucb1", "c": 1.4,
     })));
 }
 
-/// Like `random`/`flat_mc`, `negamax` is a non-MCTS `algorithm`.
+/// Like `random`/`bandit`, `negamax` is a non-MCTS `algorithm`.
 /// `max_depth`/`table_bits` are kept small: `Nim`'s heaps allow arbitrary
 /// splits, so its game tree is not the trivially shallow one a fixed-heap
 /// take-only Nim would be, and an unbounded iterative-deepening search
@@ -1011,26 +1012,26 @@ fn test_build_search_builds_random_algorithm() {
     .expect("random should build with just algorithm/q_init");
 }
 
-/// `flat_mc` is a plain `fields.rs` row like `random`, just one
-/// with its own tunable fields (`samples_per_move`/`max_rollout_depth`/
-/// `flat_mc_selection`) rather than none.
+/// `bandit` is a plain `fields.rs` row like `random`, just one
+/// with its own tunable fields (`budget`/`max_rollout_depth`/
+/// `bandit_policy`) rather than none.
 #[test]
-fn test_build_search_builds_flat_mc_algorithm() {
+fn test_build_search_builds_bandit_algorithm() {
     build_search::<Nim>(
-        &compose("flat_mc", json!({
-            "samples_per_move": 20, "max_rollout_depth": 50,
-            "flat_mc_selection": "win_rate",
+        &compose("bandit", json!({
+            "budget": 20, "max_rollout_depth": 50,
+            "bandit_policy": "random",
         })),
         0,
         false,
         &SearchBudget::default(),
     )
-    .expect("flat_mc should build from its own required params");
+    .expect("bandit should build from its own required params");
 }
 
 /// `negamax` is a non-MCTS `algorithm` too, built by
 /// `direct_search::build_direct` rather than `config_ir::build_search`, and
-/// (unlike `random`/`flat_mc`) actually reads `SearchBudget` (`threads`/
+/// (unlike `random`/`bandit`) actually reads `SearchBudget` (`threads`/
 /// `max_time`) -- this only proves it builds, so `max_depth` doesn't need to
 /// be tight here (`choose_action` is never called).
 #[test]
@@ -1068,7 +1069,7 @@ fn test_strategy_tuner_info_lists_algorithm_and_axis_choices() {
     };
     assert_eq!(
         choices("algorithm"),
-        ["random", "flat_mc", "mcts", "negamax"]
+        ["random", "bandit", "mcts", "negamax"]
     );
     for want in ["ucb1", "rave", "ments", "bayes_uct1", "gpn"] {
         assert!(
@@ -1089,7 +1090,7 @@ fn test_strategy_tuner_info_lists_algorithm_and_axis_choices() {
     assert_eq!(choices("backprop"), ["classic", "power_mean", "td"]);
 }
 
-/// `random`/`flat_mc`/`negamax` have no policy axes and no Q-values, so a
+/// `random`/`bandit`/`negamax` have no policy axes and no Q-values, so a
 /// tuner shouldn't waste trials sampling `q_init` or any `select`/`simulate`
 /// variant for them -- `active_params` (the same fixed-point evaluation
 /// `test_tuner_info_conditions_cover_every_axis_native_param_dispatch_needs`
@@ -1097,7 +1098,7 @@ fn test_strategy_tuner_info_lists_algorithm_and_axis_choices() {
 #[test]
 fn test_tuner_info_gates_axes_and_q_init_to_mcts_only() {
     let tuner = strategy_tuner_info(&["strong"], 1);
-    for algo in ["random", "flat_mc", "negamax"] {
+    for algo in ["random", "bandit", "negamax"] {
         let active = active_params(&tuner, &json!({"algorithm": algo}));
         for gated in ["q_init", "select", "simulate", "final_action"] {
             assert!(
@@ -1303,10 +1304,10 @@ fn variant_required_params() -> Vec<(&'static str, Value)> {
         ),
         ("random", compose("random", json!({}))),
         (
-            "flat_mc",
-            compose("flat_mc", json!({
-                "samples_per_move": 20, "max_rollout_depth": 50,
-                "flat_mc_selection": "win_rate",
+            "bandit",
+            compose("bandit", json!({
+                "budget": 20, "max_rollout_depth": 50,
+                "bandit_policy": "random",
             })),
         ),
         (
@@ -1576,7 +1577,7 @@ fn tuner_info_schema_has_no_unreachable_params_or_orphan_conditions() {
     // active sets must cover every declared parameter.
     let configs = [
         json!({"algorithm": "random"}),
-        json!({"algorithm": "flat_mc", "flat_mc_selection": "ucb1"}),
+        json!({"algorithm": "bandit", "bandit_policy": "ucb1"}),
         json!({"algorithm": "negamax", "negamax_aspiration": "on"}),
         json!({"algorithm": "mcts", "select": "ucb1", "select_epsilon_greedy": true,
                "simulate": "decisive_move_nst", "simulate_epsilon_greedy": true,

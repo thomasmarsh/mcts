@@ -195,7 +195,7 @@ pub(crate) const META_MCTS_INNER_ITERATIONS: usize = 50;
 /// configuration gets to run for. Defaults to this harness's historical behavior
 /// (`MAX_ITER` iterations, single-threaded, uncapped wall time) -- the
 /// right shape for a `baseline_config`-backed opponent (self-play against a
-/// discovered config, including a `random`/`flat_mc` baseline), since both
+/// discovered config, including a `random`/`bandit` baseline), since both
 /// sides of that match are built the same way and so stay symmetric
 /// regardless of budget.
 ///
@@ -363,7 +363,7 @@ pub fn build_search<G: Game + 'static>(
 /// plus, for `mcts`, its policy-axis categoricals and per-variant params --
 /// into a runnable `Box<dyn Search<G>>`. An `mcts` configuration goes through
 /// `config_ir::build_search` (the type-erased `Dyn*` axis path);
-/// `random`/`flat_mc`/`negamax` go through `direct_search::build_direct`.
+/// `random`/`bandit`/`negamax` go through `direct_search::build_direct`.
 pub(crate) fn make_candidate<G: Game + 'static>(
     params: &Value,
     seed: u64,

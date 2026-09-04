@@ -100,8 +100,8 @@ export const fakePhysicalTunerRun: RunDetail = {
   kind: "tuner",
   game: "traffic-lights",
   config: {
-    overrides: ["optimizer.n_trials=50", 'target.baselines=["flat_mc"]'],
-    baseline_settings: { flat_mc: { algorithm: "flat_mc", q_init: "Infinity" } },
+    overrides: ["optimizer.n_trials=50", 'target.baselines=["bandit"]'],
+    baseline_settings: { bandit: { algorithm: "bandit", q_init: "Infinity" } },
   },
   trial_count: 3,
   incumbent: { config: { select: "rave", c: 0.7 }, cost: 0.2 },
@@ -125,7 +125,7 @@ export const fakeTunableGames: TunableGame[] = [
         {
           name: "algorithm",
           type: "categorical",
-          choices: ["mcts", "random", "flat_mc", "negamax"],
+          choices: ["mcts", "random", "bandit", "negamax"],
           default: "mcts",
         },
         {
@@ -188,7 +188,7 @@ export const fakeTunableGames: TunableGame[] = [
 ];
 
 // Best trial (#2, cost 0.3) is deliberately `select: "ucb1_tuned"`, unlike
-// the run's `flat_mc` baseline -- proves the run-detail baseline comparison
+// the run's `bandit` baseline -- proves the run-detail baseline comparison
 // and the trial table work across different configs.
 export const fakeTrialRows: TrialRow[] = [
   {

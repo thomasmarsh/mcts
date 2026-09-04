@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(err.code, 404);
     }
 
-    /// `"random"`/`"flat_mc"`/`"negamax"` are non-MCTS algorithms --
+    /// `"random"`/`"bandit"`/`"negamax"` are non-MCTS algorithms --
     /// resolved by `direct_search::build_direct` rather than
     /// `config_ir::build_search` -- but `PresetTable::build` is just
     /// `build_search` under a preset id, so a game's `presets.json` can name
@@ -666,7 +666,7 @@ mod tests {
         let table = PresetTable::from_json(
             r#"[
                 {"id": "random", "label": "Random", "description": "", "params": {"algorithm": "random", "q_init": "Infinity"}, "max_iterations": 1},
-                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"algorithm": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100},
+                {"id": "bandit", "label": "Bandit", "description": "", "params": {"algorithm": "bandit", "budget": 20, "max_rollout_depth": 50, "bandit_policy": "random"}, "max_iterations": 100},
                 {"id": "negamax", "label": "Negamax", "description": "", "params": {
                     "algorithm": "negamax", "max_depth": 3, "table_bits": 10,
                     "negamax_replacement": "depth_preferred",
@@ -682,8 +682,8 @@ mod tests {
         let mut random_ai = table.build::<Nim>("random", 0).unwrap();
         let _ = random_ai.choose_action(&state);
 
-        let mut flat_mc_ai = table.build::<Nim>("flat_mc", 0).unwrap();
-        let _ = flat_mc_ai.choose_action(&state);
+        let mut bandit_ai = table.build::<Nim>("bandit", 0).unwrap();
+        let _ = bandit_ai.choose_action(&state);
 
         let mut negamax_ai = table.build::<Nim>("negamax", 0).unwrap();
         let _ = negamax_ai.choose_action(&state);

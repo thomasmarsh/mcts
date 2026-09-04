@@ -112,7 +112,7 @@ where
 
 /// Builds a runnable `Box<dyn Search<G = G>>` from a `SearchSpec` --
 /// `mcts-tune::make_candidate`'s dispatch for every `algorithm == mcts`
-/// configuration (`random`/`flat_mc`/`negamax` go through
+/// configuration (`random`/`bandit`/`negamax` go through
 /// `direct_search::build_direct` instead): `dispatch::to_search_spec` builds
 /// the `SearchSpec`, then this call resolves it, driven entirely by this
 /// file's registry-generated dispatch. `select`, `simulate`,

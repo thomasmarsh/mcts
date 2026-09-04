@@ -112,7 +112,7 @@ const SIMULATE_CHOICES: &[&str] = &[
 ];
 
 /// The top-level `algorithm` categorical: the move-choosing method.
-const ALGORITHM_CHOICES: &[&str] = &["random", "flat_mc", "mcts", "negamax"];
+const ALGORITHM_CHOICES: &[&str] = &["random", "bandit", "mcts", "negamax"];
 
 /// Axis categoricals and engine settings a `mcts` algorithm activates
 /// unconditionally (per-variant scalars are gated further, on the axis's
@@ -215,7 +215,7 @@ pub fn strategy_tuner_info_with_mcgs(
         },
         conditions: vec![
             // `mcts` activates the four axis categoricals plus the
-            // orthogonal `q_init` (meaningless to `random`/`flat_mc`/
+            // orthogonal `q_init` (meaningless to `random`/`bandit`/
             // `negamax`, which have no Q-values to initialize).
             condition(json!({"algorithm": "mcts"}), MCTS_AXES),
             // Shared exploration constant.
@@ -272,10 +272,11 @@ pub fn strategy_tuner_info_with_mcgs(
             condition(json!({"contempt": "on"}), &["contempt_factor"]),
             // The standalone (non-`mcts`) algorithms.
             condition(
-                json!({"algorithm": "flat_mc"}),
-                &["samples_per_move", "max_rollout_depth", "flat_mc_selection"],
+                json!({"algorithm": "bandit"}),
+                &["budget", "max_rollout_depth", "bandit_policy"],
             ),
-            condition(json!({"flat_mc_selection": "ucb1"}), &["c"]),
+            condition(json!({"bandit_policy": "ucb1"}), &["c"]),
+            condition(json!({"bandit_policy": "epsilon_greedy"}), &["epsilon"]),
             condition(
                 json!({"algorithm": "negamax"}),
                 &[

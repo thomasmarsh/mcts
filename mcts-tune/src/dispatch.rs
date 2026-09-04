@@ -31,12 +31,10 @@ use crate::search::META_MCTS_INNER_ITERATIONS;
 /// and no policy axes at all.
 pub(crate) enum AlgorithmSpec {
     Mcts(SearchSpec),
-    FlatMc {
-        samples_per_move: u32,
+    Bandit {
+        budget: u32,
         max_rollout_depth: u32,
-        /// `Some(exploration_constant)` selects `flat_mc`'s UCB1 move rule;
-        /// `None` is plain win-rate comparison.
-        ucb1: Option<f64>,
+        policy: BanditPolicySpec,
     },
     Negamax {
         max_depth: u32,
@@ -49,6 +47,16 @@ pub(crate) enum AlgorithmSpec {
         countermove_heuristic: bool,
     },
     Random,
+}
+
+/// A `bandit_policy` categorical resolved to the parameters
+/// `direct_search::build_direct` needs to construct the matching
+/// `algorithms::bandit::BanditPolicy` impl.
+pub(crate) enum BanditPolicySpec {
+    Random,
+    EpsilonGreedy { epsilon: f64 },
+    Ucb1 { c: f64 },
+    Thompson,
 }
 
 fn missing(name: &str) -> HostError {
@@ -343,15 +351,19 @@ pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError>
     match req_str(cfg, "algorithm")? {
         "mcts" => Ok(AlgorithmSpec::Mcts(to_search_spec(cfg)?)),
         "random" => Ok(AlgorithmSpec::Random),
-        "flat_mc" => Ok(AlgorithmSpec::FlatMc {
-            samples_per_move: req_u32(cfg, "samples_per_move")?,
+        "bandit" => Ok(AlgorithmSpec::Bandit {
+            budget: req_u32(cfg, "budget")?,
             max_rollout_depth: req_u32(cfg, "max_rollout_depth")?,
-            ucb1: match req_str(cfg, "flat_mc_selection")? {
-                "win_rate" => None,
-                "ucb1" => Some(req_f64(cfg, "c")?),
+            policy: match req_str(cfg, "bandit_policy")? {
+                "random" => BanditPolicySpec::Random,
+                "epsilon_greedy" => BanditPolicySpec::EpsilonGreedy {
+                    epsilon: req_f64(cfg, "epsilon")?,
+                },
+                "ucb1" => BanditPolicySpec::Ucb1 { c: req_f64(cfg, "c")? },
+                "thompson" => BanditPolicySpec::Thompson,
                 other => {
                     return Err(HostError::bad_request(format!(
-                        "unknown flat_mc_selection: {other}"
+                        "unknown bandit_policy: {other}"
                     )))
                 }
             },

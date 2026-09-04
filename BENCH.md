@@ -75,7 +75,7 @@ Rust ingest loop -> DuckDB
 
 The launch form produces a free-form JSON configuration stored on the `runs` row. For tuner this normally includes:
 
-- ordered `overrides`, such as `optimizer.n_trials=100` and `target.baselines=['flat_mc']`;
+- ordered `overrides`, such as `optimizer.n_trials=100` and `target.baselines=['bandit']`;
 - optional `game_config`;
 - optional `baseline_configs`, keyed raw strategy configurations;
 - `baseline_settings`, which records the resolved baseline parameters for display and comparison.
@@ -110,7 +110,7 @@ A run must explicitly select at least one baseline. Scenario instances are the u
 
 `target.py` decides how each instance reaches `tune eval`:
 
-- discovered configurations and the repository's `flat_mc`/`random` floor baselines use `--baseline-config <json>`;
+- discovered configurations and the repository's `bandit`/`random` floor baselines use `--baseline-config <json>`;
 - actual game presets use `--baseline <name>`.
 
 That distinction is semantic. Passing a floor baseline as though it were a named game preset turns evaluation errors into apparent cost `1.0` results.

@@ -57,8 +57,8 @@ const PLAN: RunPlan = {
   ],
   space: {
     schema_id: "strategy",
-    algorithms: ["mcts", "flat_mc"],
-    residual_categoricals: { algorithm: ["mcts", "flat_mc"], select: ["ucb1", "rave"] },
+    algorithms: ["mcts", "bandit"],
+    residual_categoricals: { algorithm: ["mcts", "bandit"], select: ["ucb1", "rave"] },
     constraints: [{ set: { select: { choices: ["ucb1", "rave"] } } }],
     parameters: [
       {
@@ -126,7 +126,7 @@ describe("LaunchForm — Run plan panel", () => {
     const table = await screen.findByTestId("run-plan-opponents");
     expect(table).toHaveTextContent('{"select":"rave"}');
     const space = screen.getByTestId("run-plan-tuning-space");
-    expect(space).toHaveTextContent("algorithm: mcts, flat_mc");
+    expect(space).toHaveTextContent("algorithm: mcts, bandit");
     expect(space).toHaveTextContent("variants: select ∈ [ucb1, rave]");
     expect(screen.getByTestId("run-plan-budgets")).toHaveTextContent("32 pairs");
   });

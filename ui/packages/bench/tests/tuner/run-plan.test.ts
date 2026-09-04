@@ -30,8 +30,8 @@ const resolved: RunPlan = {
   ],
   space: {
     schema_id: "strategy",
-    algorithms: ["mcts", "flat_mc"],
-    residual_categoricals: { algorithm: ["mcts", "flat_mc"], select: ["ucb1", "rave"] },
+    algorithms: ["mcts", "bandit"],
+    residual_categoricals: { algorithm: ["mcts", "bandit"], select: ["ucb1", "rave"] },
     constraints: [{ set: { select: { choices: ["ucb1", "rave"] } } }],
     parameters: [
       {
@@ -76,7 +76,7 @@ describe("summarizeRunPlan", () => {
     expect(s.resolved).toBe(true);
     const def = s.opponents.find((o) => o.id === "schema-default");
     expect(def?.config).toBe('{"select":"rave"}');
-    expect(s.algorithms).toEqual(["mcts", "flat_mc"]);
+    expect(s.algorithms).toEqual(["mcts", "bandit"]);
     expect(s.narrowedVariants).toEqual([{ name: "select", values: ["ucb1", "rave"] }]);
     expect(s.effortKpis.map((k) => k.value)).toEqual([
       "1000 iters",

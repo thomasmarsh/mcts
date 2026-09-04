@@ -1,4 +1,4 @@
-pub mod flat_mc;
+pub mod bandit;
 pub mod human;
 pub mod mcts;
 pub mod negamax;
@@ -174,7 +174,7 @@ pub trait Search: Sync + Send {
     /// `state` must be the same state `choose_action` was last called with --
     /// this reads existing search state rather than searching again.
     /// Default empty, matching `principle_variation`'s default: strategies
-    /// that don't keep a persistent tree (`flat_mc`, `random`, `human`) have
+    /// that don't keep a persistent tree (`bandit`, `random`, `human`) have
     /// nothing structured to report.
     #[allow(unused_variables)]
     fn root_report(&self, state: &<Self::G as Game>::S) -> RootReport<<Self::G as Game>::A> {

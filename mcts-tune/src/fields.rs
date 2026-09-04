@@ -131,15 +131,16 @@ register_field! {
     // `max` is strongest at two players; `sum` is the safer choice in wider
     // fields, where it damps the per-player AND-branch blow-up.
     gpn_bias: String => json!({"type": "categorical", "choices": ["max", "sum", "rank"], "default": "max"}),
-    // `flat_mc::FlatMonteCarloStrategy`'s per-move rollout count and
-    // per-rollout depth cap.
-    samples_per_move: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 100}),
+    // `algorithms::bandit::BanditStrategy`'s total rollout budget -- shared
+    // adaptively across every legal move by `bandit_policy`, not spent on
+    // each one unconditionally -- and its per-rollout depth cap.
+    budget: u32 => json!({"type": "int", "bounds": [1, 10000], "default": 1000}),
     max_rollout_depth: u32 => json!({"type": "int", "bounds": [1, 1000], "default": 100}),
-    // Chooses between `flat_mc`'s two move-selection rules: plain win-rate
-    // comparison, or a UCB1 bandit over the same per-move samples (reusing
-    // the `c` field every other UCB1-flavored variant already has, rather
-    // than adding a near-duplicate exploration-constant field).
-    flat_mc_selection: String => json!({"type": "categorical", "choices": ["win_rate", "ucb1"], "default": "win_rate"}),
+    // Chooses `algorithms::bandit`'s arm-selection rule. `epsilon_greedy`
+    // reuses the shared `epsilon` field, `ucb1` the shared `c` exploration
+    // constant every other UCB1-flavored variant already has, rather than
+    // adding near-duplicate fields.
+    bandit_policy: String => json!({"type": "categorical", "choices": ["random", "epsilon_greedy", "ucb1", "thompson"], "default": "ucb1"}),
     // `negamax::NegamaxOptions`'s iterative-deepening ceiling and
     // transposition table size (`1 << table_bits` slots, `0` disables it).
     max_depth: u32 => json!({"type": "int", "bounds": [1, 64], "default": 8}),

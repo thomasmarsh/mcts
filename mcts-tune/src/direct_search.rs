@@ -1,5 +1,5 @@
 //! Builds a runnable `Box<dyn Search<G>>` for a non-MCTS [`AlgorithmSpec`] --
-//! the `random`/`flat_mc`/`negamax` counterpart of `config_ir::build_search`.
+//! the `random`/`bandit`/`negamax` counterpart of `config_ir::build_search`.
 //! Those three are standalone `Search` impls, not a
 //! `Mcts<DynSelect<G>, DynSimulate<G>, B, DynSelect<G>>` `TreeSearch`,
 //! so this is the one place `G` is monomorphized against its concrete type
@@ -7,20 +7,30 @@
 
 use mcts::evaluator::MaterialBlind;
 use mcts::game::Game;
+use mcts::algorithms::bandit::{self, BanditStrategy};
 use mcts::algorithms::negamax::{Negamax, NegamaxOptions};
-use mcts::algorithms::{flat_mc::FlatMonteCarloStrategy, random::Random, Search};
+use mcts::algorithms::{random::Random, Search};
 
-use crate::dispatch::AlgorithmSpec;
+use crate::dispatch::{AlgorithmSpec, BanditPolicySpec};
 use crate::SearchBudget;
 
 /// Builds the concrete `Search` impl named by a non-MCTS `algorithm`.
 /// `budget` is accepted for symmetry with `config_ir::build_search`'s call
-/// shape; `Random` and `FlatMc` ignore it (neither has a
-/// time/iteration/thread budget to apply -- `flat_mc`'s own per-move effort
-/// is `samples_per_move`/`max_rollout_depth`, tunable fields rather than a
-/// run-level budget), but `Negamax` reads both `threads` (Lazy-SMP root
-/// splitting) and `max_time` (iterative-deepening cutoff) from it, the same
-/// as any MCTS configuration's `SearchSettings`.
+/// shape; `Random` ignores it (it has no compute budget to apply at all),
+/// but `Bandit` and `Negamax` both read it: `Bandit` feeds
+/// `budget.iteration_limit()` into `BanditStrategy::budget` (its own
+/// `algorithm == mcts`-config's `bandit_policy`/`c`/`epsilon` fields still
+/// choose the arm-selection rule -- `budget` only bounds how many rollouts
+/// that rule gets to spend, the same role `SearchSettings::max_iterations`
+/// plays for `algorithm == mcts`), and `Negamax` reads both `threads`
+/// (Lazy-SMP root splitting) and `max_time` (iterative-deepening cutoff)
+/// from it.
+///
+/// `BanditStrategy` has no wall-clock awareness at all -- unlike `Negamax`,
+/// a `SearchBudget` built from `--max-time-ms` (`max_iterations: None`,
+/// `iteration_limit()` reading `usize::MAX`) does *not* cap it; only
+/// `--max-iterations` (or the config's own `budget` field, whichever is
+/// smaller) actually bounds a `Bandit` candidate's compute.
 ///
 /// [`AlgorithmSpec::Mcts`] is unreachable here: `make_candidate` routes it
 /// through `config_ir::build_search` before falling back to this function.
@@ -31,17 +41,37 @@ pub(crate) fn build_direct<G: Game + 'static>(
 ) -> Box<dyn Search<G = G>> {
     match algorithm {
         AlgorithmSpec::Random => Box::new(Random::<G>::new().with_seed(seed)),
-        AlgorithmSpec::FlatMc {
-            samples_per_move,
+        AlgorithmSpec::Bandit {
+            budget: rollout_budget,
             max_rollout_depth,
-            ucb1,
-        } => Box::new(
-            FlatMonteCarloStrategy::<G>::new()
-                .set_samples_per_move(*samples_per_move)
-                .set_max_rollout_depth(*max_rollout_depth)
-                .set_ucb1(*ucb1)
-                .with_seed(seed),
-        ),
+            policy,
+        } => {
+            let policy: Box<dyn bandit::BanditPolicy + Send + Sync> = match policy {
+                BanditPolicySpec::Random => Box::new(bandit::Random),
+                BanditPolicySpec::EpsilonGreedy { epsilon } => {
+                    Box::new(bandit::EpsilonGreedy { epsilon: *epsilon })
+                }
+                BanditPolicySpec::Ucb1 { c } => Box::new(bandit::Ucb1 {
+                    exploration_constant: *c,
+                }),
+                BanditPolicySpec::Thompson => Box::new(bandit::ThompsonSampling::default()),
+            };
+            // `rollout_budget` is the config's own tunable `budget` field;
+            // `budget.iteration_limit()` is the operator's run-level
+            // `--max-iterations`/`SearchBudget` override, `None` unless one
+            // was actually passed. The smaller of the two wins, so a tighter
+            // operator override always caps the tunable, but a config that
+            // asks for less than the operator's ceiling isn't padded up to
+            // it.
+            let effective_budget = (*rollout_budget as usize).min(budget.iteration_limit()) as u32;
+            Box::new(
+                BanditStrategy::<G>::new()
+                    .set_budget(effective_budget)
+                    .set_max_rollout_depth(*max_rollout_depth)
+                    .set_policy(policy)
+                    .with_seed(seed),
+            )
+        }
         AlgorithmSpec::Negamax {
             max_depth,
             table_bits,
