@@ -624,14 +624,14 @@ fn test_run_cli_tune_eval_baseline_config_threads_through() {
             "--rounds",
             "1",
             "--baseline-config",
-            r#"{"family":"ucb1","c":1.4}"#,
+            r#"{"algorithm":"mcts","select":"ucb1","c":1.4}"#,
         ],
         "",
     );
     assert_eq!(code, 0);
     let result: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
     assert!(result["baseline"].is_null());
-    assert_eq!(result["baseline_config"]["family"], "ucb1");
+    assert_eq!(result["baseline_config"]["select"], "ucb1");
     assert_eq!(result["baseline_config"]["c"], 1.4);
 }
 

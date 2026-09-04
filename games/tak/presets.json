@@ -4,7 +4,9 @@
         "label": "easy",
         "description": "",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -15,8 +17,18 @@
         "id": "strong",
         "label": "strong",
         "description": "",
-        "params": 
-        {"c":2.6471732687205,"epsilon":0.1946547962725,"family":"ucb1_dm_nst","final_action":"max_avg","mcgs":false,"nst_backoff_threshold":17,"q_init":"Parent"},
+        "params": {
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "decisive_move_nst",
+            "decisive_move_mode": "win",
+            "c": 2.6471732687205,
+            "epsilon": 0.1946547962725,
+            "final_action": "max_avg",
+            "mcgs": false,
+            "nst_backoff_threshold": 17,
+            "q_init": "Parent"
+        },
         "max_iterations": 500
     }
 ]

@@ -4,7 +4,9 @@
         "label": "Easy",
         "description": "Plain UCB1 with a shallow iteration budget -- makes mistakes.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -16,7 +18,9 @@
         "label": "Strong",
         "description": "UCB1 with MCTS-Solver and a deeper iteration budget -- meaningfully stronger than Easy.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Loss",
             "final_action": "robust_child"

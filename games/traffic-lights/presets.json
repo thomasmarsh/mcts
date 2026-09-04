@@ -2,9 +2,11 @@
     {
         "id": "easy",
         "label": "Easy",
-        "description": "Shallow budget — plays somewhat randomly.",
+        "description": "Shallow budget \u2014 plays somewhat randomly.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -14,9 +16,11 @@
     {
         "id": "strong",
         "label": "Strong",
-        "description": "Deep MCTS-Solver — plays near-perfectly.",
+        "description": "Deep MCTS-Solver \u2014 plays near-perfectly.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Loss",
             "final_action": "robust_child"
@@ -28,9 +32,12 @@
         "label": "Tuned",
         "description": "Tuned with optuna.",
         "params": {
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "lgr2_mast",
+            "simulate_epsilon_greedy": true,
             "c": 2.889922832129161,
             "epsilon": 0.5719669508725548,
-            "family": "ucb1_lgr2_mast",
             "final_action": "robust_child",
             "mcgs": false,
             "q_init": "Draw"

@@ -2,9 +2,11 @@
     {
         "id": "easy",
         "label": "Easy",
-        "description": "Shallow budget — obvious mistakes.",
+        "description": "Shallow budget \u2014 obvious mistakes.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -14,9 +16,11 @@
     {
         "id": "medium",
         "label": "Medium",
-        "description": "Moderate budget — plays competently.",
+        "description": "Moderate budget \u2014 plays competently.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -26,9 +30,11 @@
     {
         "id": "strong",
         "label": "Strong",
-        "description": "Deep MCTS-Solver — plays strongly.",
+        "description": "Deep MCTS-Solver \u2014 plays strongly.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Loss",
             "final_action": "robust_child"

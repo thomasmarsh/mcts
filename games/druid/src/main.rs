@@ -514,7 +514,7 @@ impl GameAdapter for DruidAdapter {
             // candidate on the default here would pit a fixed-iteration
             // search against a time-budgeted one, a mismatch severe enough
             // to produce a near-100%-loss streak on its own, independent of
-            // which family/hyperparameters tuner samples.
+            // which variant/hyperparameters tuner samples.
             //
             // Deliberately *not* matching thread count, though -- pin both
             // sides to a single thread instead of this preset's own
@@ -596,11 +596,14 @@ mod tests {
         );
     }
 
-    #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts (seconds for small games, tens of minutes for large boards like druid) -- mcts-tune's own crate has a fast per-family unit suite covering dispatch; this only additionally proves this game's own Game impl round-trips end to end. Run explicitly with `cargo test --bins -- --ignored`."]
+    #[ignore = "slow: plays real self-play games through mcts-tune at production iteration counts (seconds for small games, tens of minutes for large boards like druid) -- mcts-tune's own crate has a fast per-variant unit suite covering dispatch; this only additionally proves this game's own Game impl round-trips end to end. Run explicitly with `cargo test --bins -- --ignored`."]
     #[test]
     fn tune_eval_round_trips() {
         let params = serde_json::json!({
-            "family": "rave",
+            "algorithm": "mcts",
+            "select": "rave",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
             "threshold": 700,
             "c": 0.3,
             "epsilon": 0.1,
@@ -632,7 +635,10 @@ mod tests {
     #[test]
     fn tune_eval_with_baseline_config_round_trips() {
         let params = serde_json::json!({
-            "family": "rave",
+            "algorithm": "mcts",
+            "select": "rave",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
             "threshold": 700,
             "c": 0.3,
             "epsilon": 0.1,
@@ -643,7 +649,9 @@ mod tests {
             "rave_ucb": "tuned",
         });
         let baseline_config = serde_json::json!({
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4,
             "q_init": "Infinity",
             "final_action": "robust_child",
@@ -676,7 +684,10 @@ mod tests {
         // elsewhere in this crate (`games/druid/src/lib.rs`'s `for size in
         // [Size { w: 3, h: 3 }, ...]` tests).
         let params = serde_json::json!({
-            "family": "rave",
+            "algorithm": "mcts",
+            "select": "rave",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
             "threshold": 700,
             "c": 0.3,
             "epsilon": 0.1,
@@ -708,7 +719,10 @@ mod tests {
     #[test]
     fn tune_eval_rejects_unsupported_game_config_size() {
         let params = serde_json::json!({
-            "family": "rave",
+            "algorithm": "mcts",
+            "select": "rave",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
             "threshold": 700,
             "c": 0.3,
             "epsilon": 0.1,

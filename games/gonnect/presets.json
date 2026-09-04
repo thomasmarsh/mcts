@@ -4,7 +4,9 @@
         "label": "easy",
         "description": "",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -16,7 +18,9 @@
         "label": "strong",
         "description": "",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.4142135623730951,
             "q_init": "Loss",
             "final_action": "robust_child"
@@ -28,9 +32,12 @@
         "label": "Tuned candidate",
         "description": "Candidate snapshot from trial 415 (trial-8511d30bd7395abfa0f03a77f8473a8f).",
         "params": {
+            "algorithm": "mcts",
+            "select": "ucb1_tuned",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win",
             "c": 0.7239492926382561,
             "epsilon": 0.9222837149108224,
-            "family": "ucb1_tuned_dm_mast",
             "final_action": "robust_child",
             "q_init": "Win"
         },

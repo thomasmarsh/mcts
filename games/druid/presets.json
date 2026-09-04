@@ -4,7 +4,9 @@
         "label": "Easy",
         "description": "Plain UCB1 with random playouts and MCTS-Solver for tactical sharpness, ~1s per move.",
         "params": {
-            "family": "ucb1",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "uniform",
             "c": 1.414,
             "q_init": "Infinity",
             "final_action": "robust_child"
@@ -18,7 +20,10 @@
         "label": "Medium",
         "description": "UCB1 with MAST-biased playouts and MCTS-Solver for tactical sharpness, ~2s per move.",
         "params": {
-            "family": "ucb1_mast",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "mast",
+            "simulate_epsilon_greedy": true,
             "c": 1.625,
             "epsilon": 0.1,
             "q_init": "Infinity",
@@ -33,7 +38,10 @@
         "label": "Strong",
         "description": "N-gram-guided (NST) decisive-move search with MCTS-Solver for tactical sharpness, ~3s per move, searching one shared tree across all available CPU cores.",
         "params": {
-            "family": "ucb1_dm_nst",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "decisive_move_nst",
+            "decisive_move_mode": "win",
             "c": 1.414,
             "epsilon": 0.3,
             "nst_backoff_threshold": 5,
@@ -49,7 +57,10 @@
         "label": "Master",
         "description": "Same search as Strong, parallelized the same way, with a longer ~8s thinking budget.",
         "params": {
-            "family": "ucb1_dm_nst",
+            "algorithm": "mcts",
+            "select": "ucb1",
+            "simulate": "decisive_move_nst",
+            "decisive_move_mode": "win",
             "c": 1.414,
             "epsilon": 0.3,
             "nst_backoff_threshold": 5,

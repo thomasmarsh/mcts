@@ -274,7 +274,10 @@ mod tests {
     #[test]
     fn tune_eval_round_trips() {
         let params = serde_json::json!({
-            "family": "rave",
+            "algorithm": "mcts",
+            "select": "rave",
+            "simulate": "decisive_move_mast",
+            "decisive_move_mode": "win_loss",
             "threshold": 700,
             "c": 0.3,
             "epsilon": 0.1,

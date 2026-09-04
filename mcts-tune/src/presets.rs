@@ -2,8 +2,7 @@
 //! particular game's own hardcoded preset list. A
 //! `PresetTable` is just a `Vec<PresetSpec>` parsed from JSON -- each entry
 //! names a `params` object (the `algorithm` categorical plus its axis
-//! variants and their parameters -- or a pre-cutover `family` name, still
-//! resolved by `dispatch::legacy_family_to_axes`) plus a time/iteration/
+//! variants and their parameters) plus a time/iteration/
 //! thread budget, resolved to a runnable search via the existing
 //! [`build_search`] (this crate's own params -> `config_ir::SearchSpec` ->
 //! `Box<dyn Search<G>>` pipeline) -- not a new mechanism, just a new
@@ -41,8 +40,8 @@ fn one() -> usize {
 /// One preset's wire shape: `id`/`label`/`description` mirror
 /// `game_host::AiPresetInfo` exactly (`to_info` just clones them into it);
 /// `params` is a search-config JSON object (`algorithm` plus the axis
-/// variants and parameters it activates, `q_init` as a string -- or a
-/// legacy `family` name) -- the exact shape `build_search` already resolves,
+/// variants and parameters it activates, `q_init` as a string) -- the exact
+/// shape `build_search` already resolves,
 /// so nothing new to validate here beyond what `build_search` itself
 /// already rejects at build time.
 ///
@@ -493,7 +492,7 @@ mod tests {
     fn sample_custom_params_spec() -> CustomStrategySpec {
         CustomStrategySpec {
             search: None,
-            params: Some(json!({"family": "random", "q_init": "Infinity"})),
+            params: Some(json!({"algorithm": "random", "q_init": "Infinity"})),
             max_time_ms: None,
             max_iterations: Some(1),
             threads: 1,
@@ -586,7 +585,7 @@ mod tests {
     #[test]
     fn build_custom_rejects_a_spec_with_both_search_and_params() {
         let mut spec = sample_custom_spec();
-        spec.params = Some(json!({"family": "random", "q_init": "Infinity"}));
+        spec.params = Some(json!({"algorithm": "random", "q_init": "Infinity"}));
         let err = match build_custom::<Nim>(&spec, 0) {
             Err(e) => e,
             Ok(_) => panic!("a spec with both search and params must be rejected"),
@@ -613,14 +612,14 @@ mod tests {
                 "id": "easy",
                 "label": "Easy",
                 "description": "Quick and beatable.",
-                "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"},
+                "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"},
                 "max_iterations": 100
             },
             {
                 "id": "strong",
                 "label": "Strong",
                 "description": "",
-                "params": {"family": "ucb1", "c": 1.4, "q_init": "Loss", "final_action": "robust_child"},
+                "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Loss", "final_action": "robust_child"},
                 "max_iterations": 5000,
                 "threads": 1
             }
@@ -666,10 +665,10 @@ mod tests {
     fn build_resolves_non_composable_direct_families() {
         let table = PresetTable::from_json(
             r#"[
-                {"id": "random", "label": "Random", "description": "", "params": {"family": "random", "q_init": "Infinity"}, "max_iterations": 1},
-                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"family": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100},
+                {"id": "random", "label": "Random", "description": "", "params": {"algorithm": "random", "q_init": "Infinity"}, "max_iterations": 1},
+                {"id": "flat_mc", "label": "Flat MC", "description": "", "params": {"algorithm": "flat_mc", "samples_per_move": 20, "max_rollout_depth": 50, "flat_mc_selection": "win_rate"}, "max_iterations": 100},
                 {"id": "negamax", "label": "Negamax", "description": "", "params": {
-                    "family": "negamax", "max_depth": 3, "table_bits": 10,
+                    "algorithm": "negamax", "max_depth": 3, "table_bits": 10,
                     "negamax_replacement": "depth_preferred",
                     "principal_variation_search": true, "history_heuristic": true,
                     "singular_extension": true, "countermove_heuristic": true,
@@ -698,7 +697,7 @@ mod tests {
         let path = dir.join("presets.json");
         std::fs::write(
             &path,
-            r#"[{"id": "only", "label": "Only", "description": "", "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"}, "max_iterations": 1}]"#,
+            r#"[{"id": "only", "label": "Only", "description": "", "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"}, "max_iterations": 1}]"#,
         )
         .unwrap();
 
@@ -715,7 +714,7 @@ mod tests {
     #[test]
     fn zero_threads_resolves_to_available_parallelism_not_a_literal_zero_thread_budget() {
         let table = PresetTable::from_json(
-            r#"[{"id": "auto", "label": "Auto", "description": "", "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"}, "max_iterations": 1, "threads": 0}]"#,
+            r#"[{"id": "auto", "label": "Auto", "description": "", "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Infinity", "final_action": "robust_child"}, "max_iterations": 1, "threads": 0}]"#,
         )
         .unwrap();
         let budget = table.presets[0].budget();
@@ -728,7 +727,7 @@ mod tests {
             "id": "strong",
             "label": "Strong",
             "description": "beatable but tries",
-            "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity"},
+            "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Infinity"},
             "max_time_ms": 500,
             "max_iterations": 1000,
             "threads": 4,
@@ -746,7 +745,7 @@ mod tests {
         let spec: PresetSpec = serde_json::from_value(json!({
             "id": "easy",
             "label": "Easy",
-            "params": {"family": "ucb1", "c": 1.4, "q_init": "Infinity"},
+            "params": {"algorithm": "mcts", "select": "ucb1", "simulate": "uniform", "c": 1.4, "q_init": "Infinity"},
         }))
         .unwrap();
         assert_eq!(spec.description, "");
@@ -808,7 +807,7 @@ mod tests {
                 "backprop": {"kind": "classic"},
                 "final_action": {"kind": "robust_child"},
             },
-            "params": {"family": "random", "q_init": "Infinity"},
+            "params": {"algorithm": "random", "q_init": "Infinity"},
         }))
         .unwrap_err();
         assert!(err.to_string().contains("mutually exclusive"), "{err}");
@@ -817,13 +816,13 @@ mod tests {
     #[test]
     fn custom_strategy_spec_deserialize_accepts_params_in_place_of_search() {
         let spec: CustomStrategySpec = serde_json::from_value(json!({
-            "params": {"family": "random", "q_init": "Infinity"},
+            "params": {"algorithm": "random", "q_init": "Infinity"},
         }))
         .unwrap();
         assert!(spec.search.is_none());
         assert_eq!(
             spec.params,
-            Some(json!({"family": "random", "q_init": "Infinity"}))
+            Some(json!({"algorithm": "random", "q_init": "Infinity"}))
         );
     }
 }
