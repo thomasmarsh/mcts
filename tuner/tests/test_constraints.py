@@ -124,15 +124,23 @@ def test_choices_checks() -> None:
         validate_constraints(schema, decode_constraints({"c": {"choices": ["Zero"]}}))
 
 
-def test_conditional_reachability() -> None:
+def test_narrowing_prunes_unreachable_conditionals() -> None:
     schema = _schema()
-    with pytest.raises(ValueError):
-        validate_constraints(schema, decode_constraints({"select": {"fix": "ucb1"}}))
-    with pytest.raises(ValueError):
-        validate_constraints(
-            schema, decode_constraints({"select": {"choices": ["ucb1", "ucb1_tuned"]}})
-        )
-    validate_constraints(schema, decode_constraints({"select": {"choices": ["ucb1", "rave"]}}))
+    # Excluding `rave` leaves the `rave_ref` condition with no trigger value:
+    # the condition and its orphaned child are pruned, not rejected.
+    for constraints in (
+        decode_constraints({"select": {"fix": "ucb1"}}),
+        decode_constraints({"select": {"choices": ["ucb1", "ucb1_tuned"]}}),
+    ):
+        validate_constraints(schema, constraints)
+        pruned = constrained_schema(schema, constraints)
+        assert pruned.conditions == ()
+        assert "rave_ref" not in {parameter.name for parameter in pruned.parameters}
+
+    # Keeping `rave` keeps the condition and its child intact.
+    kept = constrained_schema(schema, decode_constraints({"select": {"choices": ["ucb1", "rave"]}}))
+    assert kept.conditions == schema.conditions
+    assert "rave_ref" in {parameter.name for parameter in kept.parameters}
 
 
 def test_residual_domain_must_be_non_empty() -> None:
@@ -141,6 +149,30 @@ def test_residual_domain_must_be_non_empty() -> None:
         validate_constraints(
             schema, decode_constraints({"algorithm": {"choices": ["mcts", "flat_mc", "random"]}})
         )
+
+
+def test_pruning_propagates_through_a_condition_chain() -> None:
+    # `deep` is active only when `mid == "on"`, which is active only when
+    # `top == "mcts"`. Excluding `mcts` must prune both conditions and both
+    # children, not leave `deep` dangling on a vanished parent.
+    schema = TuningSchema(
+        "strategy",
+        (),
+        1,
+        (
+            ParameterSpec("top", "categorical", None, ("mcts", "negamax"), "mcts", None),
+            ParameterSpec("mid", "categorical", None, ("on", "off"), "on", None),
+            ParameterSpec("deep", "int", (1, 10), None, 5, None),
+        ),
+        (
+            ActivationCondition("top", ("mcts",), ("mid",)),
+            ActivationCondition("mid", ("on",), ("deep",)),
+        ),
+        "{}",
+    )
+    pruned = constrained_schema(schema, decode_constraints({"top": {"choices": ["negamax"]}}))
+    assert pruned.conditions == ()
+    assert {parameter.name for parameter in pruned.parameters} == {"top"}
 
 
 def test_double_unconditional_constraint_rejected() -> None:

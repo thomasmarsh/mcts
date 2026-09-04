@@ -284,21 +284,6 @@ def _unconditional_set(constraints: Constraints, name: str) -> SetOp | None:
     return hits[0] if hits else None
 
 
-def _condition_reachable(op: SetOp | None, values: tuple[JsonValue, ...]) -> bool:
-    if op is None:
-        return True
-    if isinstance(op, FixOp):
-        return any(same_scalar(op.value, value) for value in values)
-    if isinstance(op, ChoicesOp):
-        return any(same_scalar(choice, value) for choice in op.choices for value in values)
-    return any(
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and op.low <= value <= op.high
-        for value in values
-    )
-
-
 def validate_constraints(schema: TuningSchema, constraints: Constraints) -> None:
     """Reject a constraint that widens, mistypes, empties, or orphans a parameter."""
     if not constraints:
@@ -336,14 +321,9 @@ def validate_constraints(schema: TuningSchema, constraints: Constraints) -> None
             if not residual:
                 raise ValueError(f"constraints leave parameter {parameter.name!r} with no choices")
 
-    for condition in schema.conditions:
-        op = _unconditional_set(constraints, condition.parent)
-        if not _condition_reachable(op, condition.values):
-            children = ", ".join(condition.children)
-            raise ValueError(
-                f"constraint on {condition.parent!r} leaves conditional "
-                f"parameter(s) {children} unreachable"
-            )
+    # Narrowing a categorical so a conditional child can never activate is
+    # allowed -- it is how an algorithm or axis variant is excluded. The dead
+    # condition and its orphaned children are pruned from `constrained_schema`.
 
 
 # --- candidate gate -----------------------------------------------------------
@@ -534,10 +514,43 @@ def constrained_schema(schema: TuningSchema, constraints: Constraints) -> Tuning
                     parameters[position] = _retarget_default(parameters[position], op)
             by_name[name] = parameters[position]
 
-    result = replace(schema, parameters=tuple(parameters))
+    result = _prune_unreachable(replace(schema, parameters=tuple(parameters)))
     if any(constraint.when for constraint in constraints):
         _reject_empty_residual(result)
     return result
+
+
+def _prune_unreachable(schema: TuningSchema) -> TuningSchema:
+    """Drop conditions whose parent can no longer take a triggering value.
+
+    A categorical narrowing (typically "exclude this algorithm / axis variant")
+    can leave an activation condition with an empty residual trigger set. That
+    condition, and any child parameter that no longer has a live condition, are
+    removed -- iteratively, so a narrowing that kills a parent which was itself a
+    conditional child propagates. ConfigSpace never sees a condition on a value
+    its parent can't hold.
+    """
+    parameters = list(schema.parameters)
+    conditions = list(schema.conditions)
+    while True:
+        by_name = {parameter.name: parameter for parameter in parameters}
+        live = [
+            condition
+            for condition in conditions
+            if condition.parent in by_name
+            and (
+                (domain := _param_domain(by_name[condition.parent])) is None
+                or any(same_scalar(item, value) for item in domain for value in condition.values)
+            )
+        ]
+        live_children = {child for condition in live for child in condition.children}
+        orphaned = {
+            child for condition in conditions for child in condition.children
+        } - live_children
+        if len(live) == len(conditions) and not orphaned:
+            return replace(schema, parameters=tuple(parameters), conditions=tuple(conditions))
+        conditions = live
+        parameters = [parameter for parameter in parameters if parameter.name not in orphaned]
 
 
 def dynamic_forbiddens(
