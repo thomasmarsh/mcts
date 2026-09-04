@@ -23,9 +23,9 @@
 // Usage: cargo run --release --example bayes_uct_bandit_tree
 use std::cell::RefCell;
 
-use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile::Mcts, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 
 const WIDTH: usize = 5;
 
@@ -147,7 +147,7 @@ impl Game for BanditTree {
 
 fn ucb1(
     iterations: usize,
-) -> TreeSearch<BanditTree, Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>> {
+) -> TreeSearch<BanditTree, Mcts<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("ucb1")
@@ -161,7 +161,7 @@ fn bayes_uct1(
     iterations: usize,
 ) -> TreeSearch<
     BanditTree,
-    Compose<
+    Mcts<
         select::BayesUct1,
         mcts::algorithms::mcts::simulate::Uniform,
         mcts::algorithms::mcts::backprop::BayesGaussian,
@@ -181,7 +181,7 @@ fn bayes_uct2(
     iterations: usize,
 ) -> TreeSearch<
     BanditTree,
-    Compose<
+    Mcts<
         select::BayesUct2,
         mcts::algorithms::mcts::simulate::Uniform,
         mcts::algorithms::mcts::backprop::BayesGaussian,

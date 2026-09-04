@@ -27,21 +27,21 @@ use std::time::Duration;
 
 use game_breakthrough::Breakthrough;
 use game_ingenious::Ingenious;
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
-    backprop::Classic, select, simulate, strategy, strategy::Compose, SearchConfig, TreeSearch,
+    backprop::Classic, profile, profile::Mcts, select, simulate, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type V = Compose<select::UcbV, simulate::Uniform, Classic>;
-type K = Compose<select::KlUcb, simulate::Uniform, Classic>;
+type V = Mcts<select::UcbV, simulate::Uniform, Classic>;
+type K = Mcts<select::KlUcb, simulate::Uniform, Classic>;
 
 const UCB_V_C: [f64; 3] = [0.5, 1.0, 2.0];
 const KL_UCB_C: [f64; 3] = [0.0, 1.0, 3.0];
 
-fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, strategy::Ucb1> {
+fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("baseline/uct")

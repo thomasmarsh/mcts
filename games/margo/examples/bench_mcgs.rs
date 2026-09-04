@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use game_margo::{Margo, State};
 use mcts::algorithms::mcts::{
-    node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
+    node::QInit, profile, select, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
 
@@ -22,7 +22,7 @@ use mcts::algorithms::Search;
 /// explicit `graph_search: Dag(Both)` mode, `reuse_tree` off too -- so this
 /// matches what the "strong" preset (`games/margo/presets.json`) actually
 /// builds via `mcts_tune::presets::build_custom`.
-fn strong_config() -> TreeSearch<Margo, strategy::Ucb1> {
+fn strong_config() -> TreeSearch<Margo, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("bench/margo-strong")

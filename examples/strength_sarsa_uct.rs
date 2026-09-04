@@ -29,26 +29,26 @@ use std::time::Duration;
 
 use game_breakthrough::Breakthrough;
 use game_ingenious::Ingenious;
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
     backprop::{PowerMeanBackprop, TdBackprop},
-    select, simulate, strategy,
-    strategy::Compose,
-    SearchConfig, TreeSearch,
+    profile,
+    profile::Mcts,
+    select, simulate, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type Td = Compose<select::Ucb1, simulate::Uniform, TdBackprop>;
-type Power = Compose<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
+type Td = Mcts<select::Ucb1, simulate::Uniform, TdBackprop>;
+type Power = Mcts<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
 
 // lambda = 1.0 is the structural no-op control (should tie the baseline).
 const LAMBDAS: [f64; 5] = [1.0, 0.9, 0.8, 0.6, 0.3];
 // MaxMCTS(λ): bootstrap from max over children. One mid-band arm.
 const MAX_CHILD_LAMBDAS: [f64; 2] = [0.9, 0.7];
 
-fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, strategy::Ucb1> {
+fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("baseline/uct")

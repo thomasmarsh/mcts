@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 use game_ingenious::{Ingenious, State};
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
 use mcts::util::AnySearch;
@@ -31,7 +31,7 @@ const MOVE_BUDGET: Duration = Duration::from_millis(200);
 const ROUNDS: usize = 30;
 const MAX_PLIES: usize = 2000;
 
-fn plain_seat(seed: u64) -> TreeSearch<Ingenious<2>, strategy::Ucb1> {
+fn plain_seat(seed: u64) -> TreeSearch<Ingenious<2>, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)
@@ -45,7 +45,7 @@ fn plain_seat(seed: u64) -> TreeSearch<Ingenious<2>, strategy::Ucb1> {
 
 fn score_bounded_seat(
     seed: u64,
-) -> TreeSearch<Ingenious<2>, strategy::Compose<select::ScoreBoundedUct, simulate::Uniform>> {
+) -> TreeSearch<Ingenious<2>, profile::Mcts<select::ScoreBoundedUct, simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)

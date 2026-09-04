@@ -1246,7 +1246,7 @@ mod tests {
     // winning move from real alternatives, not just play the only legal one.
     #[test]
     fn mcts_solver_finds_forced_win_on_three_players_and_terminates_early() {
-        use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::algorithms::mcts::{node::QInit, profile, SearchConfig, TreeSearch};
         use mcts::algorithms::Search;
 
         let mut state = State::<3>::default();
@@ -1273,7 +1273,7 @@ mod tests {
         );
         assert_eq!(actions.len(), 7, "4 slides from (3,2) + 3 from (0,3)");
 
-        type TS = TreeSearch<Focus3, strategy::Ucb1>;
+        type TS = TreeSearch<Focus3, profile::Mcts>;
 
         let mut solved = TS::default().config(
             SearchConfig::default()

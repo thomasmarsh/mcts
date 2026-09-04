@@ -1335,10 +1335,10 @@ mod tests {
     // panicked on the `actions.contains(&action)` debug assertion.
     #[test]
     fn test_othello_sym_search() {
-        use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::algorithms::mcts::{node::QInit, profile, SearchConfig, TreeSearch};
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<Othello, strategy::Ucb1>;
+        type TS = TreeSearch<Othello, profile::Mcts>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)

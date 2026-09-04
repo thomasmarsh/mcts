@@ -22,7 +22,7 @@
 use std::time::Duration;
 
 use game_breakthrough::{Breakthrough, Heuristic};
-use mcts::algorithms::mcts::{select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -33,26 +33,26 @@ type Board = Breakthrough<8, 8>;
 // state (Breakthrough always terminates -- forward-only pawn moves bound
 // game length, no draws), no depth cutoff. This is what every hybrid below
 // is trying to beat.
-type Baseline = strategy::Ucb1;
+type Baseline = profile::Mcts;
 
 // MCTS-MR-n: uniform-random rollout except the last `n` plies before the
 // depth cutoff, which are resolved by exact bounded negamax instead
 // (`MinimaxRollout::n`). Needs a finite `max_playout_depth` to ever trigger
 // -- see `MinimaxRollout`'s doc comment: "last n plies before the playout's
 // depth cutoff", not "last n plies of the game".
-type MrN = strategy::Compose<select::Ucb1, simulate::MinimaxRollout<Board, Heuristic>>;
+type MrN = profile::Mcts<select::Ucb1, simulate::MinimaxRollout<Board, Heuristic>>;
 
 // MCTS-IC-E: uniform-random rollout, but a playout that hits the depth
 // cutoff without reaching a real terminal state gets scored by `Heuristic`
 // instead of falling through to `Game::compute_utilities`'s draw default.
-type IcE = strategy::Compose<select::Ucb1, simulate::EvaluatedCutoff<Board, Heuristic>>;
+type IcE = profile::Mcts<select::Ucb1, simulate::EvaluatedCutoff<Board, Heuristic>>;
 
 // MCTS-MS-2-Visit-0: no rollout-side change at all -- `Baseline`'s own
 // select/simulate strategies, plus a `NegamaxPrior` that seeds every
 // freshly-expanded node's children with a depth-2 bounded-negamax prior
 // before any of them has a real playout (`SearchConfig::with_prior`). Reuses
 // `Baseline`'s type since the prior lives in `SearchConfig`, not in
-// `Strategy<G>`'s associated types -- see `mcts::prior`'s module doc comment.
+// `PolicyProfile<G>`'s associated types -- see `mcts::prior`'s module doc comment.
 type MsPrior = Baseline;
 
 // MS-2's own search depth, matching the literature's own best-performing

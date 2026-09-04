@@ -27,9 +27,9 @@
 use std::time::Duration;
 
 use game_ingenious::{Ingenious, State};
-use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use mcts::util::AnySearch;
 use mcts_bench::tournament::Result as GameResult;
 
@@ -40,7 +40,7 @@ const ROUNDS_PER_SEAT: usize = 10;
 /// line; a game hitting it is scored a draw and flagged.
 const MAX_PLIES: usize = 2000;
 
-fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Ingenious<P>, strategy::Ucb1> {
+fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Ingenious<P>, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)

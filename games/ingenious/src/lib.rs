@@ -962,7 +962,7 @@ impl<const P: usize> Game for Ingenious<P> {
 mod tests {
     use super::*;
     use mcts::algorithms::{
-        mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch},
+        mcts::{profile, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };
     use mcts::util::random_play;
@@ -1262,7 +1262,7 @@ mod tests {
     // correctly end to end, not a strength benchmark.
     #[test]
     fn three_player_self_play_smoke() {
-        let mut search: TreeSearch<Ingenious3, strategy::Ucb1> =
+        let mut search: TreeSearch<Ingenious3, profile::Mcts> =
             TreeSearch::new().config(SearchConfig::new().max_iterations(64).seed(7));
 
         let mut state = State::<3>::new(7);
@@ -1287,7 +1287,7 @@ mod tests {
     // exercise, not this search-engine wiring test's job.
     #[test]
     fn ismcts_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Ingenious2, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Ingenious2, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
@@ -1369,7 +1369,7 @@ mod tests {
     // Ingenious's own rack mechanic.
     #[test]
     fn multi_tree_ismcts_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<Ingenious2, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Ingenious2, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::MultiTree)
                 .max_iterations(40)

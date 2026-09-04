@@ -8,7 +8,7 @@
 // `mcts_bench::tournament::round_robin`/`round_robin_multiple` -- both are
 // hardwired to exactly two seats (`let mut strat = [si, sj]`). Instead this
 // reproduces the paper's own Table 4 methodology directly: one seat runs
-// the solver, every other seat runs the same strategy without it, and
+// the solver, every other seat runs the same profile without it, and
 // which seat holds the solver rotates across games to cancel positional
 // bias. A win is scored for "solver" or "no solver" depending on which side
 // the winning seat was playing that game, folded into the same
@@ -25,9 +25,9 @@
 use std::time::Duration;
 
 use game_focus::{Focus, State};
-use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use mcts::util::AnySearch;
 use mcts_bench::tournament::Result as GameResult;
 
@@ -39,7 +39,7 @@ const ROUNDS_PER_SEAT: usize = 10;
 /// captures -- the signal to add a capture-count-scored move limit).
 const MAX_PLIES: usize = 600;
 
-fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Focus<P>, strategy::Ucb1> {
+fn config<const P: usize>(use_solver: bool, seed: u64) -> TreeSearch<Focus<P>, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .expand_threshold(1)

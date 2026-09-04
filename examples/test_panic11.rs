@@ -1,10 +1,10 @@
 use game_druid::{Druid, HashedState, Size};
-use mcts::algorithms::mcts::{node::QInit, select, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
 fn main() {
     let state = HashedState::new(Size { w: 5, h: 5 });
-    let mut search: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::new().config(
+    let mut search: TreeSearch<Druid, profile::Mcts> = TreeSearch::new().config(
         SearchConfig::new()
             .name("debug")
             .expand_threshold(1)

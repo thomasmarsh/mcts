@@ -24,11 +24,11 @@ use std::time::Instant;
 use game_margo::{Margo, State as MargoState};
 use game_nim::{Nim, NimState};
 use game_othello::{Othello, State as OthelloState};
+use mcts::algorithms::mcts::profile::Mcts;
+use mcts::algorithms::Search;
 use mcts::backprop;
 use mcts::game::Game;
 use mcts::select::{Rave, SelectPolicy, Ucb1};
-use mcts::algorithms::mcts::strategy::Compose;
-use mcts::algorithms::Search;
 use mcts::{SearchConfig, TreeSearch};
 use mcts_tune::config_ir::{resolve_select, DynSelect, DynSimulate, SelectSpec};
 
@@ -53,7 +53,7 @@ where
     G::S: std::fmt::Display,
     S1: SelectPolicy<G> + 'static,
 {
-    type Strat<G, S1> = Compose<S1, DynSimulate<G>, backprop::Classic, DynSelect<G>>;
+    type Strat<G, S1> = Mcts<S1, DynSimulate<G>, backprop::Classic, DynSelect<G>>;
     let config = SearchConfig::<G, Strat<G, S1>>::new()
         .max_iterations(iterations)
         .max_playout_depth(MAX_PLAYOUT_DEPTH)

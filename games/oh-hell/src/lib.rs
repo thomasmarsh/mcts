@@ -588,7 +588,7 @@ impl<const P: usize, const K: usize> Game for OhHell<P, K> {
 mod tests {
     use super::*;
     use mcts::algorithms::{
-        mcts::{render, strategy, IsmctsMode, SearchConfig, TreeSearch},
+        mcts::{profile, render, IsmctsMode, SearchConfig, TreeSearch},
         Search,
     };
     use mcts::util::random_play;
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn ismcts_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<OhHell3x3, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn ismcts_redeterminize_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<OhHell3x3, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
@@ -916,7 +916,7 @@ mod tests {
     // domain E1/E2 are meant to matter most for.
     #[test]
     fn multi_tree_ismcts_self_play_stays_legal_and_tracks_availability() {
-        let mut search: TreeSearch<OhHell3x3, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<OhHell3x3, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::MultiTree)
                 .max_iterations(40)

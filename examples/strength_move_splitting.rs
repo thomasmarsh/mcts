@@ -21,9 +21,9 @@
 // Usage: cargo run --release --example strength_move_splitting [--flat]
 use std::time::Duration;
 
-use mcts::game::{Game, TerminalStatus};
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, TerminalStatus};
 
 use game_druid::{DruidFlat, DruidSplit, HashedState, Pending, Player, Size};
 
@@ -68,7 +68,7 @@ impl GameResult {
 
 /// Shipped Strong preset shape (`Ucb1DmNst`), generic over `G` so the
 /// same alias drives both engines.
-type Ucb1DmNst<G> = strategy::Compose<
+type Ucb1DmNst<G> = profile::Mcts<
     select::Ucb1,
     simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Nst>>,
 >;

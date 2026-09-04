@@ -2388,12 +2388,12 @@ mod tests {
     #[test]
     fn regression_state_only_keying_no_corruption_with_real_captures() {
         use mcts::algorithms::mcts::{
-            node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
+            node::QInit, profile, select, GraphSearch, GraphStats, SearchConfig,
             TranspositionKeying, TreeSearch,
         };
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<Margo, strategy::Ucb1>;
+        type TS = TreeSearch<Margo, profile::Mcts>;
         let n = 4;
         let target_plies = (State::new(n).total_cells() as f64 * 0.4) as usize;
         let state = mid_game_state(n, target_plies, 1);
@@ -2429,12 +2429,12 @@ mod tests {
     #[test]
     fn state_only_keying_shrinks_the_arena_via_a_real_recapture_transposition() {
         use mcts::algorithms::mcts::{
-            node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig,
+            node::QInit, profile, select, GraphSearch, GraphStats, SearchConfig,
             TranspositionKeying, TreeSearch,
         };
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<Margo, strategy::Ucb1>;
+        type TS = TreeSearch<Margo, profile::Mcts>;
         let n = 4;
         let target_plies = (State::new(n).total_cells() as f64 * 0.4) as usize;
         let state = mid_game_state(n, target_plies, 1);

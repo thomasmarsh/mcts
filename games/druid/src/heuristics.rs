@@ -21,7 +21,7 @@ use rustc_hash::FxHashSet as HashSet;
 use mcts::algorithms::mcts::{
     backprop, select,
     simulate::{self, SimulatePolicy},
-    Strategy, TreeStats,
+    PolicyProfile, TreeStats,
 };
 use mcts::util::random_best;
 
@@ -277,7 +277,7 @@ impl<M: MoveEncoding> SimulatePolicy<DruidGame<M>> for DruidHeuristic<M> {
 #[derive(Clone, Copy, Default)]
 pub struct RaveDecisiveHeuristic<M: MoveEncoding = Split>(PhantomData<M>);
 
-impl<M: MoveEncoding> Strategy<DruidGame<M>> for RaveDecisiveHeuristic<M> {
+impl<M: MoveEncoding> PolicyProfile<DruidGame<M>> for RaveDecisiveHeuristic<M> {
     type Select = select::Rave;
     type Simulate = simulate::DecisiveMove<
         DruidGame<M>,

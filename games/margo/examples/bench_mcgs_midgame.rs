@@ -18,18 +18,18 @@
 use std::time::{Duration, Instant};
 
 use game_margo::{Margo, State};
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
-    node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
+    node::QInit, profile, select, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use rand::{rngs::SmallRng, SeedableRng};
 
 /// Byte-for-byte the same config `bench_mcgs.rs::strong_config` builds --
 /// kept as a separate copy rather than a shared helper since the two
 /// examples are meant to stay independently runnable/readable, matching
 /// this crate's existing `examples/*.rs` convention.
-fn strong_config() -> TreeSearch<Margo, strategy::Ucb1> {
+fn strong_config() -> TreeSearch<Margo, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("bench/margo-strong-midgame")

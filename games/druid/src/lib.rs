@@ -43,24 +43,25 @@ mod tests {
     use super::*;
     use crate::heuristics::heuristic_scores;
     use crate::zobrist::*;
-    use mcts::game::{Game, PlayerIndex, TerminalStatus};
     use mcts::algorithms::mcts::simulate::SimulatePolicy;
     use mcts::algorithms::mcts::TreeStats;
     use mcts::algorithms::{
         mcts::{
             node::QInit,
+            profile,
             render::{self, NodeRender},
-            strategy, SearchConfig, TreeSearch,
+            SearchConfig, TreeSearch,
         },
         Search,
     };
+    use mcts::game::{Game, PlayerIndex, TerminalStatus};
     use rustc_hash::FxHashSet as HashSet;
 
     impl NodeRender for HashedState {}
 
     #[test]
     fn test_druid_render() {
-        let mut search = TreeSearch::<Druid, strategy::Ucb1>::new().config(
+        let mut search = TreeSearch::<Druid, profile::Mcts>::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)
@@ -82,7 +83,7 @@ mod tests {
         // way (the same breadth of states real expansion would hash and
         // insert), into our own map, and confirm no two distinct states
         // ever share a hash.
-        let mut search: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Druid, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)
@@ -1013,7 +1014,7 @@ mod tests {
         // reply through White's best block. Checking `root_report` / PV
         // directly avoids the O(iter_budget * depth) cost of replaying every
         // sub-ply through a fresh tree each time.
-        let mut ts = TreeSearch::<Druid, strategy::Ucb1>::default().config(
+        let mut ts = TreeSearch::<Druid, profile::Mcts>::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
                 .max_iterations(2000)
@@ -1135,9 +1136,9 @@ mod tests {
 mod flat_tests {
     use super::*;
     use crate::zobrist::{full_hash, zobrist_height_bits};
-    use mcts::game::{Game, PlayerIndex};
     use mcts::algorithms::mcts::simulate::SimulatePolicy;
     use mcts::algorithms::mcts::TreeStats;
+    use mcts::game::{Game, PlayerIndex};
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 

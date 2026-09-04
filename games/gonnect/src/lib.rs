@@ -816,7 +816,7 @@ impl mcts::algorithms::mcts::render::NodeRender for State {}
 #[cfg(test)]
 mod tests {
     use mcts::algorithms::{
-        mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
+        mcts::{node::QInit, profile, render, SearchConfig, TreeSearch},
         Search,
     };
     use rand::{rngs::SmallRng, Rng, SeedableRng};
@@ -1068,7 +1068,7 @@ mod tests {
                 test_gonnect_seeded_playouts_terminate covers the same termination concern \
                 deterministically"]
     fn test_gonnect_render() {
-        let mut search = TreeSearch::<Gonnect, strategy::Ucb1>::new().config(
+        let mut search = TreeSearch::<Gonnect, profile::Mcts>::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)

@@ -1600,10 +1600,10 @@ mod tests {
     #[test]
     fn test_mcts_smoke() {
         use mcts::algorithms::{
-            mcts::{node::QInit, render, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, profile, render, SearchConfig, TreeSearch},
             Search,
         };
-        let mut search = TreeSearch::<Tak<3>, strategy::Ucb1>::new().config(
+        let mut search = TreeSearch::<Tak<3>, profile::Mcts>::new().config(
             SearchConfig::new()
                 .expand_threshold(1)
                 .q_init(QInit::Infinity)

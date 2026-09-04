@@ -29,7 +29,7 @@
 use std::time::Duration;
 
 use game_druid::{Druid, DruidHeuristic, DruidHeuristicWeights, RaveDecisiveHeuristic};
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::util::battle_royale;
 use mcts_bench::tournament::wilson_interval;
 
@@ -42,7 +42,7 @@ fn ai_thread_count() -> usize {
         .unwrap_or(1)
 }
 
-type Ucb1DmNst = strategy::Compose<
+type Ucb1DmNst = profile::Mcts<
     select::Ucb1,
     simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
 >;

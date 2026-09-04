@@ -9,12 +9,12 @@
 #[test]
 fn test_othello_graph_reroot_self_play_keeps_ply_and_legal_moves() {
     use game_othello::*;
-    use mcts::game::Game;
     use mcts::algorithms::Search;
+    use mcts::game::Game;
     use mcts::{GraphSearch, GraphStats};
 
     for stats in [GraphStats::Edges, GraphStats::Nodes, GraphStats::Both] {
-        type TS = mcts::TreeSearch<Othello, mcts::strategy::Ucb1>;
+        type TS = mcts::TreeSearch<Othello, mcts::profile::Mcts>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .max_iterations(100)

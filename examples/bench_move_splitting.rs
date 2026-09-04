@@ -9,17 +9,17 @@
 // Usage: cargo run --release --example bench_move_splitting
 use std::time::{Duration, Instant};
 
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
-    node::QInit, select, simulate, strategy, SearchConfig, Strategy, TreeSearch,
+    node::QInit, profile, select, simulate, PolicyProfile, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 
 use game_druid::{Druid, HashedState, Size};
 
 /// Shipped Strong preset strategy shape: Ucb1 select + DecisiveMove wrapping
 /// EpsilonGreedy wrapping NST.
-type Ucb1DmNstLocal = strategy::Compose<
+type Ucb1DmNstLocal = profile::Mcts<
     select::Ucb1,
     simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Nst>>,
 >;
@@ -49,7 +49,7 @@ fn strong_config(budget: Duration, tree_threads: usize) -> TreeSearch<Druid, Ucb
 
 /// Plain Ucb1-only config (no NST/DecisiveMove), for direct comparison of
 /// raw iteration throughput without simulate overhead.
-fn plain_ucb1_config(budget: Duration) -> TreeSearch<Druid, strategy::Ucb1> {
+fn plain_ucb1_config(budget: Duration) -> TreeSearch<Druid, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("bench/ucb1")
@@ -65,7 +65,7 @@ fn plain_ucb1_config(budget: Duration) -> TreeSearch<Druid, strategy::Ucb1> {
 fn benchmark<G, S>(label: &str, board_label: &str, search: &mut TreeSearch<G, S>, state: &G::S)
 where
     G: Game,
-    S: Strategy<G>,
+    S: PolicyProfile<G>,
     <G as Game>::A: std::fmt::Debug,
     G::S: std::fmt::Debug + Clone,
 {

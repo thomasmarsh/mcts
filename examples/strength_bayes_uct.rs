@@ -22,7 +22,7 @@
 // for this codebase's conventions) is itself costing Bayes-UCT2 games
 // against a tuned opponent, independent of the domain-correlation gap.
 use game_gonnect::Gonnect;
-use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile::Mcts, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -66,7 +66,7 @@ fn main() {
     println!();
 
     let ucb1 =
-        TreeSearch::<G7, Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>>::new()
+        TreeSearch::<G7, Mcts<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>>::new()
             .config(
                 SearchConfig::new()
                     .name("ucb1/c=sqrt2")
@@ -77,7 +77,7 @@ fn main() {
 
     let bayes_uct2 = TreeSearch::<
         G7,
-        Compose<
+        Mcts<
             select::BayesUct2,
             mcts::algorithms::mcts::simulate::Uniform,
             mcts::algorithms::mcts::backprop::BayesGaussian,

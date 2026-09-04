@@ -34,7 +34,7 @@
 //
 // Usage: cargo run --release --example strength_phantom_root_parallel_ismcts
 use game_phantom::Phantom;
-use mcts::algorithms::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, IsmctsMode, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -43,7 +43,7 @@ const WORKERS: usize = 4;
 const PER_WORKER_ITERATIONS: usize = 2000;
 const ROUNDS: usize = 15;
 
-fn ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
+fn ismcts_config(name: &str) -> TreeSearch<Phantom, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -53,7 +53,7 @@ fn ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
     )
 }
 
-fn root_parallel_ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
+fn root_parallel_ismcts_config(name: &str) -> TreeSearch<Phantom, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -64,7 +64,7 @@ fn root_parallel_ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1
     )
 }
 
-fn mo_ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
+fn mo_ismcts_config(name: &str) -> TreeSearch<Phantom, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -74,7 +74,7 @@ fn mo_ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
     )
 }
 
-fn root_parallel_mo_ismcts_config(name: &str) -> TreeSearch<Phantom, strategy::Ucb1> {
+fn root_parallel_mo_ismcts_config(name: &str) -> TreeSearch<Phantom, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

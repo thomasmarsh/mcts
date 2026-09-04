@@ -1125,10 +1125,10 @@ mod tests {
     /// child's own stored hash.
     #[test]
     fn regression_transposition_corruption_past_symmetry_ply_limit() {
-        use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+        use mcts::algorithms::mcts::{node::QInit, profile, SearchConfig, TreeSearch};
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+        type TS = TreeSearch<AtariGo, profile::Mcts>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
@@ -1153,12 +1153,12 @@ mod tests {
     #[test]
     fn regression_state_only_keying_no_corruption_past_symmetry_ply_limit() {
         use mcts::algorithms::mcts::{
-            node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
+            node::QInit, profile, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
             TreeSearch,
         };
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+        type TS = TreeSearch<AtariGo, profile::Mcts>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
@@ -1190,12 +1190,12 @@ mod tests {
     #[test]
     fn state_only_keying_matches_per_ply_arena_size_when_no_recapture_is_possible() {
         use mcts::algorithms::mcts::{
-            node::QInit, strategy, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
+            node::QInit, profile, GraphSearch, GraphStats, SearchConfig, TranspositionKeying,
             TreeSearch,
         };
         use mcts::algorithms::Search;
 
-        type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+        type TS = TreeSearch<AtariGo, profile::Mcts>;
         for seed in 0..5u64 {
             let config = |keying| {
                 SearchConfig::default()

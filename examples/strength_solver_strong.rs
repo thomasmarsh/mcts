@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use game_druid::Druid;
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -30,7 +30,7 @@ fn strong_config(
     name: &str,
 ) -> TreeSearch<
     Druid,
-    strategy::Compose<
+    profile::Mcts<
         select::Rave,
         simulate::DecisiveMove<Druid, simulate::EpsilonGreedy<Druid, simulate::Mast>>,
     >,

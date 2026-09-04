@@ -312,7 +312,7 @@ impl Game for BiddingTicTacToe {
 mod tests {
     use super::*;
     use mcts::algorithms::{
-        mcts::{strategy, SearchConfig, TreeSearch},
+        mcts::{profile, SearchConfig, TreeSearch},
         Search,
     };
 
@@ -325,7 +325,7 @@ mod tests {
         state.x.bid(40);
         state.phase = Phase::BidO;
 
-        let mut search = TreeSearch::<BiddingTicTacToe, strategy::Ucb1>::new().config(
+        let mut search = TreeSearch::<BiddingTicTacToe, profile::Mcts>::new().config(
             SearchConfig::new()
                 .max_iterations(16)
                 .num_threads(4)

@@ -26,24 +26,24 @@ use std::io;
 
 use game_breakthrough::Breakthrough;
 use game_ingenious::Ingenious;
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
-    backprop::Classic, backprop::SoftmaxBackprop, select, simulate, strategy, strategy::Compose,
+    backprop::Classic, backprop::SoftmaxBackprop, profile, profile::Mcts, select, simulate,
     SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type Grill = Compose<select::GrillAct, simulate::Uniform, Classic>;
-type Ments = Compose<select::Ments, simulate::Uniform, SoftmaxBackprop>;
+type Grill = Mcts<select::GrillAct, simulate::Uniform, Classic>;
+type Ments = Mcts<select::Ments, simulate::Uniform, SoftmaxBackprop>;
 
 const GRILL_C: [f64; 3] = [0.5, 1.0, 2.0];
 const MENTS_TAU: f64 = 0.3;
 const MENTS_EPSILON: f64 = 0.1;
 const BUDGETS: [usize; 2] = [100, 2000];
 
-fn baseline_config<G: Game>(iters: usize) -> TreeSearch<G, strategy::Ucb1> {
+fn baseline_config<G: Game>(iters: usize) -> TreeSearch<G, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("baseline/uct")

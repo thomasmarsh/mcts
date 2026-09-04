@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use game_akron::{Akron, State};
 use mcts::algorithms::mcts::{
-    node::QInit, select, strategy, GraphSearch, GraphStats, SearchConfig, TreeSearch,
+    node::QInit, profile, select, GraphSearch, GraphStats, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
 
-fn strong_config() -> TreeSearch<Akron, strategy::Ucb1> {
+fn strong_config() -> TreeSearch<Akron, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("bench/akron-strong")

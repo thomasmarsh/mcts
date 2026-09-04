@@ -114,11 +114,11 @@ fn tree_parallel_transpositions_survive_many_real_time_games() {
     // combination is exactly why this test takes several real seconds
     // and belongs here rather than in the unit-test suite.
     use game_ttt::*;
-    use mcts::game::Game;
     use mcts::algorithms::Search;
+    use mcts::game::Game;
     type G = TicTacToe;
 
-    type TS = mcts::algorithms::mcts::TreeSearch<G, mcts::algorithms::mcts::strategy::Ucb1>;
+    type TS = mcts::algorithms::mcts::TreeSearch<G, mcts::algorithms::mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::algorithms::mcts::SearchConfig::default()
             .max_time(std::time::Duration::from_millis(30))
@@ -145,10 +145,10 @@ fn tree_parallel_transpositions_survive_many_real_time_games() {
 fn atarigo_transposition_symmetry_sweep_no_corruption() {
     use game_atarigo::AtariGo;
     use game_atarigo::State;
-    use mcts::algorithms::mcts::{node::QInit, strategy, SearchConfig, TreeSearch};
+    use mcts::algorithms::mcts::{node::QInit, profile, SearchConfig, TreeSearch};
     use mcts::algorithms::Search;
 
-    type TS = TreeSearch<AtariGo, strategy::Ucb1>;
+    type TS = TreeSearch<AtariGo, profile::Mcts>;
     for &size in &[5, 7, 9] {
         for &iterations in &[30, 100, 300] {
             for seed in 0..10u64 {

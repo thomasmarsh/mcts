@@ -358,11 +358,11 @@ impl fmt::Display for Position {
 mod tests {
     use super::{Phantom, Piece, Position, LINES, NUM_CELLS};
     use mcts::{
-        game::{Game, PlayerIndex},
         algorithms::{
-            mcts::{node::NodeState, render, strategy, IsmctsMode, SearchConfig, TreeSearch},
+            mcts::{node::NodeState, profile, render, IsmctsMode, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },
+        game::{Game, PlayerIndex},
         util::random_play,
     };
     use rand::rngs::SmallRng;
@@ -592,7 +592,7 @@ mod tests {
     // instead of asserting the chosen action is always literally legal.
     #[test]
     fn ismcts_self_play_retries_rejections_and_tracks_availability() {
-        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .max_iterations(40)
@@ -626,7 +626,7 @@ mod tests {
 
     #[test]
     fn ismcts_redeterminize_self_play_retries_rejections_and_tracks_availability() {
-        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .ismcts_redeterminize(true)
@@ -669,7 +669,7 @@ mod tests {
     // reproduce).
     #[test]
     fn multi_tree_ismcts_self_play_retries_rejections_and_tracks_availability() {
-        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::MultiTree)
                 .max_iterations(40)
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn root_parallel_ismcts_self_play_retries_rejections_and_tracks_availability() {
         let _guard = parallel_test_guard();
-        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::SingleTree)
                 .num_threads(4)
@@ -750,7 +750,7 @@ mod tests {
     #[test]
     fn root_parallel_multi_tree_ismcts_self_play_retries_rejections_and_tracks_availability() {
         let _guard = parallel_test_guard();
-        let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+        let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
             SearchConfig::new()
                 .ismcts_mode(IsmctsMode::MultiTree)
                 .num_threads(4)
@@ -800,7 +800,7 @@ mod tests {
     #[test]
     fn ismcts_root_expands_from_the_literal_state_before_any_iteration() {
         for mode in [IsmctsMode::SingleTree, IsmctsMode::MultiTree] {
-            let mut search: TreeSearch<Phantom, strategy::Ucb1> = TreeSearch::new().config(
+            let mut search: TreeSearch<Phantom, profile::Mcts> = TreeSearch::new().config(
                 SearchConfig::new()
                     .ismcts_mode(mode)
                     .max_iterations(0)

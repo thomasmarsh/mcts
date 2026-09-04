@@ -5,9 +5,9 @@
 // just that its regret is high.
 use std::cell::RefCell;
 
-use mcts::game::{Game, PlayerIndex};
-use mcts::algorithms::mcts::{node::QInit, select, strategy::Compose, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile::Mcts, select, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 
 const WIDTH: usize = 5;
 
@@ -134,7 +134,7 @@ fn main() {
 
     let mut ucb1 = TreeSearch::<
         BanditTree,
-        Compose<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>,
+        Mcts<select::Ucb1, mcts::algorithms::mcts::simulate::Uniform>,
     >::new()
     .config(
         SearchConfig::new()
@@ -166,7 +166,7 @@ fn main() {
 
     let mut bayes2 = TreeSearch::<
         BanditTree,
-        Compose<
+        Mcts<
             select::BayesUct2,
             mcts::algorithms::mcts::simulate::Uniform,
             mcts::algorithms::mcts::backprop::BayesGaussian,

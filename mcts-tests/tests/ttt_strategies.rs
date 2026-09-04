@@ -1,20 +1,20 @@
+use mcts::algorithms::parallel_test_guard;
+use mcts::algorithms::Search;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
 use mcts::game::Transform;
-use mcts::algorithms::parallel_test_guard;
-use mcts::algorithms::Search;
 
-use mcts::{backprop, select, simulate, strategy::Compose};
+use mcts::{backprop, profile::Mcts, select, simulate};
 
 // Local convenience aliases for the axis compositions these tests exercise,
 // each mirroring the associated types of the retired named markers.
-type Amaf = Compose<select::Amaf, simulate::Uniform>;
-type Ucb1Nst<G> = Compose<select::Ucb1, simulate::EpsilonGreedy<G, simulate::Nst>>;
-type Ucb1ProgressiveHistory = Compose<select::ProgressiveHistory, simulate::Uniform>;
+type Amaf = Mcts<select::Amaf, simulate::Uniform>;
+type Ucb1Nst<G> = Mcts<select::Ucb1, simulate::EpsilonGreedy<G, simulate::Nst>>;
+type Ucb1ProgressiveHistory = Mcts<select::ProgressiveHistory, simulate::Uniform>;
 type Ucb1MaxRobust =
-    Compose<select::Ucb1, simulate::Uniform, backprop::Classic, select::MaxRobustChild>;
+    Mcts<select::Ucb1, simulate::Uniform, backprop::Classic, select::MaxRobustChild>;
 type RaveMastDm<G> =
-    Compose<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;
+    Mcts<select::Rave, simulate::DecisiveMove<G, simulate::EpsilonGreedy<G, simulate::Mast>>>;
 
 #[test]
 fn test_expand0() {
@@ -23,7 +23,7 @@ fn test_expand0() {
     let init_state = HashedPosition::new();
 
     for n in 0..3 {
-        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .expand_threshold(n)
@@ -53,7 +53,7 @@ fn test_root_parallel_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -77,7 +77,7 @@ fn test_num_threads_one_is_deterministic_given_a_seed() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let mut a = TS::default().config(
         mcts::SearchConfig::default()
@@ -102,7 +102,7 @@ fn test_leaf_parallel_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -128,7 +128,7 @@ fn test_num_rollouts_per_leaf_one_is_deterministic_given_a_seed() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let mut a = TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
     let mut b = TS::default().config(
@@ -156,7 +156,7 @@ fn test_leaf_parallel_virtual_loss_balances_across_many_iterations() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(500)
@@ -177,7 +177,7 @@ fn test_tree_parallel_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -197,7 +197,7 @@ fn test_explicit_graph_stat_modes_pick_legal_actions_and_update_their_owner() {
     use mcts::{GraphSearch, GraphStats};
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let state = HashedPosition::new();
     let mut legal = Vec::new();
     G::generate_actions(&state, &mut legal);
@@ -238,7 +238,7 @@ fn test_graph_diagnostics_reports_hits_edges_and_transposition_nodes() {
     use mcts::{GraphSearch, GraphStats, TranspositionKeying};
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let state = HashedPosition::new();
 
     let mut search = TS::default().config(
@@ -293,7 +293,7 @@ fn test_tree_parallel_graph_both_balances_node_virtual_loss() {
     use mcts::{GraphSearch, GraphStats};
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let state = HashedPosition::new();
     let mut legal = Vec::new();
     G::generate_actions(&state, &mut legal);
@@ -338,7 +338,7 @@ fn test_mcgs_correction_residual_picks_legal_actions_single_and_tree_parallel() 
     use mcts::{GraphSearch, GraphStats, McgsCorrection};
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let state = HashedPosition::new();
     let mut legal = Vec::new();
     G::generate_actions(&state, &mut legal);
@@ -413,7 +413,7 @@ fn test_num_tree_threads_one_is_deterministic_given_a_seed() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let mut a = TS::default().config(
         mcts::SearchConfig::default()
@@ -454,7 +454,7 @@ fn test_tree_parallel_stress_many_threads_small_tree_high_iterations() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(2000)
@@ -491,7 +491,7 @@ fn test_hybrid_root_and_tree_parallel_picks_a_legal_action() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -628,7 +628,7 @@ fn test_root_report_flags_the_proven_winning_move() {
         hashes: [0; 8],
     };
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .expand_threshold(1)
@@ -872,7 +872,7 @@ fn test_memory_stats_matches_hand_walked_arena() {
     // A handful of iterations on a fresh board: enough to expand the root
     // and explore a couple of children, small enough to hand-verify by
     // walking the arena the same way `memory_stats` does, independently.
-    let mut ts = mcts::TreeSearch::<G, mcts::strategy::Ucb1>::default().config(
+    let mut ts = mcts::TreeSearch::<G, mcts::profile::Mcts>::default().config(
         mcts::SearchConfig::default()
             .expand_threshold(1)
             .max_iterations(10),
@@ -1154,7 +1154,7 @@ fn test_minimax_backprop_prefers_the_winning_move_to_a_forced_draw() {
     // to.
     use game_ttt::*;
     use mcts::backprop::MinimaxBackprop;
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
@@ -1173,7 +1173,7 @@ fn test_minimax_backprop_prefers_the_winning_move_to_a_forced_draw() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type S = Compose<select::Ucb1, simulate::Uniform, MinimaxBackprop>;
+    type S = Mcts<select::Ucb1, simulate::Uniform, MinimaxBackprop>;
     type TS = mcts::TreeSearch<G, S>;
 
     for seed in 0..10 {
@@ -1201,7 +1201,7 @@ fn test_power_mean_backprop_prefers_the_winning_move_to_a_forced_draw() {
     // ancestor's value toward its best child once both are visited.
     use game_ttt::*;
     use mcts::backprop::PowerMeanBackprop;
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
@@ -1220,7 +1220,7 @@ fn test_power_mean_backprop_prefers_the_winning_move_to_a_forced_draw() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type S = Compose<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
+    type S = Mcts<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
     type TS = mcts::TreeSearch<G, S>;
 
     for seed in 0..10 {
@@ -1248,7 +1248,7 @@ fn ments_prefers_the_winning_move() {
     // the draw near-greedy on the soft value.
     use game_ttt::*;
     use mcts::backprop::SoftmaxBackprop;
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
@@ -1267,7 +1267,7 @@ fn ments_prefers_the_winning_move() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type M = Compose<select::Ments, simulate::Uniform, SoftmaxBackprop>;
+    type M = Mcts<select::Ments, simulate::Uniform, SoftmaxBackprop>;
     type TS = mcts::TreeSearch<G, M>;
 
     for seed in 0..10 {
@@ -1294,7 +1294,7 @@ fn grill_act_prefers_the_winning_move() {
     // `GrillAct::best_child` reads the right slot and the alpha solve never
     // panics on a real tree. Small `c` => small lambda_N => near-greedy on Q.
     use game_ttt::*;
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
@@ -1313,7 +1313,7 @@ fn grill_act_prefers_the_winning_move() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type M = Compose<select::GrillAct, simulate::Uniform, mcts::backprop::Classic>;
+    type M = Mcts<select::GrillAct, simulate::Uniform, mcts::backprop::Classic>;
     type TS = mcts::TreeSearch<G, M>;
 
     for seed in 0..10 {
@@ -1352,13 +1352,13 @@ fn test_td_backprop_lambda1_matches_classic() {
     // does -- a structural no-op. Same config, same seeds, identical move.
     use game_ttt::*;
     use mcts::backprop::{Classic, TdBackprop};
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
     type G = TicTacToe;
-    type Base = Compose<select::Ucb1, simulate::Uniform, Classic>;
-    type Td = Compose<select::Ucb1, simulate::Uniform, TdBackprop>;
+    type Base = Mcts<select::Ucb1, simulate::Uniform, Classic>;
+    type Td = Mcts<select::Ucb1, simulate::Uniform, TdBackprop>;
 
     let state = HashedPosition::from_position(Position::new());
 
@@ -1389,7 +1389,7 @@ fn test_td_backprop_prefers_winning_move() {
     // intermediate lambda still has to prefer the immediate win.
     use game_ttt::*;
     use mcts::backprop::TdBackprop;
-    use mcts::strategy::Compose;
+    use mcts::profile::Mcts;
     use mcts::{select, simulate};
     use rand::SeedableRng;
 
@@ -1408,7 +1408,7 @@ fn test_td_backprop_prefers_winning_move() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type S = Compose<select::Ucb1, simulate::Uniform, TdBackprop>;
+    type S = Mcts<select::Ucb1, simulate::Uniform, TdBackprop>;
 
     for max_child in [false, true] {
         for seed in 0..10u64 {
@@ -1460,7 +1460,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
     let init_state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().expand_threshold(1));
 
     let root_id = ts.reset(G::player_to_move(&init_state).to_index(), 0);
@@ -1547,7 +1547,7 @@ fn test_negamax_prior_self_play_no_panic_single_and_tree_parallel() {
     type G = TicTacToe;
 
     for num_tree_threads in [1, 4] {
-        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .max_iterations(50)
@@ -1630,7 +1630,7 @@ fn test_reuse_tree_promotes_matching_child_with_inherited_stats() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -1705,7 +1705,7 @@ fn test_reuse_tree_rejects_hash_match_with_wrong_replayed_state() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -1771,7 +1771,7 @@ fn test_reuse_tree_falls_back_to_reset_when_no_match() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -1813,7 +1813,7 @@ fn test_reuse_tree_disabled_always_resets() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(mcts::SearchConfig::default().max_iterations(200).seed(42));
 
     let action = ts.choose_action(&init_state);
@@ -1845,7 +1845,7 @@ fn test_mcts_solver_proof_survives_rerooting() {
         state = G::apply(state, &Move(m));
     }
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .expand_threshold(0)
@@ -1911,7 +1911,7 @@ fn test_solver_loss_threshold_lets_a_proven_loss_child_keep_accumulating_visits(
         state = G::apply(state, &Move(m));
     }
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let base_config = || {
         mcts::SearchConfig::default()
             .expand_threshold(0)
@@ -1959,7 +1959,7 @@ fn test_reuse_tree_self_play_many_moves_no_panic() {
     type G = TicTacToe;
     let mut state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(100)
@@ -1987,7 +1987,7 @@ fn test_reuse_tree_composes_with_tree_parallel_self_play_no_panic() {
     type G = TicTacToe;
     let mut state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -2009,7 +2009,7 @@ fn test_reuse_tree_composes_with_root_parallel_self_play_no_panic() {
     type G = TicTacToe;
     let mut state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -2206,7 +2206,7 @@ fn test_compact_discards_unreachable_siblings_and_preserves_reachable_edges() {
     }
 
     let init_state = HashedPosition::new();
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(300)
@@ -2270,7 +2270,7 @@ fn test_max_arena_len_bounds_arena_growth_across_a_self_play_game() {
     type G = TicTacToe;
 
     fn play_game(max_arena_len: Option<usize>) -> usize {
-        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .max_iterations(50)
@@ -2630,7 +2630,7 @@ fn test_requirements_union_composes_and_survives_wrapping() {
 
     // And the whole thing is exactly what `SearchConfig::requirements()`
     // reports for a real composed strategy, wired end to end.
-    type Strat = mcts::algorithms::mcts::strategy::Compose<UctPn, mcts::simulate::Uniform>;
+    type Strat = mcts::algorithms::mcts::profile::Mcts<UctPn, mcts::simulate::Uniform>;
     let cfg = mcts::SearchConfig::<G, Strat>::default();
     assert_eq!(cfg.requirements(), plain);
     assert!(cfg.validate().is_ok());
@@ -2655,7 +2655,7 @@ fn test_graph_reroot_promotes_matching_node_and_rebases_ply() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(300)
@@ -2739,7 +2739,7 @@ fn test_graph_reroot_falls_back_to_reset_when_no_match() {
     type G = TicTacToe;
     let init_state = HashedPosition::new();
 
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
     let mut ts = TS::default().config(
         mcts::SearchConfig::default()
             .max_iterations(200)
@@ -2788,7 +2788,7 @@ fn test_graph_reroot_across_self_play_keeps_ply_and_table_consistent() {
     type G = TicTacToe;
 
     for stats in [GraphStats::Edges, GraphStats::Nodes, GraphStats::Both] {
-        type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+        type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
         let mut ts = TS::default().config(
             mcts::SearchConfig::default()
                 .max_iterations(150)
@@ -2834,7 +2834,7 @@ fn test_final_search_report_tracks_only_the_latest_search() {
         SearchGraphMode, SearchReportReason, SearchReportStatus, SearchWarning,
     };
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(
@@ -2898,7 +2898,7 @@ fn test_final_search_report_tree_mode_has_no_tt_reads() {
     use game_ttt::*;
     use mcts::algorithms::SearchGraphMode;
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(mcts::SearchConfig::default().max_iterations(12).seed(5));
@@ -2931,7 +2931,7 @@ fn test_final_search_report_identifies_dag_stat_owners() {
     use mcts::algorithms::SearchGraphMode;
     use mcts::{GraphSearch, GraphStats};
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     for (stats, expected) in [
@@ -2958,7 +2958,7 @@ fn test_final_search_report_identifies_dag_stat_owners() {
 fn test_final_search_report_separates_reuse_from_recent_work() {
     use game_ttt::*;
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(
@@ -2985,7 +2985,7 @@ fn test_final_search_report_is_available_for_tree_parallel_search() {
     use game_ttt::*;
     use mcts::algorithms::SearchReportStatus;
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(
@@ -3007,7 +3007,7 @@ fn test_final_search_report_aggregates_root_parallel_workers() {
     use game_ttt::*;
     use mcts::algorithms::{SearchReportReason, SearchReportStatus, SearchWarning};
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(
@@ -3088,7 +3088,7 @@ fn test_final_search_report_aggregates_hybrid_root_and_tree_parallel_work() {
     use game_ttt::*;
     use mcts::algorithms::{SearchReportReason, SearchReportStatus};
     type G = TicTacToe;
-    type TS = mcts::TreeSearch<G, mcts::strategy::Ucb1>;
+    type TS = mcts::TreeSearch<G, mcts::profile::Mcts>;
 
     let state = HashedPosition::new();
     let mut search = TS::default().config(
@@ -3119,9 +3119,9 @@ fn test_ucb_v_prefers_the_immediate_win() {
     // playing 8 forces a draw).
     use game_ttt::*;
     use mcts::backprop::Classic;
+    use mcts::profile::Mcts;
     use mcts::select;
     use mcts::simulate;
-    use mcts::strategy::Compose;
     use rand::SeedableRng;
 
     let mut position = Position::new();
@@ -3139,7 +3139,7 @@ fn test_ucb_v_prefers_the_immediate_win() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type V = Compose<select::UcbV, simulate::Uniform, Classic>;
+    type V = Mcts<select::UcbV, simulate::Uniform, Classic>;
     type TS = mcts::TreeSearch<G, V>;
 
     for seed in 0..10 {
@@ -3162,9 +3162,9 @@ fn test_kl_ucb_prefers_the_immediate_win() {
     // As `test_ucb_v_prefers_the_immediate_win`, for `select::KlUcb`.
     use game_ttt::*;
     use mcts::backprop::Classic;
+    use mcts::profile::Mcts;
     use mcts::select;
     use mcts::simulate;
-    use mcts::strategy::Compose;
     use rand::SeedableRng;
 
     let mut position = Position::new();
@@ -3182,7 +3182,7 @@ fn test_kl_ucb_prefers_the_immediate_win() {
     let state = HashedPosition::from_position(position);
 
     type G = TicTacToe;
-    type K = Compose<select::KlUcb, simulate::Uniform, Classic>;
+    type K = Mcts<select::KlUcb, simulate::Uniform, Classic>;
     type TS = mcts::TreeSearch<G, K>;
 
     for seed in 0..10 {

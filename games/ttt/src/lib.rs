@@ -295,16 +295,16 @@ mod tests {
     use super::{HashedPosition, Move, TicTacToe};
 
     // Vanilla UCT + decisive-move rollouts.
-    type Ucb1DM = strategy::Compose<select::Ucb1, simulate::DecisiveMove<TicTacToe>>;
+    type Ucb1DM = profile::Mcts<select::Ucb1, simulate::DecisiveMove<TicTacToe>>;
     // Vanilla UCT + PN-MCTS's UCT-PN selection formula.
-    type Ucb1Pn = strategy::Compose<select::UctPn, simulate::Uniform>;
+    type Ucb1Pn = profile::Mcts<select::UctPn, simulate::Uniform>;
 
     use mcts::{
-        game::Game,
         algorithms::{
-            mcts::{node::QInit, render, select, simulate, strategy, SearchConfig, TreeSearch},
+            mcts::{node::QInit, profile, render, select, simulate, SearchConfig, TreeSearch},
             parallel_test_guard, Search,
         },
+        game::Game,
         util::random_play,
     };
 
@@ -452,7 +452,7 @@ mod tests {
 
     #[test]
     fn test_ttt_sym_search() {
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        type TS = TreeSearch<TicTacToe, profile::Mcts>;
         let mut ts = TS::default().config(
             SearchConfig::default()
                 .expand_threshold(0)
@@ -501,7 +501,7 @@ mod tests {
 
     #[test]
     fn test_ucb1_finds_forced_block() {
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        type TS = TreeSearch<TicTacToe, profile::Mcts>;
         let state = must_block_position();
         let mut ts = TS::default().config(
             SearchConfig::default()
@@ -541,7 +541,7 @@ mod tests {
     // (matching `test_ucb1_finds_forced_block` above).
     #[test]
     fn test_mcts_solver_finds_forced_block_and_terminates_early() {
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        type TS = TreeSearch<TicTacToe, profile::Mcts>;
         let state = must_block_position();
 
         let mut solved = TS::default().config(
@@ -633,7 +633,7 @@ mod tests {
             state = TicTacToe::apply(state, &Move(m));
         }
 
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        type TS = TreeSearch<TicTacToe, profile::Mcts>;
         let base_config = || {
             SearchConfig::default()
                 .expand_threshold(0)
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn test_mcts_solver_tree_parallel_finds_forced_block_and_terminates_early() {
         let _guard = parallel_test_guard();
-        type TS = TreeSearch<TicTacToe, strategy::Ucb1>;
+        type TS = TreeSearch<TicTacToe, profile::Mcts>;
         let state = must_block_position();
 
         let mut solved = TS::default().config(

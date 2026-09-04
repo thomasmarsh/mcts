@@ -32,7 +32,7 @@
 use std::time::Duration;
 
 use game_knightthrough::Knightthrough;
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -42,7 +42,7 @@ type KT = Knightthrough<8, 8>;
 const C: f64 = std::f64::consts::SQRT_2;
 const C_PN: f64 = 1.0;
 
-fn baseline(budget: Duration, name: &str) -> TreeSearch<KT, strategy::Ucb1> {
+fn baseline(budget: Duration, name: &str) -> TreeSearch<KT, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -57,7 +57,7 @@ fn baseline(budget: Duration, name: &str) -> TreeSearch<KT, strategy::Ucb1> {
 fn fsu(
     budget: Duration,
     name: &str,
-) -> TreeSearch<KT, strategy::Compose<select::UctPn, simulate::Uniform>> {
+) -> TreeSearch<KT, profile::Mcts<select::UctPn, simulate::Uniform>> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

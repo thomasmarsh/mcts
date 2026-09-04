@@ -6,7 +6,7 @@
 use std::time::Instant;
 
 use game_druid::{Druid, HashedState};
-use mcts::algorithms::mcts::{strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
 const DEFAULT_LARGE_ITERATIONS: usize = 20_000;
@@ -28,7 +28,7 @@ fn iteration_cap() -> usize {
 
 fn measure(label: &str, iterations: usize, seed: u64) {
     let state = HashedState::default();
-    let mut search: TreeSearch<Druid, strategy::Ucb1> = TreeSearch::new().config(
+    let mut search: TreeSearch<Druid, profile::Mcts> = TreeSearch::new().config(
         SearchConfig::new()
             .max_iterations(iterations)
             .expand_threshold(0)

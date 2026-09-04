@@ -42,7 +42,7 @@
 //
 // Usage: cargo run --release --example strength_oh_hell_redeterminize
 use game_oh_hell::OhHell;
-use mcts::algorithms::mcts::{strategy, IsmctsMode, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{profile, IsmctsMode, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
@@ -52,7 +52,7 @@ type OhHell2 = OhHell<2, 7>;
 const ITERATIONS: usize = 8000;
 const ROUNDS: usize = 15;
 
-fn cheating_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
+fn cheating_config(name: &str) -> TreeSearch<OhHell2, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -61,7 +61,7 @@ fn cheating_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
     )
 }
 
-fn ismcts_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
+fn ismcts_config(name: &str) -> TreeSearch<OhHell2, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -71,7 +71,7 @@ fn ismcts_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
     )
 }
 
-fn ismcts_redeterminize_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
+fn ismcts_redeterminize_config(name: &str) -> TreeSearch<OhHell2, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)
@@ -82,7 +82,7 @@ fn ismcts_redeterminize_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1
     )
 }
 
-fn mo_ismcts_config(name: &str) -> TreeSearch<OhHell2, strategy::Ucb1> {
+fn mo_ismcts_config(name: &str) -> TreeSearch<OhHell2, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name(name)

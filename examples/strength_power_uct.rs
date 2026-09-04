@@ -30,16 +30,15 @@ use std::time::Duration;
 
 use game_breakthrough::Breakthrough;
 use game_ingenious::Ingenious;
-use mcts::game::Game;
 use mcts::algorithms::mcts::{
-    backprop::PowerMeanBackprop, select, simulate, strategy, strategy::Compose, SearchConfig,
-    TreeSearch,
+    backprop::PowerMeanBackprop, profile, profile::Mcts, select, simulate, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use mcts::util::{AnySearch, Verbosity};
 use mcts_bench::tournament::{round_robin_multiple, Result as GameResult};
 
-type Power = Compose<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
+type Power = Mcts<select::Ucb1, simulate::Uniform, PowerMeanBackprop>;
 
 const P_VALUES: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 
@@ -50,7 +49,7 @@ const P_VALUES: [f64; 4] = [1.0, 2.0, 4.0, 8.0];
 // the interior.
 const MIXED_ARMS: [(f64, f64); 3] = [(1.0, 0.25), (1.0, 0.5), (4.0, 0.5)];
 
-fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, strategy::Ucb1> {
+fn baseline_config<G: Game>(budget: Duration) -> TreeSearch<G, profile::Mcts> {
     TreeSearch::new().config(
         SearchConfig::new()
             .name("baseline/uct")

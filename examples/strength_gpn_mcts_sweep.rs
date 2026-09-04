@@ -34,13 +34,13 @@ use std::time::Duration;
 use game_focus::{Focus, State as FocusState};
 use game_ingenious::{Ingenious, State as IngeniousState};
 use mcts::algorithms::mcts::select::GpnBias;
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
 use mcts::util::AnySearch;
 use mcts_bench::tournament::Result as GameResult;
 
-type Ucb1Gpn = strategy::Compose<select::GpnUct, simulate::Uniform>;
+type Ucb1Gpn = profile::Mcts<select::GpnUct, simulate::Uniform>;
 
 const C: f64 = 1.414;
 const MAX_PLIES: usize = 2000;
@@ -88,7 +88,7 @@ fn parse_opts() -> Opts {
     }
 }
 
-fn plain_config<G: Game>(seed: u64, budget: Duration) -> SearchConfig<G, strategy::Ucb1> {
+fn plain_config<G: Game>(seed: u64, budget: Duration) -> SearchConfig<G, profile::Mcts> {
     SearchConfig::new()
         .expand_threshold(1)
         .use_mcts_solver(true)
@@ -138,7 +138,7 @@ where
                 )
             } else {
                 AnySearch::new(
-                    TreeSearch::<G, strategy::Ucb1>::new().config(plain_config(s, budget)),
+                    TreeSearch::<G, profile::Mcts>::new().config(plain_config(s, budget)),
                 )
             }
         })

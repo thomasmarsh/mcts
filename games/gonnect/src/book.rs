@@ -17,24 +17,24 @@
 //! back into the book before the next one starts.
 
 use crate::{Gonnect, Move, State};
-use mcts::game::Game;
-use mcts::game::PlayerIndex;
 use mcts::algorithms::mcts::book::OpeningBook;
 use mcts::algorithms::mcts::index;
 use mcts::algorithms::mcts::{
-    backprop, node::QInit, select, simulate, strategy::Compose, SearchConfig, TreeSearch,
+    backprop, node::QInit, profile::Mcts, select, simulate, SearchConfig, TreeSearch,
 };
 use mcts::algorithms::{ActionReport, RootReport, Search};
+use mcts::game::Game;
+use mcts::game::PlayerIndex;
 use std::collections::HashMap;
 
 /// The lower-level rollout search QBF falls back to: plain UCB1 selection with
 /// epsilon-greedy MAST simulations (classic backprop, robust-child final move).
-type BookInner = Compose<select::Ucb1, simulate::EpsilonGreedy<Gonnect, simulate::Mast>>;
+type BookInner = Mcts<select::Ucb1, simulate::EpsilonGreedy<Gonnect, simulate::Mast>>;
 
 /// The book-building search: Quasi-Best-First selection wrapped in a top-level
 /// epsilon-greedy exploration layer, uniform simulations, classic backprop, and
 /// a highest-average-score final-move rule.
-type BookBuild = Compose<
+type BookBuild = Mcts<
     select::EpsilonGreedy<Gonnect, select::QuasiBestFirst<Gonnect, BookInner>>,
     simulate::Uniform,
     backprop::Classic,
@@ -136,8 +136,7 @@ pub fn build(
                         .q_init(QInit::Infinity),
                 );
 
-                let qbf = select::QuasiBestFirst::<Gonnect, BookInner>::new()
-                    .search(inner_search);
+                let qbf = select::QuasiBestFirst::<Gonnect, BookInner>::new().search(inner_search);
 
                 let mut top_select = select::EpsilonGreedy::<Gonnect, _>::new()
                     .epsilon(config.top_epsilon)

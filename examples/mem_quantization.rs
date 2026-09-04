@@ -15,7 +15,7 @@
 //
 // Usage: cargo run --release --example mem_quantization
 use game_druid::{Druid, HashedState};
-use mcts::algorithms::mcts::{node::QInit, select, simulate, strategy, SearchConfig, TreeSearch};
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
 const ITERATIONS: usize = 20_000;
@@ -38,15 +38,15 @@ fn main() {
     println!();
 
     println!("--- AMAF axis (select::Amaf vs select::Ucb1, both solver off) ---");
-    let mut amaf_off = TreeSearch::<Druid, strategy::Ucb1>::new().config(
+    let mut amaf_off = TreeSearch::<Druid, profile::Mcts>::new().config(
         SearchConfig::new()
             .name("amaf-off")
             .expand_threshold(1)
             .q_init(QInit::Infinity)
             .max_iterations(ITERATIONS),
     );
-    let mut amaf_on =
-        TreeSearch::<Druid, strategy::Compose<select::Amaf, simulate::Uniform>>::new().config(
+    let mut amaf_on = TreeSearch::<Druid, profile::Mcts<select::Amaf, simulate::Uniform>>::new()
+        .config(
             SearchConfig::new()
                 .name("amaf-on")
                 .expand_threshold(1)
@@ -61,7 +61,7 @@ fn main() {
     println!();
 
     println!("--- Solver axis (use_mcts_solver off vs on, both plain Ucb1 select) ---");
-    let mut solver_off = TreeSearch::<Druid, strategy::Ucb1>::new().config(
+    let mut solver_off = TreeSearch::<Druid, profile::Mcts>::new().config(
         SearchConfig::new()
             .name("solver-off")
             .expand_threshold(1)
@@ -69,7 +69,7 @@ fn main() {
             .use_mcts_solver(false)
             .max_iterations(ITERATIONS),
     );
-    let mut solver_on = TreeSearch::<Druid, strategy::Ucb1>::new().config(
+    let mut solver_on = TreeSearch::<Druid, profile::Mcts>::new().config(
         SearchConfig::new()
             .name("solver-on")
             .expand_threshold(1)
