@@ -7,7 +7,7 @@
 // `GAME_LABELS`).
 //
 // Tab navigation: "Game" tab shows the existing `GameShell`; "Bench" tab
-// shows the new `BenchApp` (run list, log tail, launch form).
+// shows the tuner UI (`BenchApp`).
 //
 // Both `GameShell` and `BenchApp` are lazy-loaded so each tab's dependency
 // tree ends up in its own chunk — the Game tab pulls in three.js (via the
@@ -26,7 +26,6 @@ import {
   type Env,
 } from "@mcts/game";
 import { DEFAULT_GAME_KIND, wireKindOf } from "./games.js";
-import { SpectatorPanel } from "./SpectatorPanel.js";
 import "./app.css";
 import "./bench.css";
 
@@ -91,7 +90,7 @@ const App = () => {
       </Show>
 
       <Show when={activeTab() === "bench"}>
-        <BenchApp Spectator={SpectatorPanel} />
+        <BenchApp />
       </Show>
     </>
   );

@@ -1,7 +1,7 @@
 // tests/TunerApp.test.tsx — component test for the version-4 tuner UI:
 // a real `createStore(tunerReducer, env)` inside `<TunerApp>` driven by a
 // mocked `TunerEnv` (no live server, no real timers relied on). Mirrors
-// `BenchApp.test.tsx` / `GameShell.test.tsx`.
+// `GameShell.test.tsx`.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@solidjs/testing-library";

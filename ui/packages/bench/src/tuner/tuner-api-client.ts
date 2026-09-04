@@ -167,7 +167,7 @@ function queryString(params: object): string {
 }
 
 /** `baseUrl` defaults to `""` (relative URLs), same convention as
- * `createBenchApiClient`. */
+ * `@mcts/game`'s api client. */
 export function createTunerApiClient(baseUrl = ""): TunerApiClient {
   const url = (path: string): string => baseUrl + path;
   const runPath = (runId: string): string =>
