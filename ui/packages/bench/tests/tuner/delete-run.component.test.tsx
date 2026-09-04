@@ -15,7 +15,7 @@ import {
 import { FleetDashboard } from "../../src/tuner/views/FleetDashboard.js";
 import { mockTunerEnv } from "./mock-tuner-env.js";
 import type { TunerEnv } from "../../src/tuner/tuner-env.js";
-import type { ProjectionRunListItem } from "../../src/tuner/tuner-types.js";
+import type { ProjectionRunListItem, TunerRunView } from "../../src/tuner/tuner-types.js";
 
 afterEach(() => {
   cleanup();
@@ -99,5 +99,45 @@ describe("FleetDashboard — delete run", () => {
     );
     // The run card is still there.
     expect(screen.getByTestId("run-card-delete")).toBeInTheDocument();
+  });
+
+  it("surfaces a 404 from the 'Failed to start' section, not just under 'Completed & failed'", async () => {
+    const failedToStart: TunerRunView = {
+      run_id: "spawn-fail-1",
+      argv: [],
+      run_dir: "/runs/spawn-fail-1",
+      pid: null,
+      started_at: "2026-01-01T00:00:00Z",
+      terminal_outcome: "spawn_failed",
+      status: "failed",
+      error_detail: "python: command not found",
+    };
+    const env = mockTunerEnv({
+      deleteRun: () =>
+        Effect.fromPromise(() =>
+          Promise.reject(new Error("tuner run 'spawn-fail-1' not found")),
+        ),
+      listRuns: () => Effect.send([failedToStart]),
+      listProjectionRuns: () => Effect.send<ProjectionRunListItem[]>([]),
+    });
+    stubConfirm(() => true);
+
+    const store = createStore<TunerState, TunerAction, TunerEnv>(
+      initialTunerState(),
+      tunerReducer,
+      env,
+    );
+    store.dispatch({ tag: "runsLoaded", runs: [failedToStart] });
+    store.dispatch({ tag: "projectionLoaded", runs: [] });
+    render(() => <FleetDashboard store={store} navigate={() => {}} />);
+
+    fireEvent.click(screen.getByTestId("run-card-delete"));
+
+    // The error banner must render regardless of which section's delete
+    // button triggered it -- not siloed under "Completed & failed", which a
+    // run that never made it into the projection never appears under.
+    await vi.waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("not found"),
+    );
   });
 });

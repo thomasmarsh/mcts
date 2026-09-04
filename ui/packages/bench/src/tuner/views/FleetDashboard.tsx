@@ -116,6 +116,12 @@ export const FleetDashboard: Component<{
         </div>
       </Show>
 
+      <Show when={state().deleteError}>
+        <div class="launch-error" role="alert">
+          {state().deleteError}
+        </div>
+      </Show>
+
       <section class="tuner-fleet-section">
         <h3>Live</h3>
         <Show when={liveRuns().length > 0} fallback={<p class="tuner-fleet-empty">No runs live.</p>}>
@@ -188,11 +194,6 @@ export const FleetDashboard: Component<{
               />
             )}
           </For>
-        </Show>
-        <Show when={state().deleteError}>
-          <div class="launch-error" role="alert">
-            {state().deleteError}
-          </div>
         </Show>
       </section>
     </div>
