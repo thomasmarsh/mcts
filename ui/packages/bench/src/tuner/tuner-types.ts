@@ -33,12 +33,15 @@ export interface TunerRunView {
   error_detail?: string | null;
 }
 
-/** `GET /api/bench/tuner/runs/{id}/log?since=N` — tail of `launch.out` plus
- * the full `launch.err` (re-sent each poll; normally empty). */
+/** `GET /api/bench/tuner/runs/{id}/log?since=N&err_since=M` — byte-offset
+ * tails of `launch.out` and `launch.err`. Both files are tailed incrementally:
+ * a heavily-logging tuner can grow `launch.err` to many megabytes over a run,
+ * so it is never re-sent whole. */
 export interface TunerRunLog {
   lines: string[];
   next_offset: number;
   err_lines: string[];
+  err_next_offset: number;
 }
 
 /** One frozen-objective file the server offers, keyed by its filename stem.

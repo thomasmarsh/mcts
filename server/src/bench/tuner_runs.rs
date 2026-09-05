@@ -713,6 +713,8 @@ pub(crate) async fn delete_tuner_run(
 pub(crate) struct TunerLogParams {
     #[serde(default)]
     since: u64,
+    #[serde(default)]
+    err_since: u64,
 }
 
 #[derive(Serialize)]
@@ -721,10 +723,19 @@ pub(crate) struct TunerLogResponse {
     lines: Vec<String>,
     /// Byte offset to pass as `since` on the next poll.
     next_offset: u64,
-    /// Full contents of `launch.err`, re-sent each poll (it is normally tiny:
-    /// a panic backtrace or nothing).
+    /// `launch.err` lines appended since the `err_since` byte offset. A tuner
+    /// that logs heavily can grow this file to many megabytes over a run, so
+    /// it is tailed incrementally exactly like `launch.out` rather than
+    /// re-sent whole on every poll.
     err_lines: Vec<String>,
+    /// Byte offset to pass as `err_since` on the next poll.
+    err_next_offset: u64,
 }
+
+/// Never return more than this many trailing bytes of a log file in one
+/// response, even when the client asks from offset 0 (a fresh page load
+/// against a run whose `launch.err` is already huge).
+const LOG_TAIL_BYTE_CAP: u64 = 256 * 1024;
 
 /// `GET /api/bench/tuner/runs/{run_id}/log?since=<offset>`
 ///
@@ -749,11 +760,13 @@ pub(crate) async fn get_tuner_run_log(
 
     let out_path = record.run_dir.join("launch.out");
     let (lines, next_offset) = tail_from(&out_path, params.since)?;
-    let (err_lines, _) = tail_from(&record.run_dir.join("launch.err"), 0)?;
+    let (err_lines, err_next_offset) =
+        tail_from(&record.run_dir.join("launch.err"), params.err_since)?;
     Ok(Json(TunerLogResponse {
         lines,
         next_offset,
         err_lines,
+        err_next_offset,
     }))
 }
 
@@ -769,11 +782,72 @@ fn tail_from(path: &std::path::Path, since: u64) -> Result<(Vec<String>, u64), B
     if file_len <= since {
         return Ok((vec![], since));
     }
+    // Clamp the read window to the last `LOG_TAIL_BYTE_CAP` bytes. A client
+    // that polls steadily keeps `since` current and never trips this; it only
+    // bites a first poll against an already-large file, where dropping the
+    // older bytes (and skipping the partial first line after a mid-file seek)
+    // is the right trade against shipping megabytes.
+    let start = since.max(file_len.saturating_sub(LOG_TAIL_BYTE_CAP));
     let mut file = std::fs::File::open(path).map_err(io_error)?;
-    file.seek(SeekFrom::Start(since)).map_err(io_error)?;
+    file.seek(SeekFrom::Start(start)).map_err(io_error)?;
+    let mut reader = BufReader::new(file);
+    if start > since {
+        // A mid-file seek lands partway through a line; drop that fragment.
+        reader
+            .read_until(b'\n', &mut Vec::new())
+            .map_err(io_error)?;
+    }
     let mut lines = Vec::new();
-    for line in BufReader::new(file).lines() {
+    for line in reader.lines() {
         lines.push(line.map_err(io_error)?);
     }
     Ok((lines, file_len))
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::{tail_from, LOG_TAIL_BYTE_CAP};
+    use std::io::Write;
+
+    #[test]
+    fn tails_incrementally_from_offset() {
+        let dir = std::env::temp_dir().join(format!("tail-inc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log");
+        std::fs::write(&path, "a\nb\n").unwrap();
+        let (lines, off) = tail_from(&path, 0).unwrap();
+        assert_eq!(lines, ["a", "b"]);
+        assert_eq!(off, 4);
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"c\n").unwrap();
+        let (lines, off) = tail_from(&path, off).unwrap();
+        assert_eq!(lines, ["c"]);
+        assert_eq!(off, 6);
+
+        let (lines, off2) = tail_from(&path, off).unwrap();
+        assert!(lines.is_empty());
+        assert_eq!(off2, off);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn caps_a_cold_read_of_a_huge_file() {
+        let dir = std::env::temp_dir().join(format!("tail-cap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("log");
+        let line = "x".repeat(63);
+        let body = format!("{line}\n").repeat(20_000); // ~1.25 MB, well over the cap
+        std::fs::write(&path, &body).unwrap();
+
+        let (lines, off) = tail_from(&path, 0).unwrap();
+        assert_eq!(off, body.len() as u64, "offset still reports true EOF");
+        let returned: usize = lines.iter().map(|l| l.len() + 1).sum();
+        assert!(
+            (returned as u64) <= LOG_TAIL_BYTE_CAP,
+            "returned {returned} bytes, cap is {LOG_TAIL_BYTE_CAP}"
+        );
+        assert!(lines.iter().all(|l| l == &line), "no partial line survives the seek");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -58,7 +58,7 @@ export interface TunerEnv {
   extendRun(runId: string, body: TunerBudgetExtension): Effect<TunerRunView>;
   resumeRun(runId: string): Effect<TunerRunView>;
   deleteRun(runId: string): Effect<void>;
-  getRunLog(runId: string, since: number): Effect<TunerRunLog>;
+  getRunLog(runId: string, since: number, errSince: number): Effect<TunerRunLog>;
   getRunEvidence(runId: string, sinceSeq: number): Effect<EvidenceTailResponse>;
   /** A long-lived effect: pushes `{kind:"events"}` messages as the run's
    * evidence stream appends, then exactly one terminal `{kind:"ended"}` or
@@ -128,7 +128,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     extendRun: (runId, body) => lift(() => api.extendRun(runId, body)),
     resumeRun: (runId) => lift(() => api.resumeRun(runId)),
     deleteRun: (runId) => lift(() => api.deleteRun(runId)),
-    getRunLog: (runId, since) => lift(() => api.getRunLog(runId, since)),
+    getRunLog: (runId, since, errSince) => lift(() => api.getRunLog(runId, since, errSince)),
     getRunEvidence: (runId, sinceSeq) => lift(() => api.getRunEvidence(runId, sinceSeq)),
     openEvidenceStream: (runId, sinceSeq) =>
       Effect.stream<EvidenceStreamMessage>((send, done) => {

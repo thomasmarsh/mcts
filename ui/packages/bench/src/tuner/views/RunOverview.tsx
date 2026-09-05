@@ -4,7 +4,7 @@
 // ranked validation table. Cohort race strips and the full science /
 // evidence views are their own slices.
 
-import { createEffect, createMemo, createSignal, For, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
@@ -429,25 +429,11 @@ export const RunOverview: Component<{
             </div>
           </Show>
           <pre class="tuner-log-lines" data-testid="tuner-log-lines">
-            <For each={state().log.lines}>
-              {(line) => (
-                <>
-                  {line}
-                  {"\n"}
-                </>
-              )}
-            </For>
+            {state().log.lines.join("\n")}
           </pre>
           <Show when={state().log.errLines.length > 0}>
             <pre class="tuner-log-err" data-testid="tuner-log-err">
-              <For each={state().log.errLines}>
-                {(line) => (
-                  <>
-                    {line}
-                    {"\n"}
-                  </>
-                )}
-              </For>
+              {state().log.errLines.join("\n")}
             </pre>
           </Show>
           </section>

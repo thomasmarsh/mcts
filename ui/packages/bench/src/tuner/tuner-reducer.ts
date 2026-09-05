@@ -59,6 +59,12 @@ import type { JsonValue, TunableGame } from "../types.js";
 /** Fixed cadence for the open run's launch-log tail. */
 export const LOG_TAIL_MS = 3_000;
 
+/** Trailing lines of `launch.out` / `launch.err` the UI retains. The diagnostic
+ * tail only ever needs the recent end; keeping the whole of a multi-megabyte
+ * `launch.err` in state (and reconciling it into the DOM on every poll) is what
+ * made the run view lock up on long-lived runs. */
+export const LOG_LINES_MAX = 2_000;
+
 /** Bounded ring buffer for the open run's live evidence envelopes. */
 export const EVIDENCE_RING_MAX = 400;
 
@@ -95,7 +101,10 @@ export interface TunerPreflightState {
 export interface TunerLogTailState {
   lines: string[];
   errLines: string[];
+  /** Byte offset into `launch.out` for the next tail poll. */
   offset: number;
+  /** Byte offset into `launch.err` for the next tail poll. */
+  errOffset: number;
   error: string | null;
   /** false once the open run has exited (its `launch.out` is complete) — no
    * further ticks are scheduled. */
@@ -295,7 +304,7 @@ export function initialTunerState(): TunerState {
     evidenceStreamActive: false,
     evidenceStreamOk: true,
     evidenceGeneration: 0,
-    log: { lines: [], errLines: [], offset: 0, error: null, active: false },
+    log: { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: false },
     stopError: null,
     deletingRunId: null,
     deleteError: null,
@@ -408,6 +417,7 @@ export type TunerAction =
       lines: string[];
       errLines: string[];
       nextOffset: number;
+      errNextOffset: number;
     }
   | { tag: "logFailed"; generation: number; error: string }
   | { tag: "evidenceEvents"; generation: number; events: EvidenceEnvelope[]; nextSeq?: number }
@@ -611,20 +621,26 @@ function fetchProjectionMeta(env: TunerEnv): Effect<TunerAction> {
     .catch((): TunerAction => ({ tag: "projectionMetaLoaded", meta: { last_pass_at: null } }));
 }
 
+/** Keep only the trailing `LOG_LINES_MAX` entries of a log buffer. */
+const boundTail = (lines: string[]): string[] =>
+  lines.length > LOG_LINES_MAX ? lines.slice(-LOG_LINES_MAX) : lines;
+
 function fetchLog(
   env: TunerEnv,
   runId: string,
   since: number,
+  errSince: number,
   generation: number,
 ): Effect<TunerAction> {
   return env
-    .getRunLog(runId, since)
+    .getRunLog(runId, since, errSince)
     .map((log): TunerAction => ({
       tag: "logLoaded",
       generation,
       lines: log.lines,
       errLines: log.err_lines,
       nextOffset: log.next_offset,
+      errNextOffset: log.err_next_offset,
     }))
     .catch((e): TunerAction => ({ tag: "logFailed", generation, error: String(e) }));
 }
@@ -1115,7 +1131,7 @@ export function tunerReducer(
       draft.openRunId = action.run.run_id;
       draft.logGeneration += 1;
       draft.journalGeneration += 1;
-      draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
+      draft.log = { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: true };
       draft.evidence = freshEvidence();
       const effects = [
         Effect.send<TunerAction>({ tag: "logTick", generation: draft.logGeneration }),
@@ -1187,7 +1203,7 @@ export function tunerReducer(
       draft.stopError = null;
       draft.extendError = null;
       draft.logGeneration += 1;
-      draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
+      draft.log = { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: true };
       const logTick = Effect.send<TunerAction>({
         tag: "logTick",
         generation: draft.logGeneration,
@@ -1210,7 +1226,7 @@ export function tunerReducer(
     }
     case "closeRun":
       draft.openRunId = null;
-      draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
+      draft.log = { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: false };
       clearResources(draft);
       draft.evidence = freshEvidence();
       // No open run — wind the auto-refresh loop and evidence follower down.
@@ -1344,13 +1360,20 @@ export function tunerReducer(
       if (action.generation !== draft.logGeneration || !draft.openRunId || !draft.log.active) {
         return null;
       }
-      return fetchLog(env, draft.openRunId, draft.log.offset, action.generation);
+      return fetchLog(
+        env,
+        draft.openRunId,
+        draft.log.offset,
+        draft.log.errOffset,
+        action.generation,
+      );
     }
     case "logLoaded": {
       if (action.generation !== draft.logGeneration) return null;
-      draft.log.lines.push(...action.lines);
-      draft.log.errLines = action.errLines;
+      draft.log.lines = boundTail([...draft.log.lines, ...action.lines]);
+      draft.log.errLines = boundTail([...draft.log.errLines, ...action.errLines]);
       draft.log.offset = action.nextOffset;
+      draft.log.errOffset = action.errNextOffset;
       draft.log.error = null;
       if (!isOpenRunLive(draft)) {
         draft.log.active = false;
@@ -1541,7 +1564,7 @@ export function tunerReducer(
       // If the deleted run was the one on screen, route back to the fleet.
       if (draft.openRunId === action.runId) {
         draft.openRunId = null;
-        draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
+        draft.log = { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: false };
         clearResources(draft);
         draft.evidence = freshEvidence();
         syncAutoRefresh(draft);

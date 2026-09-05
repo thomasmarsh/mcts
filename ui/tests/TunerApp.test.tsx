@@ -147,7 +147,7 @@ describe("TunerApp fleet", () => {
           listObjectives: () => Effect.send(objectives),
           listRuns: () => Effect.send([]),
           launchRun,
-          getRunLog: () => Effect.send({ lines: ["booting"], next_offset: 7, err_lines: [] }),
+          getRunLog: () => Effect.send({ lines: ["booting"], next_offset: 7, err_lines: [], err_next_offset: 0 }),
         })}
       />
     ));

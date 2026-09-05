@@ -77,7 +77,7 @@ export interface TunerApiClient {
   resumeRun(runId: string): Promise<TunerRunView>;
   /** Permanently remove a terminal run. `409` if the run is still live. */
   deleteRun(runId: string): Promise<void>;
-  getRunLog(runId: string, since?: number): Promise<TunerRunLog>;
+  getRunLog(runId: string, since?: number, errSince?: number): Promise<TunerRunLog>;
   getRunEvidence(runId: string, sinceSeq: number): Promise<EvidenceTailResponse>;
   /** Subscribe to the run's evidence SSE stream from `sinceSeq`. Returns a
    * handle whose `close()` tears down the underlying `EventSource`. */
@@ -216,8 +216,8 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     extendRun: (runId, body) => sendJson(url(`${runPath(runId)}/extend`), "POST", body),
     resumeRun: (runId) => sendJson(url(`${runPath(runId)}/resume`), "POST"),
     deleteRun: (runId) => sendNoContent(url(runPath(runId)), "DELETE"),
-    getRunLog: (runId, since) =>
-      fetchJson(url(`${runPath(runId)}/log${queryString({ since })}`)),
+    getRunLog: (runId, since, errSince) =>
+      fetchJson(url(`${runPath(runId)}/log${queryString({ since, err_since: errSince })}`)),
     getRunEvidence: (runId, sinceSeq) =>
       fetchJson(url(`${runPath(runId)}/evidence${queryString({ since_seq: sinceSeq })}`)),
     openEvidenceStream: (runId, sinceSeq, handlers) => {

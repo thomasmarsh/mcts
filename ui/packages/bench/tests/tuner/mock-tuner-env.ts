@@ -45,7 +45,7 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
     extendRun: () => Effect.send(runView()),
     resumeRun: () => Effect.send(runView()),
     deleteRun: () => Effect.send(undefined),
-    getRunLog: () => Effect.send({ lines: [], next_offset: 0, err_lines: [] }),
+    getRunLog: () => Effect.send({ lines: [], next_offset: 0, err_lines: [], err_next_offset: 0 }),
     getRunEvidence: () => Effect.send({ events: [], next_seq: 0, run_status: "live" }),
     // Default: an evidence stream that opens and immediately closes (no
     // events, no terminal action). Tests that exercise the ticker override

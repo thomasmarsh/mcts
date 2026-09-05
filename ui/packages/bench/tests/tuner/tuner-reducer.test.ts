@@ -371,7 +371,7 @@ describe("tunerReducer", () => {
       mockTunerEnv({
         launchRun: () => Effect.send(launched),
         getRunLog: () =>
-          Effect.send({ lines: ["cohort 0 starting"], next_offset: 17, err_lines: [] }),
+          Effect.send({ lines: ["cohort 0 starting"], next_offset: 17, err_lines: [], err_next_offset: 0 }),
         listRuns: () => Effect.send([runView({ run_id: "fresh", status: "exited" })]),
         getProjectionRun: () => Effect.send(detail),
       }),
@@ -399,7 +399,7 @@ describe("tunerReducer", () => {
       s.shadowDecisions = { status: "loading" };
       s.activeEliminations = { status: "loading" };
       s.report = { status: "loading" };
-      s.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
+      s.log = { lines: [], errLines: [], offset: 0, errOffset: 0, error: null, active: true };
     });
 
     ts.receive({ tag: "logTick", generation: 1 });
@@ -442,12 +442,14 @@ describe("tunerReducer", () => {
         lines: ["cohort 0 starting"],
         errLines: [],
         nextOffset: 17,
+        errNextOffset: 0,
       },
       (s) => {
         s.log = {
           lines: ["cohort 0 starting"],
           errLines: [],
           offset: 17,
+          errOffset: 0,
           error: null,
           active: true,
         };
