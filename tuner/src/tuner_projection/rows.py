@@ -15,6 +15,7 @@ from tuner_cli.codec import JsonObject, elements, integer, json_object, number, 
 from tuner_cli.domain import PairResult, PhaseCompute, ReplayState
 from tuner_cli.identity import canonical_json
 from tuner_cli.statistics import pair_utility
+from tuner_cli.telemetry import Span
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +388,43 @@ def _compute_phase_row(run_id: str, phase: str, bucket: PhaseCompute) -> Compute
         bucket.search_iterations,
         bucket.wall_time_ms,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryLaneRow:
+    run_id: str
+    name: str
+    span_count: int
+    total_us: int
+    max_us: int
+    first_start_us: int
+    last_end_us: int
+
+
+def telemetry_lane_rows(run_id: str, spans: list[Span]) -> list[TelemetryLaneRow]:
+    """One aggregate row per distinct span name in the wall-clock sidecar.
+
+    ``span_count`` counts every record (zero-length markers included, so the
+    ``session`` lane's count is the number of run-loop processes that touched
+    the run); ``total_us`` / ``max_us`` sum and peak the durations; the
+    ``first_start_us`` / ``last_end_us`` extent is Unix-epoch microseconds so a
+    resumed run's lanes still line up on one wall timeline.
+    """
+    by_name: dict[str, list[Span]] = {}
+    for span in spans:
+        by_name.setdefault(span.name, []).append(span)
+    return [
+        TelemetryLaneRow(
+            run_id,
+            name,
+            len(group),
+            sum(span.dur_us for span in group),
+            max(span.dur_us for span in group),
+            min(span.start_us for span in group),
+            max(span.start_us + span.dur_us for span in group),
+        )
+        for name, group in sorted(by_name.items())
+    ]
 
 
 def compute_phase_rows(run_id: str, state: ReplayState) -> list[ComputePhaseRow]:

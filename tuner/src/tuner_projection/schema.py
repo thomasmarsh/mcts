@@ -7,7 +7,7 @@ order in which runs were projected.
 
 from __future__ import annotations
 
-PROJECTION_SCHEMA_VERSION = 2
+PROJECTION_SCHEMA_VERSION = 3
 
 # Tables carrying projected content, in the order the canonical dump emits them.
 # ``ingest_state`` is deliberately excluded here: it holds the per-run change
@@ -209,6 +209,22 @@ CREATE TABLE compute_phases (
     search_iterations INTEGER NOT NULL,
     wall_time_ms     INTEGER NOT NULL,
     PRIMARY KEY (run_id, phase)
+) WITHOUT ROWID;
+
+-- Per-span-name rollup of the run's `telemetry.jsonl` wall-clock sidecar
+-- (`tuner_cli.telemetry`). Non-scientific and wall-clock-stamped, so like
+-- `ingest_state` and `run_checkpoints` it is excluded from `CONTENT_TABLES`
+-- and the canonical dump: no replay or fingerprint reads it, and a rebuild
+-- reproduces it from the sidecar. Serves the read-only telemetry API only.
+CREATE TABLE telemetry_lanes (
+    run_id        TEXT NOT NULL REFERENCES runs(run_id),
+    name          TEXT NOT NULL,
+    span_count    INTEGER NOT NULL,
+    total_us      INTEGER NOT NULL,
+    max_us        INTEGER NOT NULL,
+    first_start_us INTEGER NOT NULL,
+    last_end_us   INTEGER NOT NULL,
+    PRIMARY KEY (run_id, name)
 ) WITHOUT ROWID;
 
 CREATE INDEX idx_candidates_run ON candidates(run_id);

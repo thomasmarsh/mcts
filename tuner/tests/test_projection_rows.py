@@ -108,6 +108,28 @@ def test_compute_phase_rows_cover_three_phases(
     assert result[0].pair_attempts == state.compute.tuning.pair_attempts
 
 
+def test_telemetry_lane_rows_aggregate_per_name() -> None:
+    from tuner_cli.telemetry import read_spans
+
+    spans = read_spans(COMPLETE / "telemetry.jsonl")
+    result = rows.telemetry_lane_rows("r", spans)
+    by_name = {row.name: row for row in result}
+
+    assert [row.name for row in result] == sorted(by_name)
+    assert by_name["session"].span_count == len({s.pid for s in spans})
+    wait = by_name["wait"]
+    wait_spans = [s for s in spans if s.name == "wait"]
+    assert wait.span_count == len(wait_spans)
+    assert wait.total_us == sum(s.dur_us for s in wait_spans)
+    assert wait.max_us == max(s.dur_us for s in wait_spans)
+    assert wait.first_start_us == min(s.start_us for s in wait_spans)
+    assert wait.last_end_us == max(s.start_us + s.dur_us for s in wait_spans)
+
+
+def test_telemetry_lane_rows_empty_without_a_sidecar() -> None:
+    assert rows.telemetry_lane_rows("r", []) == []
+
+
 def test_row_builders_are_deterministic(complete: tuple[Manifest, ReplayState, JsonObject]) -> None:
     _manifest, state, report = complete
     assert rows.proposal_rows("r", state) == rows.proposal_rows("r", state)

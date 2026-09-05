@@ -13,6 +13,7 @@ from tuner_cli.artifacts import Manifest, read_manifest
 from tuner_cli.evidence import read_events, tail_events
 from tuner_cli.replay import ReplayCheckpoint, fold_checkpoint
 from tuner_cli.report import build_report
+from tuner_cli.telemetry import Span, read_spans
 
 from . import rows
 from .rows import RunRow
@@ -123,7 +124,24 @@ def _project_run(
         active_elimination_decisions=rows.active_elimination_decision_rows(run_id, state),
         validation_rows=rows.validation_rows(run_id, report_obj),
         compute_phases=rows.compute_phase_rows(run_id, state),
+        telemetry_lanes=rows.telemetry_lane_rows(run_id, _read_telemetry(run_dir)),
     )
+
+
+def _read_telemetry(run_dir: Path) -> list[Span]:
+    """The wall-clock sidecar's spans, or an empty list when the run has none.
+
+    The sidecar is optional (older runs predate it; a run killed before its
+    first span wrote never creates it) and non-scientific, so a missing or
+    unreadable file is not an ingest error -- it just yields no telemetry rows.
+    """
+    path = run_dir / "telemetry.jsonl"
+    if not path.is_file():
+        return []
+    try:
+        return read_spans(path)
+    except (OSError, ValueError):
+        return []
 
 
 def _discover(runs_root: Path) -> list[Path]:

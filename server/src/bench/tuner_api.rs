@@ -985,6 +985,99 @@ pub(crate) async fn report(
     Ok(Json(json_value(&report_json)?))
 }
 
+#[derive(Serialize)]
+pub(crate) struct TelemetryLane {
+    name: String,
+    span_count: i64,
+    total_us: i64,
+    max_us: i64,
+    first_start_us: i64,
+    last_end_us: i64,
+}
+
+#[derive(Serialize)]
+pub(crate) struct TelemetrySummary {
+    run_id: String,
+    /// Distinct run-loop processes that touched the run (the `session` lane's
+    /// span count); each `--resume` after a hard stop adds one.
+    sessions: i64,
+    /// Wall-clock extent of the sidecar in Unix-epoch microseconds, `null`
+    /// when the run has no telemetry yet.
+    first_start_us: Option<i64>,
+    last_end_us: Option<i64>,
+    /// `last_end_us - first_start_us`, or 0 when there is no telemetry. Spans
+    /// a resumed run's sleep gap, so it is not the sum of session durations.
+    wall_span_us: i64,
+    /// Total run-loop thread time across every lane -- the loop's own CPU
+    /// cost, excluding the game subprocesses it waits on.
+    loop_active_us: i64,
+    /// The `wait` lane total: wall time blocked on game subprocesses.
+    wait_us: i64,
+    lanes: Vec<TelemetryLane>,
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/telemetry`
+///
+/// Per-span-name rollup of the run's wall-clock `telemetry.jsonl` sidecar,
+/// plus the handful of sums the run header is built from. Non-scientific: this
+/// is the only endpoint that reads `telemetry_lanes`, and the sidecar feeds no
+/// replay or fingerprint. A run with no sidecar yet returns empty lanes and
+/// zeroed sums, not a 404.
+pub(crate) async fn telemetry(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<TelemetrySummary>, BenchError> {
+    let conn = open(&state)?;
+    require_run(&conn, &run_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, span_count, total_us, max_us, first_start_us, last_end_us \
+             FROM telemetry_lanes WHERE run_id = ?1 ORDER BY name",
+        )
+        .map_err(sql_error)?;
+    let lanes = stmt
+        .query_map([&run_id], |row| {
+            Ok(TelemetryLane {
+                name: row.get(0)?,
+                span_count: row.get(1)?,
+                total_us: row.get(2)?,
+                max_us: row.get(3)?,
+                first_start_us: row.get(4)?,
+                last_end_us: row.get(5)?,
+            })
+        })
+        .map_err(sql_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_error)?;
+
+    let sessions = lanes
+        .iter()
+        .find(|lane| lane.name == "session")
+        .map_or(0, |lane| lane.span_count);
+    let wait_us = lanes
+        .iter()
+        .find(|lane| lane.name == "wait")
+        .map_or(0, |lane| lane.total_us);
+    let loop_active_us = lanes.iter().map(|lane| lane.total_us).sum();
+    let first_start_us = lanes.iter().map(|lane| lane.first_start_us).min();
+    let last_end_us = lanes.iter().map(|lane| lane.last_end_us).max();
+    let wall_span_us = match (first_start_us, last_end_us) {
+        (Some(start), Some(end)) => (end - start).max(0),
+        _ => 0,
+    };
+
+    Ok(Json(TelemetrySummary {
+        run_id,
+        sessions,
+        first_start_us,
+        last_end_us,
+        wall_span_us,
+        loop_active_us,
+        wait_us,
+        lanes,
+    }))
+}
+
 /// `POST /api/bench/tuner/projection/refresh`
 ///
 /// Re-runs the `tuner-project` projector (incremental) against the bench runs

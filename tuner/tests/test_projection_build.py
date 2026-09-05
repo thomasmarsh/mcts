@@ -78,6 +78,21 @@ def test_projecting_twice_is_byte_identical(tmp_path: Path) -> None:
     assert _dump(first) == _dump(second)
 
 
+def test_projects_the_telemetry_sidecar_when_present(tmp_path: Path) -> None:
+    db_path = tmp_path / "p.sqlite"
+    project_runs(PROJECTION_ROOT, db_path, rebuild=True)
+    store = open_store(db_path)
+    try:
+        rows = store._connection.execute(  # noqa: SLF001
+            "SELECT run_id, name FROM telemetry_lanes ORDER BY run_id, name"
+        ).fetchall()
+    finally:
+        store.close()
+    # Only version4 carries a telemetry.jsonl; version4-active-halving has none.
+    assert {run_id for run_id, _ in rows} == {"version4"}
+    assert ("version4", "wait") in rows
+
+
 def test_records_ingest_error(tmp_path: Path) -> None:
     root = tmp_path / "runs"
     broken = root / "broken"
@@ -442,7 +457,7 @@ def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
         value = store._connection.execute(  # noqa: SLF001
             "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
         ).fetchone()
-        assert value == ("2",)
+        assert value == ("3",)
     finally:
         store.close()
 
@@ -461,7 +476,7 @@ def test_open_store_rebuilds_on_schema_version_mismatch(tmp_path: Path) -> None:
     try:
         assert store._connection.execute(  # noqa: SLF001
             "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
-        ).fetchone() == ("2",)
+        ).fetchone() == ("3",)
         # The file was dropped and recreated fresh, so it holds no run rows until
         # the next projection pass re-populates it.
         assert store.projected_run_ids() == []

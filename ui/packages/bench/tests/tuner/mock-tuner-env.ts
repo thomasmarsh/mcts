@@ -82,6 +82,17 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
     getProjectionPairGames: () => Effect.send([]),
     getProjectionValidation: () => Effect.send({ rows: [], unresolved_ties: null }),
     getProjectionReport: () => Effect.send({}),
+    getProjectionTelemetry: (runId: string) =>
+      Effect.send({
+        run_id: runId,
+        sessions: 0,
+        first_start_us: null,
+        last_end_us: null,
+        wall_span_us: 0,
+        loop_active_us: 0,
+        wait_us: 0,
+        lanes: [],
+      }),
     getProjectionProposals: () => Effect.send([]),
     getProjectionObservations: () => Effect.send([]),
     getProjectionShadowDecisions: () => Effect.send([]),

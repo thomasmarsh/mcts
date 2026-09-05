@@ -28,6 +28,7 @@ from .rows import (
     RunReportRow,
     RunRow,
     ShadowDecisionRow,
+    TelemetryLaneRow,
     ValidationRow,
 )
 from .schema import CONTENT_TABLES, DDL, PROJECTION_SCHEMA_VERSION
@@ -64,6 +65,7 @@ class RunProjection:
     active_elimination_decisions: Sequence[ActiveEliminationDecisionRow] = ()
     validation_rows: Sequence[ValidationRow] = ()
     compute_phases: Sequence[ComputePhaseRow] = ()
+    telemetry_lanes: Sequence[TelemetryLaneRow] = ()
 
 
 _CHILD_TABLES: tuple[str, ...] = (
@@ -79,6 +81,7 @@ _CHILD_TABLES: tuple[str, ...] = (
     "active_elimination_decisions",
     "validation_rows",
     "compute_phases",
+    "telemetry_lanes",
 )
 
 
@@ -189,6 +192,7 @@ class Store:
             )
             _insert(self._connection, "validation_rows", projection.validation_rows)
             _insert(self._connection, "compute_phases", projection.compute_phases)
+            _insert(self._connection, "telemetry_lanes", projection.telemetry_lanes)
             self._connection.execute(
                 "INSERT INTO ingest_state VALUES (?, ?, ?, ?)",
                 (

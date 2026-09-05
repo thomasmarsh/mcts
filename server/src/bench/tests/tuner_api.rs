@@ -11,7 +11,7 @@ use super::support::{
 };
 
 const V4: &str = "/api/bench/tuner/projection/runs/version4";
-const CAND0: &str = "candidate-130051c1c73a2aa1f25731bb5f9bf9fad38bd5f2852406cef837c5b14cc8fd90";
+const CAND0: &str = "candidate-e2fa7724ce16c277a0c7a3d261aa511568ab60241311fb4ea3c1f403db072576";
 
 #[tokio::test]
 async fn projection_meta_exposes_the_last_pass_stamp() {
@@ -192,6 +192,62 @@ async fn report_verbatim() {
     assert_eq!(report["schema_version"], 5);
     assert_eq!(report["status"], "complete");
     assert!(report["validation_order"].is_array());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn telemetry_rolls_up_the_wall_clock_sidecar() {
+    let (app, root) = seeded_app(default_seed);
+    let (status, body) = http_get(app.clone(), &format!("{V4}/telemetry")).await;
+    assert_eq!(status, StatusCode::OK);
+    let summary = body_json(&body);
+
+    // The version4 fixture's telemetry.jsonl records two run-loop sessions
+    // (an original process and a --resume after a simulated machine sleep).
+    assert_eq!(summary["sessions"], 2);
+    assert_eq!(summary["run_id"], "version4");
+
+    let lanes = summary["lanes"].as_array().unwrap();
+    let names: Vec<&str> = lanes.iter().map(|l| l["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"wait"));
+    assert!(names.contains(&"session"));
+    // Lanes come back sorted by name.
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted);
+
+    let wait = lanes.iter().find(|l| l["name"] == "wait").unwrap();
+    assert_eq!(summary["wait_us"], wait["total_us"]);
+    // The loop's own CPU time excludes the game subprocesses it waits on.
+    assert!(summary["loop_active_us"].as_i64().unwrap() >= wait["total_us"].as_i64().unwrap());
+    // The wall extent spans the resume sleep gap, so it dwarfs the loop's CPU.
+    assert!(
+        summary["wall_span_us"].as_i64().unwrap() > summary["loop_active_us"].as_i64().unwrap()
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn telemetry_is_empty_without_a_sidecar() {
+    let (app, root) = seeded_app(default_seed);
+    let (status, body) =
+        http_get(app, "/api/bench/tuner/projection/runs/version4-active-halving/telemetry").await;
+    assert_eq!(status, StatusCode::OK);
+    let summary = body_json(&body);
+    assert_eq!(summary["sessions"], 0);
+    assert_eq!(summary["wall_span_us"], 0);
+    assert!(summary["first_start_us"].is_null());
+    assert!(summary["lanes"].as_array().unwrap().is_empty());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn telemetry_404s_for_an_unknown_run() {
+    let (app, root) = seeded_app(default_seed);
+    let (status, _) =
+        http_get(app, "/api/bench/tuner/projection/runs/nope/telemetry").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     std::fs::remove_dir_all(root).unwrap();
 }
 

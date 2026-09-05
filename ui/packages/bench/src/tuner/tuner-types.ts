@@ -378,6 +378,37 @@ export interface ProjectionRunDetail {
   compute: ProjectionComputePhase[];
 }
 
+/** One per-span-name lane of `GET .../projection/runs/{id}/telemetry` — the
+ * rollup of the run's wall-clock `telemetry.jsonl` sidecar. Times are
+ * microseconds; `first_start_us` / `last_end_us` are Unix-epoch. */
+export interface ProjectionTelemetryLane {
+  name: string;
+  span_count: number;
+  total_us: number;
+  max_us: number;
+  first_start_us: number;
+  last_end_us: number;
+}
+
+/** `GET /api/bench/tuner/projection/runs/{id}/telemetry`. Non-scientific:
+ * the sidecar carries the wall-clock timings `evidence.jsonl` omits and no
+ * replay reads it. Empty lanes / zeroed sums for a run with no sidecar. */
+export interface ProjectionTelemetry {
+  run_id: string;
+  /** Run-loop processes that touched the run; a `--resume` adds one. */
+  sessions: number;
+  first_start_us: number | null;
+  last_end_us: number | null;
+  /** `last_end_us - first_start_us`; spans a resumed run's sleep gap. */
+  wall_span_us: number;
+  /** Total run-loop thread time across every lane, excluding the game
+   * subprocesses it waits on. */
+  loop_active_us: number;
+  /** Wall time blocked on game subprocesses (the `wait` lane total). */
+  wait_us: number;
+  lanes: ProjectionTelemetryLane[];
+}
+
 export interface ProjectionCohort {
   cohort_index: number;
   candidate_ids: string[];

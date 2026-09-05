@@ -21,6 +21,7 @@ import type {
   ProjectionMeta,
   ProjectionRefreshResult,
   ProjectionRunDetail,
+  ProjectionTelemetry,
   ProjectionRunListItem,
   ProjectionValidation,
   ObjectiveValidationResult,
@@ -85,6 +86,7 @@ export interface TunerEnv {
   getProjectionPairGames(runId: string, pairId: string): Effect<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Effect<ProjectionValidation>;
   getProjectionReport(runId: string): Effect<JsonValue>;
+  getProjectionTelemetry(runId: string): Effect<ProjectionTelemetry>;
   getProjectionProposals(
     runId: string,
     query?: ProjectionRunPageQuery,
@@ -165,6 +167,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
       lift(() => api.getProjectionPairGames(runId, pairId)),
     getProjectionValidation: (runId) => lift(() => api.getProjectionValidation(runId)),
     getProjectionReport: (runId) => lift(() => api.getProjectionReport(runId)),
+    getProjectionTelemetry: (runId) => lift(() => api.getProjectionTelemetry(runId)),
     getProjectionProposals: (runId, query) =>
       lift(() => api.getProjectionProposals(runId, query)),
     getProjectionObservations: (runId, query) =>

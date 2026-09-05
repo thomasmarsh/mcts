@@ -1,0 +1,15 @@
+{"args":{"resumed":0},"dur_us":0,"name":"session","pid":4001,"start_us":1757000000000000}
+{"args":{},"dur_us":320000,"name":"cold_fold","pid":4001,"start_us":1757000001000000}
+{"args":{"phase":"tuning"},"dur_us":900000,"name":"propose","pid":4001,"start_us":1757000001400000}
+{"args":{"pairs":6,"phase":"tuning"},"dur_us":50000,"name":"dispatch","pid":4001,"start_us":1757000002400000}
+{"args":{"pairs":6,"phase":"tuning"},"dur_us":24000000,"name":"wait","pid":4001,"start_us":1757000002500000}
+{"args":{"phase":"tuning"},"dur_us":180000,"name":"fold","pid":4001,"start_us":1757000026600000}
+{"args":{"phase":"tuning"},"dur_us":850000,"name":"propose","pid":4001,"start_us":1757000026900000}
+{"args":{"pairs":6,"phase":"tuning"},"dur_us":40000,"name":"dispatch","pid":4001,"start_us":1757000027800000}
+{"args":{"pairs":6,"phase":"tuning"},"dur_us":26000000,"name":"wait","pid":4001,"start_us":1757000027900000}
+{"args":{"resumed":1},"dur_us":0,"name":"session","pid":4002,"start_us":1760600000000000}
+{"args":{},"dur_us":410000,"name":"cold_fold","pid":4002,"start_us":1760600001000000}
+{"args":{"phase":"validation"},"dur_us":150000,"name":"fold","pid":4002,"start_us":1760600002000000}
+{"args":{"phase":"validation"},"dur_us":300000,"name":"propose","pid":4002,"start_us":1760600002300000}
+{"args":{"pairs":4,"phase":"validation"},"dur_us":45000,"name":"dispatch","pid":4002,"start_us":1760600002700000}
+{"args":{"pairs":4,"phase":"validation"},"dur_us":18000000,"name":"wait","pid":4002,"start_us":1760600002800000}
