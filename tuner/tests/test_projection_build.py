@@ -291,6 +291,40 @@ def test_deleted_run_is_not_resurrected_as_a_startup_failure(tmp_path: Path) -> 
         store.close()
 
 
+def test_pass_with_no_prunes_does_not_vacuum(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    store = open_store(db_path)
+    try:
+        first = project_pass(root, store, rebuild=False)
+        assert first.pruned == 0 and first.vacuumed is False
+
+        calls = []
+        store.vacuum = lambda: calls.append(True)  # type: ignore[method-assign]
+        second = project_pass(root, store, rebuild=False)
+        assert second.pruned == 0 and second.vacuumed is False
+        assert calls == []
+    finally:
+        store.close()
+
+
+def test_pass_with_a_prune_still_vacuums(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    store = open_store(db_path)
+    try:
+        project_pass(root, store, rebuild=False)
+        shutil.rmtree(root / "version4-active-halving")
+
+        calls = []
+        store.vacuum = lambda: calls.append(True)  # type: ignore[method-assign]
+        summary = project_pass(root, store, rebuild=False)
+        assert summary.pruned == 1 and summary.vacuumed is True
+        assert calls == [True]
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("rebuild", [True, False])
 def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
     db_path = tmp_path / "p.sqlite"

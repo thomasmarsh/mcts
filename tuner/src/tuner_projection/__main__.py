@@ -33,7 +33,8 @@ def _run_watch(runs_root: Path, db_path: Path, *, interval: float) -> int:
             summary = project_pass(runs_root, store, rebuild=False)
             print(
                 f"projected={summary.projected} skipped={summary.skipped} "
-                f"ingest_errors={summary.ingest_errors} pruned={summary.pruned}",
+                f"ingest_errors={summary.ingest_errors} pruned={summary.pruned} "
+                f"vacuumed={summary.vacuumed}",
                 flush=True,
             )
             deadline = time.monotonic() + interval

@@ -25,6 +25,7 @@ class ProjectionSummary:
     skipped: int
     ingest_errors: int
     pruned: int
+    vacuumed: bool = False
 
 
 def _fingerprint(run_dir: Path) -> ChangeFingerprint:
@@ -162,7 +163,9 @@ def _prune(store: Store, discovered: set[str]) -> int:
     return len(stale)
 
 
-def project_pass(runs_root: Path, store: Store, *, rebuild: bool) -> ProjectionSummary:
+def project_pass(
+    runs_root: Path, store: Store, *, rebuild: bool, force_vacuum: bool = False
+) -> ProjectionSummary:
     """One projection pass against an already-open store.
 
     Split out of :func:`project_runs` so watch mode can hold a single store
@@ -198,8 +201,10 @@ def project_pass(runs_root: Path, store: Store, *, rebuild: bool) -> ProjectionS
         errors += 1
     pruned = _prune(store, discovered)
     store.record_pass(datetime.now(timezone.utc).isoformat())
-    store.vacuum()
-    return ProjectionSummary(projected, skipped, errors, pruned)
+    vacuumed = force_vacuum or pruned > 0
+    if vacuumed:
+        store.vacuum()
+    return ProjectionSummary(projected, skipped, errors, pruned, vacuumed)
 
 
 def project_runs(runs_root: Path, db_path: Path, *, rebuild: bool) -> ProjectionSummary:
@@ -207,6 +212,6 @@ def project_runs(runs_root: Path, db_path: Path, *, rebuild: bool) -> Projection
         db_path.unlink()
     store = open_store(db_path)
     try:
-        return project_pass(runs_root, store, rebuild=rebuild)
+        return project_pass(runs_root, store, rebuild=rebuild, force_vacuum=True)
     finally:
         store.close()
