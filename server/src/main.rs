@@ -412,6 +412,29 @@ async fn main() {
         });
     }
 
+    // Periodically mark tuner-run launches whose pid died with no reaper
+    // thread left to observe it (this server restarted, or the machine
+    // rebooted, out from under a live run) as `TerminalOutcome::Lost`. Left
+    // unreaped, every fleet-status poll re-runs `kill -0` against a pid gone
+    // forever, spamming this process's stderr and reporting the run
+    // `live`/`unknown` in perpetuity instead of the terminal run it is.
+    {
+        let bench_runs = bench_state.bench_runs_dir.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                match mcts_bench::tuner_launch::reap_lost(&bench_runs) {
+                    Ok(reaped) if !reaped.is_empty() => {
+                        eprintln!("reaped lost tuner run(s): {}", reaped.join(", "));
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("tuner run reaper error: {e}"),
+                }
+            }
+        });
+    }
+
     // `ui/`'s Vite build (`pnpm build`, or `pnpm dev`'s proxy in
     // development -- see ui/README.md) is the only frontend now; the old
     // hand-rolled `server/static/app.js` was retired once it stopped

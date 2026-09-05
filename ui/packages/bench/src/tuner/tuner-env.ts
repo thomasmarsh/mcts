@@ -55,6 +55,7 @@ export interface TunerEnv {
   planRun(body: TunerLaunchRequest): Effect<RunPlan>;
   stopRun(runId: string): Effect<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Effect<TunerRunView>;
+  resumeRun(runId: string): Effect<TunerRunView>;
   deleteRun(runId: string): Effect<void>;
   getRunLog(runId: string, since: number): Effect<TunerRunLog>;
   getRunEvidence(runId: string, sinceSeq: number): Effect<EvidenceTailResponse>;
@@ -103,6 +104,7 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
     planRun: (body) => lift(() => api.planRun(body)),
     stopRun: (runId) => lift(() => api.stopRun(runId)),
     extendRun: (runId, body) => lift(() => api.extendRun(runId, body)),
+    resumeRun: (runId) => lift(() => api.resumeRun(runId)),
     deleteRun: (runId) => lift(() => api.deleteRun(runId)),
     getRunLog: (runId, since) => lift(() => api.getRunLog(runId, since)),
     getRunEvidence: (runId, sinceSeq) => lift(() => api.getRunEvidence(runId, sinceSeq)),

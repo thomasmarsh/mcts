@@ -72,6 +72,8 @@ export interface TunerApiClient {
   planRun(body: TunerLaunchRequest): Promise<RunPlan>;
   stopRun(runId: string): Promise<TunerRunView>;
   extendRun(runId: string, body: TunerBudgetExtension): Promise<TunerRunView>;
+  /** Relaunch a terminal run with `--resume` and no budget change. */
+  resumeRun(runId: string): Promise<TunerRunView>;
   /** Permanently remove a terminal run. `409` if the run is still live. */
   deleteRun(runId: string): Promise<void>;
   getRunLog(runId: string, since?: number): Promise<TunerRunLog>;
@@ -199,6 +201,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     planRun: (body) => sendJson(url("/api/bench/tuner/runs/plan"), "POST", body),
     stopRun: (runId) => sendJson(url(`${runPath(runId)}/stop`), "POST"),
     extendRun: (runId, body) => sendJson(url(`${runPath(runId)}/extend`), "POST", body),
+    resumeRun: (runId) => sendJson(url(`${runPath(runId)}/resume`), "POST"),
     deleteRun: (runId) => sendNoContent(url(runPath(runId)), "DELETE"),
     getRunLog: (runId, since) =>
       fetchJson(url(`${runPath(runId)}/log${queryString({ since })}`)),

@@ -28,6 +28,7 @@ function badge(props: RunStatusBadgeProps): Badge {
   if (props.terminalOutcome === "exited") return { label: "exited", cls: "badge-completed" };
   if (props.terminalOutcome === "signalled") return { label: "stopped", cls: "badge-stopped" };
   if (props.terminalOutcome === "spawn_failed") return { label: "spawn failed", cls: "badge-crashed" };
+  if (props.terminalOutcome === "lost") return { label: "lost (resumable)", cls: "badge-stopped" };
   if (props.status === "exited") return { label: "exited", cls: "badge-completed" };
   return { label: "unknown", cls: "badge-unknown" };
 }

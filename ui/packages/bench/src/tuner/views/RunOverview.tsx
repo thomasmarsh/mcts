@@ -41,14 +41,18 @@ export const RunOverview: Component<{
   const status = createMemo(() => journalRow()?.status ?? (projectionRow() ? "exited" : null));
   const live = createMemo(() => status() === "live");
 
-  // A run is extendable once its process has exited cleanly — a
-  // tuning-budget-exhaustion freeze or a normal completion. A run that never
-  // wrote a manifest (`status: "failed"`) or was killed / crashed
-  // (`signalled` / `spawn_failed`) is not: a resume has nothing to build on.
-  const extendable = createMemo(() => {
+  // A run is relaunchable (plain resume, or a budget-raising extend) once
+  // its process has exited cleanly — a tuning-budget-exhaustion freeze, a
+  // normal completion, or the server's own reaper concluding its pid died
+  // with no exit ever observed (`lost`: this server, or the whole machine,
+  // restarted mid-run — see `mcts_bench::tuner_launch::reap_lost`). A run
+  // that never wrote a manifest (`status: "failed"`) or was deliberately
+  // killed (`signalled` / `spawn_failed`) is not: there is nothing coherent
+  // to continue.
+  const relaunchable = createMemo(() => {
     if (status() !== "exited") return false;
     const outcome = journalRow()?.terminal_outcome;
-    return outcome == null || outcome === "exited";
+    return outcome == null || outcome === "exited" || outcome === "lost";
   });
 
   const [extendTuning, setExtendTuning] = createSignal("");
@@ -175,6 +179,15 @@ export const RunOverview: Component<{
         <Show when={live()}>
           <button onClick={() => dispatch({ tag: "stopRun", runId: props.runId })}>Stop</button>
         </Show>
+        <Show when={!live() && relaunchable()}>
+          <button
+            data-testid="resume-run"
+            disabled={state().resumeBusy}
+            onClick={() => dispatch({ tag: "resumeRun", runId: props.runId })}
+          >
+            {state().resumeBusy ? "Resuming…" : "Resume"}
+          </button>
+        </Show>
         <button
           onClick={() => dispatch({ tag: "refreshProjection" })}
           disabled={state().refreshing}
@@ -196,8 +209,13 @@ export const RunOverview: Component<{
           {state().refreshError}
         </div>
       </Show>
+      <Show when={state().resumeError}>
+        <div class="launch-error" role="alert" data-testid="resume-error">
+          {state().resumeError}
+        </div>
+      </Show>
 
-      <Show when={!live() && extendable()}>
+      <Show when={!live() && relaunchable()}>
         <section class="tuner-extend-budget" data-testid="extend-budget-form">
           <h3>Extend budget</h3>
           <p class="tuner-extend-hint">

@@ -9,8 +9,11 @@ import type { JsonValue } from "../types.js";
 
 // --- Operational journal -------------------------------------------------
 
-/** `record.terminal_outcome` — how the detached process ended. */
-export type TerminalOutcome = "exited" | "signalled" | "spawn_failed";
+/** `record.terminal_outcome` — how the detached process ended. `lost` means
+ * the pid died with no reaper thread left alive to observe it (the server
+ * that launched it restarted, or the machine rebooted) — the server's
+ * periodic reaper assigns it after the fact once it notices the pid is gone. */
+export type TerminalOutcome = "exited" | "signalled" | "spawn_failed" | "lost";
 
 /** Derived liveness the server reports on each journal row. `failed` = the
  * process ended before it ever wrote a `manifest.json`, so the projection

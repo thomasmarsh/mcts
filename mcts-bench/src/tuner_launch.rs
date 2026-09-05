@@ -436,6 +436,27 @@ pub fn extend(
             "a budget extension must raise at least one budget",
         ));
     }
+    resume_impl(root, run_id, Some(extension))
+}
+
+/// Relaunch a terminal run with `--resume` and no budget change -- continues
+/// it against whatever of its existing pair-attempt budgets is unspent
+/// (e.g. a run interrupted mid-cohort by a crash or a machine restart,
+/// [`reap_lost`] having since marked it terminal). A run that had already
+/// exhausted its budget and completed has nothing left to do and simply
+/// re-freezes at the same point; raise a budget first via [`extend`] instead.
+pub fn resume(root: &Path, run_id: &str) -> io::Result<TunerLaunchRecord> {
+    resume_impl(root, run_id, None)
+}
+
+/// Shared relaunch path for [`extend`] and [`resume`]: reuses the run's most
+/// recent launch argv (its frozen scientific inputs) and adds `--resume` plus,
+/// when raising a budget, the extension flags.
+fn resume_impl(
+    root: &Path,
+    run_id: &str,
+    extension: Option<&BudgetExtension>,
+) -> io::Result<TunerLaunchRecord> {
     let record = records(root)?
         .into_iter()
         .find(|record| record.run_id == run_id)
@@ -448,24 +469,26 @@ pub fn extend(
     }
     let mut argv = resumable_argv(&record.argv);
     argv.push("--resume".into());
-    for (flag, delta) in [
-        ("--extend-tuning-pairs", extension.tuning_pair_attempts_delta),
-        (
-            "--extend-validation-pairs",
-            extension.validation_pair_attempts_delta,
-        ),
-        (
-            "--extend-diagnostic-pairs",
-            extension.diagnostic_pair_attempts_delta,
-        ),
-    ] {
-        argv.push(flag.into());
-        argv.push(delta.to_string());
+    if let Some(extension) = extension {
+        for (flag, delta) in [
+            ("--extend-tuning-pairs", extension.tuning_pair_attempts_delta),
+            (
+                "--extend-validation-pairs",
+                extension.validation_pair_attempts_delta,
+            ),
+            (
+                "--extend-diagnostic-pairs",
+                extension.diagnostic_pair_attempts_delta,
+            ),
+        ] {
+            argv.push(flag.into());
+            argv.push(delta.to_string());
+        }
+        argv.push("--extend-reason".into());
+        argv.push(extension.reason.clone());
+        argv.push("--extend-requested-at".into());
+        argv.push(crate::launch::iso_timestamp());
     }
-    argv.push("--extend-reason".into());
-    argv.push(extension.reason.clone());
-    argv.push("--extend-requested-at".into());
-    argv.push(crate::launch::iso_timestamp());
     let run_dir = record.run_dir.clone();
     spawn_and_journal(root, run_id, run_dir, argv, false)
 }
@@ -522,6 +545,12 @@ pub enum TerminalOutcome {
     Exited,
     Signalled,
     SpawnFailed,
+    /// The recorded pid is no longer alive, but no `spawn_and_journal` reaper
+    /// thread ever observed its exit -- the launching server (or the whole
+    /// machine) went down first, taking that thread with it. [`reap_lost`]
+    /// assigns this after the fact so the run stops looking `live` forever;
+    /// it carries no exit status because none was ever collected.
+    Lost,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -800,6 +829,32 @@ fn delete_orphan(root: &Path, run_id: &str) -> io::Result<()> {
 
 pub fn is_alive(pid: u32) -> bool {
     crate::launch::is_alive(pid)
+}
+
+/// Mark every non-terminal launch whose pid is no longer alive as
+/// [`TerminalOutcome::Lost`]. A `spawn_and_journal` reaper thread only lives
+/// as long as the server process that launched it, so a launch that outlives
+/// its own server (a `cargo run` restart, a machine reboot) is left with no
+/// terminal record and no thread left to ever write one. Without this, every
+/// future [`records`] read re-runs a `kill -0` against a pid that is gone
+/// forever, spamming stderr and reporting the run `unknown`/`live` in
+/// perpetuity instead of the actually-terminal run it is. Intended to run on
+/// a timer from the server's own startup, not on a hot request path -- it
+/// walks the whole journal. Returns the run ids it reaped.
+pub fn reap_lost(root: &Path) -> io::Result<Vec<String>> {
+    let mut reaped = Vec::new();
+    for record in records(root)? {
+        if record.terminal_outcome.is_some() {
+            continue;
+        }
+        let Some(pid) = record.pid else { continue };
+        if is_alive(pid) {
+            continue;
+        }
+        append_terminal(root, &record.run_id, TerminalOutcome::Lost)?;
+        reaped.push(record.run_id);
+    }
+    Ok(reaped)
 }
 
 /// Deliver `SIGINT` to the launched run's whole process group (the child is
@@ -1259,6 +1314,94 @@ mod tests {
             resumable_argv(&argv),
             ["uv", "-m", "tuner_cli", "--tuning-pair-budget", "10"]
         );
+    }
+
+    #[test]
+    fn reap_lost_marks_a_dead_pid_terminal_and_leaves_a_live_one_alone() {
+        let root = scratch("reap-lost");
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "dead".into(),
+                argv: vec!["uv".into()],
+                run_dir: root.join("dead"),
+                pid: Some(999_999_999),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: None,
+            },
+        )
+        .unwrap();
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "already-terminal".into(),
+                argv: vec!["uv".into()],
+                run_dir: root.join("already-terminal"),
+                pid: Some(999_999_998),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: None,
+            },
+        )
+        .unwrap();
+        append_terminal(&root, "already-terminal", TerminalOutcome::Exited).unwrap();
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "live".into(),
+                argv: vec!["uv".into()],
+                run_dir: root.join("live"),
+                pid: Some(std::process::id()),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: None,
+            },
+        )
+        .unwrap();
+
+        let reaped = reap_lost(&root).unwrap();
+        assert_eq!(reaped, vec!["dead".to_string()]);
+
+        let by_id: HashMap<String, TunerLaunchRecord> = records(&root)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.run_id.clone(), r))
+            .collect();
+        assert_eq!(
+            by_id["dead"].terminal_outcome,
+            Some(TerminalOutcome::Lost)
+        );
+        assert_eq!(
+            by_id["already-terminal"].terminal_outcome,
+            Some(TerminalOutcome::Exited)
+        );
+        assert_eq!(by_id["live"].terminal_outcome, None);
+
+        // Idempotent: a second pass finds nothing left to reap.
+        assert_eq!(reap_lost(&root).unwrap(), Vec::<String>::new());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resume_relaunches_with_no_extension_flags() {
+        let root = scratch("resume");
+        let run_dir = root.join("finished");
+        fs::create_dir_all(&run_dir).unwrap();
+        append_launch(
+            &root,
+            &TunerLaunchRecord {
+                run_id: "finished".into(),
+                argv: vec!["true".into()],
+                run_dir: run_dir.clone(),
+                pid: Some(1),
+                started_at: "2026-01-01T00:00:00Z".into(),
+                terminal_outcome: Some(TerminalOutcome::Lost),
+            },
+        )
+        .unwrap();
+
+        let record = resume(&root, "finished").unwrap();
+        assert!(record.argv.iter().any(|a| a == "--resume"));
+        assert!(!record.argv.iter().any(|a| a.starts_with("--extend-")));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

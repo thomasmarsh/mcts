@@ -187,6 +187,11 @@ export interface TunerState {
    * a `busy` edge, which the async valtio→Solid snapshot can coalesce away)
    * to know when to reset its fields. */
   extendSeq: number;
+  /** Inline error from the last `POST .../resume` — a plain resume (no budget
+   * change) of a run that was merely interrupted rather than exhausted. */
+  resumeError: string | null;
+  /** true while a resume POST is in flight, so the button is held. */
+  resumeBusy: boolean;
   /** true while a manual `projection/refresh` POST is in flight. */
   refreshing: boolean;
   refreshError: string | null;
@@ -260,6 +265,8 @@ export function initialTunerState(): TunerState {
     extendError: null,
     extendBusy: false,
     extendSeq: 0,
+    resumeError: null,
+    resumeBusy: false,
     refreshing: false,
     refreshError: null,
     lastProjectionRefreshAt: null,
@@ -376,6 +383,9 @@ export type TunerAction =
   | { tag: "extendRun"; runId: string; extension: TunerBudgetExtension }
   | { tag: "extendOk" }
   | { tag: "extendFailed"; error: string }
+  | { tag: "resumeRun"; runId: string }
+  | { tag: "resumeOk" }
+  | { tag: "resumeFailed"; error: string }
   | { tag: "deleteRun"; runId: string }
   | { tag: "deleteRunOk"; runId: string }
   | { tag: "deleteRunFailed"; error: string };
@@ -1358,6 +1368,32 @@ export function tunerReducer(
     case "extendFailed":
       draft.extendError = action.error;
       draft.extendBusy = false;
+      return null;
+
+    case "resumeRun": {
+      if (draft.resumeBusy) return null;
+      draft.resumeBusy = true;
+      draft.resumeError = null;
+      return env
+        .resumeRun(action.runId)
+        .map((): TunerAction => ({ tag: "resumeOk" }))
+        .catch((e): TunerAction => ({ tag: "resumeFailed", error: String(e) }));
+    }
+    case "resumeOk": {
+      draft.resumeBusy = false;
+      draft.resumeError = null;
+      // The run re-opens as `live`: restart the journal poll loop (it stopped
+      // when the run went terminal) so the card flips back and the projection
+      // follower's fresh rows are picked up on the next pass.
+      draft.journalGeneration += 1;
+      return Effect.send<TunerAction>({
+        tag: "journalTick",
+        generation: draft.journalGeneration,
+      });
+    }
+    case "resumeFailed":
+      draft.resumeError = action.error;
+      draft.resumeBusy = false;
       return null;
 
     case "deleteRun": {

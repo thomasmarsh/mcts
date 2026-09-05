@@ -39,7 +39,7 @@ use super::{
     tuner_runs::{
         delete_tuner_objective, delete_tuner_run, extend_tuner_run, get_tuner_objective,
         get_tuner_run, get_tuner_run_log, launch_tuner_run, list_tuner_objectives, list_tuner_runs,
-        plan_tuner_run, preflight_tuner_run, put_tuner_objective, stop_tuner_run,
+        plan_tuner_run, preflight_tuner_run, put_tuner_objective, resume_tuner_run, stop_tuner_run,
         validate_tuner_objective,
     },
     types::*,
@@ -128,6 +128,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
         .route(
             "/api/bench/tuner/runs/{run_id}/extend",
             post(extend_tuner_run).layer(launch_timeout),
+        )
+        .route(
+            "/api/bench/tuner/runs/{run_id}/resume",
+            post(resume_tuner_run).layer(launch_timeout),
         )
         // Read-only projection API. The operational journal routes above
         // answer "is it running / stop it"; these answer "what did it find",

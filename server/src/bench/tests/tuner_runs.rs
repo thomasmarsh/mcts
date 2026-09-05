@@ -278,6 +278,47 @@ async fn extend_validates_the_request_and_relaunches() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn resume_relaunches_with_no_extension_flags() {
+    let (app, root) = seeded_app(default_seed);
+    let runs_root = root.join("bench-runs");
+    let run_dir = runs_root.join("tuner_resume");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    tuner_launch::append_launch(
+        &runs_root,
+        &TunerLaunchRecord {
+            run_id: "tuner_resume".into(),
+            argv: vec!["true".into()],
+            run_dir: run_dir.clone(),
+            pid: Some(1),
+            started_at: "2026-01-01T00:00:00Z".into(),
+            terminal_outcome: Some(TerminalOutcome::Lost),
+        },
+    )
+    .unwrap();
+
+    let (status, _) =
+        http_post_json(app.clone(), "/api/bench/tuner/runs/missing/resume", json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/runs/tuner_resume/resume",
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let argv = body_json(&body)["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert!(argv.contains(&"--resume".to_string()));
+    assert!(!argv.iter().any(|a| a.starts_with("--extend-")));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn seed_copy_never_overwrites_a_user_edit() {
     let dir = std::env::temp_dir().join(format!("mcts_seed_test_{}", std::process::id()));

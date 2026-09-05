@@ -612,6 +612,29 @@ pub(crate) async fn extend_tuner_run(
     Ok((StatusCode::ACCEPTED, Json(view(record))))
 }
 
+/// `POST /api/bench/tuner/runs/{run_id}/resume`
+///
+/// Relaunch a terminal run with `--resume` and no budget change, continuing
+/// it against whatever pair-attempt budget it had left -- the counterpart to
+/// `extend` for a run that was merely interrupted (crashed, or its server
+/// restarted out from under it -- see [`tuner_launch::reap_lost`]) rather
+/// than one that ran out of budget and needs more.
+pub(crate) async fn resume_tuner_run(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<(StatusCode, Json<TunerRunView>), BenchError> {
+    let record =
+        tuner_launch::resume(&state.bench_runs_dir, &run_id).map_err(|error| BenchError {
+            status: match error.kind() {
+                std::io::ErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
+                std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            message: format!("failed to resume tuner run: {error}"),
+        })?;
+    Ok((StatusCode::ACCEPTED, Json(view(record))))
+}
+
 pub(crate) async fn stop_tuner_run(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
