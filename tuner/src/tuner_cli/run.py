@@ -21,7 +21,7 @@ from .domain import Candidate, SearchEffort
 from .effort import exceeds_same_kind
 from .event_payloads import BudgetExtendedPayload
 from .evidence import EvidenceWriter, read_events, write_manifest
-from .executor import BoundedPairExecutor, PairExecutor, SequentialPairExecutor
+from .executor import BoundedPairPool, PairPool, SequentialPairPool
 from .identity import candidate_from_config, sha256_file
 from .objective import ResolvedObjective, resolve_objective
 from .proposer import ModelProposer, ProposerPolicy
@@ -81,7 +81,7 @@ def run_foreground(
     if run_dir is not None:
         options = replace(options, run_dir=run_dir)
     binary, directory, objective_path = validate_options(options)
-    executor = pair_executor(options.evaluator_workers)
+    executor = pair_pool(options.evaluator_workers)
     active_target = GameBinaryTarget(binary) if target is None else target
     spec = game_spec(active_target, binary)
     options = replace(options, constraints=resolved_constraints(spec, options))
@@ -291,8 +291,8 @@ def validate_evaluator_workers(workers: int, cpu_count: int | None) -> int:
     return available
 
 
-def pair_executor(workers: int) -> PairExecutor:
-    return SequentialPairExecutor() if workers == 1 else BoundedPairExecutor(workers)
+def pair_pool(workers: int) -> PairPool:
+    return SequentialPairPool() if workers == 1 else BoundedPairPool(workers)
 
 
 def game_spec(target: Target, binary: Path) -> GameSpec:

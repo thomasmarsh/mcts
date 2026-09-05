@@ -6,6 +6,7 @@ from contextlib import AbstractContextManager, nullcontext
 
 from .allocator import (
     allocation_policy_version,
+    candidate_failure_due,
     decide_allocation,
     pair_candidates,
     proposal_at,
@@ -79,12 +80,13 @@ from .evidence import (
     tail_events,
 )
 from .executor import (
-    PairExecutor,
     PairFailed,
     PairInterrupted,
     PairJob,
+    PairOutcome,
+    PairPool,
     PairSucceeded,
-    SequentialPairExecutor,
+    SequentialPairPool,
 )
 from .identity import canonical_json
 from .observations import comparable_prefix_observations, contextual_observation
@@ -111,24 +113,37 @@ def continue_run(
     spec: GameSpec,
     model: ModelProposer,
     timeout: int,
-    executor: PairExecutor | None = None,
+    executor: PairPool | None = None,
     telemetry: TelemetryWriter | None = None,
 ) -> None:
-    pairs = executor or SequentialPairExecutor()
+    pairs = executor or SequentialPairPool()
     # Fold the log from scratch once (cold start or `--resume`), then keep the
     # accumulator in process and fold only each turn's freshly appended events.
-    with _span(telemetry, "cold_fold"):
-        fold = RunningFold.cold(manifest, read_events(writer.path))
-    while True:
-        state = fold.state()
-        if state.terminal_status != "open":
-            return
-        advance_one(
-            manifest, writer, target, default, spec, model, timeout, state, pairs, telemetry
-        )
-        with _span(telemetry, "fold"):
-            tail, total = tail_events(writer.path, since_seq=fold.sequence)
-            fold.advance(tail, total)
+    try:
+        with _span(telemetry, "cold_fold"):
+            fold = RunningFold.cold(manifest, read_events(writer.path))
+        while True:
+            state = fold.state()
+            if state.terminal_status != "open":
+                return
+            advance_one(
+                manifest,
+                writer,
+                target,
+                default,
+                spec,
+                model,
+                timeout,
+                state,
+                fold,
+                pairs,
+                telemetry,
+            )
+            with _span(telemetry, "fold"):
+                tail, total = tail_events(writer.path, since_seq=fold.sequence)
+                fold.advance(tail, total)
+    finally:
+        pairs.close()
 
 
 def advance_one(
@@ -140,7 +155,8 @@ def advance_one(
     model: ModelProposer,
     timeout: int,
     state: ReplayState,
-    executor: PairExecutor,
+    fold: RunningFold,
+    executor: PairPool,
     telemetry: TelemetryWriter | None = None,
 ) -> None:
     match state.pending_resource_allocation:
@@ -162,7 +178,17 @@ def advance_one(
             raise RuntimeError("suspension allocation must be folded immediately")
         case None:
             _advance_selected(
-                manifest, writer, target, default, spec, model, timeout, state, executor, telemetry
+                manifest,
+                writer,
+                target,
+                default,
+                spec,
+                model,
+                timeout,
+                state,
+                fold,
+                executor,
+                telemetry,
             )
 
 
@@ -175,7 +201,8 @@ def _advance_selected(
     model: ModelProposer,
     timeout: int,
     state: ReplayState,
-    executor: PairExecutor,
+    fold: RunningFold,
+    executor: PairPool,
     telemetry: TelemetryWriter | None = None,
 ) -> None:
     decision = decide_allocation(manifest, state)
@@ -187,7 +214,7 @@ def _advance_selected(
             proposal = proposal_at(state, proposal_index)
             writer.append(proposal_disposition(target, manifest, state, proposal))
         case ExecutePair():
-            execute_pairs(manifest, writer, target, state, timeout, executor, telemetry)
+            execute_pairs(manifest, writer, target, fold, timeout, executor, telemetry)
         case FailCandidate(failure):
             task = next(
                 item
@@ -239,37 +266,99 @@ def execute_pairs(
     manifest: Manifest,
     writer: EvidenceWriter,
     target: Target,
-    state: ReplayState,
+    fold: RunningFold,
     timeout: int,
-    executor: PairExecutor,
+    executor: PairPool,
     telemetry: TelemetryWriter | None = None,
 ) -> None:
-    tasks = ready_pairs(manifest, state, executor.capacity)
-    phase = tasks[0].task_case.phase if tasks else "none"
-    with _span(telemetry, "dispatch", phase=phase, pairs=len(tasks)):
-        jobs = tuple(_pair_job(manifest, state, task, timeout) for task in tasks)
-        for job in jobs:
-            writer.append(_pair_started_payload(job.task))
-    with _span(telemetry, "wait", phase=phase, pairs=len(jobs)):
-        outcomes = executor.evaluate(target, jobs)
-    for outcome in outcomes:
-        match outcome:
-            case PairSucceeded(_, result):
-                if not isinstance(result, PairResult):
-                    raise RuntimeError("objective executor returned a non-objective pair")
-                writer.append(pair_payload(result))
-            case PairFailed(job, error):
-                writer.append(failure_payload(job.task, error))
-                if job.task.task_case.phase == "validation":
-                    raise error
-            case PairInterrupted():
-                executor.cancel(target)
-                writer.append(
-                    RunInterruptedPayload(
-                        "pair_execution", jobs[0].task.pair_id if len(jobs) == 1 else None
-                    )
-                )
-                raise KeyboardInterrupt
+    """Keep the pool full of ready pairs and fold each completion as it lands.
+
+    Pairs are started as workers free up, not in fixed batches, so one slow
+    game never idles the other workers. Completions arrive out of order; they
+    are buffered and folded strictly in dispatch order so ``pair_completed``
+    evidence stays in the same canonical sequence a one-at-a-time run produces.
+
+    The first failed pair ends dispatch for this call: the remaining in-flight
+    pairs are drained and folded, then the run loop re-offers the ready pairs,
+    retrying or failing the candidate exactly as it did on a bounded batch.
+    """
+    entry = ready_pairs(manifest, fold.state())
+    if not entry:
+        return
+    phase = entry[0].task_case.phase
+    order: list[str] = []
+    live: set[str] = set()
+    buffer: dict[str, PairOutcome] = {}
+    failed = False
+    cursor = 0
+
+    def catch_up() -> None:
+        tail, total = tail_events(writer.path, since_seq=fold.sequence)
+        fold.advance(tail, total)
+
+    def top_up() -> None:
+        state = fold.state()
+        if failed or candidate_failure_due(manifest, state) is not None:
+            return
+        for task in ready_pairs(manifest, state):
+            if executor.running() >= executor.capacity:
+                break
+            if task.pair_id in live or task.pair_id in buffer:
+                continue
+            writer.append(_pair_started_payload(task))
+            catch_up()
+            executor.start(target, _pair_job(manifest, state, task, timeout))
+            live.add(task.pair_id)
+            order.append(task.pair_id)
+
+    def flush() -> None:
+        nonlocal cursor
+        while cursor < len(order) and order[cursor] in buffer:
+            _record_pair(
+                writer, target, executor, buffer.pop(order[cursor]), single=executor.capacity == 1
+            )
+            catch_up()
+            cursor += 1
+
+    with _span(telemetry, "dispatch", phase=phase):
+        top_up()
+    while executor.running() or cursor < len(order):
+        if executor.running() == 0:
+            flush()
+            return
+        with _span(telemetry, "wait", phase=phase, pairs=executor.running()):
+            outcome = executor.next_outcome(target)
+        live.discard(outcome.job.task.pair_id)
+        buffer[outcome.job.task.pair_id] = outcome
+        failed = failed or isinstance(outcome, PairFailed)
+        flush()
+        with _span(telemetry, "dispatch", phase=phase):
+            top_up()
+
+
+def _record_pair(
+    writer: EvidenceWriter,
+    target: Target,
+    executor: PairPool,
+    outcome: PairOutcome,
+    *,
+    single: bool,
+) -> None:
+    match outcome:
+        case PairSucceeded(_, result):
+            if not isinstance(result, PairResult):
+                raise RuntimeError("objective executor returned a non-objective pair")
+            writer.append(pair_payload(result))
+        case PairFailed(job, error):
+            writer.append(failure_payload(job.task, error))
+            if job.task.task_case.phase == "validation":
+                raise error
+        case PairInterrupted(job):
+            executor.cancel(target)
+            writer.append(
+                RunInterruptedPayload("pair_execution", job.task.pair_id if single else None)
+            )
+            raise KeyboardInterrupt
 
 
 def _execute_diagnostic(
