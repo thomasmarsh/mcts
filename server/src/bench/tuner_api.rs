@@ -1097,6 +1097,66 @@ pub(crate) async fn telemetry(
     }))
 }
 
+#[derive(Serialize)]
+pub(crate) struct ContenderRow {
+    candidate_id: String,
+    opponent_id: String,
+    phase: String,
+    wins: i64,
+    losses: i64,
+    draws: i64,
+    /// Sum of `pair_utility` over this group's pairs; the UI divides by the
+    /// group's pair count for a mean and sorts contenders by it.
+    sum_utility: f64,
+}
+
+/// `GET /api/bench/tuner/projection/runs/{run_id}/contenders`
+///
+/// Per-(candidate, opponent, phase) W/L/D rollup of the run's `pairs` table:
+/// the sign of each pair's `pair_utility` is the paired (seat-swapped) outcome
+/// from the candidate's side. Covers every candidate the run evaluated, not
+/// just the validation shortlist `validation` carries. Read model only -- a
+/// rebuild reproduces it from the same pair rows.
+pub(crate) async fn contenders(
+    AxumState(state): AxumState<Arc<BenchState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<Vec<ContenderRow>>, BenchError> {
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT candidate_id, opponent_id, phase, \
+                 SUM(CASE WHEN pair_utility > 0 THEN 1 ELSE 0 END), \
+                 SUM(CASE WHEN pair_utility < 0 THEN 1 ELSE 0 END), \
+                 SUM(CASE WHEN pair_utility = 0 THEN 1 ELSE 0 END), \
+                 COALESCE(SUM(pair_utility), 0.0) \
+                 FROM pairs WHERE run_id = ?1 \
+                 GROUP BY candidate_id, opponent_id, phase \
+                 ORDER BY candidate_id, opponent_id, phase",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map([&run_id], |row| {
+                Ok(ContenderRow {
+                    candidate_id: row.get(0)?,
+                    opponent_id: row.get(1)?,
+                    phase: row.get(2)?,
+                    wins: row.get(3)?,
+                    losses: row.get(4)?,
+                    draws: row.get(5)?,
+                    sum_utility: row.get(6)?,
+                })
+            })
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
+}
+
 /// `POST /api/bench/tuner/projection/refresh`
 ///
 /// Re-runs the `tuner-project` projector (incremental) against the bench runs

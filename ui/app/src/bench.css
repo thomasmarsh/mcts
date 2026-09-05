@@ -4071,6 +4071,52 @@ body.bench-active #analysis-panel {
   margin-top: 8px;
   color: #14508c;
 }
+
+.tuner-science-dutycycle {
+  font-weight: 600;
+  margin: 4px 0 8px;
+}
+.tuner-timeline {
+  margin: 8px 0;
+}
+.tuner-timeline-svg {
+  width: 100%;
+  height: 72px;
+  display: block;
+}
+.tuner-timeline-extent {
+  fill: rgba(20, 80, 140, 0.16);
+}
+.tuner-timeline-active {
+  fill: rgba(20, 80, 140, 0.6);
+}
+.tuner-timeline-legend {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 12px;
+}
+.tuner-timeline-legend-name {
+  font-weight: 600;
+}
+.tuner-timeline-legend-val {
+  opacity: 0.7;
+  margin-left: 4px;
+}
+.tuner-candidate-record {
+  margin: 12px 0;
+}
+.tuner-candidate-record-phases {
+  opacity: 0.7;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.tuner-contenders-table {
+  margin-top: 20px;
+}
 .tuner-stepline-svg {
   width: 100%;
   height: 60px;

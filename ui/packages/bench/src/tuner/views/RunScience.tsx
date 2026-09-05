@@ -23,6 +23,9 @@ import { deriveElimination } from "../models/elimination-model.js";
 import { deriveOpponentResponse, type OpponentRow } from "../models/opponent-model.js";
 import { deriveDiagnosticGraph } from "../models/diagnostic-model.js";
 import { deriveComputeLedger } from "../models/compute-model.js";
+import { deriveTimeline } from "../models/timeline-model.js";
+import { formatWall } from "../models/progress-model.js";
+import { TimelineLanes } from "../primitives/TimelineLanes.js";
 import { StepLine } from "../primitives/StepLine.js";
 import { FunnelBars } from "../primitives/FunnelBars.js";
 import { KpiRow } from "../primitives/KpiRow.js";
@@ -158,6 +161,7 @@ export const RunScience: Component<{
   const opponents = createMemo(() => deriveOpponentResponse(report()));
   const diagnostic = createMemo(() => deriveDiagnosticGraph(report()));
   const compute = createMemo(() => deriveComputeLedger(report(), detail()?.compute));
+  const timeline = createMemo(() => deriveTimeline(peek(state().telemetry)));
 
   /** `final` once the report is in; otherwise `live` when the section's rows
    * are non-empty, `empty` when they are genuinely absent. */
@@ -615,6 +619,58 @@ export const RunScience: Component<{
                 </For>
               </ul>
             </Show>
+          </Show>
+        </Section>
+
+        <Section
+          id="time-profile"
+          liveness={rowLiveness(timeline().present)}
+          title="Time profile"
+          caption="Where the run's wall-clock time goes: the run loop's own single-threaded work versus waiting on game subprocesses, and the split across loop stages. Non-scientific wall-clock telemetry — download the trace for a full profiler view."
+          collapsed={collapsed()}
+          toggle={toggle}
+          numbers={
+            <DataTable
+              testid="time-profile-numbers"
+              rows={timeline().byStage}
+              rowKey={(s) => s.stage}
+              empty="No wall-clock telemetry recorded for this run."
+              columns={[
+                { key: "stage", header: "Stage", render: (s) => s.stage },
+                { key: "ms", header: "Total", align: "right", render: (s) => formatWall(s.ms) },
+                {
+                  key: "pct",
+                  header: "Share",
+                  align: "right",
+                  render: (s) => `${(s.fraction * 100).toFixed(0)}%`,
+                },
+              ]}
+            />
+          }
+        >
+          <Show
+            when={timeline().present}
+            fallback={<p class="tuner-fleet-empty">No timing recorded for this run.</p>}
+          >
+            <p class="tuner-science-dutycycle" data-testid="time-profile-headline">
+              {timeline().duty.headline}
+              <Show when={timeline().sessions > 1}>
+                {" "}
+                · {timeline().sessions} sessions
+              </Show>
+            </p>
+            <TimelineLanes lanes={timeline().lanes} wallMs={timeline().wallMs} />
+            <Treemap
+              testid="time-profile-treemap"
+              format={formatWall}
+              groups={[
+                {
+                  key: "stages",
+                  label: "loop stages",
+                  children: timeline().byStage.map((s) => ({ label: s.stage, value: s.ms })),
+                },
+              ]}
+            />
           </Show>
         </Section>
     </div>

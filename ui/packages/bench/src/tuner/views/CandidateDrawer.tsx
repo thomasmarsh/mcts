@@ -4,12 +4,13 @@
 // copy-preset button. Pairs / per-prefix observation forests arrive in
 // later evidence slices.
 
-import { createMemo, Show, type Component } from "solid-js";
+import { createMemo, For, Show, type Component } from "solid-js";
 import type { Store } from "@mcts/core";
 import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
 import { deriveVerdict } from "../models/verdict-model.js";
+import { deriveContenders, findContender, formatWDL } from "../models/contender-model.js";
 import { ConfigDiff } from "../primitives/ConfigDiff.js";
 import { CopyPresetButton } from "../primitives/CopyPresetButton.js";
 import { IntervalBar } from "../primitives/IntervalBar.js";
@@ -39,6 +40,12 @@ export const CandidateDrawer: Component<{
   );
   const validationRow = createMemo(() =>
     verdict().ranked.find((r) => r.candidateId === props.candidateId),
+  );
+  const contender = createMemo(() =>
+    findContender(
+      deriveContenders(peek(state().contenders) ?? [], peek(state().candidates)),
+      props.candidateId,
+    ),
   );
 
   return (
@@ -91,6 +98,42 @@ export const CandidateDrawer: Component<{
                   </p>
                 </div>
               )}
+            </Show>
+
+            <Show when={contender() && contender()!.games > 0}>
+              <div class="tuner-candidate-record" data-testid="candidate-record">
+                <h4>Record · {formatWDL(contender()!.overall)} (W / D / L)</h4>
+                <table class="tuner-table">
+                  <thead>
+                    <tr>
+                      <th>Opponent</th>
+                      <th class="tuner-td-right">W / D / L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <For each={contender()!.byOpponent}>
+                      {(o) => (
+                        <tr>
+                          <td>{o.opponentId}</td>
+                          <td class="tuner-td-right">{formatWDL(o)}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+                <Show when={contender()!.byPhase.length > 1}>
+                  <p class="tuner-candidate-record-phases">
+                    <For each={contender()!.byPhase}>
+                      {(p) => (
+                        <span>
+                          {p.phase}: {formatWDL(p)}
+                          {"  "}
+                        </span>
+                      )}
+                    </For>
+                  </p>
+                </Show>
+              </div>
             </Show>
 
             <h4>Config vs default</h4>

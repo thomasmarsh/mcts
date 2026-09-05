@@ -415,6 +415,20 @@ export interface ProjectionTelemetry {
   lanes: ProjectionTelemetryLane[];
 }
 
+/** One row of `GET .../projection/runs/{id}/contenders` — a
+ * per-(candidate, opponent, phase) W/L/D rollup of the run's pair outcomes.
+ * Covers every evaluated candidate, not just the validation shortlist. */
+export interface ProjectionContenderRow {
+  candidate_id: string;
+  opponent_id: string;
+  phase: string;
+  wins: number;
+  losses: number;
+  draws: number;
+  /** Sum of `pair_utility` over this group's pairs. */
+  sum_utility: number;
+}
+
 export interface ProjectionCohort {
   cohort_index: number;
   candidate_ids: string[];

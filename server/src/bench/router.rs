@@ -200,6 +200,10 @@ pub fn bench_router(state: Arc<BenchState>) -> Router {
             "/api/bench/tuner/projection/runs/{run_id}/telemetry",
             get(tuner_api::telemetry),
         )
+        .route(
+            "/api/bench/tuner/projection/runs/{run_id}/contenders",
+            get(tuner_api::contenders),
+        )
         .route("/api/bench/runs", get(list_runs))
         .route("/api/bench/runs/{run_id}", get(get_run))
         .route("/api/bench/runs/{run_id}/log", get(get_run_log))

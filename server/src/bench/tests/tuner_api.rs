@@ -173,6 +173,30 @@ async fn pairs_filtered() {
 }
 
 #[tokio::test]
+async fn contenders_roll_up_pair_outcomes() {
+    let (app, root) = seeded_app(default_seed);
+    let (status, body) = http_get(app.clone(), &format!("{V4}/contenders")).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body_json(&body);
+    let arr = rows.as_array().unwrap();
+    assert!(!arr.is_empty());
+    // Each (candidate, opponent, phase) group's W+L+D is that group's pair
+    // count, and every group together covers the fixture's 88 pairs.
+    let total: i64 = arr
+        .iter()
+        .map(|r| {
+            r["wins"].as_i64().unwrap() + r["losses"].as_i64().unwrap() + r["draws"].as_i64().unwrap()
+        })
+        .sum();
+    assert_eq!(total, 88);
+    assert!(arr.iter().all(|r| r["candidate_id"].is_string()));
+
+    let (status, _) = http_get(app, "/api/bench/tuner/projection/runs/nope/contenders").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn validation_rows_and_ties() {
     let (app, root) = seeded_app(default_seed);
     let (status, body) = http_get(app, &format!("{V4}/validation")).await;

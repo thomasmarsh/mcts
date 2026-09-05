@@ -16,6 +16,7 @@ import type {
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
+  ProjectionContenderRow,
   ProjectionRunPageQuery,
   ProjectionRefreshResult,
   ProjectionRunDetail,
@@ -101,6 +102,7 @@ export interface TunerApiClient {
   getProjectionReport(runId: string): Promise<JsonValue>;
   /** Wall-clock telemetry rollup — the run header's vitals source. */
   getProjectionTelemetry(runId: string): Promise<ProjectionTelemetry>;
+  getProjectionContenders(runId: string): Promise<ProjectionContenderRow[]>;
   // Live science row tables — populated on every projection refresh, partial
   // or complete, so they carry the run's science before `report.json` exists.
   getProjectionProposals(
@@ -311,6 +313,7 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
     getProjectionValidation: (runId) => fetchJson(url(`${projPath(runId)}/validation`)),
     getProjectionReport: (runId) => fetchJson(url(`${projPath(runId)}/report`)),
     getProjectionTelemetry: (runId) => fetchJson(url(`${projPath(runId)}/telemetry`)),
+    getProjectionContenders: (runId) => fetchJson(url(`${projPath(runId)}/contenders`)),
     getProjectionProposals: (runId, query = {}) =>
       fetchJson(url(`${projPath(runId)}/proposals${queryString(query)}`)),
     getProjectionObservations: (runId, query = {}) =>

@@ -13,6 +13,7 @@ import { deriveProgress } from "../models/progress-model.js";
 import { summarizeVitals, budgetPairsFromManifest } from "../models/telemetry-model.js";
 import { RunVitals } from "../primitives/RunVitals.js";
 import { deriveVerdict } from "../models/verdict-model.js";
+import { deriveContenders, formatWDL, type Contender } from "../models/contender-model.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
 import { deriveConvergence } from "../models/science-models.js";
 import { RunStatusBadge } from "../primitives/RunStatusBadge.js";
@@ -197,6 +198,12 @@ export const RunOverview: Component<{
       candidates: peek(state().candidates),
       report: peek(state().report),
     }),
+  );
+
+  // Every candidate the run has evaluated and its whole-run W/D/L — broader
+  // than the validation shortlist `deriveVerdict` ranks.
+  const contenders = createMemo(() =>
+    deriveContenders(peek(state().contenders) ?? [], peek(state().candidates)),
   );
 
   const openCandidate = (candidateId: string): void =>
@@ -414,6 +421,45 @@ export const RunOverview: Component<{
                   verdict().ties.some((t) => t.left === r.candidateId || t.right === r.candidateId)
                     ? "tie"
                     : "",
+              },
+            ]}
+          />
+        </section>
+      </Show>
+
+      <Show when={contenders().length > 0}>
+        <section class="tuner-contenders-table" data-testid="run-contenders">
+          <h3>All contenders</h3>
+          <p class="tuner-science-caption">
+            Every candidate this run has evaluated and its whole-run record —
+            broader than the validation shortlist above.
+          </p>
+          <DataTable<Contender>
+            testid="contenders-table"
+            rows={contenders()}
+            rowKey={(c) => c.candidateId}
+            onRowClick={(c) => openCandidate(c.candidateId)}
+            pageSize={contenders().length > 60 ? 30 : undefined}
+            columns={[
+              { key: "id", header: "Candidate", render: (c) => c.shortId },
+              {
+                key: "cohort",
+                header: "Cohort",
+                align: "right",
+                render: (c) => (c.cohortIndex == null ? "—" : c.cohortIndex),
+              },
+              { key: "phase", header: "Phase", render: (c) => c.phaseReached ?? "—" },
+              {
+                key: "wdl",
+                header: "W / D / L",
+                align: "right",
+                render: (c) => formatWDL(c.overall),
+              },
+              {
+                key: "util",
+                header: "Mean utility",
+                align: "right",
+                render: (c) => (c.meanUtility == null ? "—" : c.meanUtility.toFixed(3)),
               },
             ]}
           />

@@ -48,6 +48,12 @@ const receiveTelemetry = (ts: ReturnType<typeof store>, generation: number): voi
   });
 };
 
+const receiveContenders = (ts: ReturnType<typeof store>, generation: number): void => {
+  ts.receive({ tag: "contendersLoaded", generation, contenders: [] }, (s) => {
+    s.contenders = ok([]);
+  });
+};
+
 const loadingAll = (s: TunerState): void => {
   s.tunableGames = { status: "loading" };
   s.objectives = { status: "loading" };
@@ -182,6 +188,7 @@ describe("tunerReducer", () => {
       },
     );
     receiveTelemetry(ts, 1);
+    receiveContenders(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -239,6 +246,7 @@ describe("tunerReducer", () => {
       },
     );
     receiveTelemetry(ts, 2);
+    receiveContenders(ts, 2);
     ts.receive({ tag: "candidatesLoaded", generation: 2, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -324,6 +332,7 @@ describe("tunerReducer", () => {
       },
     );
     receiveTelemetry(ts, 1);
+    receiveContenders(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -358,6 +367,7 @@ describe("tunerReducer", () => {
       s.pairsGeneration = 2;
       s.projectionDetail = { status: "idle" };
       s.telemetry = { status: "idle" };
+      s.contenders = { status: "idle" };
       s.validation = { status: "idle" };
       s.candidates = { status: "idle" };
       s.pairs = { status: "idle" };
@@ -412,6 +422,7 @@ describe("tunerReducer", () => {
       s.evidenceGeneration = 1;
       s.projectionDetail = { status: "loading" };
       s.telemetry = { status: "loading" };
+      s.contenders = { status: "loading" };
       s.validation = { status: "loading" };
       s.candidates = { status: "loading" };
       s.pairs = { status: "loading" };
@@ -435,6 +446,7 @@ describe("tunerReducer", () => {
       },
     );
     receiveTelemetry(ts, 1);
+    receiveContenders(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -507,6 +519,7 @@ describe("tunerReducer", () => {
       },
     );
     receiveTelemetry(ts, 2);
+    receiveContenders(ts, 2);
     ts.receive({ tag: "candidatesLoaded", generation: 2, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });

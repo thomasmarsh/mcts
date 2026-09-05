@@ -172,4 +172,19 @@ export {
   type ContenderRecord,
   type ContenderRecords,
 } from "./models/telemetry-model.js";
+export {
+  deriveContenders,
+  formatWDL,
+  findContender,
+  type WDL,
+  type Contender,
+  type ContenderOpponent,
+  type ContenderPhase,
+} from "./models/contender-model.js";
+export {
+  deriveTimeline,
+  type Timeline,
+  type TimelineLane,
+  type TimelineStage,
+} from "./models/timeline-model.js";
 export type * from "./tuner-types.js";
