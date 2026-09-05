@@ -4,6 +4,17 @@
 // No confidence interval, bootstrap, calibration, or ranking arithmetic
 // lives here — every real statistic stays in the projection / report
 // (AGENTS.md "no statistics in TS").
+//
+// `foldStep`/`freshLiveProgress` are the incremental building blocks behind
+// `foldEvidence` (itself just `envelopes.reduce(foldStep, freshLiveProgress())`).
+// The reducer folds new envelopes onto its *own* running `LiveProgress`
+// one batch at a time, rather than recomputing over the client's bounded
+// evidence ring on every update — the same "replay incrementally, not from
+// scratch" fix already applied to the tuner's own projection replay. Fully
+// recomputing from the ring would also be wrong past ~200 pairs into a
+// phase: the ring is capped (`EVIDENCE_RING_MAX`) for ticker display, so a
+// long-running phase's earlier `pair_started`/`pair_completed` events fall
+// off it and a from-scratch fold would silently under-count.
 
 import type {
   EvidenceEnvelope,
@@ -28,13 +39,26 @@ export function shortId(id: string | null): string {
   return tail.slice(0, 7);
 }
 
-export function foldEvidence(envelopes: EvidenceEnvelope[]): LiveProgress {
-  let phase: LivePhase = "proposal";
-  let cohortIndex: number | null = null;
-  let pairs = { started: 0, completed: 0, failed: 0 };
-  const proposals: LiveProgress["proposals"] = {};
-  let bestSoFar: LiveProgress["bestSoFar"] = null;
-  let lastEventSeq = 0;
+export function freshLiveProgress(): LiveProgress {
+  return {
+    phase: "proposal",
+    cohortIndex: null,
+    pairs: { started: 0, completed: 0, failed: 0 },
+    proposals: {},
+    bestSoFar: null,
+    lastEventSeq: 0,
+  };
+}
+
+/** Fold one envelope onto a running `LiveProgress`, returning a new value
+ * (the input is never mutated, so it stays safe to hold onto the previous
+ * value elsewhere — e.g. across a Solid store's reactivity check). */
+export function foldStep(state: LiveProgress, envelope: EvidenceEnvelope): LiveProgress {
+  let phase = state.phase;
+  let cohortIndex = state.cohortIndex;
+  let pairs = state.pairs;
+  let proposals = state.proposals;
+  let bestSoFar = state.bestSoFar;
 
   // A phase change zeroes the per-phase pair counters.
   const setPhase = (next: LivePhase): void => {
@@ -44,84 +68,87 @@ export function foldEvidence(envelopes: EvidenceEnvelope[]): LiveProgress {
     }
   };
 
-  for (const envelope of envelopes) {
-    lastEventSeq = envelope.sequence;
-    const p = asObj(envelope.payload);
+  const p = asObj(envelope.payload);
 
-    switch (envelope.type) {
-      case "proposal_created":
-      case "proposal_accepted":
-      case "proposal_rejected": {
-        setPhase("proposal");
-        const source = asStr(p.source) ?? "unknown";
-        const bucket = (proposals[source] ??= { created: 0, accepted: 0, rejected: 0 });
-        if (envelope.type === "proposal_created") bucket.created += 1;
-        else if (envelope.type === "proposal_accepted") bucket.accepted += 1;
-        else bucket.rejected += 1;
-        const cohort = asNum(p.cohort_index);
-        if (cohort !== null) cohortIndex = cohort;
-        break;
-      }
-
-      case "allocation_decided": {
-        const allocation = asObj(p.allocation);
-        const cohort = asNum(allocation.cohort_index);
-        if (cohort !== null) cohortIndex = cohort;
-        if (allocation.kind === "begin_validation") setPhase("validation");
-        else if (allocation.kind === "evaluate_diagnostic_pair") setPhase("diagnostic");
-        else setPhase("tuning");
-        break;
-      }
-
-      case "pair_started":
-      case "pair_completed":
-      case "pair_failed": {
-        setPhase(p.phase === "validation" ? "validation" : "tuning");
-        if (envelope.type === "pair_started") pairs.started += 1;
-        else if (envelope.type === "pair_failed") pairs.failed += 1;
-        else {
-          pairs.completed += 1;
-          const utility = asNum(p.pair_utility);
-          const candidateId = asStr(p.candidate_id);
-          if (
-            utility !== null &&
-            candidateId !== null &&
-            (bestSoFar === null || utility > bestSoFar.pairUtility)
-          ) {
-            bestSoFar = { candidateId, pairUtility: utility };
-          }
-        }
-        break;
-      }
-
-      case "observation_completed":
-        setPhase(p.phase === "validation" ? "validation" : "tuning");
-        break;
-
-      case "cohort_completed": {
-        const cohort = asNum(p.cohort_index);
-        if (cohort !== null) cohortIndex = cohort;
-        setPhase("tuning");
-        break;
-      }
-
-      case "diagnostic_pair_started":
-      case "diagnostic_pair_completed":
-      case "diagnostic_pair_failed":
-        setPhase("diagnostic");
-        break;
-
-      case "finalists_selected":
-      case "run_completed":
-        setPhase("done");
-        break;
-
-      default:
-        break;
+  switch (envelope.type) {
+    case "proposal_created":
+    case "proposal_accepted":
+    case "proposal_rejected": {
+      setPhase("proposal");
+      const source = asStr(p.source) ?? "unknown";
+      const prior = proposals[source] ?? { created: 0, accepted: 0, rejected: 0 };
+      const bucket = { ...prior };
+      if (envelope.type === "proposal_created") bucket.created += 1;
+      else if (envelope.type === "proposal_accepted") bucket.accepted += 1;
+      else bucket.rejected += 1;
+      proposals = { ...proposals, [source]: bucket };
+      const cohort = asNum(p.cohort_index);
+      if (cohort !== null) cohortIndex = cohort;
+      break;
     }
+
+    case "allocation_decided": {
+      const allocation = asObj(p.allocation);
+      const cohort = asNum(allocation.cohort_index);
+      if (cohort !== null) cohortIndex = cohort;
+      if (allocation.kind === "begin_validation") setPhase("validation");
+      else if (allocation.kind === "evaluate_diagnostic_pair") setPhase("diagnostic");
+      else setPhase("tuning");
+      break;
+    }
+
+    case "pair_started":
+    case "pair_completed":
+    case "pair_failed": {
+      setPhase(p.phase === "validation" ? "validation" : "tuning");
+      if (envelope.type === "pair_started") pairs = { ...pairs, started: pairs.started + 1 };
+      else if (envelope.type === "pair_failed") pairs = { ...pairs, failed: pairs.failed + 1 };
+      else {
+        pairs = { ...pairs, completed: pairs.completed + 1 };
+        const utility = asNum(p.pair_utility);
+        const candidateId = asStr(p.candidate_id);
+        if (
+          utility !== null &&
+          candidateId !== null &&
+          (bestSoFar === null || utility > bestSoFar.pairUtility)
+        ) {
+          bestSoFar = { candidateId, pairUtility: utility };
+        }
+      }
+      break;
+    }
+
+    case "observation_completed":
+      setPhase(p.phase === "validation" ? "validation" : "tuning");
+      break;
+
+    case "cohort_completed": {
+      const cohort = asNum(p.cohort_index);
+      if (cohort !== null) cohortIndex = cohort;
+      setPhase("tuning");
+      break;
+    }
+
+    case "diagnostic_pair_started":
+    case "diagnostic_pair_completed":
+    case "diagnostic_pair_failed":
+      setPhase("diagnostic");
+      break;
+
+    case "finalists_selected":
+    case "run_completed":
+      setPhase("done");
+      break;
+
+    default:
+      break;
   }
 
-  return { phase, cohortIndex, pairs, proposals, bestSoFar, lastEventSeq };
+  return { phase, cohortIndex, pairs, proposals, bestSoFar, lastEventSeq: envelope.sequence };
+}
+
+export function foldEvidence(envelopes: EvidenceEnvelope[]): LiveProgress {
+  return envelopes.reduce(foldStep, freshLiveProgress());
 }
 
 function signed(value: number | null): string {

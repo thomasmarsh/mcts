@@ -801,6 +801,62 @@ describe("tunerReducer scienceStale", () => {
   });
 });
 
+describe("tunerReducer evidence — incremental fold and ticker", () => {
+  const env = mockTunerEnv();
+
+  it("keeps the running pair tally correct once the evidence ring truncates", () => {
+    const draft = initialTunerState();
+    const total = 300; // > EVIDENCE_RING_MAX (400 envelopes ÷ 2 per pair)
+    for (let i = 1; i <= total; i += 1) {
+      tunerReducer(
+        draft,
+        {
+          tag: "evidenceEvents",
+          generation: 0,
+          events: [
+            { sequence: i * 2 - 1, type: "pair_started", payload: { phase: "tuning" } },
+            { sequence: i * 2, type: "pair_completed", payload: { phase: "tuning" } },
+          ],
+        },
+        env,
+      );
+    }
+    // The ring itself is bounded and no longer holds every pair's events...
+    expect(draft.evidence.ring.length).toBeLessThan(total * 2);
+    // ...but the running tally was folded forward incrementally, so it still
+    // reports the true total rather than only what's left in the ring.
+    expect(draft.evidence.live.pairs).toEqual({ started: total, completed: total, failed: 0 });
+    expect(draft.evidence.live.lastEventSeq).toBe(total * 2);
+  });
+
+  it("delivers stable TickerLine object identity across batches, for <For>", () => {
+    const draft = initialTunerState();
+    tunerReducer(
+      draft,
+      {
+        tag: "evidenceEvents",
+        generation: 0,
+        events: [{ sequence: 1, type: "pair_started", payload: {} }],
+      },
+      env,
+    );
+    const firstLine = draft.evidence.tickerLines[0];
+    tunerReducer(
+      draft,
+      {
+        tag: "evidenceEvents",
+        generation: 0,
+        events: [{ sequence: 2, type: "pair_completed", payload: {} }],
+      },
+      env,
+    );
+    // The line built for sequence 1 is the exact same object after a second,
+    // unrelated batch lands -- nothing re-maps the whole ticker on update.
+    expect(draft.evidence.tickerLines[0]).toBe(firstLine);
+    expect(draft.evidence.tickerLines).toHaveLength(2);
+  });
+});
+
 function launchRequest() {
   return {
     game_kind: "nim",

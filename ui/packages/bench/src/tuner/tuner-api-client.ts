@@ -231,19 +231,48 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
           source.close();
         }
       };
+      // The server's catch-up pass on an established run can still hand this
+      // one `EventSource` a few hundred frames back-to-back (bounded, but
+      // still many) before settling into its normal one-line-at-a-time
+      // tailing. Firing `onEvents` -- and so a store dispatch and a reactive
+      // re-render -- once per SSE frame turns that burst into that many
+      // synchronous render passes on the main thread, which is what actually
+      // reads as "unresponsive" on open, independent of how small any single
+      // message is. Coalesce whatever arrives within one short window into a
+      // single `onEvents` call instead, so a burst costs one render pass, not
+      // N: this is the async decoupling point between "how fast the network
+      // hands us frames" and "how often the UI re-renders", not a size or
+      // count cap on the data itself.
+      let pending: EvidenceEnvelope[] = [];
+      let flushTimer: ReturnType<typeof setTimeout> | null = null;
+      const flush = (): void => {
+        flushTimer = null;
+        if (pending.length === 0) return;
+        const batch = pending;
+        pending = [];
+        handlers.onEvents(batch);
+      };
+      const scheduleFlush = (): void => {
+        if (flushTimer === null) flushTimer = setTimeout(flush, 32);
+      };
       source.onmessage = (event: MessageEvent<string>) => {
         try {
-          const envelope = JSON.parse(event.data) as EvidenceEnvelope;
-          handlers.onEvents([envelope]);
+          pending.push(JSON.parse(event.data) as EvidenceEnvelope);
+          scheduleFlush();
         } catch (error: unknown) {
           handlers.onError(`invalid evidence event: ${String(error)}`);
         }
       };
       source.addEventListener("projection-updated", () => {
+        // Ordering matters: this tells the reducer the projection now covers
+        // evidence up to some sequence, so any events already queued for the
+        // next flush must apply first.
+        flush();
         handlers.onProjectionUpdated();
       });
       // The server names its final frame `event: end`.
       source.addEventListener("end", () => {
+        flush();
         close();
         handlers.onEnd();
       });
@@ -251,11 +280,17 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
         // EventSource reconnects on a transient drop; a hard failure (run
         // gone, 4xx) leaves it CLOSED — only then surface the error.
         if (source.readyState === EventSource.CLOSED) {
+          flush();
           close();
           handlers.onError("evidence stream connection lost");
         }
       };
-      return { close };
+      return {
+        close: () => {
+          if (flushTimer !== null) clearTimeout(flushTimer);
+          close();
+        },
+      };
     },
     refreshProjection: () =>
       sendJson(url("/api/bench/tuner/projection/refresh"), "POST"),

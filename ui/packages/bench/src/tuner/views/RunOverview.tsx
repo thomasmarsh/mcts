@@ -12,7 +12,6 @@ import type { TunerRoute } from "../tuner-routes.js";
 import { deriveProgress } from "../models/progress-model.js";
 import { deriveVerdict } from "../models/verdict-model.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
-import { foldEvidence, tickerLines } from "../models/evidence-fold.js";
 import { deriveConvergence } from "../models/science-models.js";
 import { RunStatusBadge } from "../primitives/RunStatusBadge.js";
 import { ProgressRail } from "../primitives/ProgressRail.js";
@@ -112,9 +111,13 @@ export const RunOverview: Component<{
     });
   };
 
-  const evidenceRing = createMemo(() => state().evidence.ring);
-  const liveProgress = createMemo(() => (live() ? foldEvidence(evidenceRing()) : null));
-  const ticker = createMemo(() => tickerLines(evidenceRing(), 200));
+  // Both read directly off reducer state, which folds/formats each evidence
+  // batch incrementally as it arrives (see `applyEvidence` in
+  // tuner-reducer.ts) rather than remapping the whole ring here on every
+  // render -- `ticker`'s `TickerLine` objects keep stable identity across
+  // renders so `<EventTicker>`'s `<For>` only patches in new rows.
+  const liveProgress = createMemo(() => (live() ? state().evidence.live : null));
+  const ticker = createMemo(() => state().evidence.tickerLines);
 
   // A compact live "is it improving" signal without opening Science: one step
   // per cohort, from the projection candidate + observation rows.

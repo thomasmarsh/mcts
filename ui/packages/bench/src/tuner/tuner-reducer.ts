@@ -19,6 +19,7 @@
 
 import { Effect } from "@mcts/core";
 import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
+import { foldStep, freshLiveProgress, describeEvent } from "./models/evidence-fold.js";
 import {
   JOURNAL_POLL_MS,
   journalPollDelayMs,
@@ -29,6 +30,7 @@ import type { TunerEnv } from "./tuner-env.js";
 import type {
   EvidenceEnvelope,
   EvidenceTailResponse,
+  LiveProgress,
   ProjectionActiveElimination,
   ProjectionCandidate,
   ProjectionGameRow,
@@ -43,6 +45,7 @@ import type {
   ObjectiveValidationResult,
   LaunchPreflightResult,
   RunPlan,
+  TickerLine,
   TunerBudgetExtension,
   TunerLaunchRequest,
   TunerObjectiveDetail,
@@ -181,10 +184,19 @@ export interface TunerState {
   pairGames: RemoteData<ProjectionGameRow[]>;
   pairGamesGeneration: number;
   resourceGeneration: number;
-  /** The open run's live evidence journal: a bounded ring of the most recent
-   * envelopes and the highest sequence applied. Populated by the SSE stream
-   * (or its degraded poll fallback) while the run is live. */
-  evidence: { seq: number; ring: EvidenceEnvelope[] };
+  /** The open run's live evidence journal. `ring` (raw envelopes, bounded)
+   * only backs the "N older events" expand-to-see-everything affordance in
+   * `<EventTicker>`; `tickerLines` is the ticker's actual render input, one
+   * formatted, identity-stable line per envelope (built once, appended, never
+   * remapped), and `live` is the running progress tally, folded onto
+   * incrementally rather than recomputed from the (truncatable) ring on
+   * every update — see `evidence-fold.ts`'s module doc comment. */
+  evidence: {
+    seq: number;
+    ring: EvidenceEnvelope[];
+    tickerLines: TickerLine[];
+    live: LiveProgress;
+  };
   /** true while the evidence stream (or its poll fallback) is following the
    * open live run. */
   evidenceStreamActive: boolean;
@@ -279,7 +291,7 @@ export function initialTunerState(): TunerState {
     pairGames: idle(),
     pairGamesGeneration: 0,
     resourceGeneration: 0,
-    evidence: { seq: 0, ring: [] },
+    evidence: freshEvidence(),
     evidenceStreamActive: false,
     evidenceStreamOk: true,
     evidenceGeneration: 0,
@@ -467,17 +479,42 @@ const SCIENTIFIC_EVIDENCE_TYPES: ReadonlySet<string> = new Set([
 const hasScientificEvent = (events: EvidenceEnvelope[]): boolean =>
   events.some((e) => SCIENTIFIC_EVIDENCE_TYPES.has(e.type));
 
-/** Append envelopes to the bounded ring and advance the applied sequence. */
+function freshEvidence(): TunerState["evidence"] {
+  return { seq: 0, ring: [], tickerLines: [], live: freshLiveProgress() };
+}
+
+/** Append envelopes to the bounded ring/ticker and fold them onto the
+ * running `live` tally, one batch at a time. Every `TickerLine` is built
+ * exactly once and never remapped on a later call, so the same object
+ * reference reaches `<EventTicker>` across renders -- `<For>` then patches in
+ * only the newly appended rows instead of tearing down and recreating the
+ * whole visible window on every update, the way remapping the ring through
+ * `tickerLines()` on every render used to. `live` is folded forward from its
+ * own previous value rather than recomputed over `ring`, so it stays correct
+ * once the ring truncates (see this function's module doc comment) and the
+ * cost of applying a batch is O(batch size), not O(ring size). */
 function applyEvidence(
   draft: TunerState,
   events: EvidenceEnvelope[],
   nextSeq: number,
 ): void {
+  if (events.length === 0) {
+    draft.evidence.seq = Math.max(draft.evidence.seq, nextSeq);
+    return;
+  }
   const ring = [...draft.evidence.ring, ...events];
+  const tickerLines = [
+    ...draft.evidence.tickerLines,
+    ...events.map((e) => ({ seq: e.sequence, text: describeEvent(e) })),
+  ];
+  const live = events.reduce(foldStep, draft.evidence.live);
   const seq = events.reduce((max, e) => Math.max(max, e.sequence), draft.evidence.seq);
   draft.evidence = {
     seq: Math.max(seq, nextSeq),
     ring: ring.length > EVIDENCE_RING_MAX ? ring.slice(-EVIDENCE_RING_MAX) : ring,
+    tickerLines:
+      tickerLines.length > EVIDENCE_RING_MAX ? tickerLines.slice(-EVIDENCE_RING_MAX) : tickerLines,
+    live,
   };
 }
 
@@ -1071,7 +1108,7 @@ export function tunerReducer(
       draft.logGeneration += 1;
       draft.journalGeneration += 1;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: true };
-      draft.evidence = { seq: 0, ring: [] };
+      draft.evidence = freshEvidence();
       const effects = [
         Effect.send<TunerAction>({ tag: "logTick", generation: draft.logGeneration }),
         Effect.send<TunerAction>({ tag: "journalTick", generation: draft.journalGeneration }),
@@ -1152,7 +1189,7 @@ export function tunerReducer(
       draft.openPairId = null;
       draft.pairGames = idle();
       draft.pairsPage = { limit: draft.pairsPage.limit, offset: 0 };
-      draft.evidence = { seq: 0, ring: [] };
+      draft.evidence = freshEvidence();
       const effects = [logTick, startResourceLoad(draft, env, action.runId)];
       // If the newly opened run is already live, start its projection
       // auto-refresh loop and evidence follower now rather than waiting for
@@ -1167,7 +1204,7 @@ export function tunerReducer(
       draft.openRunId = null;
       draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
       clearResources(draft);
-      draft.evidence = { seq: 0, ring: [] };
+      draft.evidence = freshEvidence();
       // No open run — wind the auto-refresh loop and evidence follower down.
       syncAutoRefresh(draft);
       syncEvidenceStream(draft, env);
@@ -1490,7 +1527,7 @@ export function tunerReducer(
         draft.openRunId = null;
         draft.log = { lines: [], errLines: [], offset: 0, error: null, active: false };
         clearResources(draft);
-        draft.evidence = { seq: 0, ring: [] };
+        draft.evidence = freshEvidence();
         syncAutoRefresh(draft);
         syncEvidenceStream(draft, env);
       }
