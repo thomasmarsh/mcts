@@ -66,7 +66,7 @@ def state() -> ReplayState:
 def elite_state() -> ReplayState:
     """Cohort 1, whose two retained elites are its weakest-ranked candidates."""
     events = read_events(FIXTURES / "evidence.jsonl")
-    return replay(read_manifest(FIXTURES / "manifest.json"), events[:238])
+    return replay(read_manifest(FIXTURES / "manifest.json"), events[:235])
 
 
 def _dispositions(decision: ShadowRaceDecision) -> dict[str, str]:
