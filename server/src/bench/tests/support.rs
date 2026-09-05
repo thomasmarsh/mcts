@@ -132,6 +132,21 @@ pub(super) fn seeded_app_with_state_and_signaller(
     seed_fn: impl FnOnce(&duckdb::Connection, &Path),
     process_group_signaller: ProcessGroupSignaller,
 ) -> (Router, PathBuf, Arc<BenchState>) {
+    seeded_app_with_state_signaller_and_tuner_db(
+        seed_fn,
+        process_group_signaller,
+        tuner_projection_fixture(),
+    )
+}
+
+/// Like [`seeded_app_with_state_and_signaller`], but against a caller-supplied
+/// tuner projection SQLite file instead of the checked-in fixture -- for tests
+/// that need a larger or purpose-built projection (e.g. pagination-at-scale).
+pub(super) fn seeded_app_with_state_signaller_and_tuner_db(
+    seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    process_group_signaller: ProcessGroupSignaller,
+    tuner_projection_db: PathBuf,
+) -> (Router, PathBuf, Arc<BenchState>) {
     let n = FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp_dir =
         std::env::temp_dir().join(format!("mcts_bench_api_test_{}_{}", std::process::id(), n,));
@@ -175,7 +190,7 @@ pub(super) fn seeded_app_with_state_and_signaller(
             })
         }),
         process_group_signaller,
-        tuner_projection_db: tuner_projection_fixture(),
+        tuner_projection_db,
         // Stub: the endpoint test asserts the handler shapes these counts; the
         // real projector shell-out is covered by `tuner_api`'s parser unit test
         // and by code review (see the plan's `refresh_is_only_spawn` claim).

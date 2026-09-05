@@ -37,6 +37,17 @@ fn sql_error(error: rusqlite::Error) -> BenchError {
     }
 }
 
+/// A `spawn_blocking` task can only fail by panicking or being cancelled
+/// (this server never aborts these tasks), so this is effectively unreachable
+/// in production -- still handled rather than unwrapped, since a panicking
+/// query should surface as a 500, not take the process down.
+fn join_error(error: tokio::task::JoinError) -> BenchError {
+    BenchError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        message: format!("tuner projection query task failed: {error}"),
+    }
+}
+
 /// Open the projection file read-only. A missing or unreadable file is a 500 --
 /// the projection is server infrastructure, not user input; `POST
 /// /projection/refresh` (or the `tuner-project` CLI) is how it comes to exist.
@@ -111,6 +122,25 @@ pub(crate) struct PairFilter {
     cohort: Option<i64>,
     limit: Option<i64>,
     offset: Option<i64>,
+}
+
+/// `limit`/`offset` pagination scoped to one run, for the science-row
+/// endpoints (`proposals`, `observations`, `shadow_decisions`,
+/// `active_eliminations`) that have no other filter fields. Same default
+/// (500) and clamp (5000) as `PairFilter`/`pairs`.
+#[derive(Deserialize, Default)]
+pub(crate) struct RunPage {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+impl RunPage {
+    fn limit(&self) -> i64 {
+        self.limit.unwrap_or(500).clamp(1, 5000)
+    }
+    fn offset(&self) -> i64 {
+        self.offset.unwrap_or(0).max(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -613,43 +643,42 @@ pub(crate) async fn pairs(
     AxumPath(run_id): AxumPath<String>,
     Query(filter): Query<PairFilter>,
 ) -> Result<Json<Vec<PairRow>>, BenchError> {
-    let conn = open(&state)?;
-    require_run(&conn, &run_id)?;
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
 
-    let mut sql = String::from(
-        "SELECT p.pair_id, p.phase, p.candidate_id, p.task_id, p.opponent_id, p.pair_utility \
-         FROM pairs p",
-    );
-    if filter.cohort.is_some() {
-        sql.push_str(
-            " JOIN candidates c ON c.run_id = p.run_id AND c.candidate_id = p.candidate_id",
+        let mut sql = String::from(
+            "SELECT p.pair_id, p.phase, p.candidate_id, p.task_id, p.opponent_id, p.pair_utility \
+             FROM pairs p",
         );
-    }
-    sql.push_str(" WHERE p.run_id = ?1");
-    let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(run_id.clone())];
-    if let Some(candidate) = &filter.candidate {
-        params.push(Box::new(candidate.clone()));
-        sql.push_str(&format!(" AND p.candidate_id = ?{}", params.len()));
-    }
-    if let Some(cohort) = filter.cohort {
-        params.push(Box::new(cohort));
-        sql.push_str(&format!(" AND c.cohort_index = ?{}", params.len()));
-    }
-    let limit = filter.limit.unwrap_or(500).clamp(1, 5000);
-    let offset = filter.offset.unwrap_or(0).max(0);
-    params.push(Box::new(limit));
-    params.push(Box::new(offset));
-    sql.push_str(&format!(
-        " ORDER BY p.pair_id LIMIT ?{} OFFSET ?{}",
-        params.len() - 1,
-        params.len()
-    ));
+        if filter.cohort.is_some() {
+            sql.push_str(
+                " JOIN candidates c ON c.run_id = p.run_id AND c.candidate_id = p.candidate_id",
+            );
+        }
+        sql.push_str(" WHERE p.run_id = ?1");
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(run_id.clone())];
+        if let Some(candidate) = &filter.candidate {
+            params.push(Box::new(candidate.clone()));
+            sql.push_str(&format!(" AND p.candidate_id = ?{}", params.len()));
+        }
+        if let Some(cohort) = filter.cohort {
+            params.push(Box::new(cohort));
+            sql.push_str(&format!(" AND c.cohort_index = ?{}", params.len()));
+        }
+        let limit = filter.limit.unwrap_or(500).clamp(1, 5000);
+        let offset = filter.offset.unwrap_or(0).max(0);
+        params.push(Box::new(limit));
+        params.push(Box::new(offset));
+        sql.push_str(&format!(
+            " ORDER BY p.pair_id LIMIT ?{} OFFSET ?{}",
+            params.len() - 1,
+            params.len()
+        ));
 
-    let mut stmt = conn.prepare(&sql).map_err(sql_error)?;
-    let rows = stmt
-        .query_map(
-            rusqlite::params_from_iter(params.iter()),
-            |row| {
+        let mut stmt = conn.prepare(&sql).map_err(sql_error)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
                 Ok(PairRow {
                     pair_id: row.get(0)?,
                     phase: row.get(1)?,
@@ -658,12 +687,14 @@ pub(crate) async fn pairs(
                     opponent_id: row.get(4)?,
                     pair_utility: row.get(5)?,
                 })
-            },
-        )
-        .map_err(sql_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql_error)?;
-    Ok(Json(rows))
+            })
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// `GET /api/bench/tuner/projection/runs/{run_id}/pairs/{pair_id}/games`
@@ -711,135 +742,168 @@ pub(crate) async fn pair_games(
 pub(crate) async fn proposals(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
+    Query(page): Query<RunPage>,
 ) -> Result<Json<Vec<ProposalRow>>, BenchError> {
-    let conn = open(&state)?;
-    require_run(&conn, &run_id)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT proposal_index, cohort_index, cohort_slot, candidate_id, source, \
-                    source_attempt, disposition, frontier_id, origin, acquisition, \
-                    prediction, uncertainty, parent_candidate_id, refill_of_candidate_id \
-             FROM proposals WHERE run_id = ?1 ORDER BY proposal_index",
-        )
-        .map_err(sql_error)?;
-    let rows = stmt
-        .query_map([&run_id], |row| {
-            Ok(ProposalRow {
-                proposal_index: row.get(0)?,
-                cohort_index: row.get(1)?,
-                cohort_slot: row.get(2)?,
-                candidate_id: row.get(3)?,
-                source: row.get(4)?,
-                source_attempt: row.get(5)?,
-                disposition: row.get(6)?,
-                frontier_id: row.get(7)?,
-                origin: row.get(8)?,
-                acquisition: row.get(9)?,
-                prediction: row.get(10)?,
-                uncertainty: row.get(11)?,
-                parent_candidate_id: row.get(12)?,
-                refill_of_candidate_id: row.get(13)?,
-            })
-        })
-        .map_err(sql_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql_error)?;
-    Ok(Json(rows))
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT proposal_index, cohort_index, cohort_slot, candidate_id, source, \
+                        source_attempt, disposition, frontier_id, origin, acquisition, \
+                        prediction, uncertainty, parent_candidate_id, refill_of_candidate_id \
+                 FROM proposals WHERE run_id = ?1 ORDER BY proposal_index LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![run_id, page.limit(), page.offset()],
+                |row| {
+                    Ok(ProposalRow {
+                        proposal_index: row.get(0)?,
+                        cohort_index: row.get(1)?,
+                        cohort_slot: row.get(2)?,
+                        candidate_id: row.get(3)?,
+                        source: row.get(4)?,
+                        source_attempt: row.get(5)?,
+                        disposition: row.get(6)?,
+                        frontier_id: row.get(7)?,
+                        origin: row.get(8)?,
+                        acquisition: row.get(9)?,
+                        prediction: row.get(10)?,
+                        uncertainty: row.get(11)?,
+                        parent_candidate_id: row.get(12)?,
+                        refill_of_candidate_id: row.get(13)?,
+                    })
+                },
+            )
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// `GET /api/bench/tuner/projection/runs/{run_id}/observations`
 pub(crate) async fn observations(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
+    Query(page): Query<RunPage>,
 ) -> Result<Json<Vec<ObservationRow>>, BenchError> {
-    let conn = open(&state)?;
-    require_run(&conn, &run_id)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT observation_id, candidate_id, phase, prefix_id, mean, lower, upper \
-             FROM observations WHERE run_id = ?1 ORDER BY observation_id",
-        )
-        .map_err(sql_error)?;
-    let rows = stmt
-        .query_map([&run_id], |row| {
-            Ok(ObservationRow {
-                observation_id: row.get(0)?,
-                candidate_id: row.get(1)?,
-                phase: row.get(2)?,
-                prefix_id: row.get(3)?,
-                mean: row.get(4)?,
-                lower: row.get(5)?,
-                upper: row.get(6)?,
-            })
-        })
-        .map_err(sql_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql_error)?;
-    Ok(Json(rows))
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT observation_id, candidate_id, phase, prefix_id, mean, lower, upper \
+                 FROM observations WHERE run_id = ?1 ORDER BY observation_id LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![run_id, page.limit(), page.offset()],
+                |row| {
+                    Ok(ObservationRow {
+                        observation_id: row.get(0)?,
+                        candidate_id: row.get(1)?,
+                        phase: row.get(2)?,
+                        prefix_id: row.get(3)?,
+                        mean: row.get(4)?,
+                        lower: row.get(5)?,
+                        upper: row.get(6)?,
+                    })
+                },
+            )
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// `GET /api/bench/tuner/projection/runs/{run_id}/shadow-decisions`
 pub(crate) async fn shadow_decisions(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
+    Query(page): Query<RunPage>,
 ) -> Result<Json<Vec<ShadowDecisionRow>>, BenchError> {
-    let conn = open(&state)?;
-    require_run(&conn, &run_id)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT race_index, cohort_index, prefix_id, candidate_id, boundary_candidate_id, \
-                    disposition, policy_kind, policy_version \
-             FROM shadow_decisions WHERE run_id = ?1 ORDER BY race_index, candidate_id",
-        )
-        .map_err(sql_error)?;
-    let rows = stmt
-        .query_map([&run_id], |row| {
-            Ok(ShadowDecisionRow {
-                race_index: row.get(0)?,
-                cohort_index: row.get(1)?,
-                prefix_id: row.get(2)?,
-                candidate_id: row.get(3)?,
-                boundary_candidate_id: row.get(4)?,
-                disposition: row.get(5)?,
-                policy_kind: row.get(6)?,
-                policy_version: row.get(7)?,
-            })
-        })
-        .map_err(sql_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql_error)?;
-    Ok(Json(rows))
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT race_index, cohort_index, prefix_id, candidate_id, \
+                        boundary_candidate_id, disposition, policy_kind, policy_version \
+                 FROM shadow_decisions WHERE run_id = ?1 \
+                 ORDER BY race_index, candidate_id LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![run_id, page.limit(), page.offset()],
+                |row| {
+                    Ok(ShadowDecisionRow {
+                        race_index: row.get(0)?,
+                        cohort_index: row.get(1)?,
+                        prefix_id: row.get(2)?,
+                        candidate_id: row.get(3)?,
+                        boundary_candidate_id: row.get(4)?,
+                        disposition: row.get(5)?,
+                        policy_kind: row.get(6)?,
+                        policy_version: row.get(7)?,
+                    })
+                },
+            )
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// `GET /api/bench/tuner/projection/runs/{run_id}/active-eliminations`
 pub(crate) async fn active_eliminations(
     AxumState(state): AxumState<Arc<BenchState>>,
     AxumPath(run_id): AxumPath<String>,
+    Query(page): Query<RunPage>,
 ) -> Result<Json<Vec<ActiveEliminationRow>>, BenchError> {
-    let conn = open(&state)?;
-    require_run(&conn, &run_id)?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT batch_index, cohort_index, prefix_id, candidate_id, action, margin_kind \
-             FROM active_elimination_decisions WHERE run_id = ?1 \
-             ORDER BY batch_index, candidate_id",
-        )
-        .map_err(sql_error)?;
-    let rows = stmt
-        .query_map([&run_id], |row| {
-            Ok(ActiveEliminationRow {
-                batch_index: row.get(0)?,
-                cohort_index: row.get(1)?,
-                prefix_id: row.get(2)?,
-                candidate_id: row.get(3)?,
-                action: row.get(4)?,
-                margin_kind: row.get(5)?,
-            })
-        })
-        .map_err(sql_error)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(sql_error)?;
-    Ok(Json(rows))
+    tokio::task::spawn_blocking(move || {
+        let conn = open(&state)?;
+        require_run(&conn, &run_id)?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT batch_index, cohort_index, prefix_id, candidate_id, action, margin_kind \
+                 FROM active_elimination_decisions WHERE run_id = ?1 \
+                 ORDER BY batch_index, candidate_id LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(sql_error)?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![run_id, page.limit(), page.offset()],
+                |row| {
+                    Ok(ActiveEliminationRow {
+                        batch_index: row.get(0)?,
+                        cohort_index: row.get(1)?,
+                        prefix_id: row.get(2)?,
+                        candidate_id: row.get(3)?,
+                        action: row.get(4)?,
+                        margin_kind: row.get(5)?,
+                    })
+                },
+            )
+            .map_err(sql_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql_error)?;
+        Ok(Json(rows))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 /// `GET /api/bench/tuner/projection/runs/{run_id}/validation`

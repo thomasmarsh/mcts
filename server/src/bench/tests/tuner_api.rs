@@ -5,7 +5,10 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 
-use super::support::{body_json, default_seed, http_get, http_post_json, seeded_app};
+use super::support::{
+    body_json, default_seed, http_get, http_post_json, seeded_app,
+    seeded_app_with_state_signaller_and_tuner_db,
+};
 
 const V4: &str = "/api/bench/tuner/projection/runs/version4";
 const CAND0: &str = "candidate-130051c1c73a2aa1f25731bb5f9bf9fad38bd5f2852406cef837c5b14cc8fd90";
@@ -246,6 +249,180 @@ async fn live_science_rows_serve_from_a_partial_run() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{suffix}");
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn proposals_observations_and_shadow_decisions_respect_limit_and_offset() {
+    // `version4-partial` has 4 proposals, 28 observations, and 4 shadow
+    // decisions -- enough to exercise limit/offset without needing a
+    // synthetic fixture for the "under the default cap" claim.
+    let (app, root) = seeded_app(default_seed);
+    const P: &str = "/api/bench/tuner/projection/runs/version4-partial";
+
+    // Omitting limit/offset returns everything (all four cases are well
+    // under the 500 default).
+    let (_, body) = http_get(app.clone(), &format!("{P}/proposals")).await;
+    assert_eq!(body_json(&body).as_array().unwrap().len(), 4);
+
+    let (_, body) = http_get(app.clone(), &format!("{P}/proposals?limit=2")).await;
+    let first_two = body_json(&body);
+    assert_eq!(first_two.as_array().unwrap().len(), 2);
+
+    let (_, body) = http_get(app.clone(), &format!("{P}/proposals?limit=2&offset=2")).await;
+    let next_two = body_json(&body);
+    assert_eq!(next_two.as_array().unwrap().len(), 2);
+    assert_ne!(
+        first_two[0]["proposal_index"], next_two[0]["proposal_index"],
+        "offset should skip the first page"
+    );
+
+    let (_, body) = http_get(app.clone(), &format!("{P}/proposals?offset=10")).await;
+    assert!(body_json(&body).as_array().unwrap().is_empty());
+
+    let (_, body) = http_get(app.clone(), &format!("{P}/observations?limit=10")).await;
+    assert_eq!(body_json(&body).as_array().unwrap().len(), 10);
+    let (_, body) = http_get(app.clone(), &format!("{P}/observations?limit=10&offset=25")).await;
+    assert_eq!(body_json(&body).as_array().unwrap().len(), 3);
+
+    let (_, body) = http_get(app.clone(), &format!("{P}/shadow-decisions?limit=1")).await;
+    let first = body_json(&body);
+    assert_eq!(first.as_array().unwrap().len(), 1);
+    let (_, body) = http_get(app, &format!("{P}/shadow-decisions?limit=1&offset=1")).await;
+    let second = body_json(&body);
+    assert_eq!(second.as_array().unwrap().len(), 1);
+    assert_ne!(
+        first[0]["candidate_id"], second[0]["candidate_id"],
+        "offset should skip the first page"
+    );
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn science_row_pagination_clamps_like_pairs() {
+    let (app, root) = seeded_app(default_seed);
+    const P: &str = "/api/bench/tuner/projection/runs/version4-partial";
+
+    for (suffix, total) in [
+        ("proposals", 4),
+        ("observations", 28),
+        ("shadow-decisions", 4),
+        ("active-eliminations", 0),
+    ] {
+        // limit=0 clamps up to 1, so the response is never empty just because
+        // of a degenerate limit (except when the table itself is empty).
+        let (status, body) = http_get(app.clone(), &format!("{P}/{suffix}?limit=0")).await;
+        assert_eq!(status, StatusCode::OK, "{suffix}");
+        let rows = body_json(&body);
+        assert_eq!(rows.as_array().unwrap().len(), total.min(1), "{suffix}");
+
+        // A limit above the 5000 clamp still returns at most the table's rows.
+        let (status, body) = http_get(app.clone(), &format!("{P}/{suffix}?limit=999999")).await;
+        assert_eq!(status, StatusCode::OK, "{suffix}");
+        assert_eq!(
+            body_json(&body).as_array().unwrap().len(),
+            total,
+            "{suffix}"
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn science_row_endpoints_paginate_a_large_synthetic_run_without_blocking() {
+    // Build a purpose-made SQLite projection with one run carrying 6000
+    // observations -- well past the 5000 clamp -- and confirm a paginated
+    // request returns a bounded page while a concurrent, unrelated small
+    // request against the same connection pool completes promptly (a proxy
+    // for "the big scan doesn't serialize behind the async runtime thread").
+    use rusqlite::Connection;
+
+    let db_path = std::env::temp_dir().join(format!(
+        "mcts_tuner_projection_scale_test_{}_{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, manifest_run_id TEXT, \
+             manifest_fingerprint TEXT, terminal_status TEXT, report_available INTEGER NOT NULL, \
+             ingest_error TEXT);
+             CREATE TABLE observations (run_id TEXT NOT NULL, observation_id TEXT NOT NULL, \
+             candidate_id TEXT NOT NULL, phase TEXT NOT NULL, prefix_id TEXT NOT NULL, \
+             mean REAL NOT NULL, lower REAL NOT NULL, upper REAL NOT NULL, \
+             PRIMARY KEY (run_id, observation_id));
+             INSERT INTO runs (run_id, terminal_status, report_available, ingest_error) \
+             VALUES ('big', 'open', 0, NULL);",
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO observations \
+                     (run_id, observation_id, candidate_id, phase, prefix_id, mean, lower, upper) \
+                     VALUES ('big', ?1, 'cand', 'tuning', 'prefix', 0.5, 0.4, 0.6)",
+                )
+                .unwrap();
+            for i in 0..6000 {
+                stmt.execute([format!("obs-{i:06}")]).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    let (app, root, _state) = seeded_app_with_state_signaller_and_tuner_db(
+        default_seed,
+        std::sync::Arc::new(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "injected missing process",
+            ))
+        }),
+        db_path.clone(),
+    );
+
+    // A bounded page over the 6000-row table.
+    let (status, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/projection/runs/big/observations",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body).as_array().unwrap().len(), 500);
+
+    let (status, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/projection/runs/big/observations?limit=50&offset=5990",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body_json(&body).as_array().unwrap().len(), 10);
+
+    // A concurrent unrelated request (against the small default fixture-free
+    // `meta` route) finishes -- exercising that the big-table handler runs on
+    // a blocking thread rather than starving the runtime.
+    let meta_app = app.clone();
+    let (big_status, (meta_status, _)) = tokio::join!(
+        async {
+            http_get(
+                app,
+                "/api/bench/tuner/projection/runs/big/observations?limit=5000",
+            )
+            .await
+            .0
+        },
+        http_get(meta_app, "/api/bench/tuner/projection/meta"),
+    );
+    assert_eq!(big_status, StatusCode::OK);
+    assert_eq!(meta_status, StatusCode::OK);
+
+    std::fs::remove_dir_all(root).unwrap();
+    let _ = std::fs::remove_file(&db_path);
 }
 
 #[tokio::test]
