@@ -32,6 +32,7 @@ from .smac_proposer import SmacProposer
 from .space import build_space, default_values
 from .target import GameBinaryTarget, Target
 from .tasks import validate_cycle_endpoint
+from .telemetry import TelemetryWriter
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +101,8 @@ def run_foreground(
         write_report(directory)
         return directory / "report.json"
     model = model_proposer or proposer_for(options.proposer_policy, spec, manifest)
+    telemetry = TelemetryWriter(directory / "telemetry.jsonl")
+    telemetry.mark("session", resumed=int(options.resume))
     continue_run(
         manifest,
         writer,
@@ -109,6 +112,7 @@ def run_foreground(
         model,
         options.pair_timeout_seconds,
         executor,
+        telemetry,
     )
     write_report(directory)
     return directory / "report.json"

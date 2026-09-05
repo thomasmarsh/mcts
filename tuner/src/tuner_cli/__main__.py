@@ -170,6 +170,28 @@ def _plan_main(argv: list[str]) -> int:
     return 0
 
 
+def _trace_main(argv: list[str]) -> int:
+    """`tuner trace <run-dir> [-o OUT]` — render the wall-clock telemetry
+    sidecar (`telemetry.jsonl`) as a Chrome / Perfetto JSON Trace Profile.
+    Reads no scientific evidence and plays no game."""
+    from .telemetry import chrome_trace, read_spans
+
+    parser = argparse.ArgumentParser(prog="tuner trace")
+    parser.add_argument("run_dir", type=Path)
+    parser.add_argument("-o", "--output", type=Path, metavar="PATH")
+    args = parser.parse_args(argv)
+    try:
+        document = chrome_trace(read_spans(args.run_dir / "telemetry.jsonl"))
+    except (OSError, ValueError) as error:
+        print(f"tuner trace failed: {error}", file=sys.stderr)
+        return 1
+    if args.output is not None:
+        args.output.write_text(document + "\n", encoding="utf-8")
+    else:
+        print(document)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     # A subcommand-free argv is the foreground `run` (kept as the default so
@@ -180,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
         return _preflight_main(raw[1:])
     if raw and raw[0] == "plan":
         return _plan_main(raw[1:])
+    if raw and raw[0] == "trace":
+        return _trace_main(raw[1:])
     args = build_parser().parse_args(raw)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(message)s")
     try:

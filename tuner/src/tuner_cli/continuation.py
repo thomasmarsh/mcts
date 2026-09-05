@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
+
 from .allocator import (
     allocation_policy_version,
     decide_allocation,
@@ -92,6 +94,13 @@ from .replay import RunningFold, observation_payload
 from .schema import GameSpec
 from .selection import select_top_candidates, select_validation_shortlist
 from .target import PairExecutionError, Target
+from .telemetry import TelemetryWriter
+
+
+def _span(
+    telemetry: TelemetryWriter | None, name: str, **args: str | int
+) -> AbstractContextManager[None]:
+    return nullcontext() if telemetry is None else telemetry.span(name, args)
 
 
 def continue_run(
@@ -103,18 +112,23 @@ def continue_run(
     model: ModelProposer,
     timeout: int,
     executor: PairExecutor | None = None,
+    telemetry: TelemetryWriter | None = None,
 ) -> None:
     pairs = executor or SequentialPairExecutor()
     # Fold the log from scratch once (cold start or `--resume`), then keep the
     # accumulator in process and fold only each turn's freshly appended events.
-    fold = RunningFold.cold(manifest, read_events(writer.path))
+    with _span(telemetry, "cold_fold"):
+        fold = RunningFold.cold(manifest, read_events(writer.path))
     while True:
         state = fold.state()
         if state.terminal_status != "open":
             return
-        advance_one(manifest, writer, target, default, spec, model, timeout, state, pairs)
-        tail, total = tail_events(writer.path, since_seq=fold.sequence)
-        fold.advance(tail, total)
+        advance_one(
+            manifest, writer, target, default, spec, model, timeout, state, pairs, telemetry
+        )
+        with _span(telemetry, "fold"):
+            tail, total = tail_events(writer.path, since_seq=fold.sequence)
+            fold.advance(tail, total)
 
 
 def advance_one(
@@ -127,10 +141,13 @@ def advance_one(
     timeout: int,
     state: ReplayState,
     executor: PairExecutor,
+    telemetry: TelemetryWriter | None = None,
 ) -> None:
     match state.pending_resource_allocation:
         case IntroduceCandidate() | RefillCandidate():
-            writer.append(proposal_payload(create_proposal(manifest, state, default, spec, model)))
+            with _span(telemetry, "propose"):
+                proposal = create_proposal(manifest, state, default, spec, model)
+            writer.append(proposal_payload(proposal))
         case BeginValidation():
             select_finalists(manifest, writer, state)
         case EvaluateDiagnosticPair(_, _, task):
@@ -145,7 +162,7 @@ def advance_one(
             raise RuntimeError("suspension allocation must be folded immediately")
         case None:
             _advance_selected(
-                manifest, writer, target, default, spec, model, timeout, state, executor
+                manifest, writer, target, default, spec, model, timeout, state, executor, telemetry
             )
 
 
@@ -159,6 +176,7 @@ def _advance_selected(
     timeout: int,
     state: ReplayState,
     executor: PairExecutor,
+    telemetry: TelemetryWriter | None = None,
 ) -> None:
     decision = decide_allocation(manifest, state)
     if allocation := resource_allocation(decision, manifest, state):
@@ -169,7 +187,7 @@ def _advance_selected(
             proposal = proposal_at(state, proposal_index)
             writer.append(proposal_disposition(target, manifest, state, proposal))
         case ExecutePair():
-            execute_pairs(manifest, writer, target, state, timeout, executor)
+            execute_pairs(manifest, writer, target, state, timeout, executor, telemetry)
         case FailCandidate(failure):
             task = next(
                 item
@@ -224,12 +242,16 @@ def execute_pairs(
     state: ReplayState,
     timeout: int,
     executor: PairExecutor,
+    telemetry: TelemetryWriter | None = None,
 ) -> None:
     tasks = ready_pairs(manifest, state, executor.capacity)
-    jobs = tuple(_pair_job(manifest, state, task, timeout) for task in tasks)
-    for job in jobs:
-        writer.append(_pair_started_payload(job.task))
-    outcomes = executor.evaluate(target, jobs)
+    phase = tasks[0].task_case.phase if tasks else "none"
+    with _span(telemetry, "dispatch", phase=phase, pairs=len(tasks)):
+        jobs = tuple(_pair_job(manifest, state, task, timeout) for task in tasks)
+        for job in jobs:
+            writer.append(_pair_started_payload(job.task))
+    with _span(telemetry, "wait", phase=phase, pairs=len(jobs)):
+        outcomes = executor.evaluate(target, jobs)
     for outcome in outcomes:
         match outcome:
             case PairSucceeded(_, result):
