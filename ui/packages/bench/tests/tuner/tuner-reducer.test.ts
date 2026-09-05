@@ -4,7 +4,7 @@
 // TestStore's manual scheduler; every test winds them down so no sleep is
 // left pending.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { Effect } from "@mcts/core";
 import { createTestStore } from "../../../../tests/test-store.js";
 import {
@@ -854,6 +854,89 @@ describe("tunerReducer evidence — incremental fold and ticker", () => {
     // unrelated batch lands -- nothing re-maps the whole ticker on update.
     expect(draft.evidence.tickerLines[0]).toBe(firstLine);
     expect(draft.evidence.tickerLines).toHaveLength(2);
+  });
+});
+
+describe("tunerReducer — closes the evidence stream connection, not just the reducer's own flag", () => {
+  it("calls env.closeEvidenceStream when navigating away from a live run's overview", () => {
+    const closeEvidenceStream = vi.fn();
+    const env = mockTunerEnv({ closeEvidenceStream });
+    const draft = initialTunerState();
+    draft.runs = ok([runView({ run_id: "r1", status: "live" })]);
+    draft.openRunId = "r1";
+    draft.evidenceStreamActive = true;
+
+    tunerReducer(draft, { tag: "closeRun" }, env);
+
+    expect(closeEvidenceStream).toHaveBeenCalledTimes(1);
+    expect(draft.evidenceStreamActive).toBe(false);
+  });
+
+  it("does not call it when switching straight to a different live run (openEvidenceStream replaces it instead)", () => {
+    const closeEvidenceStream = vi.fn();
+    const env = mockTunerEnv({ closeEvidenceStream });
+    const draft = initialTunerState();
+    draft.runs = ok([
+      runView({ run_id: "r1", status: "live" }),
+      runView({ run_id: "r2", status: "live" }),
+    ]);
+    draft.openRunId = "r1";
+    draft.evidenceStreamActive = true;
+
+    tunerReducer(draft, { tag: "openRun", runId: "r2" }, env);
+
+    expect(closeEvidenceStream).not.toHaveBeenCalled();
+  });
+
+  it("does not call it again once the stream is already inactive", () => {
+    const closeEvidenceStream = vi.fn();
+    const env = mockTunerEnv({ closeEvidenceStream });
+    const draft = initialTunerState();
+    draft.openRunId = null;
+    draft.evidenceStreamActive = false;
+
+    tunerReducer(draft, { tag: "closeRun" }, env);
+
+    expect(closeEvidenceStream).not.toHaveBeenCalled();
+  });
+});
+
+describe("tunerReducer — stable references on an unchanged auto-refresh", () => {
+  const env = mockTunerEnv();
+
+  it("keeps the previous candidates array when a poll returns the same rows", () => {
+    const draft = initialTunerState();
+    const rows = [
+      { candidate_id: "c1", fingerprint: "f1", canonical_config: {}, cohort_index: 0, cohort_slot: 0, source: "schema_default", parent_candidate_id: null },
+      { candidate_id: "c2", fingerprint: "f2", canonical_config: {}, cohort_index: 0, cohort_slot: 1, source: "schema_default", parent_candidate_id: null },
+    ];
+    tunerReducer(draft, { tag: "candidatesLoaded", generation: 0, candidates: rows }, env);
+    const first = draft.candidates.status === "ok" ? draft.candidates.value : null;
+
+    // A later poll hands back a structurally identical but brand-new array
+    // (fresh off JSON.parse) -- the stored reference should not change, so
+    // every downstream chart memo keyed off it sees nothing to recompute.
+    const rowsAgain = JSON.parse(JSON.stringify(rows)) as typeof rows;
+    tunerReducer(draft, { tag: "candidatesLoaded", generation: 0, candidates: rowsAgain }, env);
+    const second = draft.candidates.status === "ok" ? draft.candidates.value : null;
+    expect(second).toBe(first);
+
+    // A genuinely new row does replace it.
+    tunerReducer(
+      draft,
+      {
+        tag: "candidatesLoaded",
+        generation: 0,
+        candidates: [
+          ...rows,
+          { candidate_id: "c3", fingerprint: "f3", canonical_config: {}, cohort_index: 1, cohort_slot: 0, source: "schema_default", parent_candidate_id: null },
+        ],
+      },
+      env,
+    );
+    const third = draft.candidates.status === "ok" ? draft.candidates.value : null;
+    expect(third).not.toBe(first);
+    expect(third).toHaveLength(3);
   });
 });
 

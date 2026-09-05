@@ -65,6 +65,15 @@ export interface TunerEnv {
    * `{kind:"error"}` and resolves. Opening a new stream closes the previous
    * one (the UI only ever follows one run at a time). */
   openEvidenceStream(runId: string, sinceSeq: number): Effect<EvidenceStreamMessage>;
+  /** Close whatever evidence stream is currently open, without opening a
+   * replacement. `openEvidenceStream` already closes the previous stream
+   * when a *new* one starts (switching between two live runs is
+   * self-cleaning), but nothing previously closed the connection when the
+   * reducer simply stops following one -- the run went non-live, or its
+   * overview was navigated away from -- leaving it open, still receiving
+   * and parsing every event, for as long as the tab lives. The reducer
+   * calls this the moment it decides a stream should stop. */
+  closeEvidenceStream(): void;
   refreshProjection(): Effect<ProjectionRefreshResult>;
   getProjectionMeta(): Effect<ProjectionMeta>;
   listProjectionRuns(): Effect<ProjectionRunListItem[]>;
@@ -139,6 +148,10 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
           },
         });
       }),
+    closeEvidenceStream: () => {
+      activeStream?.close();
+      activeStream = null;
+    },
     refreshProjection: () => lift(() => api.refreshProjection()),
     getProjectionMeta: () => lift(() => api.getProjectionMeta()),
     listProjectionRuns: () => lift(() => api.listProjectionRuns()),

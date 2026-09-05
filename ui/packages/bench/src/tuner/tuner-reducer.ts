@@ -18,7 +18,7 @@
 // different run or re-initialising invalidates whatever is still in flight.
 
 import { Effect } from "@mcts/core";
-import { idle, toErr, toLoading, toOk, peek, type RemoteData } from "./remote-data.js";
+import { idle, toErr, toLoading, toOk, toOkStableList, peek, type RemoteData } from "./remote-data.js";
 import { foldStep, freshLiveProgress, describeEvent } from "./models/evidence-fold.js";
 import {
   JOURNAL_POLL_MS,
@@ -560,6 +560,14 @@ function syncEvidenceStream(draft: TunerState, env: TunerEnv): Effect<TunerActio
   if (!live && draft.evidenceStreamActive) {
     draft.evidenceStreamActive = false;
     draft.evidenceGeneration += 1;
+    // Actually tear down the connection -- bumping the generation above only
+    // makes the reducer ignore whatever this stream sends next; without this
+    // call the real EventSource (and everything downstream of it: network
+    // socket, JSON parsing, batching) keeps running for as long as the tab
+    // lives, since nothing else ever closes it once the run stops being the
+    // one actively followed (only *replacing* it with another live run's
+    // stream does, in `openEvidenceStream`'s own `activeStream?.close()`).
+    env.closeEvidenceStream();
   }
   return null;
 }
@@ -1232,7 +1240,7 @@ export function tunerReducer(
       return null;
     case "candidatesLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
-      draft.candidates = toOk(action.candidates, Date.now());
+      draft.candidates = toOkStableList(draft.candidates, action.candidates, (c) => c.candidate_id);
       return null;
     case "candidatesFailed":
       if (action.generation !== draft.resourceGeneration) return null;
@@ -1240,7 +1248,7 @@ export function tunerReducer(
       return null;
     case "pairsLoaded":
       if (action.generation !== draft.pairsGeneration) return null;
-      draft.pairs = toOk(action.pairs, Date.now());
+      draft.pairs = toOkStableList(draft.pairs, action.pairs, (p) => p.pair_id);
       return null;
     case "pairsFailed":
       if (action.generation !== draft.pairsGeneration) return null;
@@ -1255,7 +1263,7 @@ export function tunerReducer(
     }
     case "proposalsLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
-      draft.proposals = toOk(action.proposals, Date.now());
+      draft.proposals = toOkStableList(draft.proposals, action.proposals, (p) => p.proposal_index);
       return null;
     case "proposalsFailed":
       if (action.generation !== draft.resourceGeneration) return null;
@@ -1263,7 +1271,11 @@ export function tunerReducer(
       return null;
     case "observationsLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
-      draft.observations = toOk(action.observations, Date.now());
+      draft.observations = toOkStableList(
+        draft.observations,
+        action.observations,
+        (o) => o.observation_id,
+      );
       return null;
     case "observationsFailed":
       if (action.generation !== draft.resourceGeneration) return null;
@@ -1271,7 +1283,7 @@ export function tunerReducer(
       return null;
     case "shadowDecisionsLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
-      draft.shadowDecisions = toOk(action.rows, Date.now());
+      draft.shadowDecisions = toOkStableList(draft.shadowDecisions, action.rows, (r) => r.race_index);
       return null;
     case "shadowDecisionsFailed":
       if (action.generation !== draft.resourceGeneration) return null;
@@ -1279,7 +1291,11 @@ export function tunerReducer(
       return null;
     case "activeEliminationsLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
-      draft.activeEliminations = toOk(action.rows, Date.now());
+      draft.activeEliminations = toOkStableList(
+        draft.activeEliminations,
+        action.rows,
+        (r) => r.batch_index,
+      );
       return null;
     case "activeEliminationsFailed":
       if (action.generation !== draft.resourceGeneration) return null;

@@ -51,6 +51,7 @@ export function mockTunerEnv(over: Partial<TunerEnv> = {}): TunerEnv {
     // events, no terminal action). Tests that exercise the ticker override
     // this with a scripted `Effect.stream`.
     openEvidenceStream: () => Effect.stream((_send, done) => done()),
+    closeEvidenceStream: () => {},
     refreshProjection: () =>
       Effect.send({ projected: 0, skipped: 0, ingest_errors: 0, pruned: 0 }),
     getProjectionMeta: () => Effect.send({ last_pass_at: null }),

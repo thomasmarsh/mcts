@@ -218,6 +218,44 @@ async fn pump_catchup_is_capped_for_a_long_established_run() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn pump_catchup_resumes_from_since_seq_without_resending_earlier_lines() {
+    let dir = std::env::temp_dir().join(format!("mcts_ev_resume_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("evidence.jsonl");
+    let total = 300u64;
+    let contents: String = (1..=total)
+        .map(|seq| format!("{}\n", line(seq, "pair_completed")))
+        .collect();
+    std::fs::write(&path, contents).unwrap();
+
+    let is_live: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let timing = StreamTiming {
+        poll: Duration::from_millis(10),
+        quiet_close: Duration::from_millis(50),
+        projection_notice: Duration::from_secs(3600),
+    };
+    // A reconnect partway through the log: everything at or before 200 was
+    // already delivered on the prior connection and must not come back.
+    let since_seq = 200;
+    let pump = tokio::spawn(pump_evidence(path.clone(), since_seq, is_live, tx, timing));
+
+    let mut count = 0u64;
+    while (tokio::time::timeout(Duration::from_millis(200), rx.recv()).await).is_ok_and(|frame| frame.is_some())
+    {
+        count += 1;
+        if count >= total - since_seq {
+            break;
+        }
+    }
+    assert_eq!(count, total - since_seq, "should resume after since_seq, not replay from the start");
+
+    drop(rx);
+    let _ = tokio::time::timeout(Duration::from_secs(1), pump).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Count frames until the channel goes quiet for `quiet`.
 async fn drain_quiet(
     rx: &mut tokio::sync::mpsc::Receiver<axum::response::sse::Event>,

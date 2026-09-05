@@ -13,9 +13,12 @@
 //!   and pushes appended lines through an mpsc channel. It sends a final
 //!   `event: end` and closes once the run is no longer `live` and no new line
 //!   has landed for 3 s, and ends immediately on client disconnect. Its
-//!   initial catch-up pass is capped at `CATCHUP_MAX` envelopes -- see that
-//!   constant's doc comment -- so opening an established run's page cannot
-//!   flood the client with its entire history.
+//!   initial catch-up pass runs on a blocking-pool thread (`read_catchup`),
+//!   decodes at most `CATCHUP_MAX` envelopes, and -- since sequences are
+//!   contiguous from 1 -- finds where to start decoding with a byte-level
+//!   newline scan rather than JSON-decoding (and discarding) every line
+//!   before it: a reconnect to an established run costs a linear scan of the
+//!   file's bytes, not a JSON parse of its entire history.
 //!
 //! The payload is passed through untouched; only `sequence` and `type` are
 //! read here. No evidence decode schema lives on the server side of this
@@ -181,9 +184,63 @@ async fn send_envelope(tx: &tokio::sync::mpsc::Sender<Event>, env: &Value) -> Re
 /// pair/phase tally, both of which the next projection fetch supersedes
 /// anyway. Sending the full backlog instead turns every open of an
 /// established run into a burst of thousands of SSE frames -- each one a
-/// client-side dispatch -- which is what actually made the tab unresponsive,
-/// not the (already bounded) rendering of any single frame.
+/// client-side dispatch.
 pub(crate) const CATCHUP_MAX: usize = 500;
+
+/// Byte offset just past the `n`th `\n` in `text` (i.e. past `n` complete
+/// lines), or `text.len()` if it has fewer than `n`. A plain byte scan, not a
+/// JSON decode -- evidence sequences are contiguous from 1, so "skip
+/// everything up to line N" never needs to parse the lines it's skipping,
+/// only count newlines up to them. `since_seq` on a reconnect, and "all but
+/// the last `CATCHUP_MAX` lines" on a fresh open, both reduce to this.
+fn offset_after_lines(text: &str, n: u64) -> usize {
+    if n == 0 {
+        return 0;
+    }
+    let mut seen = 0u64;
+    for (index, byte) in text.bytes().enumerate() {
+        if byte == b'\n' {
+            seen += 1;
+            if seen >= n {
+                return index + 1;
+            }
+        }
+    }
+    text.len()
+}
+
+/// The blocking half of a catch-up pass: read the file, skip straight to the
+/// byte offset of the first line actually worth decoding, and JSON-decode
+/// only from there. Run on a blocking-pool thread -- disk I/O and, for a
+/// large evidence.jsonl, the read itself are both real blocking work, and
+/// this must never sit on an async-runtime worker thread. Returns the
+/// envelopes to send, the byte offset to resume tailing from, and the
+/// highest sequence seen (the true end of file, independent of how much of
+/// the prefix was actually decoded).
+fn read_catchup(path: &Path, since_seq: u64) -> (Vec<Value>, u64, u64) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (Vec::new(), 0, since_seq);
+    };
+    let prefix = complete_prefix(&text);
+    let offset = prefix.len() as u64;
+    let total_lines = prefix.bytes().filter(|&b| b == b'\n').count() as u64;
+    // Skip decoding both what the client has already seen (`since_seq`) and,
+    // among what's left, anything older than the most recent `CATCHUP_MAX` --
+    // neither skip costs more than the byte scan above.
+    let skip_lines = since_seq.max(total_lines.saturating_sub(CATCHUP_MAX as u64));
+    let start = offset_after_lines(prefix, skip_lines);
+    let mut last_seq = since_seq;
+    let mut catchup = Vec::with_capacity(CATCHUP_MAX);
+    for line in prefix[start..].lines() {
+        if let Some((sequence, env)) = envelope(line) {
+            if sequence > last_seq {
+                last_seq = sequence;
+            }
+            catchup.push(env);
+        }
+    }
+    (catchup, offset, last_seq.max(total_lines))
+}
 
 pub(crate) async fn pump_evidence(
     path: PathBuf,
@@ -192,8 +249,6 @@ pub(crate) async fn pump_evidence(
     tx: tokio::sync::mpsc::Sender<Event>,
     timing: StreamTiming,
 ) {
-    let mut offset: u64 = 0;
-    let mut last_seq = since_seq;
     let mut last_line_at = Instant::now();
     // `projection-updated` debounce: the sequence we last nudged the client to
     // re-fetch at, and when. A frame goes out only once the evidence log has
@@ -205,32 +260,15 @@ pub(crate) async fn pump_evidence(
         .checked_sub(timing.projection_notice)
         .unwrap_or_else(Instant::now);
 
-    // Catch-up pass: everything already past `since_seq`, then park the byte
-    // cursor at the end of the last complete line. `last_seq` always advances
-    // to the true end of the file so the poll loop below never re-sends a
-    // dropped-for-being-too-old line; only which envelopes get *sent* is
-    // bounded, via a bounded ring that keeps just the most recent
-    // `CATCHUP_MAX` of them.
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let prefix = complete_prefix(&text);
-        offset = prefix.len() as u64;
-        let mut catchup: std::collections::VecDeque<Value> =
-            std::collections::VecDeque::with_capacity(CATCHUP_MAX);
-        for line in prefix.lines() {
-            if let Some((sequence, env)) = envelope(line) {
-                if sequence > last_seq {
-                    last_seq = sequence;
-                    if catchup.len() == CATCHUP_MAX {
-                        catchup.pop_front();
-                    }
-                    catchup.push_back(env);
-                }
-            }
-        }
-        for env in &catchup {
-            if send_envelope(&tx, env).await.is_err() {
-                return;
-            }
+    let catchup_path = path.clone();
+    let (catchup, mut offset, mut last_seq) =
+        match tokio::task::spawn_blocking(move || read_catchup(&catchup_path, since_seq)).await {
+            Ok(result) => result,
+            Err(_) => (Vec::new(), 0, since_seq),
+        };
+    for env in &catchup {
+        if send_envelope(&tx, env).await.is_err() {
+            return;
         }
     }
 
