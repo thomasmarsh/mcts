@@ -39,6 +39,7 @@ import type {
   ProjectionMeta,
   ProjectionProposal,
   ProjectionRunDetail,
+  ProjectionTelemetry,
   ProjectionRunListItem,
   ProjectionShadowDecision,
   ProjectionValidation,
@@ -156,6 +157,9 @@ export interface TunerState {
    * Reloaded (under a fresh `resourceGeneration`) whenever the open run
    * changes or a `projection/refresh` completes. */
   projectionDetail: RemoteData<ProjectionRunDetail>;
+  /** Wall-clock telemetry rollup for the open run — the run header's vitals
+   * source. Non-scientific; refreshed alongside the projection resources. */
+  telemetry: RemoteData<ProjectionTelemetry>;
   validation: RemoteData<ProjectionValidation>;
   candidates: RemoteData<ProjectionCandidate[]>;
   /** Evidence view: the open run's pair rows for the current `pairsPage`
@@ -280,6 +284,7 @@ export function initialTunerState(): TunerState {
     runPlanGeneration: 0,
     openRunId: null,
     projectionDetail: idle(),
+    telemetry: idle(),
     validation: idle(),
     candidates: idle(),
     pairs: idle(),
@@ -378,6 +383,8 @@ export type TunerAction =
   | { tag: "closeRun" }
   | { tag: "loadRunResources"; runId: string }
   | { tag: "detailLoaded"; generation: number; detail: ProjectionRunDetail }
+  | { tag: "telemetryLoaded"; generation: number; telemetry: ProjectionTelemetry }
+  | { tag: "telemetryFailed"; generation: number; error: string }
   | { tag: "detailFailed"; generation: number; error: string }
   | { tag: "validationLoaded"; generation: number; validation: ProjectionValidation }
   | { tag: "validationFailed"; generation: number; error: string }
@@ -671,6 +678,10 @@ function fetchRunResources(
       .map((validation): TunerAction => ({ tag: "validationLoaded", generation, validation }))
       .catch((e): TunerAction => ({ tag: "validationFailed", generation, error: String(e) })),
     env
+      .getProjectionTelemetry(runId)
+      .map((telemetry): TunerAction => ({ tag: "telemetryLoaded", generation, telemetry }))
+      .catch((e): TunerAction => ({ tag: "telemetryFailed", generation, error: String(e) })),
+    env
       .getProjectionCandidates(runId)
       .map((candidates): TunerAction => ({ tag: "candidatesLoaded", generation, candidates }))
       .catch((e): TunerAction => ({ tag: "candidatesFailed", generation, error: String(e) })),
@@ -704,6 +715,7 @@ function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Eff
   draft.resourceGeneration += 1;
   draft.pairsGeneration = draft.resourceGeneration;
   draft.projectionDetail = toLoading(draft.projectionDetail);
+  draft.telemetry = toLoading(draft.telemetry);
   draft.validation = toLoading(draft.validation);
   draft.candidates = toLoading(draft.candidates);
   draft.pairs = toLoading(draft.pairs);
@@ -720,6 +732,7 @@ function clearResources(draft: TunerState): void {
   draft.pairsGeneration = draft.resourceGeneration;
   draft.pairsPage = { limit: draft.pairsPage.limit, offset: 0 };
   draft.projectionDetail = idle();
+  draft.telemetry = idle();
   draft.validation = idle();
   draft.candidates = idle();
   draft.pairs = idle();
@@ -1214,6 +1227,14 @@ export function tunerReducer(
     case "detailFailed":
       if (action.generation !== draft.resourceGeneration) return null;
       draft.projectionDetail = toErr(action.error, draft.projectionDetail);
+      return null;
+    case "telemetryLoaded":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.telemetry = toOk(action.telemetry, Date.now());
+      return null;
+    case "telemetryFailed":
+      if (action.generation !== draft.resourceGeneration) return null;
+      draft.telemetry = toErr(action.error, draft.telemetry);
       return null;
     case "validationLoaded":
       if (action.generation !== draft.resourceGeneration) return null;

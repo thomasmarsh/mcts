@@ -175,6 +175,12 @@ pub(crate) struct ManifestSummary {
     task_seed: i64,
     shadow_policy_kind: String,
     active_elimination: bool,
+    /// Resolved pair-attempt budgets from the manifest's `compute_budget`
+    /// block — the denominator the run header anchors its progress bar and
+    /// ETA on. `None` for a legacy manifest that predates the block.
+    tuning_pair_budget: Option<i64>,
+    validation_pair_budget: Option<i64>,
+    diagnostic_pair_budget: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -436,9 +442,19 @@ pub(crate) async fn run_detail(
     let manifest = conn
         .query_row(
             "SELECT game_kind, objective_id, cohort_size, finalists, seed, task_seed, \
-                    shadow_policy_kind, active_elimination FROM run_manifest WHERE run_id = ?1",
+                    shadow_policy_kind, active_elimination, manifest_json \
+             FROM run_manifest WHERE run_id = ?1",
             [&run_id],
             |row| {
+                let budget = serde_json::from_str::<Value>(&row.get::<_, String>(8)?)
+                    .ok()
+                    .and_then(|m| m.get("compute_budget").cloned());
+                let budget_field = |key: &str| {
+                    budget
+                        .as_ref()
+                        .and_then(|b| b.get(key))
+                        .and_then(Value::as_i64)
+                };
                 Ok(ManifestSummary {
                     manifest_run_id: manifest_run_id.clone(),
                     manifest_fingerprint: manifest_fingerprint.clone(),
@@ -450,6 +466,9 @@ pub(crate) async fn run_detail(
                     task_seed: row.get(5)?,
                     shadow_policy_kind: row.get(6)?,
                     active_elimination: row.get::<_, i64>(7)? != 0,
+                    tuning_pair_budget: budget_field("tuning_pair_attempts"),
+                    validation_pair_budget: budget_field("validation_pair_attempts"),
+                    diagnostic_pair_budget: budget_field("diagnostic_pair_attempts"),
                 })
             },
         )

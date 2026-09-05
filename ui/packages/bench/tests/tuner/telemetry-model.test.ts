@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  budgetPairsFromManifest,
   deriveContenderRecords,
   deriveVitals,
   formatRecord,
+  summarizeVitals,
 } from "../../src/tuner/models/telemetry-model.js";
 import type {
   ProjectionComputePhase,
+  ProjectionManifestSummary,
   ProjectionPairRow,
   ProjectionTelemetry,
 } from "../../src/tuner/tuner-types.js";
@@ -106,6 +109,65 @@ describe("deriveVitals", () => {
       nowMs: 0,
     });
     expect(v.etaMs).toBe(0);
+  });
+});
+
+describe("budgetPairsFromManifest", () => {
+  const manifest = (over: Partial<ProjectionManifestSummary> = {}): ProjectionManifestSummary => ({
+    manifest_run_id: "r",
+    manifest_fingerprint: "f",
+    game_kind: "druid",
+    objective_id: "o",
+    cohort_size: 4,
+    finalists: 2,
+    seed: 1,
+    task_seed: 2,
+    shadow_policy_kind: "none",
+    active_elimination: false,
+    tuning_pair_budget: 84,
+    validation_pair_budget: 4,
+    diagnostic_pair_budget: 0,
+    ...over,
+  });
+
+  it("sums the three budget legs", () => {
+    expect(budgetPairsFromManifest(manifest())).toBe(88);
+  });
+
+  it("is null for a legacy manifest missing a leg, or no manifest", () => {
+    expect(budgetPairsFromManifest(manifest({ diagnostic_pair_budget: null }))).toBeNull();
+    expect(budgetPairsFromManifest(null)).toBeNull();
+  });
+});
+
+describe("summarizeVitals", () => {
+  it("formats the KPI tiles, budget fraction and ETA", () => {
+    const view = summarizeVitals({
+      telemetry: telemetry(),
+      compute: [phase({ completed_pairs: 40, wall_time_ms: 1_600_000 })],
+      budgetPairs: 100,
+      live: false,
+      nowMs: 0,
+    });
+    expect(view.progressFraction).toBe(0.4);
+    expect(view.etaLabel).toBe("50m 0s");
+    const byLabel = new Map(view.kpis.map((k) => [k.label, k.value]));
+    expect(byLabel.get("effective parallelism")).toBe("2.00×");
+    expect(byLabel.get("loop overhead")).toBe("20%");
+    expect(byLabel.get("s / pair")).toBe("50.0s");
+    expect(byLabel.get("pairs done")).toBe("40 / 100");
+  });
+
+  it("drops the budget bar and ETA when the budget is unknown, and shows a sessions tile on resume", () => {
+    const view = summarizeVitals({
+      telemetry: telemetry({ sessions: 2 }),
+      compute: [phase({ completed_pairs: 5 })],
+      live: false,
+      nowMs: 0,
+    });
+    expect(view.progressFraction).toBeNull();
+    expect(view.etaLabel).toBeNull();
+    expect(view.kpis.some((k) => k.label === "sessions" && k.value === "2")).toBe(true);
   });
 });
 

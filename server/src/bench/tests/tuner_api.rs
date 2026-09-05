@@ -77,6 +77,9 @@ async fn run_detail() {
     assert_eq!(detail["manifest"]["cohort_size"], 4);
     assert_eq!(detail["manifest"]["finalists"], 2);
     assert_eq!(detail["manifest"]["active_elimination"], false);
+    assert_eq!(detail["manifest"]["tuning_pair_budget"], 84);
+    assert_eq!(detail["manifest"]["validation_pair_budget"], 4);
+    assert_eq!(detail["manifest"]["diagnostic_pair_budget"], 0);
     assert_eq!(detail["report"]["schema_version"], 5);
     assert_eq!(detail["report"]["status"], "complete");
     let phases: Vec<&str> = detail["compute"]

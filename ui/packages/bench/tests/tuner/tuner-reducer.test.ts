@@ -28,6 +28,26 @@ function ok<T>(value: T): RemoteData<T> {
   return { status: "ok", value, fetchedAt: expect.any(Number) as unknown as number };
 }
 
+// The resource-fanout tests below override `getProjectionTelemetry` with
+// this fixed rollup so a single `replace_all`-friendly receive helper can
+// consume the `telemetryLoaded` action regardless of run id.
+const FIXED_TELEMETRY = {
+  run_id: "r",
+  sessions: 0,
+  first_start_us: null,
+  last_end_us: null,
+  wall_span_us: 0,
+  loop_active_us: 0,
+  wait_us: 0,
+  lanes: [],
+};
+
+const receiveTelemetry = (ts: ReturnType<typeof store>, generation: number): void => {
+  ts.receive({ tag: "telemetryLoaded", generation, telemetry: FIXED_TELEMETRY }, (s) => {
+    s.telemetry = ok(FIXED_TELEMETRY);
+  });
+};
+
 const loadingAll = (s: TunerState): void => {
   s.tunableGames = { status: "loading" };
   s.objectives = { status: "loading" };
@@ -126,6 +146,7 @@ describe("tunerReducer", () => {
       tunerReducer,
       mockTunerEnv({
         listRuns: () => Effect.send([runView({ run_id: "r1", status: "exited" })]),
+        getProjectionTelemetry: () => Effect.send(FIXED_TELEMETRY),
         refreshProjection: () => {
           refreshes += 1;
           return Effect.send({ projected: 1, skipped: 0, ingest_errors: 0, pruned: 0 });
@@ -160,6 +181,7 @@ describe("tunerReducer", () => {
         s.validation = ok({ rows: [], unresolved_ties: null });
       },
     );
+    receiveTelemetry(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -216,6 +238,7 @@ describe("tunerReducer", () => {
         s.validation = ok({ rows: [], unresolved_ties: null });
       },
     );
+    receiveTelemetry(ts, 2);
     ts.receive({ tag: "candidatesLoaded", generation: 2, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -252,6 +275,7 @@ describe("tunerReducer", () => {
     const ts = createTestStore<TunerState, TunerAction, TunerEnv>(
       tunerReducer,
       mockTunerEnv({
+        getProjectionTelemetry: () => Effect.send(FIXED_TELEMETRY),
         refreshProjection: () => {
           refreshes += 1;
           return Effect.send({ projected: 1, skipped: 0, ingest_errors: 0, pruned: 0 });
@@ -299,6 +323,7 @@ describe("tunerReducer", () => {
         s.validation = ok({ rows: [], unresolved_ties: null });
       },
     );
+    receiveTelemetry(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -332,6 +357,7 @@ describe("tunerReducer", () => {
       s.resourceGeneration = 2;
       s.pairsGeneration = 2;
       s.projectionDetail = { status: "idle" };
+      s.telemetry = { status: "idle" };
       s.validation = { status: "idle" };
       s.candidates = { status: "idle" };
       s.pairs = { status: "idle" };
@@ -367,6 +393,7 @@ describe("tunerReducer", () => {
           Effect.send({ lines: ["cohort 0 starting"], next_offset: 17, err_lines: [], err_next_offset: 0 }),
         listRuns: () => Effect.send([runView({ run_id: "fresh", status: "exited" })]),
         getProjectionRun: () => Effect.send(detail),
+        getProjectionTelemetry: () => Effect.send(FIXED_TELEMETRY),
       }),
     );
 
@@ -384,6 +411,7 @@ describe("tunerReducer", () => {
       s.evidenceStreamActive = true;
       s.evidenceGeneration = 1;
       s.projectionDetail = { status: "loading" };
+      s.telemetry = { status: "loading" };
       s.validation = { status: "loading" };
       s.candidates = { status: "loading" };
       s.pairs = { status: "loading" };
@@ -406,6 +434,7 @@ describe("tunerReducer", () => {
         s.validation = ok({ rows: [], unresolved_ties: null });
       },
     );
+    receiveTelemetry(ts, 1);
     ts.receive({ tag: "candidatesLoaded", generation: 1, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });
@@ -477,6 +506,7 @@ describe("tunerReducer", () => {
         s.validation = ok({ rows: [], unresolved_ties: null });
       },
     );
+    receiveTelemetry(ts, 2);
     ts.receive({ tag: "candidatesLoaded", generation: 2, candidates: [] }, (s) => {
       s.candidates = ok([]);
     });

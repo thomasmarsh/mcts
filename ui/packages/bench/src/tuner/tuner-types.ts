@@ -348,6 +348,12 @@ export interface ProjectionManifestSummary {
   task_seed: number;
   shadow_policy_kind: string;
   active_elimination: boolean;
+  /** Resolved pair-attempt budgets from the manifest's `compute_budget`
+   * block — the denominator the run header's progress bar and ETA anchor
+   * on. `null` for a legacy manifest that predates the block. */
+  tuning_pair_budget: number | null;
+  validation_pair_budget: number | null;
+  diagnostic_pair_budget: number | null;
 }
 
 export interface ProjectionReportSummary {

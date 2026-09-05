@@ -7,9 +7,12 @@
 
 import type {
   ProjectionComputePhase,
+  ProjectionManifestSummary,
   ProjectionPairRow,
   ProjectionTelemetry,
 } from "../tuner-types.js";
+import type { KpiItem } from "../primitives/KpiRow.js";
+import { formatWall } from "./progress-model.js";
 
 const sum = (xs: number[]): number => xs.reduce((a, b) => a + b, 0);
 
@@ -91,6 +94,96 @@ export function deriveVitals(input: VitalsInput): RunVitals {
     etaMs,
     sessions: telemetry.sessions,
   };
+}
+
+/** Total resolved pair-attempt budget from the manifest's `compute_budget`
+ * block, or `null` when any leg is missing (a legacy manifest) — which
+ * leaves the ETA and the budget-anchored progress bar unrendered rather
+ * than guessing at a denominator. */
+export function budgetPairsFromManifest(
+  manifest: ProjectionManifestSummary | null | undefined,
+): number | null {
+  if (!manifest) return null;
+  const { tuning_pair_budget, validation_pair_budget, diagnostic_pair_budget } = manifest;
+  if (
+    tuning_pair_budget == null ||
+    validation_pair_budget == null ||
+    diagnostic_pair_budget == null
+  ) {
+    return null;
+  }
+  return tuning_pair_budget + validation_pair_budget + diagnostic_pair_budget;
+}
+
+export interface VitalsView {
+  /** Stat tiles for the run header, already formatted. */
+  kpis: KpiItem[];
+  /** `completedPairs / budgetPairs` in [0, 1], or `null` when the budget is
+   * unknown (no budget bar rendered). */
+  progressFraction: number | null;
+  /** Human ETA (`"3h 20m"`), or `null` when the budget or rate is unknown. */
+  etaLabel: string | null;
+  /** > 1 once the run has resumed at least once. */
+  sessions: number;
+}
+
+const ratio = (x: number | null, unit: string): string =>
+  x == null ? "—" : `${x.toFixed(2)}${unit}`;
+
+/** Reshape `deriveVitals` output into the run header's display bundle. Pure
+ * formatting — the arithmetic is all in `deriveVitals`. */
+export function summarizeVitals(input: VitalsInput): VitalsView {
+  const v = deriveVitals(input);
+  const budget = input.budgetPairs ?? null;
+
+  const kpis: KpiItem[] = [
+    {
+      label: "elapsed wall",
+      value: formatWall(v.elapsedWallMs),
+      hint: "Wall time the run has been going, spanning any resume sleep gap.",
+    },
+    {
+      label: "game compute",
+      value: formatWall(v.gameComputeMs),
+      hint: "Cumulative game-subprocess compute; exceeds elapsed wall once parallelism > 1.",
+    },
+    {
+      label: "effective parallelism",
+      value: ratio(v.effectiveParallelism, "×"),
+      hint: "Games in flight per wall-second the loop spends waiting on subprocesses.",
+    },
+    {
+      label: "loop overhead",
+      value:
+        v.loopOverheadFraction == null
+          ? "—"
+          : `${(v.loopOverheadFraction * 100).toFixed(0)}%`,
+      hint: "Share of the critical path that is the run loop's own single-threaded work.",
+    },
+    {
+      label: "s / pair",
+      value: v.secPerPair == null ? "—" : `${v.secPerPair.toFixed(1)}s`,
+      hint: "Lifetime average wall time per completed pair.",
+    },
+    {
+      label: "pairs done",
+      value: budget == null ? `${v.completedPairs}` : `${v.completedPairs} / ${budget}`,
+      hint: "Completed pairs against the resolved pair-attempt budget.",
+    },
+  ];
+  if (v.sessions > 1) {
+    kpis.push({
+      label: "sessions",
+      value: `${v.sessions}`,
+      hint: "Run-loop processes that have touched this run; > 1 means it resumed.",
+    });
+  }
+
+  const progressFraction =
+    budget != null && budget > 0 ? Math.min(1, v.completedPairs / budget) : null;
+  const etaLabel = v.etaMs == null ? null : formatWall(v.etaMs);
+
+  return { kpis, progressFraction, etaLabel, sessions: v.sessions };
 }
 
 export interface ContenderRecord {

@@ -3227,6 +3227,49 @@ body.bench-active #analysis-panel {
   margin-bottom: 6px;
 }
 
+.tuner-run-vitals {
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 14px 0;
+  background: #1a1b22;
+}
+
+.tuner-run-vitals-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.tuner-run-vitals-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.tuner-vitals-eta {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  color: #7fd18b;
+}
+
+.tuner-vitals-eta--none {
+  color: #808291;
+}
+
+.tuner-vitals-bar {
+  height: 6px;
+  background: #2a2b33;
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.tuner-vitals-fill {
+  height: 100%;
+  background: #4a6ee0;
+}
+
 .tuner-progress-bar {
   height: 6px;
   background: #2a2b33;

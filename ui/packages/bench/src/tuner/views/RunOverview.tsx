@@ -10,6 +10,8 @@ import { peek } from "../remote-data.js";
 import type { TunerAction, TunerState } from "../tuner-reducer.js";
 import type { TunerRoute } from "../tuner-routes.js";
 import { deriveProgress } from "../models/progress-model.js";
+import { summarizeVitals, budgetPairsFromManifest } from "../models/telemetry-model.js";
+import { RunVitals } from "../primitives/RunVitals.js";
 import { deriveVerdict } from "../models/verdict-model.js";
 import { schemaDefaults } from "../models/config-diff-model.js";
 import { deriveConvergence } from "../models/science-models.js";
@@ -139,6 +141,23 @@ export const RunOverview: Component<{
   const convergence = createMemo(() =>
     deriveConvergence(peek(state().report), cohorts(), peek(state().observations) ?? []),
   );
+
+  // Wall-clock vitals: the ETA, the budget-anchored burn, and the
+  // performance table (parallelism, loop overhead, s/pair). Rendered as
+  // soon as the telemetry rollup has landed, live or finished.
+  const telemetry = createMemo(() => peek(state().telemetry));
+  const vitals = createMemo(() => {
+    const t = telemetry();
+    if (!t) return null;
+    return summarizeVitals({
+      telemetry: t,
+      compute: detail()?.compute ?? [],
+      budgetPairs: budgetPairsFromManifest(detail()?.manifest),
+      live: live(),
+      startedAt: journalRow()?.started_at ?? null,
+      nowMs: Date.now(),
+    });
+  });
 
   const progress = createMemo(() =>
     deriveProgress({
@@ -308,6 +327,10 @@ export const RunOverview: Component<{
           compute={detail()?.compute}
           live={liveProgress()}
         />
+
+        <Show when={vitals()}>
+          <RunVitals view={vitals()!} />
+        </Show>
 
         <Show when={convergence().present && convergence().steps.length > 1}>
           <section class="tuner-overview-sparkline" data-testid="overview-convergence">

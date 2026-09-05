@@ -160,4 +160,16 @@ export {
   type ProgressSummary,
   type ProgressInput,
 } from "./models/progress-model.js";
+export {
+  deriveVitals,
+  summarizeVitals,
+  budgetPairsFromManifest,
+  deriveContenderRecords,
+  formatRecord,
+  type VitalsInput,
+  type RunVitals,
+  type VitalsView,
+  type ContenderRecord,
+  type ContenderRecords,
+} from "./models/telemetry-model.js";
 export type * from "./tuner-types.js";
