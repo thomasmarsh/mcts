@@ -207,12 +207,6 @@ export const RunOverview: Component<{
             {state().resumeBusy ? "Resuming…" : "Resume"}
           </button>
         </Show>
-        <button
-          onClick={() => dispatch({ tag: "refreshProjection" })}
-          disabled={state().refreshing}
-        >
-          {state().refreshing ? "Refreshing…" : "Refresh science"}
-        </button>
       </div>
 
       <Show when={journalRow()?.run_dir}>
@@ -221,11 +215,6 @@ export const RunOverview: Component<{
       <Show when={state().stopError}>
         <div class="launch-error" role="alert">
           {state().stopError}
-        </div>
-      </Show>
-      <Show when={state().refreshError}>
-        <div class="launch-error" role="alert">
-          {state().refreshError}
         </div>
       </Show>
       <Show when={state().resumeError}>

@@ -13,7 +13,7 @@
 //   - the open run's projection auto-refresh: while the open run is live,
 //     re-runs the projector every `PROJECTION_REFRESH_MS` and silently
 //     reloads the per-run science, so the overview / science / evidence
-//     views fill in and keep updating without a manual "Refresh science".
+//     views fill in and keep updating on their own.
 // Each loop carries the generation it was scheduled under; opening a
 // different run or re-initialising invalidates whatever is still in flight.
 
@@ -236,17 +236,13 @@ export interface TunerState {
   resumeError: string | null;
   /** true while a resume POST is in flight, so the button is held. */
   resumeBusy: boolean;
-  /** true while a manual `projection/refresh` POST is in flight. */
-  refreshing: boolean;
-  refreshError: string | null;
   lastProjectionRefreshAt: number | null;
   /** `projection_meta.last_pass_at` from the server — the headless follower's
    * last pass. Used for the fleet freshness indicator on a cold open, before
    * this tab has ever driven a refresh of its own. */
   projectionLastPassAt: string | null;
   /** true while an automatic (loop-driven) `projection/refresh` POST is in
-   * flight — kept separate from `refreshing` so the manual button's spinner
-   * doesn't flicker every cadence. */
+   * flight. */
   autoRefreshing: boolean;
   /** true while the projection auto-refresh loop is scheduled for the open
    * live run. */
@@ -313,8 +309,6 @@ export function initialTunerState(): TunerState {
     extendSeq: 0,
     resumeError: null,
     resumeBusy: false,
-    refreshing: false,
-    refreshError: null,
     lastProjectionRefreshAt: null,
     projectionLastPassAt: null,
     autoRefreshing: false,
@@ -366,9 +360,6 @@ export type TunerAction =
   | { tag: "projectionFailed"; error: string }
   | { tag: "projectionMetaLoaded"; meta: ProjectionMeta }
   | { tag: "projectionUpdatedPush"; generation: number }
-  | { tag: "refreshProjection" }
-  | { tag: "refreshDone" }
-  | { tag: "refreshFailed"; error: string }
   | { tag: "projectionRefreshTick"; generation: number }
   | { tag: "autoRefreshProjection" }
   | { tag: "autoRefreshDone" }
@@ -976,7 +967,7 @@ export function tunerReducer(
       // A run just went terminal — pull a fresh projection so the completed
       // list gains its row without waiting for a manual refresh.
       if (after < before) {
-        effects.push(Effect.send<TunerAction>({ tag: "refreshProjection" }));
+        effects.push(Effect.send<TunerAction>({ tag: "autoRefreshProjection" }));
       }
       // The open run's liveness may have changed with this poll — start or
       // stop its projection auto-refresh loop and evidence follower to match.
@@ -1031,29 +1022,6 @@ export function tunerReducer(
       );
     }
 
-    case "refreshProjection": {
-      if (draft.refreshing) return null;
-      draft.refreshing = true;
-      draft.refreshError = null;
-      return env
-        .refreshProjection()
-        .map((): TunerAction => ({ tag: "refreshDone" }))
-        .catch((e): TunerAction => ({ tag: "refreshFailed", error: String(e) }));
-    }
-    case "refreshDone": {
-      draft.refreshing = false;
-      draft.scienceStale = false;
-      draft.lastProjectionRefreshAt = Date.now();
-      const list = fetchProjection(env);
-      return draft.openRunId
-        ? Effect.merge(list, startResourceLoad(draft, env, draft.openRunId))
-        : list;
-    }
-    case "refreshFailed":
-      draft.refreshing = false;
-      draft.refreshError = action.error;
-      return null;
-
     case "projectionRefreshTick": {
       if (
         action.generation !== draft.projectionRefreshGeneration ||
@@ -1078,15 +1046,13 @@ export function tunerReducer(
       );
     }
     case "autoRefreshProjection": {
-      // A manual refresh in flight already covers this cadence.
-      if (draft.refreshing || draft.autoRefreshing) return null;
+      if (draft.autoRefreshing) return null;
       draft.autoRefreshing = true;
       return env
         .refreshProjection()
         .map((): TunerAction => ({ tag: "autoRefreshDone" }))
-        // A periodic refresh that fails is non-critical: the launch-log tail
-        // still shows progress and the next tick tries again. Don't raise
-        // `refreshError` — that banner is for the manual button.
+        // A projection refresh that fails is non-critical: the launch-log tail
+        // still shows progress and the next tick tries again.
         .catch((): TunerAction => ({ tag: "autoRefreshDone" }));
     }
     case "autoRefreshDone": {
@@ -1147,7 +1113,10 @@ export function tunerReducer(
       // A launch that failed fast still leaves a journalled, dead run — pull
       // the journal (and reproject) so the fleet shows it as "failed to
       // start" with its diagnostics rather than nothing at all.
-      return Effect.merge(fetchJournal(env), Effect.send<TunerAction>({ tag: "refreshProjection" }));
+      return Effect.merge(
+        fetchJournal(env),
+        Effect.send<TunerAction>({ tag: "autoRefreshProjection" }),
+      );
 
     case "preflight": {
       draft.preflightGeneration += 1;

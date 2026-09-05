@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -444,3 +445,28 @@ def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
         assert value == ("2",)
     finally:
         store.close()
+
+
+def test_open_store_rebuilds_on_schema_version_mismatch(tmp_path: Path) -> None:
+    db_path = tmp_path / "p.sqlite"
+    project_runs(PROJECTION_ROOT, db_path, rebuild=True)
+    original_ids = sorted(open_store(db_path).projected_run_ids())
+
+    stale = sqlite3.connect(db_path)
+    stale.execute("UPDATE projection_meta SET value = '1' WHERE key = 'projection_schema_version'")
+    stale.commit()
+    stale.close()
+
+    store = open_store(db_path)
+    try:
+        assert store._connection.execute(  # noqa: SLF001
+            "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
+        ).fetchone() == ("2",)
+        # The file was dropped and recreated fresh, so it holds no run rows until
+        # the next projection pass re-populates it.
+        assert store.projected_run_ids() == []
+    finally:
+        store.close()
+
+    project_runs(PROJECTION_ROOT, db_path, rebuild=False)
+    assert sorted(open_store(db_path).projected_run_ids()) == original_ids

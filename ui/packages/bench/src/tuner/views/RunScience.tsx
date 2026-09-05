@@ -111,7 +111,6 @@ export const RunScience: Component<{
   navigate: (route: TunerRoute) => void;
 }> = (props) => {
   const state = props.store.getState();
-  const dispatch = props.store.dispatch;
 
   const report = createMemo(() => peek(state().report));
   const candidates = createMemo(() => peek(state().candidates));
@@ -190,12 +189,6 @@ export const RunScience: Component<{
           ← Overview
         </button>
         <h2>{props.runId} · science</h2>
-        <button
-          onClick={() => dispatch({ tag: "refreshProjection" })}
-          disabled={state().refreshing}
-        >
-          {state().refreshing ? "Refreshing…" : "Refresh science"}
-        </button>
       </div>
 
       <Show when={!report() && anyLoading()}>

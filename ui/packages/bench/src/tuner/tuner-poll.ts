@@ -6,14 +6,14 @@
 //   - the fleet journal (`GET /runs`): cheap, liveness only. Poll while any
 //     run is `live`; stop once every run has exited.
 //   - the projection refresh for the *open* run: expensive (re-runs the
-//     projector). Auto-refresh only while that run is `live`; once it has
-//     exited the run-dir is authority and won't change, so switch to a
-//     manual "Refresh science" button.
+//     projector). Auto-refresh only while that run is `live` and its evidence
+//     stream has failed; once it has exited the run-dir is authority and the
+//     headless follower keeps the projection current on its own.
 
 export const JOURNAL_POLL_MS = 3_000;
 /** Auto-refresh cadence for the open run's projection while it is live. Fast
  * enough that convergence / funnel / race / observations move on-screen every
- * few pair completions without a manual "Refresh science". */
+ * few pair completions on their own. */
 export const PROJECTION_REFRESH_MS = 6_000;
 /** One accelerated cycle immediately after the evidence stream reports a new
  * *scientific* event, so a burst of pair completions pulls the science

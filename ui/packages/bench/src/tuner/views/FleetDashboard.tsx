@@ -96,12 +96,6 @@ export const FleetDashboard: Component<{
         </div>
         <div class="tuner-fleet-actions">
           <span class="tuner-fleet-freshness">{freshness()}</span>
-          <button
-            onClick={() => dispatch({ tag: "refreshProjection" })}
-            disabled={state().refreshing}
-          >
-            {state().refreshing ? "Refreshing…" : "Refresh science"}
-          </button>
           <button onClick={() => props.navigate({ view: "objectives" })}>Manage objectives</button>
           <button onClick={() => props.navigate({ view: "profiles" })}>Manage profiles</button>
           <button class="tuner-fleet-new" onClick={() => props.navigate({ view: "launch" })}>
@@ -109,12 +103,6 @@ export const FleetDashboard: Component<{
           </button>
         </div>
       </div>
-
-      <Show when={state().refreshError}>
-        <div class="launch-error" role="alert">
-          {state().refreshError}
-        </div>
-      </Show>
 
       <Show when={state().deleteError}>
         <div class="launch-error" role="alert">

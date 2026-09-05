@@ -69,12 +69,6 @@ export const RunEvidence: Component<{
           ← Overview
         </button>
         <h2>{props.runId} · evidence</h2>
-        <button
-          onClick={() => dispatch({ tag: "refreshProjection" })}
-          disabled={state().refreshing}
-        >
-          {state().refreshing ? "Refreshing…" : "Refresh"}
-        </button>
       </div>
 
       <section class="tuner-evidence-section">

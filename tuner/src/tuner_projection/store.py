@@ -273,6 +273,10 @@ def _field(row: object, name: str) -> str | int | float | None:
 
 
 def open_store(db_path: Path) -> Store:
+    if db_path.exists() and _schema_version(db_path) != PROJECTION_SCHEMA_VERSION:
+        # The projection is a rebuildable read model, so a file left behind by
+        # an older schema is not an error: drop it and re-project from scratch.
+        db_path.unlink()
     fresh = not db_path.exists()
     connection = sqlite3.connect(db_path)
     connection.execute("PRAGMA foreign_keys = ON")
@@ -285,6 +289,20 @@ def open_store(db_path: Path) -> Store:
         connection.commit()
     _check_schema_version(connection)
     return Store(connection)
+
+
+def _schema_version(db_path: Path) -> int | None:
+    connection = sqlite3.connect(db_path)
+    try:
+        cursor = connection.execute(
+            "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
+        )
+        row = cursor.fetchone()
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        connection.close()
+    return int(row[0]) if row is not None else None
 
 
 def _check_schema_version(connection: sqlite3.Connection) -> None:

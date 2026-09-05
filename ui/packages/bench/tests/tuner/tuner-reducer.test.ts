@@ -94,11 +94,11 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "runsLoaded", runs: [runView({ status: "exited" })] }, (s) => {
       s.runs = ok([runView({ status: "exited" })]);
     });
-    ts.receive({ tag: "refreshProjection" }, (s) => {
-      s.refreshing = true;
+    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
+      s.autoRefreshing = true;
     });
-    ts.receive({ tag: "refreshDone" }, (s) => {
-      s.refreshing = false;
+    ts.receive({ tag: "autoRefreshDone" }, (s) => {
+      s.autoRefreshing = false;
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
@@ -195,23 +195,16 @@ describe("tunerReducer", () => {
       s.evidenceStreamActive = false;
       s.evidenceGeneration = 2;
     });
-    ts.receive({ tag: "refreshProjection" }, (s) => {
-      s.refreshing = true;
+    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
+      s.autoRefreshing = true;
     });
-    ts.receive({ tag: "refreshDone" }, (s) => {
-      s.refreshing = false;
+    // The terminal-transition refresh is a silent reload: generations bump and
+    // the resources refetch without flipping the on-screen slots to `loading`.
+    ts.receive({ tag: "autoRefreshDone" }, (s) => {
+      s.autoRefreshing = false;
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
       s.resourceGeneration = 2;
       s.pairsGeneration = 2;
-      s.projectionDetail = { status: "loading", previous: detail };
-      s.validation = { status: "loading", previous: { rows: [], unresolved_ties: null } };
-      s.candidates = { status: "loading", previous: [] };
-      s.pairs = { status: "loading", previous: [] };
-      s.proposals = { status: "loading", previous: [] };
-      s.observations = { status: "loading", previous: [] };
-      s.shadowDecisions = { status: "loading", previous: [] };
-      s.activeEliminations = { status: "loading", previous: [] };
-      s.report = { status: "loading", previous: {} };
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
     ts.receive({ tag: "detailLoaded", generation: 2, detail }, (s) => {
@@ -463,23 +456,16 @@ describe("tunerReducer", () => {
         s.evidenceGeneration = 2;
       },
     );
-    ts.receive({ tag: "refreshProjection" }, (s) => {
-      s.refreshing = true;
+    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
+      s.autoRefreshing = true;
     });
-    ts.receive({ tag: "refreshDone" }, (s) => {
-      s.refreshing = false;
+    // The terminal-transition refresh is a silent reload: generations bump and
+    // the resources refetch without flipping the on-screen slots to `loading`.
+    ts.receive({ tag: "autoRefreshDone" }, (s) => {
+      s.autoRefreshing = false;
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
       s.resourceGeneration = 2;
       s.pairsGeneration = 2;
-      s.projectionDetail = { status: "loading", previous: detail };
-      s.validation = { status: "loading", previous: { rows: [], unresolved_ties: null } };
-      s.candidates = { status: "loading", previous: [] };
-      s.pairs = { status: "loading", previous: [] };
-      s.proposals = { status: "loading", previous: [] };
-      s.observations = { status: "loading", previous: [] };
-      s.shadowDecisions = { status: "loading", previous: [] };
-      s.activeEliminations = { status: "loading", previous: [] };
-      s.report = { status: "loading", previous: {} };
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });
     ts.receive({ tag: "detailLoaded", generation: 2, detail }, (s) => {
@@ -558,11 +544,11 @@ describe("tunerReducer", () => {
     ts.receive({ tag: "runsLoaded", runs: [dead] }, (s) => {
       s.runs = ok([dead]);
     });
-    ts.receive({ tag: "refreshProjection" }, (s) => {
-      s.refreshing = true;
+    ts.receive({ tag: "autoRefreshProjection" }, (s) => {
+      s.autoRefreshing = true;
     });
-    ts.receive({ tag: "refreshDone" }, (s) => {
-      s.refreshing = false;
+    ts.receive({ tag: "autoRefreshDone" }, (s) => {
+      s.autoRefreshing = false;
       s.lastProjectionRefreshAt = expect.any(Number) as unknown as number;
     });
     ts.receive({ tag: "projectionLoaded", runs: [] });

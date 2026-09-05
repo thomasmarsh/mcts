@@ -112,10 +112,10 @@ describe("RunOverview — initial-load skeleton", () => {
     await vi.waitFor(() => expect(screen.getByTestId("progress-rail")).toBeInTheDocument());
     expect(screen.queryByTestId("run-overview-skeleton")).not.toBeInTheDocument();
 
-    // A background refresh (e.g. `refreshProjection`) re-fetches detail
+    // A background refresh (`autoRefreshProjection`) re-fetches detail
     // without going through `loading` from the user's point of view — the
     // skeleton must not reappear.
-    store.dispatch({ tag: "refreshProjection" });
+    store.dispatch({ tag: "autoRefreshProjection" });
     await vi.waitFor(() => expect(screen.getByTestId("progress-rail")).toBeInTheDocument());
     expect(screen.queryByTestId("run-overview-skeleton")).not.toBeInTheDocument();
   });
