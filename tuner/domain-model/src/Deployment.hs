@@ -73,6 +73,7 @@ data ResolvedObjective = ResolvedObjective
   , roSourcePath                 :: String  -- filesystem path
   , roPanel                      :: OpponentPanel
   , roStartDistributionFingerprint :: String
+  , roGameConfig                 :: String  -- canonical JSON game config
   }
   deriving (Eq, Show)
 

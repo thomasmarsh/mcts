@@ -27,6 +27,7 @@ data EventType
   | EvAllocationDecided
   | EvShadowRaceDecided
   | EvCandidateFailed
+  | EvBudgetExtended
   deriving (Eq, Show)
 
 -- | Reason a proposal was rejected.
@@ -201,5 +202,12 @@ data EventPayload
       , epRcValidationSearchEffort :: SearchEffort
       , epRcMissingProductionAxes :: [String]
       , epRcCohortFrontierId      :: String
+      }
+  | BudgetExtendedPayload
+      { epBeTuningPairAttemptsDelta     :: Int
+      , epBeValidationPairAttemptsDelta :: Int
+      , epBeDiagnosticPairAttemptsDelta :: Int
+      , epBeReason                      :: String
+      , epBeRequestedAt                 :: String
       }
   deriving (Eq, Show)

@@ -81,6 +81,8 @@ data ReplayState = ReplayState
   , rsActiveEliminationSuspension :: Maybe SuspendActiveElimination
   , rsDiagnosticPairs            :: [DiagnosticPairResult]
   , rsDiagnosticAttempts         :: [(String, PairAttemptFacts)]
+  , rsEffectiveBudget            :: ComputeBudget
+  , rsSupersededFinalists        :: [[Candidate]]
   }
   deriving (Eq, Show)
 

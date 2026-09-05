@@ -1,6 +1,7 @@
 module Artifacts where
 
 import Candidate (ProposalSource)
+import Constraints (Constraints)
 import Deployment (ObjectiveEpoch, OpponentPanel)
 import Effort (SearchEffort)
 import Evaluation (TaskCorpus, TaskPrefix)
@@ -24,7 +25,7 @@ data ProposerSpecification = ProposerSpecification
   , psBootstrapSeed            :: Int
   , psReserveSeed              :: Int
   , psRuntimeVersions          :: [(String, String)]
-  , psExcludedFamilies         :: [String]
+  , psConstraints              :: Constraints
   }
   deriving (Eq, Show)
 
@@ -109,6 +110,8 @@ data Manifest = Manifest
   , mCandidateFailurePolicy     :: CandidateFailurePolicySpec
   , mActiveElimination          :: Maybe ActiveEliminationSpec
   , mDiagnosticPolicy           :: DiagnosticPolicySpec
+  , mGameConfig                 :: String
+  , mConstraints                :: Constraints
   }
   deriving (Eq, Show)
 
