@@ -150,11 +150,17 @@ export const RunOverview: Component<{
   // page reload or a fresh navigation, not a background refresh — `peek`
   // means a slice that has already loaded once, even if a refetch is now in
   // flight, no longer counts as "initial"). Before that, `deriveProgress`
-  // has no compute ledger to work from and reports a literal "0 / 0 pairs",
-  // which reads as real (if unremarkable) data rather than "still loading" —
-  // show a skeleton instead so a run that's actually running does not look
-  // like one that stalled at zero.
+  // has no compute ledger to work from.
   const initialLoad = createMemo(() => detail() === undefined);
+
+  // The evidence stream starts alongside the detail fetch and, since its
+  // catch-up pass is now server-side bounded, typically reports its first
+  // envelope well before the projection has ingested enough to answer
+  // `getProjectionRun`. While detail is still loading, that live tally is a
+  // genuine "it's working, here's how far" signal (`ProgressRail` already
+  // knows how to render it via its `live` prop) -- fall all the way back to
+  // an inert skeleton only when neither source has produced anything yet.
+  const hasLiveSignal = createMemo(() => (liveProgress()?.lastEventSeq ?? 0) > 0);
 
   const gameKind = createMemo(
     () => detail()?.manifest?.game_kind ?? projectionRow()?.game_kind ?? null,
@@ -292,7 +298,7 @@ export const RunOverview: Component<{
       </Show>
 
       <Show
-        when={!initialLoad()}
+        when={!initialLoad() || hasLiveSignal()}
         fallback={
           <div class="tuner-run-skeleton" data-testid="run-overview-skeleton">
             Loading run…

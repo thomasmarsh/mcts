@@ -50,11 +50,13 @@ export const ProgressRail: Component<ProgressInput & { live?: LiveProgress | nul
           style={{ width: `${Math.min(100, p().fraction * 100)}%` }}
         />
       </div>
-      <div class="tuner-progress-counts">
-        {p().pairs.completed} / {p().pairs.attempted} pairs
-        {p().pairs.failed > 0 ? ` · ${p().pairs.failed} failed` : ""}
-        {p().pairs.censored > 0 ? ` · ${p().pairs.censored} censored` : ""}
-      </div>
+      <Show when={ledgerReady()}>
+        <div class="tuner-progress-counts">
+          {p().pairs.completed} / {p().pairs.attempted} pairs
+          {p().pairs.failed > 0 ? ` · ${p().pairs.failed} failed` : ""}
+          {p().pairs.censored > 0 ? ` · ${p().pairs.censored} censored` : ""}
+        </div>
+      </Show>
       <Show when={props.live && !ledgerReady()}>
         <div class="tuner-progress-live-counts" data-testid="progress-live-counts">
           {phaseLabel()}: {props.live!.pairs.completed} pairs done
@@ -62,6 +64,8 @@ export const ProgressRail: Component<ProgressInput & { live?: LiveProgress | nul
             ? ` · ${props.live!.pairs.started - props.live!.pairs.completed} in flight`
             : ""}
           {props.live!.pairs.failed > 0 ? ` · ${props.live!.pairs.failed} failed` : ""}
+          {" · "}
+          {props.live!.lastEventSeq} evidence lines ingested so far
         </div>
       </Show>
       <Show when={props.live && budgetTotal() > 0}>
