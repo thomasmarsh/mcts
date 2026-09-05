@@ -12,7 +12,10 @@
 //!   on `traces::live_run_moves`: a spawned task polls the file every 500 ms
 //!   and pushes appended lines through an mpsc channel. It sends a final
 //!   `event: end` and closes once the run is no longer `live` and no new line
-//!   has landed for 3 s, and ends immediately on client disconnect.
+//!   has landed for 3 s, and ends immediately on client disconnect. Its
+//!   initial catch-up pass is capped at `CATCHUP_MAX` envelopes -- see that
+//!   constant's doc comment -- so opening an established run's page cannot
+//!   flood the client with its entire history.
 //!
 //! The payload is passed through untouched; only `sequence` and `type` are
 //! read here. No evidence decode schema lives on the server side of this
@@ -171,6 +174,17 @@ async fn send_envelope(tx: &tokio::sync::mpsc::Sender<Event>, env: &Value) -> Re
 /// per newly appended evidence line into `tx`. Returns when the client hangs
 /// up (a `tx.send` error) or when `is_live()` is false and no line has landed
 /// for `timing.quiet_close` (after emitting `event: end`).
+/// Cap on how many envelopes the catch-up pass will ever send. A resumed or
+/// long-lived run's `evidence.jsonl` can hold many thousands of lines; a
+/// freshly opened tab only needs enough recent history to seed the live
+/// ticker (bounded client-side to `EVIDENCE_RING_MAX`) and the in-flight
+/// pair/phase tally, both of which the next projection fetch supersedes
+/// anyway. Sending the full backlog instead turns every open of an
+/// established run into a burst of thousands of SSE frames -- each one a
+/// client-side dispatch -- which is what actually made the tab unresponsive,
+/// not the (already bounded) rendering of any single frame.
+pub(crate) const CATCHUP_MAX: usize = 500;
+
 pub(crate) async fn pump_evidence(
     path: PathBuf,
     since_seq: u64,
@@ -192,18 +206,30 @@ pub(crate) async fn pump_evidence(
         .unwrap_or_else(Instant::now);
 
     // Catch-up pass: everything already past `since_seq`, then park the byte
-    // cursor at the end of the last complete line.
+    // cursor at the end of the last complete line. `last_seq` always advances
+    // to the true end of the file so the poll loop below never re-sends a
+    // dropped-for-being-too-old line; only which envelopes get *sent* is
+    // bounded, via a bounded ring that keeps just the most recent
+    // `CATCHUP_MAX` of them.
     if let Ok(text) = std::fs::read_to_string(&path) {
         let prefix = complete_prefix(&text);
         offset = prefix.len() as u64;
+        let mut catchup: std::collections::VecDeque<Value> =
+            std::collections::VecDeque::with_capacity(CATCHUP_MAX);
         for line in prefix.lines() {
             if let Some((sequence, env)) = envelope(line) {
                 if sequence > last_seq {
                     last_seq = sequence;
-                    if send_envelope(&tx, &env).await.is_err() {
-                        return;
+                    if catchup.len() == CATCHUP_MAX {
+                        catchup.pop_front();
                     }
+                    catchup.push_back(env);
                 }
+            }
+        }
+        for env in &catchup {
+            if send_envelope(&tx, env).await.is_err() {
+                return;
             }
         }
     }

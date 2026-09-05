@@ -3181,6 +3181,44 @@ body.bench-active #analysis-panel {
   background: #1a1b22;
 }
 
+.tuner-run-skeleton {
+  border: 1px solid #2a2b33;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 14px 0;
+  background: #1a1b22;
+  color: #808291;
+  font-size: 12px;
+}
+
+.tuner-run-skeleton-bars {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tuner-run-skeleton-bar {
+  height: 10px;
+  border-radius: 5px;
+  background: linear-gradient(90deg, #22232c 25%, #2c2d38 37%, #22232c 63%);
+  background-size: 400% 100%;
+  animation: tuner-skeleton-shimmer 1.4s ease infinite;
+}
+
+.tuner-run-skeleton-bar--short {
+  width: 40%;
+}
+
+@keyframes tuner-skeleton-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
 .tuner-progress-head {
   display: flex;
   justify-content: space-between;

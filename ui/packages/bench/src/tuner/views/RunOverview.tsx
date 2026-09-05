@@ -146,6 +146,16 @@ export const RunOverview: Component<{
     }),
   );
 
+  // True only until the run's own detail has loaded for the first time (a
+  // page reload or a fresh navigation, not a background refresh — `peek`
+  // means a slice that has already loaded once, even if a refetch is now in
+  // flight, no longer counts as "initial"). Before that, `deriveProgress`
+  // has no compute ledger to work from and reports a literal "0 / 0 pairs",
+  // which reads as real (if unremarkable) data rather than "still loading" —
+  // show a skeleton instead so a run that's actually running does not look
+  // like one that stalled at zero.
+  const initialLoad = createMemo(() => detail() === undefined);
+
   const gameKind = createMemo(
     () => detail()?.manifest?.game_kind ?? projectionRow()?.game_kind ?? null,
   );
@@ -281,36 +291,49 @@ export const RunOverview: Component<{
         </section>
       </Show>
 
-      <ProgressRail
-        status={status()}
-        startedAt={journalRow()?.started_at ?? null}
-        nowMs={Date.now()}
-        compute={detail()?.compute}
-        live={liveProgress()}
-      />
+      <Show
+        when={!initialLoad()}
+        fallback={
+          <div class="tuner-run-skeleton" data-testid="run-overview-skeleton">
+            Loading run…
+            <div class="tuner-run-skeleton-bars">
+              <div class="tuner-run-skeleton-bar" />
+              <div class="tuner-run-skeleton-bar tuner-run-skeleton-bar--short" />
+            </div>
+          </div>
+        }
+      >
+        <ProgressRail
+          status={status()}
+          startedAt={journalRow()?.started_at ?? null}
+          nowMs={Date.now()}
+          compute={detail()?.compute}
+          live={liveProgress()}
+        />
 
-      <Show when={convergence().present && convergence().steps.length > 1}>
-        <section class="tuner-overview-sparkline" data-testid="overview-convergence">
-          <h3>Convergence</h3>
-          <StepLine
-            points={convergence().steps.map((s) => ({ x: s.x, y: s.bestMargin, label: s.label }))}
-            domain={convergence().domain}
-          />
-        </section>
-      </Show>
+        <Show when={convergence().present && convergence().steps.length > 1}>
+          <section class="tuner-overview-sparkline" data-testid="overview-convergence">
+            <h3>Convergence</h3>
+            <StepLine
+              points={convergence().steps.map((s) => ({ x: s.x, y: s.bestMargin, label: s.label }))}
+              domain={convergence().domain}
+            />
+          </section>
+        </Show>
 
-      <Show when={live() || ticker().length > 0}>
-        <section class="tuner-live-feed">
-          <h3>Live events</h3>
-          <EventTicker
-            lines={ticker()}
-            emptyLabel={
-              live()
-                ? "Waiting for the tuner's first event…"
-                : "No events streamed for this run."
-            }
-          />
-        </section>
+        <Show when={live() || ticker().length > 0}>
+          <section class="tuner-live-feed">
+            <h3>Live events</h3>
+            <EventTicker
+              lines={ticker()}
+              emptyLabel={
+                live()
+                  ? "Waiting for the tuner's first event…"
+                  : "No events streamed for this run."
+              }
+            />
+          </section>
+        </Show>
       </Show>
 
       <Show when={progress().phase !== "starting" && !live()}>

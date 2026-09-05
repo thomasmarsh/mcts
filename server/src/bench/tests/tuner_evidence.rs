@@ -11,7 +11,7 @@ use axum::http::StatusCode;
 use mcts_bench::tuner_launch::{self, TunerLaunchRecord};
 use serde_json::Value;
 
-use super::super::tuner_evidence::{pump_evidence, StreamTiming};
+use super::super::tuner_evidence::{pump_evidence, StreamTiming, CATCHUP_MAX};
 use super::support::{body_json, default_seed, http_get, seeded_app};
 
 fn line(sequence: u64, event_type: &str) -> String {
@@ -162,6 +162,59 @@ async fn pump_streams_appended_lines_then_ends_when_the_run_stops() {
         .await
         .expect("pump task should finish once the run is no longer live")
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn pump_catchup_is_capped_for_a_long_established_run() {
+    let dir = std::env::temp_dir().join(format!("mcts_ev_catchup_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("evidence.jsonl");
+    let total = CATCHUP_MAX + 200;
+    let contents: String = (1..=total as u64)
+        .map(|seq| format!("{}\n", line(seq, "pair_completed")))
+        .collect();
+    std::fs::write(&path, contents).unwrap();
+
+    let is_live: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);
+    // Wide enough to hold every catch-up frame without the pump blocking on
+    // a full channel, so this measures the pump's own cap, not backpressure.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(CATCHUP_MAX + 16);
+    let timing = StreamTiming {
+        poll: Duration::from_millis(10),
+        quiet_close: Duration::from_millis(50),
+        projection_notice: Duration::from_secs(3600),
+    };
+    let pump = tokio::spawn(pump_evidence(path.clone(), 0, is_live, tx, timing));
+
+    let mut seqs = Vec::new();
+    while let Ok(Some(_frame)) =
+        tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
+    {
+        seqs.push(());
+        if seqs.len() >= CATCHUP_MAX {
+            break;
+        }
+    }
+    assert_eq!(
+        seqs.len(),
+        CATCHUP_MAX,
+        "catch-up should send exactly the most recent CATCHUP_MAX envelopes, not the whole log"
+    );
+
+    // The pump still knows the log's true tail: a freshly appended line
+    // (sequence beyond every catch-up envelope, dropped or not) streams.
+    let mut appended = std::fs::read_to_string(&path).unwrap();
+    appended.push_str(&line(total as u64 + 1, "pair_completed"));
+    appended.push('\n');
+    std::fs::write(&path, appended).unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("appended line should still stream after capped catch-up")
+        .expect("channel should still be open");
+
+    drop(rx);
+    let _ = tokio::time::timeout(Duration::from_secs(1), pump).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
