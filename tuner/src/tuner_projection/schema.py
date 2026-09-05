@@ -7,7 +7,7 @@ order in which runs were projected.
 
 from __future__ import annotations
 
-PROJECTION_SCHEMA_VERSION = 1
+PROJECTION_SCHEMA_VERSION = 2
 
 # Tables carrying projected content, in the order the canonical dump emits them.
 # ``ingest_state`` is deliberately excluded here: it holds the per-run change
@@ -41,6 +41,19 @@ CREATE TABLE ingest_state (
     evidence_size        INTEGER NOT NULL,
     evidence_mtime_ns    INTEGER NOT NULL,
     manifest_fingerprint TEXT NOT NULL
+) WITHOUT ROWID;
+
+-- A pickled `tuner_cli.replay.ReplayCheckpoint`, keyed by run, that lets a
+-- live run's next pass fold only the events past `last_sequence` instead of
+-- replaying the whole evidence log from scratch. Bookkeeping like
+-- `ingest_state`, not projected content: excluded from `CONTENT_TABLES` and
+-- the canonical dump, safe to drop and never affects what a rebuild produces.
+CREATE TABLE run_checkpoints (
+    run_id             TEXT PRIMARY KEY,
+    checkpoint_version INTEGER NOT NULL,
+    last_sequence      INTEGER NOT NULL,
+    manifest_fingerprint TEXT NOT NULL,
+    state              BLOB NOT NULL
 ) WITHOUT ROWID;
 
 CREATE TABLE runs (

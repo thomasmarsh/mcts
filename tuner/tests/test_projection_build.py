@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
+import tuner_projection.build as build_module
 from tuner_projection.build import project_pass, project_runs
-from tuner_projection.store import open_store
+from tuner_projection.store import Store, open_store
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PROJECTION_ROOT = FIXTURES / "projection-root"
@@ -325,6 +326,112 @@ def test_pass_with_a_prune_still_vacuums(tmp_path: Path) -> None:
         store.close()
 
 
+def test_watch_loop_folds_only_the_new_tail_after_the_first_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Task 14d: a live run's steady-state passes must not re-read/re-decode
+    the whole evidence log -- only `tail_events` past the last checkpoint."""
+    run_dir = tmp_path / "runs" / "version4"
+    run_dir.mkdir(parents=True)
+    shutil.copy(FIXTURES / "version4" / "manifest.json", run_dir / "manifest.json")
+    lines = (
+        (FIXTURES / "version4" / "evidence.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines(keepends=True)
+    )
+    evidence = run_dir / "evidence.jsonl"
+    evidence.write_text("", encoding="utf-8")
+
+    calls = []
+    original_read_events = build_module.read_events
+
+    def counting_read_events(path: Path) -> list:
+        calls.append(path)
+        return original_read_events(path)
+
+    monkeypatch.setattr(build_module, "read_events", counting_read_events)
+
+    db_path = tmp_path / "p.sqlite"
+    store = open_store(db_path)
+    try:
+        chunk = len(lines) // 4
+        for end in (chunk, 2 * chunk, 3 * chunk, len(lines)):
+            evidence.write_text("".join(lines[:end]), encoding="utf-8")
+            os.utime(evidence)
+            summary = project_pass(tmp_path / "runs", store, rebuild=False)
+            assert summary.ingest_errors == 0
+    finally:
+        store.close()
+
+    # Only the very first pass (no checkpoint yet) does a full read; every
+    # later pass, despite the log growing each time, resumes from the prior
+    # checkpoint via `tail_events` instead.
+    assert calls == [evidence]
+
+    rebuilt_db = tmp_path / "rebuilt.sqlite"
+    project_runs(tmp_path / "runs", rebuilt_db, rebuild=True)
+    assert _dump(db_path) == _dump(rebuilt_db)
+
+
+def test_checkpoint_version_mismatch_falls_back_to_full_replay(tmp_path: Path) -> None:
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    project_runs(root, db_path, rebuild=False)
+
+    store = open_store(db_path)
+    store._connection.execute(  # noqa: SLF001 - test corrupts stored checkpoint on purpose
+        "UPDATE run_checkpoints SET checkpoint_version = 999 WHERE run_id = 'version4'"
+    )
+    store._connection.commit()  # noqa: SLF001
+    store.close()
+
+    evidence = root / "version4" / "evidence.jsonl"
+    stat = evidence.stat()
+    os.utime(evidence, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    summary = project_runs(root, db_path, rebuild=False)
+    assert summary.ingest_errors == 0
+
+    rebuilt_db = tmp_path / "rebuilt.sqlite"
+    project_runs(PROJECTION_ROOT, rebuilt_db, rebuild=True)
+    assert _dump(db_path) == _dump(rebuilt_db)
+
+
+def test_rebuild_ignores_an_existing_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _copy_root(tmp_path)
+    db_path = tmp_path / "p.sqlite"
+    project_runs(root, db_path, rebuild=False)
+
+    store = open_store(db_path)
+    # A checkpoint so broken that reading it would raise if `--rebuild` ever
+    # looked at it -- proving the rebuild path is the escape hatch it claims
+    # to be, not merely "usually skips a valid one".
+    store._connection.execute(  # noqa: SLF001
+        "UPDATE run_checkpoints SET state = ? WHERE run_id = 'version4'", (b"not a pickle",)
+    )
+    store._connection.commit()  # noqa: SLF001
+
+    checked = []
+    original_checkpoint = Store.checkpoint
+
+    def spying_checkpoint(self: Store, run_id: str, *, manifest_fingerprint: str):
+        checked.append(run_id)
+        return original_checkpoint(self, run_id, manifest_fingerprint=manifest_fingerprint)
+
+    monkeypatch.setattr(Store, "checkpoint", spying_checkpoint)
+    try:
+        summary = project_pass(root, store, rebuild=True)
+    finally:
+        store.close()
+    assert summary.ingest_errors == 0
+    assert checked == []
+
+    rebuilt_db = tmp_path / "rebuilt.sqlite"
+    project_runs(PROJECTION_ROOT, rebuilt_db, rebuild=True)
+    assert _dump(db_path) == _dump(rebuilt_db)
+
+
 @pytest.mark.parametrize("rebuild", [True, False])
 def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
     db_path = tmp_path / "p.sqlite"
@@ -334,6 +441,6 @@ def test_schema_version_row_present(tmp_path: Path, rebuild: bool) -> None:
         value = store._connection.execute(  # noqa: SLF001
             "SELECT value FROM projection_meta WHERE key = 'projection_schema_version'"
         ).fetchone()
-        assert value == ("1",)
+        assert value == ("2",)
     finally:
         store.close()

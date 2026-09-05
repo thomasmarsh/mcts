@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tuner_cli.artifacts import read_manifest
-from tuner_cli.evidence import read_events
-from tuner_cli.replay import replay
+from tuner_cli.artifacts import Manifest, read_manifest
+from tuner_cli.evidence import read_events, tail_events
+from tuner_cli.replay import ReplayCheckpoint, fold_checkpoint
 from tuner_cli.report import build_report
 
 from . import rows
@@ -54,13 +54,47 @@ def _error_projection(run_id: str, fingerprint: ChangeFingerprint, error: str) -
     )
 
 
-def _project_run(run_dir: Path, run_id: str, fingerprint: ChangeFingerprint) -> RunProjection:
+def _fold_run(
+    evidence_path: Path, manifest: Manifest, resume: tuple[int, ReplayCheckpoint] | None
+) -> tuple[ReplayCheckpoint, int]:
+    """Fold the run's events, incrementally onto `resume` when possible, and
+    return the resulting checkpoint alongside the sequence it covers through.
+
+    Falls back to a full from-scratch replay whenever a resume can't be
+    trusted -- not just on the version/fingerprint mismatch `Store.checkpoint`
+    already screens for, but also if the evidence log turns out to have
+    *fewer* lines than the checkpoint's high-water mark, which means it is
+    not a live run's ordinary append-only growth and the checkpoint no longer
+    describes a prefix of it.
+    """
+    if resume is not None:
+        since_seq, checkpoint = resume
+        tail, total = tail_events(evidence_path, since_seq=since_seq)
+        if total >= since_seq:
+            return fold_checkpoint(manifest, tail, resume_from=checkpoint), total
+    events = read_events(evidence_path)
+    return fold_checkpoint(manifest, events), len(events)
+
+
+def _project_run(
+    run_dir: Path, run_id: str, fingerprint: ChangeFingerprint, store: Store, *, rebuild: bool
+) -> RunProjection:
+    evidence_path = run_dir / "evidence.jsonl"
     try:
         manifest = read_manifest(run_dir / "manifest.json")
-        events = read_events(run_dir / "evidence.jsonl")
-        state = replay(manifest, events)
+        resume = (
+            None if rebuild else store.checkpoint(run_id, manifest_fingerprint=manifest.fingerprint)
+        )
+        replay_checkpoint, last_sequence = _fold_run(evidence_path, manifest, resume)
+        state = replay_checkpoint.state
     except (OSError, ValueError) as error:
         return _error_projection(run_id, fingerprint, f"{type(error).__name__}: {error}")
+    store.save_checkpoint(
+        run_id,
+        last_sequence=last_sequence,
+        manifest_fingerprint=manifest.fingerprint,
+        checkpoint=replay_checkpoint,
+    )
     report_obj = None
     if state.terminal_status == "complete":
         try:
@@ -181,7 +215,7 @@ def project_pass(
         if not rebuild and store.fingerprint(run_id) == fingerprint:
             skipped += 1
             continue
-        projection = _project_run(run_dir, run_id, fingerprint)
+        projection = _project_run(run_dir, run_id, fingerprint, store, rebuild=rebuild)
         store.replace_run(projection)
         projected += 1
         errors += 1 if projection.run.ingest_error is not None else 0

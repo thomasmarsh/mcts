@@ -31,6 +31,21 @@ class LedgerBuilder:
         self._validation = _PhaseAccumulator()
         self._diagnostic = _PhaseAccumulator()
 
+    @classmethod
+    def from_ledger(cls, ledger: ComputeLedger) -> LedgerBuilder:
+        """Reconstruct a builder that resumes exactly where `ledger` left off.
+
+        Lossless: every `PhaseCompute` field but `censored_attempts` round-trips
+        directly, and `censored_attempts` is itself always derived as
+        ``attempts - completed_pairs - failed_attempts`` (see `compute` below),
+        so recomputing it from the other three reproduces it exactly.
+        """
+        builder = cls()
+        builder._tuning = _PhaseAccumulator.from_compute(ledger.tuning)
+        builder._validation = _PhaseAccumulator.from_compute(ledger.validation)
+        builder._diagnostic = _PhaseAccumulator.from_compute(ledger.diagnostic)
+        return builder
+
     def apply(self, event: EvidenceEvent) -> None:
         payload = event.payload
         match payload:
@@ -88,6 +103,17 @@ class _PhaseAccumulator:
         self.physical_games = 0
         self.search_iterations = 0
         self.wall_time_ms = 0
+
+    @classmethod
+    def from_compute(cls, compute: PhaseCompute) -> _PhaseAccumulator:
+        accumulator = cls()
+        accumulator.attempts = compute.pair_attempts
+        accumulator.completed_pairs = compute.completed_pairs
+        accumulator.failed_attempts = compute.failed_attempts
+        accumulator.physical_games = compute.physical_games
+        accumulator.search_iterations = compute.search_iterations
+        accumulator.wall_time_ms = compute.wall_time_ms
+        return accumulator
 
     def compute(self) -> PhaseCompute:
         return PhaseCompute(

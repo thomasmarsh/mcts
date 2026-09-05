@@ -7,10 +7,13 @@ dataclasses that ``rows.py`` produces.
 
 from __future__ import annotations
 
+import pickle
 import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from tuner_cli.replay import ReplayCheckpoint
 
 from .rows import (
     ActiveEliminationDecisionRow,
@@ -28,6 +31,12 @@ from .rows import (
     ValidationRow,
 )
 from .schema import CONTENT_TABLES, DDL, PROJECTION_SCHEMA_VERSION
+
+# Bumped whenever `ReplayCheckpoint`'s pickled shape changes incompatibly. A
+# mismatch (or any other unpickling problem) is treated as "no checkpoint" --
+# the next pass falls back to a full read+replay and writes a fresh one, so
+# this is a perf-only fallback, never a correctness one.
+CHECKPOINT_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,8 +106,64 @@ class Store:
 
     def delete_run(self, run_id: str) -> None:
         with self._connection:
-            for table in (*_CHILD_TABLES, "runs", "ingest_state"):
+            for table in (*_CHILD_TABLES, "runs", "ingest_state", "run_checkpoints"):
                 self._connection.execute(f"DELETE FROM {table} WHERE run_id = ?", (run_id,))
+
+    def checkpoint(
+        self, run_id: str, *, manifest_fingerprint: str
+    ) -> tuple[int, ReplayCheckpoint] | None:
+        """`(last_sequence, checkpoint)` for `run_id`, or `None` if there isn't
+        a usable one.
+
+        `None` covers every reason a checkpoint can't be trusted: none exists
+        yet, its `checkpoint_version` doesn't match this build, it was taken
+        against a different manifest, or the pickled blob fails to load (a
+        stale/foreign format). Every case is a full-replay fallback, not an
+        error -- see `CHECKPOINT_VERSION`.
+        """
+        cursor = self._connection.execute(
+            "SELECT checkpoint_version, last_sequence, manifest_fingerprint, state "
+            "FROM run_checkpoints WHERE run_id = ?",
+            (run_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        version, last_sequence, stored_fingerprint, blob = row
+        if int(version) != CHECKPOINT_VERSION or str(stored_fingerprint) != manifest_fingerprint:
+            return None
+        try:
+            checkpoint = pickle.loads(blob)
+        except Exception:
+            return None
+        if not isinstance(checkpoint, ReplayCheckpoint):
+            return None
+        return int(last_sequence), checkpoint
+
+    def save_checkpoint(
+        self,
+        run_id: str,
+        *,
+        last_sequence: int,
+        manifest_fingerprint: str,
+        checkpoint: ReplayCheckpoint,
+    ) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT INTO run_checkpoints VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET "
+                "checkpoint_version = excluded.checkpoint_version, "
+                "last_sequence = excluded.last_sequence, "
+                "manifest_fingerprint = excluded.manifest_fingerprint, "
+                "state = excluded.state",
+                (
+                    run_id,
+                    CHECKPOINT_VERSION,
+                    last_sequence,
+                    manifest_fingerprint,
+                    pickle.dumps(checkpoint),
+                ),
+            )
 
     def replace_run(self, projection: RunProjection) -> None:
         run_id = projection.run.run_id

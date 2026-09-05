@@ -144,9 +144,20 @@ class _Replay:
     superseded_finalists: list[tuple[Candidate, ...]] = field(default_factory=lambda: [])
     superseded_pairs: list[PairResult] = field(default_factory=lambda: [])
     superseded_observations: list[Observation] = field(default_factory=lambda: [])
+    # Set only when resuming from a `ReplayCheckpoint` (see `_resume` below):
+    # the running totals a checkpoint's `ReplayState` does not itself carry,
+    # because `state()` only ever emits the *current* effective budget and
+    # `_scientific_count` folds several lists down to bare counts. `None`/`0`
+    # (the defaults) reproduce today's from-scratch behavior exactly.
+    effective_budget_base: ComputeBudget | None = None
+    budget_extension_count_base: int = 0
+    superseded_pair_count_base: int = 0
+    superseded_observation_count_base: int = 0
 
     def effective_budget(self) -> ComputeBudget:
-        base = self.manifest.compute_budget
+        base = self.effective_budget_base
+        if base is None:
+            base = self.manifest.compute_budget
         return ComputeBudget(
             base.tuning_pair_attempts
             + sum(item.tuning_pair_attempts_delta for item in self.budget_extensions),
@@ -622,11 +633,14 @@ def _scientific_count(state: _Replay) -> int:
         len(state.proposals)
         + len(state.dispositions)
         + len(state.completed)
+        + state.superseded_pair_count_base
         + len(state.superseded_pairs)
         + len(state.observations)
+        + state.superseded_observation_count_base
         + len(state.superseded_observations)
         + len(state.shadow_races)
         + len(state.candidate_failures)
+        + state.budget_extension_count_base
         + len(state.budget_extensions)
         + state.allocations
         + len(state.completed_cohorts)
@@ -775,13 +789,100 @@ def _apply(state: _Replay, event: EvidenceEvent) -> None:
             return
 
 
-def fold_events(manifest: Manifest, events: list[EvidenceEvent]) -> ReplayState:
-    state = _Replay(manifest)
+@dataclass(frozen=True, slots=True)
+class ReplayCheckpoint:
+    """A resumable snapshot of one `_Replay` fold.
+
+    `ReplayState` alone is not a sufficient checkpoint: `_Replay.allocations`
+    is a bare running count with no `ReplayState` field, and
+    `budget_extensions`/`superseded_pairs`/`superseded_observations` are
+    folded down to lengths (via `effective_budget`/`_scientific_count`) that
+    `ReplayState` never stores either. This pairs `state` with exactly the
+    running totals `_resume` needs to reconstruct a `_Replay` that folding the
+    *rest* of the events onto produces a `ReplayState` identical to folding
+    every event from scratch.
+    """
+
+    state: ReplayState
+    allocations: int
+    budget_extensions: int
+    superseded_pairs: int
+    superseded_observations: int
+
+
+def _resume(manifest: Manifest, checkpoint: ReplayCheckpoint) -> _Replay:
+    state = checkpoint.state
+    resumed = _Replay(manifest)
+    resumed.proposals = list(state.proposals)
+    resumed.dispositions = dict(state.dispositions)
+    resumed.completed = list(state.completed_pairs)
+    resumed.observations = list(state.observations)
+    resumed.completed_cohorts = list(state.completed_cohorts)
+    resumed.active_elites = state.active_elites
+    resumed.finalists = state.finalists
+    resumed.terminal = state.terminal_status
+    resumed.tuning_block_index = state.tuning_block_index
+    resumed.pending = state.pending_resource_allocation
+    resumed.allocations = checkpoint.allocations
+    resumed.ledger = LedgerBuilder.from_ledger(state.compute)
+    resumed.shadow_races = list(state.shadow_races)
+    resumed.candidate_failures = list(state.candidate_failures)
+    resumed.pair_attempts = dict(state.pair_attempts)
+    resumed.refill_attempts = dict(state.refill_attempts)
+    resumed.elimination_allocations = list(state.elimination_allocations)
+    resumed.active_elimination_suspension = state.active_elimination_suspension
+    resumed.diagnostic_pairs = list(state.diagnostic_pairs)
+    resumed.diagnostic_attempts = dict(state.diagnostic_attempts)
+    resumed.superseded_finalists = list(state.superseded_finalists)
+    resumed.effective_budget_base = state.effective_budget
+    resumed.budget_extension_count_base = checkpoint.budget_extensions
+    resumed.superseded_pair_count_base = checkpoint.superseded_pairs
+    resumed.superseded_observation_count_base = checkpoint.superseded_observations
+    return resumed
+
+
+def _fold(
+    manifest: Manifest, events: list[EvidenceEvent], resume_from: ReplayCheckpoint | None
+) -> _Replay:
+    state = _Replay(manifest) if resume_from is None else _resume(manifest, resume_from)
     for event in events:
         state.ledger.apply(event)
         _apply(state, event)
-    return state.state()
+    return state
 
 
-def replay(manifest: Manifest, events: list[EvidenceEvent]) -> ReplayState:
-    return fold_events(manifest, events)
+def fold_events(
+    manifest: Manifest,
+    events: list[EvidenceEvent],
+    *,
+    resume_from: ReplayCheckpoint | None = None,
+) -> ReplayState:
+    return _fold(manifest, events, resume_from).state()
+
+
+def replay(
+    manifest: Manifest,
+    events: list[EvidenceEvent],
+    *,
+    resume_from: ReplayCheckpoint | None = None,
+) -> ReplayState:
+    return fold_events(manifest, events, resume_from=resume_from)
+
+
+def fold_checkpoint(
+    manifest: Manifest,
+    events: list[EvidenceEvent],
+    *,
+    resume_from: ReplayCheckpoint | None = None,
+) -> ReplayCheckpoint:
+    """Fold `events` (the unread tail, when resuming) and return a fresh
+    checkpoint alongside the resulting state, for a caller (the projector)
+    that needs to persist it for the next pass's `tail_events` call."""
+    state = _fold(manifest, events, resume_from)
+    return ReplayCheckpoint(
+        state.state(),
+        state.allocations,
+        state.budget_extension_count_base + len(state.budget_extensions),
+        state.superseded_pair_count_base + len(state.superseded_pairs),
+        state.superseded_observation_count_base + len(state.superseded_observations),
+    )
