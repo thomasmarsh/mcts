@@ -19,7 +19,7 @@ from test_run import FakeModel, FakeTarget, _budgeted_options
 
 from tuner_cli.artifacts import Manifest, read_manifest
 from tuner_cli.evidence import EvidenceEvent, read_events
-from tuner_cli.replay import ReplayCheckpoint, fold_checkpoint, replay
+from tuner_cli.replay import ReplayCheckpoint, RunningFold, fold_checkpoint, replay
 from tuner_cli.run import run_foreground
 
 FIXTURES = Path(__file__).parent / "fixtures" / "projection-root" / "version4-active-halving"
@@ -67,6 +67,37 @@ def test_budget_extension_reopen_resumes_identically_at_every_split(tmp_path: Pa
     events = read_events(options.run_dir / "evidence.jsonl")
     assert any(event.type == "budget_extended" for event in events)
     _assert_checkpoint_then_tail_matches_full_replay(manifest, events)
+
+
+def _assert_running_fold_matches_full_replay(
+    manifest: Manifest, events: list[EvidenceEvent]
+) -> None:
+    """`RunningFold`, advanced one event at a time (the worst case for the run
+    loop), must track a from-scratch fold at every prefix."""
+    expected_prefixes = [replay(manifest, events[:split]) for split in range(len(events) + 1)]
+    fold = RunningFold.cold(manifest, [])
+    assert fold.state() == expected_prefixes[0]
+    for index, event in enumerate(events, 1):
+        fold.advance([event], index)
+        assert fold.sequence == index
+        assert fold.state() == expected_prefixes[index], f"diverged after event {index}"
+
+
+def test_running_fold_tracks_full_replay_event_by_event() -> None:
+    manifest = read_manifest(FIXTURES / "manifest.json")
+    events = read_events(FIXTURES / "evidence.jsonl")
+    _assert_running_fold_matches_full_replay(manifest, events)
+
+
+def test_running_fold_resumes_from_a_cold_fold_of_a_partial_log() -> None:
+    """A hard stop mid-run: rebuild from the log so far, then continue."""
+    manifest = read_manifest(FIXTURES / "manifest.json")
+    events = read_events(FIXTURES / "evidence.jsonl")
+    split = len(events) // 2
+    fold = RunningFold.cold(manifest, events[:split])
+    assert fold.sequence == split
+    fold.advance(events[split:], len(events))
+    assert fold.state() == replay(manifest, events)
 
 
 def test_checkpoint_round_trips_through_pickle() -> None:

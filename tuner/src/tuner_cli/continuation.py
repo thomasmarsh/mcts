@@ -68,7 +68,14 @@ from .event_payloads import (
     RunInterruptedPayload,
     ShadowRaceDecidedPayload,
 )
-from .evidence import SCIENTIFIC, EvidenceWriter, diagnostic_pair_payload, pair_payload, read_events
+from .evidence import (
+    SCIENTIFIC,
+    EvidenceWriter,
+    diagnostic_pair_payload,
+    pair_payload,
+    read_events,
+    tail_events,
+)
 from .executor import (
     PairExecutor,
     PairFailed,
@@ -81,7 +88,7 @@ from .identity import canonical_json
 from .observations import comparable_prefix_observations, contextual_observation
 from .proposer import POLICY_VERSION, ModelProposer, tuning_frontier
 from .race_policy import decide_shadow_race
-from .replay import fold_events, observation_payload
+from .replay import RunningFold, observation_payload
 from .schema import GameSpec
 from .selection import select_top_candidates, select_validation_shortlist
 from .target import PairExecutionError, Target
@@ -97,21 +104,17 @@ def continue_run(
     timeout: int,
     executor: PairExecutor | None = None,
 ) -> None:
+    pairs = executor or SequentialPairExecutor()
+    # Fold the log from scratch once (cold start or `--resume`), then keep the
+    # accumulator in process and fold only each turn's freshly appended events.
+    fold = RunningFold.cold(manifest, read_events(writer.path))
     while True:
-        state = fold_events(manifest, read_events(writer.path))
+        state = fold.state()
         if state.terminal_status != "open":
             return
-        advance_one(
-            manifest,
-            writer,
-            target,
-            default,
-            spec,
-            model,
-            timeout,
-            state,
-            executor or SequentialPairExecutor(),
-        )
+        advance_one(manifest, writer, target, default, spec, model, timeout, state, pairs)
+        tail, total = tail_events(writer.path, since_seq=fold.sequence)
+        fold.advance(tail, total)
 
 
 def advance_one(

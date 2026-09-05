@@ -869,6 +869,50 @@ def replay(
     return fold_events(manifest, events, resume_from=resume_from)
 
 
+class RunningFold:
+    """A persistent in-process evidence fold for the foreground run loop.
+
+    `continue_run` turns its loop once per appended decision -- hundreds of
+    times per cohort on a real run. Re-reading and re-folding the whole
+    `evidence.jsonl` at the top of every turn is O(N^2) in the event count and
+    comes to dominate a long run's loop overhead. This holds the `_Replay`
+    accumulator between turns and folds only the events appended since the last
+    turn. A cold start or a `--resume` builds one with `cold`, which folds the
+    log from scratch exactly once; after a hard stop the next process does the
+    same, so the resumed run reaches the same terminal state as one that never
+    stopped.
+
+    Folding the tail incrementally is the same invariant `ReplayCheckpoint`
+    pins for the projector: the `ReplayState` this produces is identical, field
+    for field, to a from-scratch `fold_events` over the same log.
+    """
+
+    __slots__ = ("_replay", "_sequence")
+
+    def __init__(self, replay: _Replay, sequence: int) -> None:
+        self._replay = replay
+        self._sequence = sequence
+
+    @classmethod
+    def cold(cls, manifest: Manifest, events: list[EvidenceEvent]) -> RunningFold:
+        return cls(_fold(manifest, events, None), len(events))
+
+    @property
+    def sequence(self) -> int:
+        return self._sequence
+
+    def state(self) -> ReplayState:
+        return self._replay.state()
+
+    def advance(self, events: list[EvidenceEvent], total: int) -> ReplayState:
+        """Fold `events` (the tail past `sequence`) onto the running state."""
+        for event in events:
+            self._replay.ledger.apply(event)
+            _apply(self._replay, event)
+        self._sequence = total
+        return self._replay.state()
+
+
 def fold_checkpoint(
     manifest: Manifest,
     events: list[EvidenceEvent],
