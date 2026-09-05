@@ -115,6 +115,10 @@ export const RunScience: Component<{
 
   const report = createMemo(() => peek(state().report));
   const candidates = createMemo(() => peek(state().candidates));
+  // `proposals`/`observations`/`shadowDecisions` are fetched by the reducer
+  // under `SCIENCE_ROW_FETCH_LIMIT` (tuner-reducer.ts), not the whole run's
+  // table -- these derivations run over that bounded slice, not a full scan
+  // refetched on every push.
   const proposals = createMemo(() => peek(state().proposals) ?? []);
   const observationRows = createMemo(() => peek(state().observations) ?? []);
   const shadowRows = createMemo(() => peek(state().shadowDecisions) ?? []);

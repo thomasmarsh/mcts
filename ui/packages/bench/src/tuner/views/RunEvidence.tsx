@@ -27,6 +27,20 @@ export const RunEvidence: Component<{
   const pairs = createMemo(() => peek(state().pairs) ?? []);
   const detail = createMemo(() => peek(state().projectionDetail));
   const pairsPending = createMemo(() => isLoading(state().pairs) && pairs().length === 0);
+  const pairsPage = createMemo(() => state().pairsPage);
+  // The `pairs` fetch is a bounded page (`pairsPage`), not the whole run's
+  // table, so the true total comes from the run's compute-phase rollup
+  // (already fetched for the overview) rather than the fetched page's
+  // length -- otherwise the header would silently report a truncated count
+  // once a run passes one page.
+  const pairsTotal = createMemo(() => {
+    const compute = detail()?.compute;
+    if (!compute) return pairs().length;
+    return compute.reduce((sum, phase) => sum + phase.completed_pairs, 0);
+  });
+  const pairsRangeEnd = createMemo(() =>
+    Math.min(pairsPage().offset + pairsPage().limit, pairsTotal()),
+  );
 
   const cohortOf = createMemo(() => {
     const map = new Map<string, number>();
@@ -71,6 +85,7 @@ export const RunEvidence: Component<{
           rowKey={(c) => c.candidate_id}
           onRowClick={(c) => openCandidate(c.candidate_id)}
           empty="No candidates projected."
+          pageSize={50}
           columns={[
             { key: "id", header: "Candidate", render: (c) => shortCandidateId(c.candidate_id) },
             { key: "src", header: "Source", render: (c) => c.source },
@@ -92,7 +107,7 @@ export const RunEvidence: Component<{
       </section>
 
       <section class="tuner-evidence-section">
-        <h3>Pairs ({filteredPairs().length})</h3>
+        <h3>Pairs ({pairsTotal()})</h3>
         <label class="tuner-evidence-filter">
           Phase{" "}
           <select value={phase()} onChange={(e) => setPhase(e.currentTarget.value)}>
@@ -129,6 +144,36 @@ export const RunEvidence: Component<{
               },
             ]}
           />
+          <div class="tuner-table-pager" data-testid="evidence-pairs-pager">
+            <button
+              data-testid="evidence-pairs-prev"
+              disabled={pairsPage().offset === 0}
+              onClick={() =>
+                dispatch({
+                  tag: "pairsPageChanged",
+                  offset: Math.max(0, pairsPage().offset - pairsPage().limit),
+                })
+              }
+            >
+              ← Prev
+            </button>
+            <span>
+              {pairsTotal() === 0 ? "0–0" : `${pairsPage().offset + 1}–${pairsRangeEnd()}`} of{" "}
+              {pairsTotal()}
+            </span>
+            <button
+              data-testid="evidence-pairs-next"
+              disabled={pairsRangeEnd() >= pairsTotal()}
+              onClick={() =>
+                dispatch({
+                  tag: "pairsPageChanged",
+                  offset: pairsPage().offset + pairsPage().limit,
+                })
+              }
+            >
+              Next →
+            </button>
+          </div>
         </Show>
         <Show when={state().openPairId}>
           {(pairId) => (

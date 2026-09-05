@@ -497,3 +497,11 @@ export interface ProjectionPairQuery {
   limit?: number;
   offset?: number;
 }
+
+/** `limit`/`offset` pagination for the run-scoped science tables
+ * (`proposals`, `observations`, `shadow-decisions`, `active-eliminations`) —
+ * same shape as `ProjectionPairQuery` minus the pair-specific filters. */
+export interface ProjectionRunPageQuery {
+  limit?: number;
+  offset?: number;
+}

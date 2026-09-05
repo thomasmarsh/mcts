@@ -3631,6 +3631,13 @@ body.bench-active #analysis-panel {
 .tuner-config-diff {
   overflow-x: auto;
 }
+.tuner-table-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.78rem;
+}
 
 .tuner-objective-actions {
   display: inline-flex;

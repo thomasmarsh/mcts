@@ -16,6 +16,7 @@ import type {
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
+  ProjectionRunPageQuery,
   ProjectionRefreshResult,
   ProjectionRunDetail,
   ProjectionMeta,
@@ -99,10 +100,22 @@ export interface TunerApiClient {
   getProjectionReport(runId: string): Promise<JsonValue>;
   // Live science row tables — populated on every projection refresh, partial
   // or complete, so they carry the run's science before `report.json` exists.
-  getProjectionProposals(runId: string): Promise<ProjectionProposal[]>;
-  getProjectionObservations(runId: string): Promise<ProjectionObservation[]>;
-  getProjectionShadowDecisions(runId: string): Promise<ProjectionShadowDecision[]>;
-  getProjectionActiveEliminations(runId: string): Promise<ProjectionActiveElimination[]>;
+  getProjectionProposals(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Promise<ProjectionProposal[]>;
+  getProjectionObservations(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Promise<ProjectionObservation[]>;
+  getProjectionShadowDecisions(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Promise<ProjectionShadowDecision[]>;
+  getProjectionActiveEliminations(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Promise<ProjectionActiveElimination[]>;
 }
 
 class TunerApiError extends Error {
@@ -259,11 +272,13 @@ export function createTunerApiClient(baseUrl = ""): TunerApiClient {
       fetchJson(url(`${projPath(runId)}/pairs/${encodeURIComponent(pairId)}/games`)),
     getProjectionValidation: (runId) => fetchJson(url(`${projPath(runId)}/validation`)),
     getProjectionReport: (runId) => fetchJson(url(`${projPath(runId)}/report`)),
-    getProjectionProposals: (runId) => fetchJson(url(`${projPath(runId)}/proposals`)),
-    getProjectionObservations: (runId) => fetchJson(url(`${projPath(runId)}/observations`)),
-    getProjectionShadowDecisions: (runId) =>
-      fetchJson(url(`${projPath(runId)}/shadow-decisions`)),
-    getProjectionActiveEliminations: (runId) =>
-      fetchJson(url(`${projPath(runId)}/active-eliminations`)),
+    getProjectionProposals: (runId, query = {}) =>
+      fetchJson(url(`${projPath(runId)}/proposals${queryString(query)}`)),
+    getProjectionObservations: (runId, query = {}) =>
+      fetchJson(url(`${projPath(runId)}/observations${queryString(query)}`)),
+    getProjectionShadowDecisions: (runId, query = {}) =>
+      fetchJson(url(`${projPath(runId)}/shadow-decisions${queryString(query)}`)),
+    getProjectionActiveEliminations: (runId, query = {}) =>
+      fetchJson(url(`${projPath(runId)}/active-eliminations${queryString(query)}`)),
   };
 }

@@ -59,6 +59,18 @@ export const LOG_TAIL_MS = 3_000;
 /** Bounded ring buffer for the open run's live evidence envelopes. */
 export const EVIDENCE_RING_MAX = 400;
 
+/** Page size for the evidence view's server-paginated pairs table. */
+export const PAIRS_PAGE_SIZE = 100;
+
+/** Ceiling passed to the four run-scoped science-row endpoints (`proposals`,
+ * `observations`, `shadow-decisions`, `active-eliminations`). These feed
+ * `RunScience`'s chart derivations rather than a paged table, so — unlike
+ * `pairs` — there is no user-facing pager to page through the rest; this is
+ * just an explicit bound (matching the server's own clamp) in place of
+ * silently trusting its 500-row default, which truncated every one of these
+ * four calls before this constant existed. */
+export const SCIENCE_ROW_FETCH_LIMIT = 5_000;
+
 export interface TunerLaunchState {
   status: "idle" | "pending" | "done" | "error";
   error: string | null;
@@ -134,9 +146,20 @@ export interface TunerState {
   projectionDetail: RemoteData<ProjectionRunDetail>;
   validation: RemoteData<ProjectionValidation>;
   candidates: RemoteData<ProjectionCandidate[]>;
-  /** Evidence view: the open run's pair rows (server-capped; filtered
-   * client-side by the pairs table). */
+  /** Evidence view: the open run's pair rows for the current `pairsPage`
+   * (filtered client-side by the pairs table's phase select, within that
+   * page). */
   pairs: RemoteData<ProjectionPairRow[]>;
+  /** `limit`/`offset` sent to `getProjectionPairs`. Reset to offset 0
+   * whenever a different run is opened; preserved across a live/manual
+   * projection refresh (so a page navigated to isn't yanked back to page 1
+   * by the next SSE push). */
+  pairsPage: { limit: number; offset: number };
+  /** Bumped on every `pairsPageChanged` navigation, and kept in lockstep with
+   * `resourceGeneration` on every full resource (re)load, so a page-only
+   * refetch and a full-resource refetch never validate each other's stale
+   * responses. */
+  pairsGeneration: number;
   /** Live science row tables — populated on every projection refresh (partial
    * or complete), so the science charts fill in from these before
    * `report.json` exists. Re-fetched on every projection refresh alongside
@@ -243,6 +266,8 @@ export function initialTunerState(): TunerState {
     validation: idle(),
     candidates: idle(),
     pairs: idle(),
+    pairsPage: { limit: PAIRS_PAGE_SIZE, offset: 0 },
+    pairsGeneration: 0,
     proposals: idle(),
     observations: idle(),
     shadowDecisions: idle(),
@@ -348,6 +373,7 @@ export type TunerAction =
   | { tag: "candidatesFailed"; generation: number; error: string }
   | { tag: "pairsLoaded"; generation: number; pairs: ProjectionPairRow[] }
   | { tag: "pairsFailed"; generation: number; error: string }
+  | { tag: "pairsPageChanged"; offset: number }
   | { tag: "proposalsLoaded"; generation: number; proposals: ProjectionProposal[] }
   | { tag: "proposalsFailed"; generation: number; error: string }
   | { tag: "observationsLoaded"; generation: number; observations: ProjectionObservation[] }
@@ -558,10 +584,31 @@ function fetchLog(
     .catch((e): TunerAction => ({ tag: "logFailed", generation, error: String(e) }));
 }
 
+/** Fetch the pairs table's current page, tagged under `pairsGeneration`
+ * (kept separate from `resourceGeneration` — see that field's doc comment). */
+function fetchPairsPage(
+  env: TunerEnv,
+  runId: string,
+  generation: number,
+  page: { limit: number; offset: number },
+): Effect<TunerAction> {
+  return env
+    .getProjectionPairs(runId, page)
+    .map((pairs): TunerAction => ({ tag: "pairsLoaded", generation, pairs }))
+    .catch((e): TunerAction => ({ tag: "pairsFailed", generation, error: String(e) }));
+}
+
 /** Load every per-run projection resource the overview / drawer needs,
- * tagged with the current `resourceGeneration` so a stale response for a
+ * tagged with the current `resourceGeneration` (pairs under `pairsGeneration`
+ * instead — see that field's doc comment) so a stale response for a
  * previously-open run is ignored. */
-function fetchRunResources(env: TunerEnv, runId: string, generation: number): Effect<TunerAction> {
+function fetchRunResources(
+  env: TunerEnv,
+  runId: string,
+  generation: number,
+  pairsGeneration: number,
+  pairsPage: { limit: number; offset: number },
+): Effect<TunerAction> {
   return Effect.merge(
     env
       .getProjectionRun(runId)
@@ -575,28 +622,25 @@ function fetchRunResources(env: TunerEnv, runId: string, generation: number): Ef
       .getProjectionCandidates(runId)
       .map((candidates): TunerAction => ({ tag: "candidatesLoaded", generation, candidates }))
       .catch((e): TunerAction => ({ tag: "candidatesFailed", generation, error: String(e) })),
-    env
-      .getProjectionPairs(runId)
-      .map((pairs): TunerAction => ({ tag: "pairsLoaded", generation, pairs }))
-      .catch((e): TunerAction => ({ tag: "pairsFailed", generation, error: String(e) })),
+    fetchPairsPage(env, runId, pairsGeneration, pairsPage),
     env
       .getProjectionReport(runId)
       .map((report): TunerAction => ({ tag: "reportLoaded", generation, report }))
       .catch((e): TunerAction => ({ tag: "reportFailed", generation, error: String(e) })),
     env
-      .getProjectionProposals(runId)
+      .getProjectionProposals(runId, { limit: SCIENCE_ROW_FETCH_LIMIT })
       .map((proposals): TunerAction => ({ tag: "proposalsLoaded", generation, proposals }))
       .catch((e): TunerAction => ({ tag: "proposalsFailed", generation, error: String(e) })),
     env
-      .getProjectionObservations(runId)
+      .getProjectionObservations(runId, { limit: SCIENCE_ROW_FETCH_LIMIT })
       .map((observations): TunerAction => ({ tag: "observationsLoaded", generation, observations }))
       .catch((e): TunerAction => ({ tag: "observationsFailed", generation, error: String(e) })),
     env
-      .getProjectionShadowDecisions(runId)
+      .getProjectionShadowDecisions(runId, { limit: SCIENCE_ROW_FETCH_LIMIT })
       .map((rows): TunerAction => ({ tag: "shadowDecisionsLoaded", generation, rows }))
       .catch((e): TunerAction => ({ tag: "shadowDecisionsFailed", generation, error: String(e) })),
     env
-      .getProjectionActiveEliminations(runId)
+      .getProjectionActiveEliminations(runId, { limit: SCIENCE_ROW_FETCH_LIMIT })
       .map((rows): TunerAction => ({ tag: "activeEliminationsLoaded", generation, rows }))
       .catch(
         (e): TunerAction => ({ tag: "activeEliminationsFailed", generation, error: String(e) }),
@@ -606,6 +650,7 @@ function fetchRunResources(env: TunerEnv, runId: string, generation: number): Ef
 
 function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Effect<TunerAction> {
   draft.resourceGeneration += 1;
+  draft.pairsGeneration = draft.resourceGeneration;
   draft.projectionDetail = toLoading(draft.projectionDetail);
   draft.validation = toLoading(draft.validation);
   draft.candidates = toLoading(draft.candidates);
@@ -615,11 +660,13 @@ function startResourceLoad(draft: TunerState, env: TunerEnv, runId: string): Eff
   draft.shadowDecisions = toLoading(draft.shadowDecisions);
   draft.activeEliminations = toLoading(draft.activeEliminations);
   draft.report = toLoading(draft.report);
-  return fetchRunResources(env, runId, draft.resourceGeneration);
+  return fetchRunResources(env, runId, draft.resourceGeneration, draft.pairsGeneration, draft.pairsPage);
 }
 
 function clearResources(draft: TunerState): void {
   draft.resourceGeneration += 1;
+  draft.pairsGeneration = draft.resourceGeneration;
+  draft.pairsPage = { limit: draft.pairsPage.limit, offset: 0 };
   draft.projectionDetail = idle();
   draft.validation = idle();
   draft.candidates = idle();
@@ -910,9 +957,16 @@ export function tunerReducer(
       // Silent reload: refetch under a bumped generation without flipping the
       // per-run slots to `loading`, so the science on screen doesn't flash.
       draft.resourceGeneration += 1;
+      draft.pairsGeneration = draft.resourceGeneration;
       return Effect.merge(
         list,
-        fetchRunResources(env, draft.openRunId, draft.resourceGeneration),
+        fetchRunResources(
+          env,
+          draft.openRunId,
+          draft.resourceGeneration,
+          draft.pairsGeneration,
+          draft.pairsPage,
+        ),
       );
     }
 
@@ -984,9 +1038,16 @@ export function tunerReducer(
       // per-run slots to `loading`, so the science already on screen stays
       // put (no dim flash) while the fresher data loads underneath.
       draft.resourceGeneration += 1;
+      draft.pairsGeneration = draft.resourceGeneration;
       return Effect.merge(
         list,
-        fetchRunResources(env, draft.openRunId, draft.resourceGeneration),
+        fetchRunResources(
+          env,
+          draft.openRunId,
+          draft.resourceGeneration,
+          draft.pairsGeneration,
+          draft.pairsPage,
+        ),
       );
     }
 
@@ -1090,6 +1151,7 @@ export function tunerReducer(
       draft.openCandidateId = null;
       draft.openPairId = null;
       draft.pairGames = idle();
+      draft.pairsPage = { limit: draft.pairsPage.limit, offset: 0 };
       draft.evidence = { seq: 0, ring: [] };
       const effects = [logTick, startResourceLoad(draft, env, action.runId)];
       // If the newly opened run is already live, start its projection
@@ -1140,13 +1202,20 @@ export function tunerReducer(
       draft.candidates = toErr(action.error, draft.candidates);
       return null;
     case "pairsLoaded":
-      if (action.generation !== draft.resourceGeneration) return null;
+      if (action.generation !== draft.pairsGeneration) return null;
       draft.pairs = toOk(action.pairs, Date.now());
       return null;
     case "pairsFailed":
-      if (action.generation !== draft.resourceGeneration) return null;
+      if (action.generation !== draft.pairsGeneration) return null;
       draft.pairs = toErr(action.error, draft.pairs);
       return null;
+    case "pairsPageChanged": {
+      if (!draft.openRunId) return null;
+      draft.pairsPage = { ...draft.pairsPage, offset: action.offset };
+      draft.pairsGeneration += 1;
+      draft.pairs = toLoading(draft.pairs);
+      return fetchPairsPage(env, draft.openRunId, draft.pairsGeneration, draft.pairsPage);
+    }
     case "proposalsLoaded":
       if (action.generation !== draft.resourceGeneration) return null;
       draft.proposals = toOk(action.proposals, Date.now());

@@ -17,6 +17,7 @@ import type {
   ProjectionGameRow,
   ProjectionPairQuery,
   ProjectionPairRow,
+  ProjectionRunPageQuery,
   ProjectionMeta,
   ProjectionRefreshResult,
   ProjectionRunDetail,
@@ -75,10 +76,22 @@ export interface TunerEnv {
   getProjectionPairGames(runId: string, pairId: string): Effect<ProjectionGameRow[]>;
   getProjectionValidation(runId: string): Effect<ProjectionValidation>;
   getProjectionReport(runId: string): Effect<JsonValue>;
-  getProjectionProposals(runId: string): Effect<ProjectionProposal[]>;
-  getProjectionObservations(runId: string): Effect<ProjectionObservation[]>;
-  getProjectionShadowDecisions(runId: string): Effect<ProjectionShadowDecision[]>;
-  getProjectionActiveEliminations(runId: string): Effect<ProjectionActiveElimination[]>;
+  getProjectionProposals(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Effect<ProjectionProposal[]>;
+  getProjectionObservations(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Effect<ProjectionObservation[]>;
+  getProjectionShadowDecisions(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Effect<ProjectionShadowDecision[]>;
+  getProjectionActiveEliminations(
+    runId: string,
+    query?: ProjectionRunPageQuery,
+  ): Effect<ProjectionActiveElimination[]>;
 }
 
 export function createTunerEnv(api: TunerApiClient): TunerEnv {
@@ -139,11 +152,13 @@ export function createTunerEnv(api: TunerApiClient): TunerEnv {
       lift(() => api.getProjectionPairGames(runId, pairId)),
     getProjectionValidation: (runId) => lift(() => api.getProjectionValidation(runId)),
     getProjectionReport: (runId) => lift(() => api.getProjectionReport(runId)),
-    getProjectionProposals: (runId) => lift(() => api.getProjectionProposals(runId)),
-    getProjectionObservations: (runId) => lift(() => api.getProjectionObservations(runId)),
-    getProjectionShadowDecisions: (runId) =>
-      lift(() => api.getProjectionShadowDecisions(runId)),
-    getProjectionActiveEliminations: (runId) =>
-      lift(() => api.getProjectionActiveEliminations(runId)),
+    getProjectionProposals: (runId, query) =>
+      lift(() => api.getProjectionProposals(runId, query)),
+    getProjectionObservations: (runId, query) =>
+      lift(() => api.getProjectionObservations(runId, query)),
+    getProjectionShadowDecisions: (runId, query) =>
+      lift(() => api.getProjectionShadowDecisions(runId, query)),
+    getProjectionActiveEliminations: (runId, query) =>
+      lift(() => api.getProjectionActiveEliminations(runId, query)),
   };
 }
