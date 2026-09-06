@@ -14,6 +14,7 @@ research/az-train/.venv/
 *.egg-info/
 # pnpm workspace (ui/)
 ui/node_modules/
+.pnpm-store/
 apps/ui/pnpm-lock.yaml
 # Vite build output (served by the cargo server's ServeDir)
 apps/server/static/dist/
