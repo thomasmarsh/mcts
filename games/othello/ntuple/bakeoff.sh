@@ -14,8 +14,25 @@
 #
 # Usage:  games/othello/ntuple/bakeoff.sh <work-dir> [harvest.toml] [train.toml]
 #
+# Environment:
+#   ORACLE=mcts|edax        target teacher (default mcts). With edax, arms
+#                           B/C/D read their target from an independent Edax
+#                           evaluation instead of the MCTS tree's own value.
+#   EDAX_CFG=<path>          Edax oracle config (default harvest_edax.toml).
+#   HELDOUT_EDAX_LEVEL=<N>   held-out relabel level, strictly above the
+#                           training level (default 18); ORACLE=edax only.
+#   EDAX_GAMES=<N>           corpus size for ORACLE=edax (default 300).
+#                           Arm C pays one Edax call per harvested node
+#                           (~10^2-10^3 per move), so the MCTS default of
+#                           3000 games is intractable here -- keep it small.
+#
 # Runs for hours -- launch it as a background job and tail <work-dir>/log.
 set -euo pipefail
+
+ORACLE="${ORACLE:-mcts}"
+EDAX_CFG="${EDAX_CFG:-games/othello/ntuple/harvest_edax.toml}"
+HELDOUT_EDAX_LEVEL="${HELDOUT_EDAX_LEVEL:-18}"
+EDAX_GAMES="${EDAX_GAMES:-300}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
@@ -30,7 +47,9 @@ export LIBRARY_PATH="${LIBRARY_PATH:-/opt/homebrew/lib}"
 mkdir -p "$WORK"
 LOG="$WORK/log"
 exec > >(tee -a "$LOG") 2>&1
-echo "=== bake-off start $(date -u +%FT%TZ)  work=$WORK ==="
+echo "=== bake-off start $(date -u +%FT%TZ)  work=$WORK  oracle=$ORACLE ==="
+ORACLE_ARGS=(--oracle "$ORACLE")
+[[ "$ORACLE" == edax ]] && ORACLE_ARGS+=(--edax-config "$EDAX_CFG" --games "$EDAX_GAMES")
 
 ACCT="$WORK/cpu_seconds.tsv"
 : > "$ACCT"
@@ -46,18 +65,30 @@ stage() {  # stage <name> -- run "$@" (rest), record wall-seconds
 # ---------------------------------------------------------------------------
 if [[ ! -f "$WORK/harvest/harvest.json" ]]; then
   stage harvest cargo run --release -q -p game-othello -- \
-    dump --label harvest --out "$WORK/harvest" --harvest-config "$HARVEST_CFG"
+    dump --label harvest --out "$WORK/harvest" --harvest-config "$HARVEST_CFG" \
+    "${ORACLE_ARGS[@]}"
 fi
 cat "$WORK/harvest/harvest.json"
 
 # ---------------------------------------------------------------------------
-# 2. Held-out set: an independent deep-search harvest (arm_b == root deep
-#    searched values -- the best cheap ground-truth proxy).
+# 2. Held-out set: an independent harvest, arm_b (root positions) relabelled
+#    by a stronger teacher than training used --
+#    ORACLE=mcts: a deeper MCTS label search (via HARVEST_CFG);
+#    ORACLE=edax: Edax at HELDOUT_EDAX_LEVEL, strictly above the training
+#    level -- so the held-out MSE is a near-ground-truth reference rather
+#    than a re-run of the (possibly weak) training teacher.
 # ---------------------------------------------------------------------------
+HELDOUT_ARGS=(--oracle "$ORACLE" --seed 999983 --games 400)
+if [[ "$ORACLE" == edax ]]; then
+  # arm_b only (one Edax call per ply, no per-node harvest), but at the
+  # higher held-out level -- keep the count modest.
+  HELDOUT_ARGS=(--oracle edax --seed 999983 --games 200 \
+    --edax-config "$EDAX_CFG" --edax-level "$HELDOUT_EDAX_LEVEL")
+fi
 if [[ ! -f "$WORK/heldout/arm_b.bin" ]]; then
   stage heldout cargo run --release -q -p game-othello -- \
     dump --label harvest --out "$WORK/heldout" \
-    --harvest-config "$HARVEST_CFG" --seed 999983 --games 400
+    --harvest-config "$HARVEST_CFG" "${HELDOUT_ARGS[@]}"
 fi
 HELD="$WORK/heldout/arm_b.bin"
 

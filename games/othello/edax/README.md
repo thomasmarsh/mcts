@@ -63,6 +63,52 @@ Per-move exchange:
   `game_othello::edax` and its `cargo test --lib` coverage.
 - **Move reply:** `<file><rank>` upper-cased (e.g. `D3`), or `PA` for a pass.
 
+## Edax as a scoring oracle (`game_othello::edax::EdaxEval`)
+
+`game_othello::edax::EdaxEval` reads a numeric *evaluation* out of Edax
+rather than a move (the offline evaluator training pipeline uses Edax scores
+as regression targets). It drives the same binary **without `-q`** (which
+suppresses the search-result line) plus `-n 1` (single thread, so wall-time
+is CPU-time for label-cost accounting):
+
+```
+mEdax-native -n 1 -book-usage off -eval-file <dir>/data/eval.dat -level <N>
+```
+
+Per-eval exchange: `setboard <64><space><side>`, then `go`. Edax replies with
+a board dump, then one **search-result line** after this header:
+
+```
+ depth|score|       time   |  nodes (N)  |   N/s    | principal variation
+------+-----+--------------+-------------+----------+----------------------
+   10   +00        0:00.021        145934    6949238 d3 C5 e6 D2 c3 E3 f3 F6
+```
+
+then `Edax plays <MOVE>`. Whitespace-split of the result line:
+
+| field | 0 | 1 | 2 | 3 | 4 | 5.. |
+|---|---|---|---|---|---|---|
+| | depth token | signed disc score | time | nodes | N/s | principal variation |
+
+- **Score** is in disc-difference units (`+00`, `-38`), from the
+  side-to-move perspective. `EdaxEval` returns it verbatim as `f32`.
+- **Depth token** is `10` for a full-depth search or `30@73%` for a
+  selective one. `EdaxEval` reports the eval as *exact* only when the token
+  carries no `@` selectivity marker **and** the reported depth ≥ the number
+  of empty squares (Edax searched to the end).
+- Runtime `level <N>` switches search depth without a respawn — `EdaxEval`
+  uses it to raise to a full solve (`level 60`) near the endgame.
+- A position with no legal move prints `*** Game Over ***`; `EdaxEval`
+  handles that by reading the exact disc-difference straight off the board
+  (empties awarded to the leader, Edax's own final-score convention).
+
+Pinned against `mEdax-native` built from `edax-reversi` v4.6
+(`14f048c05ddfa385b6bf954a9c2905bbe677e9d3`). `game_othello::edax`'s
+`score_line_parse_pins_the_v46_format` test locks the field layout; the
+`#[ignore]`d `edax_eval_opening_won_and_solved` test drives the real binary
+(opening ≈ balanced, a near-full won board solves exact & strongly positive,
+perspective sign flips).
+
 ### The one gotcha
 
 Edax **aborts an in-progress `go` search the instant another line is queued

@@ -1,0 +1,28 @@
+# Configuration for `game-othello dump --label harvest --oracle edax`.
+#
+# Keeps the `harvest.toml` self-play corpus but swaps the training-target
+# oracle from the MCTS tree's own searched value to an independent Edax
+# evaluation of each position. Arm A (final game outcome) is unaffected;
+# arms B/C/D read their target from Edax.
+#
+#   arm_b.bin  played root          <- Edax eval of that root
+#   arm_c.bin  every internal node  <- Edax eval of that node (per-node bill)
+#   arm_d.bin  played line          <- TD(lambda) return over Edax root evals
+#
+# Set `edax_level` from `games/othello/ntuple/edax_level_sweep.sh` (lowest
+# level whose held-out MSE has plateaued) and `target_mode`/`squash_t` from
+# an arm-B held-out fit -- both before running bakeoff.sh, and independently
+# of any strength result it produces.
+
+edax_level     = 10        # fixed-depth Edax search for heuristic labels
+edax_exact_ply = 12        # empties <= this: raise to a full solve (level 60).
+                           # Keep this modest: a 12-empty solve is ~1 ms, but
+                           # each extra ply roughly quadruples it, and arm C
+                           # pays one solve per harvested deep node.
+target_mode    = "sign"    # "sign" = +1/0/-1 of the Edax score (primary)
+                           # "squash" = tanh(score / squash_t)
+squash_t       = 10.0      # disc-difference scale; only used for target_mode="squash"
+
+# The vendored Edax binary + weights (games/othello/edax/build-edax.sh).
+edax_binary    = "games/othello/edax/vendor/bin/mEdax-native"
+edax_data_dir  = "games/othello/edax/vendor/data"

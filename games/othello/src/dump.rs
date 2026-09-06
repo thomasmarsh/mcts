@@ -133,6 +133,14 @@ struct Config {
     harvest_config: PathBuf,
     games_overridden: bool,
     seed_overridden: bool,
+    /// `--label harvest` target oracle: `mcts` (the searched value read from
+    /// the tree) or `edax` (an independent Edax evaluation of each position).
+    /// Arm A (outcome) is unaffected either way.
+    oracle: String,
+    edax_config: PathBuf,
+    /// `--edax-level N` overrides the config's `edax_level` (used by the
+    /// `edax_level_sweep.sh` diagnostic and the higher-level held-out relabel).
+    edax_level_override: Option<u32>,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -145,6 +153,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut epsilon = 0.1f64;
     let mut presets_path = PathBuf::from("games/othello/presets.json");
     let mut harvest_config = PathBuf::from("games/othello/ntuple/harvest.toml");
+    let mut oracle = "mcts".to_string();
+    let mut edax_config = PathBuf::from("games/othello/ntuple/harvest_edax.toml");
+    let mut edax_level_override = None;
     let mut games_overridden = false;
     let mut seed_overridden = false;
     while let Some(a) = args.next() {
@@ -165,6 +176,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--epsilon" => epsilon = val().parse().expect("--epsilon must be a float"),
             "--presets" => presets_path = PathBuf::from(val()),
             "--harvest-config" => harvest_config = PathBuf::from(val()),
+            "--oracle" => oracle = val(),
+            "--edax-config" => edax_config = PathBuf::from(val()),
+            "--edax-level" => {
+                edax_level_override = Some(val().parse().expect("--edax-level must be an integer"))
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-othello dump --out <path> [--games N] [--seed N] \
@@ -178,6 +194,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             }
             other => panic!("unknown dump argument: {other}"),
         }
+    }
+    match oracle.as_str() {
+        "mcts" | "edax" => {}
+        other => panic!("unknown --oracle {other:?} (want mcts | edax)"),
     }
     match label.as_str() {
         "outcome" | "harvest" => {}
@@ -203,6 +223,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         harvest_config,
         games_overridden,
         seed_overridden,
+        oracle,
+        edax_config,
+        edax_level_override,
     }
 }
 
@@ -355,6 +378,80 @@ struct HarvestParams {
     td_lambda: f64,
 }
 
+/// Parameters for the `--oracle edax` target teacher
+/// (`games/othello/ntuple/harvest_edax.toml`). The self-play corpus params
+/// still come from `harvest.toml`; only the label oracle changes.
+#[derive(serde::Deserialize)]
+struct EdaxParams {
+    edax_level: u32,
+    edax_exact_ply: u32,
+    target_mode: String,
+    squash_t: f32,
+    edax_binary: String,
+    edax_data_dir: String,
+}
+
+/// A [`TargetOracle`] that labels each position with an independent Edax
+/// evaluation, mapped into `[-1, 1]`. Near the endgame it raises the search
+/// to a full solve.
+struct EdaxLabel {
+    edax: crate::edax::EdaxEval,
+    level: u32,
+    exact_ply: u32,
+    mode: EdaxMode,
+    squash_t: f32,
+    /// Positions that came back as exact solves (label-quality cross-check).
+    exact_hits: u64,
+}
+
+#[derive(Clone, Copy)]
+enum EdaxMode {
+    Sign,
+    Squash,
+}
+
+impl EdaxLabel {
+    fn new(p: &EdaxParams, level_override: Option<u32>) -> Self {
+        let mode = match p.target_mode.as_str() {
+            "sign" => EdaxMode::Sign,
+            "squash" => EdaxMode::Squash,
+            other => panic!("target_mode must be \"sign\" or \"squash\", got {other:?}"),
+        };
+        let level = level_override.unwrap_or(p.edax_level);
+        EdaxLabel {
+            edax: crate::edax::EdaxEval::spawn(&p.edax_binary, &p.edax_data_dir, level),
+            level,
+            exact_ply: p.edax_exact_ply,
+            mode,
+            squash_t: p.squash_t,
+            exact_hits: 0,
+        }
+    }
+}
+
+impl crate::harvest::TargetOracle for EdaxLabel {
+    fn target(&mut self, state: &State) -> f32 {
+        let empties = 64 - state.occupied().count_ones();
+        let level = if empties <= self.exact_ply { 60 } else { self.level };
+        let s = self.edax.eval(state, level);
+        if s.exact {
+            self.exact_hits += 1;
+        }
+        match self.mode {
+            EdaxMode::Sign => {
+                if s.score > 0.0 {
+                    1.0
+                } else if s.score < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+            EdaxMode::Squash => (s.score / self.squash_t).tanh(),
+        }
+    }
+}
+
 /// Encode `records` to `<dir>/<name>.bin` and a matching JSON manifest at
 /// `<dir>/<name>.json`.
 fn write_arm(dir: &std::path::Path, name: &str, records: &[Record]) {
@@ -399,9 +496,36 @@ fn random_opening(rng: &mut SmallRng, opening_plies: usize) -> State {
 }
 
 fn run_harvest(cfg: &Config) {
-    use crate::harvest::{harvest_tree_scored, label_search, root_value, HarvestFilter};
+    use crate::harvest::{
+        harvest_tree_scored, harvest_tree_scored_oracle, label_search, root_value, HarvestFilter,
+        TargetOracle,
+    };
     use mcts::algorithms::Search;
     use mcts::game::PlayerIndex;
+    use std::time::{Duration, Instant};
+
+    let use_edax = cfg.oracle == "edax";
+    let mut edax: Option<EdaxLabel> = if use_edax {
+        let etext = std::fs::read_to_string(&cfg.edax_config)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", cfg.edax_config.display()));
+        let ep: EdaxParams = toml::from_str(&etext).expect("edax config must parse");
+        eprintln!(
+            "oracle=edax  level={}  exact_ply={}  mode={}",
+            cfg.edax_level_override.unwrap_or(ep.edax_level),
+            ep.edax_exact_ply,
+            ep.target_mode
+        );
+        Some(EdaxLabel::new(&ep, cfg.edax_level_override))
+    } else {
+        None
+    };
+
+    // CPU accounting: the self-play search is the controlled variable and is
+    // paid by every arm; the Edax label cost is broken out per arm (root
+    // evals feed B and D, the per-node harvest is arm C's alone).
+    let mut t_selfplay = Duration::ZERO;
+    let mut t_edax_root = Duration::ZERO;
+    let mut t_edax_harvest = Duration::ZERO;
 
     let text = std::fs::read_to_string(&cfg.harvest_config)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", cfg.harvest_config.display()));
@@ -466,16 +590,32 @@ fn run_harvest(cfg: &Config) {
                 continue;
             }
 
+            let t0 = Instant::now();
             let action = engine.choose_action(&state);
+            t_selfplay += t0.elapsed();
+
             let pidx = state.turn.to_index();
-            let rv = root_value(&engine, &state, pidx);
+            let rv: f64 = if let Some(o) = edax.as_mut() {
+                let t = Instant::now();
+                let v = o.target(&state) as f64;
+                t_edax_root += t.elapsed();
+                v
+            } else {
+                root_value(&engine, &state, pidx)
+            };
             let rv_black = if state.turn == Player::Black { rv } else { -rv };
 
             let mut rec = record_for(&state, None);
             arm_a.push(rec); // outcome target backfilled below
             rec.target = rv as f32;
             arm_b.push(rec);
-            arm_c.extend(harvest_tree_scored(&engine, &state, &filter));
+            if let Some(o) = edax.as_mut() {
+                let t = Instant::now();
+                arm_c.extend(harvest_tree_scored_oracle(&engine, &state, &filter, o));
+                t_edax_harvest += t.elapsed();
+            } else {
+                arm_c.extend(harvest_tree_scored(&engine, &state, &filter));
+            }
             traj.push((arm_a.len() - 1, rec.side, rv_black));
 
             state = Othello::apply(state, &action);
@@ -556,11 +696,32 @@ fn run_harvest(cfg: &Config) {
     write_arm(dir, "arm_c", &arm_c_records);
     write_arm(dir, "arm_d", &arm_d);
 
+    // CPU accounting. For `--oracle mcts` the arms differ only in training
+    // cost (bakeoff.sh times that); for `--oracle edax` the plot needs the
+    // Edax label bill broken out -- root evals feed arms B/D, the per-node
+    // harvest is arm C's alone, and arm A pays no Edax at all.
+    let cpu_block = if use_edax {
+        let o = edax.as_ref().unwrap();
+        format!(
+            ",\n  \"oracle\": \"edax\",\n  \"cpu\": {{\n    \
+             \"selfplay_s\": {:.2},\n    \"edax_root_s\": {:.2},\n    \
+             \"edax_harvest_s\": {:.2},\n    \"edax_calls\": {},\n    \
+             \"edax_nodes\": {},\n    \"edax_exact_hits\": {}\n  }}",
+            t_selfplay.as_secs_f64(),
+            t_edax_root.as_secs_f64(),
+            t_edax_harvest.as_secs_f64(),
+            o.edax.calls(),
+            o.edax.total_nodes(),
+            o.exact_hits,
+        )
+    } else {
+        format!(",\n  \"oracle\": \"mcts\",\n  \"selfplay_s\": {:.2}", t_selfplay.as_secs_f64())
+    };
     let summary = format!(
         "{{\n  \"games\": {},\n  \"label_iters\": {},\n  \"epsilon\": {},\n  \"td_lambda\": {},\n  \
          \"min_visits\": {},\n  \"max_per_search\": {},\n  \"dedup\": {},\n  \
          \"arm_a\": {},\n  \"arm_b\": {},\n  \"arm_c\": {},\n  \"arm_c_raw\": {},\n  \"arm_d\": {},\n  \
-         \"harvest_ratio\": {:.2},\n  \"harvest_ratio_raw\": {:.2}\n}}\n",
+         \"harvest_ratio\": {:.2},\n  \"harvest_ratio_raw\": {:.2}{}\n}}\n",
         params.games,
         params.label_iters,
         params.epsilon,
@@ -575,11 +736,12 @@ fn run_harvest(cfg: &Config) {
         arm_d.len(),
         arm_c_records.len() as f64 / arm_a.len().max(1) as f64,
         harvest_ratio_raw,
+        cpu_block,
     );
     std::fs::write(dir.join("harvest.json"), &summary).expect("cannot write harvest.json");
 
     eprintln!(
-        "wrote arm_a={} arm_b={} arm_c={} arm_d={} to {}  (harvest ratio {:.1}x)",
+        "wrote arm_a={} arm_b={} arm_c={} arm_d={} to {}  (harvest ratio {:.2}x)",
         arm_a.len(),
         arm_b.len(),
         arm_c_records.len(),

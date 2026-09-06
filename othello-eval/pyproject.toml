@@ -3,7 +3,10 @@ name = "othello-eval"
 version = "0.1.0"
 description = "numpy reader for game-othello dump position records"
 requires-python = ">=3.11,<3.14"
-dependencies = ["numpy>=2,<3"]
+dependencies = [
+    "matplotlib>=3.11.1",
+    "numpy>=2,<3",
+]
 
 [project.scripts]
 othello-eval-train = "othello_eval.ntuple:train_cli"

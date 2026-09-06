@@ -3,6 +3,7 @@ strength-vs-cumulative-CPU-seconds table (+ PNG if matplotlib is present).
 
 Reads, from the work dir:
   cpu_seconds.tsv     stage -> wall seconds (harvest, train_*, edax_*, h2h_*)
+  harvest/harvest.json  per-arm Edax label CPU breakout (ORACLE=edax runs)
   mse.json            per-arm held-out MSE + pairwise bootstrap CI
   edax_<arm>.txt      "secondary N = <level>" ladder placement
   h2h_<a>_<b>.txt     per-depth A-vs-B win rate + CI
@@ -61,11 +62,33 @@ def main() -> None:
     mse = json.loads((work / "mse.json").read_text()) if (work / "mse.json").exists() else {}
     mse_models = mse.get("models", {})
 
-    shared_label_secs = cpu.get("harvest", 0.0)
+    harvest = (
+        json.loads((work / "harvest" / "harvest.json").read_text())
+        if (work / "harvest" / "harvest.json").exists()
+        else {}
+    )
+    # Per-arm label-generation CPU. For ORACLE=mcts the arms share the whole
+    # `harvest` stage. For ORACLE=edax the stage's `cpu` block breaks the
+    # Edax bill out: arm A pays only the self-play search, B/D add the root
+    # evals, C adds the per-node harvest (attributed to C, never amortised).
+    stage_secs = cpu.get("harvest", 0.0)
+    hc = harvest.get("cpu") if harvest.get("oracle") == "edax" else None
+    if hc:
+        selfplay = hc["selfplay_s"]
+        label_gen = {
+            "a": selfplay,
+            "b": selfplay + hc["edax_root_s"],
+            "c": selfplay + hc["edax_harvest_s"],
+            "d": selfplay + hc["edax_root_s"],
+        }
+    else:
+        label_gen = {arm: stage_secs for arm in ARMS}
+
     csv_lines = ["arm,label_gen_cpu_s,train_cpu_s,cumulative_cpu_s,edax_level,held_out_mse"]
     table: list[tuple[str, ...]] = []
     for arm in ARMS:
         train_s = cpu.get(f"train_{arm}", 0.0)
+        shared_label_secs = label_gen[arm]
         cum = shared_label_secs + train_s
         lvl = edax_level(work, arm)
         m = mse_models.get(arm.upper(), {}).get("mse")
@@ -108,7 +131,7 @@ def main() -> None:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        xs = [shared_label_secs + cpu.get(f"train_{a}", 0.0) for a in ARMS]
+        xs = [label_gen[a] + cpu.get(f"train_{a}", 0.0) for a in ARMS]
         ys = [edax_level(work, a) or 0 for a in ARMS]
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
         ax1.plot(xs, ys, "o-")
