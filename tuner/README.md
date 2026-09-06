@@ -1,20 +1,20 @@
 # MCTS game tuner
 
-`tuner` is a foreground, reproducible strategy tuner for executables that
-implement the game-host `describe`, `compare validate`, and `compare eval`
-protocol. It freezes an explicit deployment objective before creating an
-artifact, then runs as many complete retained-elite cohorts as the declared
-evaluation budget funds. The first cohort uses the bootstrap/SMAC/random-reserve
-schedule; at each completed-cohort boundary the top `--finalists` candidates are
-retained as elites and the next challenger cohort (filled from the frozen
-challenger schedule) starts only when the remaining tuning budget can fund all
-of its planned new pairs. When another whole cohort does not fit, the latest
-cohort's finalists receive held-out validation.
+`tuner` is a foreground, reproducible strategy tuner for game-host executables
+that implement `describe`, `compare validate`, and `compare eval`. It freezes
+the deployment objective before it starts, retains the best candidates between
+cohorts, and validates the final shortlist against held-out tasks.
 
-An objective is strict JSON containing the schema default and one or more raw,
-inline historical opponent configurations. The checked-in Druid deployment
-objective is `tuner/objectives/druid-reference-v1.json`; Python never resolves
-named Rust presets at runtime.
+The tuner is deliberately conservative about what its results mean. It records
+the evidence needed to replay a run, keeps tuning and validation data separate,
+and labels reduced-fidelity results as `mechanics_smoke`, not `production`.
+
+## Start a run
+
+The checked-in Druid objective is
+`tuner/objectives/druid-reference-v1.json`. It contains the schema default and
+raw, inline historical opponent configurations. Python does not resolve named
+Rust presets at runtime.
 
 ```bash
 uv run --project tuner tuner \
@@ -30,158 +30,169 @@ uv run --project tuner tuner \
   --production-max-iterations 64
 ```
 
-`--evaluator-workers` is an operational setting and defaults to `1`. Each
-evaluator runs one search thread, so the worker count cannot exceed the
-available logical CPUs. Values above one execute an allocator-ordered batch of
-seat-swapped pair subprocesses concurrently; starts may be batched, but terminal
-evidence is committed in the same canonical order as sequential execution.
-Worker count is not frozen in the manifest, so a run may resume with a different
-count. Tuning pairs retry automatically after one recorded failure. After two
-started, incomplete attempts for the same tuning pair, the frozen
-`terminal-candidate-refill-v1` policy records `candidate_failed`, preserves the
-candidate's factual work, removes it from the live cohort, and refills the
-vacancy through the ordinary scheduled proposal source (or `random_reserve`
-after the schedule is exhausted). Validation failures still require explicit
-resume and never trigger finalist replacement. Interrupting a run cancels active
-children, leaving any uncommitted starts censored; those starts count toward the
-same two-attempt tuning limit on resume.
+The first cohort follows the bootstrap, SMAC, and random-reserve schedule. At
+each completed-cohort boundary, the top `--finalists` become retained elites.
+The tuner begins the next challenger cohort only when the remaining tuning
+budget funds all of its planned new pairs. Otherwise, it validates the latest
+cohort's finalists.
 
-Panel weights produce a deterministic weighted-fair task order. Every task
-names the exact panel opponent, canonical configuration fingerprint, seed, and
-start stratum it uses. `--seed` controls proposal streams only;
-`--task-seed` controls the disjoint tuning and held-out validation corpora.
-`--constraint JSON` may be repeated to restrict the tuning space for this run —
-an array of `{"when"?: {...}, "set": {...}}` entries, or the bare
-`{name: {fix|range|choices}}` map as sugar for one un-predicated entry. Each
-narrowing may only constrain (never widen) the declared schema. Constraints
-apply to candidate proposals only; the frozen set is validated for resume and
-does not change schema-default or inline objective opponents.
-All configured task counts must be complete panel weight cycles. `--tuning-pairs`
-is the maximum tuning prefix: the tuner evaluates every accepted candidate on
-each cumulative complete-cycle prefix before deepening the full cohort, with no
-elimination. `--finalists` is both the retained-elite count and the final
-shortlist count. The selected validation corpus is always a leading prefix of the
-frozen production validation corpus.
+## What is frozen
 
-At a complete non-final tuning prefix containing at least 12 pairs, the tuner
-records a deterministic paired, stratum-aware `shadow_race_decided` screening
-disposition. The 12-pair minimum, practical margin, and nominal elimination
-threshold are frozen in the manifest. This is evidence only: every candidate
-still reaches the maximum tuning prefix, and the nominal threshold has not earned
-an active-pruning safety claim. Runs with no eligible non-final prefix are valid
-and record no shadow decisions.
+The manifest freezes the objective, panel, task corpora and prefixes, search
+effort, proposal schedule, model versions, budgets, and derived objective epoch.
+This makes the scientific result reproducible even when a run is resumed.
 
-`--shadow-policy {paired_bootstrap,successive_halving}` selects which frozen
-policy records those dispositions; it is manifest-frozen and resume-sensitive.
-The default `paired_bootstrap` is the stratum-aware bootstrap above.
-`--active-elimination-audit-probability` accepts `paired_bootstrap` at any
-setting and accepts `successive_halving` only with a positive
-`--shadow-halving-spare-margin` (method version
-`successive-halving-spare-near-tie-v1`), the gate-approved spare-near-tie policy;
-the plain eta-2 cut stays shadow-only. `successive_halving` is
-a control that, at each eligible common prefix, starts from the full
-cohort roster, applies its own prior batches, ranks the surviving candidates by
-their common-prefix point estimate (fingerprint breaking ties), keeps the first
-`max(finalists, ceil(survivors / 2), retained elites)` of them, and marks the
-rest eliminated. With a positive `--shadow-halving-spare-margin`, a would-be
-eliminated candidate whose paired mean at the cut prefix is within the margin of
-the last kept candidate is carried to the next look instead (`spare_margin` of
-`0.0` is exactly the plain eta-2 cut). Retained elites are always protected. It
-makes no confidence claim; its `--shadow-practical-margin` only defines the
-audit's recovered boundary, and an explicitly non-default paired threshold is
-rejected with it.
-The `report.json` `shadow_elimination` section is tagged by policy: paired looks
-keep their calibration and Brier score, successive-halving looks expose rank and
-prior/target survivor counts with calibration fields reported as not applicable.
+- `--seed` controls proposal streams.
+- `--task-seed` controls the disjoint tuning and held-out validation corpora.
+- Panel weights determine a deterministic weighted-fair task order. Each task
+  records its opponent, configuration fingerprint, seed, and start stratum.
+- `--constraint JSON` may be repeated to narrow the proposal space. It accepts
+  either `[{"when"?: {...}, "set": {...}}]` or the shorthand
+  `{name: {fix|range|choices}}`. A constraint can narrow the declared schema,
+  but cannot widen it. It affects proposals, not the schema default or objective
+  opponents.
+- All task counts must be complete panel-weight cycles. `--tuning-pairs` is the
+  largest tuning prefix: every accepted candidate reaches each cumulative,
+  complete-cycle prefix before the full cohort is deepened.
+- `--finalists` is both the retained-elite count and the final shortlist count.
+  Validation always uses a leading prefix of the frozen production corpus.
 
-Passing `--active-elimination-audit-probability` with a finite value strictly
-between zero and one opts into activation-validation mode. After each eligible
-shadow decision the tuner records an `allocation_decided` batch that either
-prunes an eliminated candidate or deterministically continues it as an audit.
-Each batch action carries a typed `decision_margin`: a `paired_probability`
-margin (threshold, favorable probability, and their difference) for a paired
-decision, or a `successive_halving_rank` margin (rank, target survivor count,
-ranks below the cutoff, and the spared-candidate count for that look) for a rank
-decision. The manifest's active specification binds the selected shadow-policy
-kind, exact method version, and spare margin, so a resume cannot pair an active
-audit with another decision policy. Audits and recorded boundaries remain through
-the maximum prefix; pruned candidates are not replaced within that cohort. The
-option is frozen for resume
-At the completed-cohort boundary, an audited candidate that reaches its exact
-recorded boundary candidate at maximum tuning fidelity suspends later active
-pruning while shadow decisions and full-cohort tuning continue.
+## Budgets and failures
 
-`report.json` includes a `candidate_lifecycle` projection of this policy,
-terminal failures, and replacement lineage, plus a `shadow_elimination` audit
-of those frozen decisions.
-It labels each candidate against the same cohort's maximum tuning-prefix top
-set, while calibration and stratum reversals compare against the exact early
-boundary candidate recorded in the decision. `top_set_false_elimination_rate`
-uses eligible unprotected top-set paths as its denominator; `trash_precision`
-uses counterfactual eliminations and calls only candidates outside that same
-tuning top set “trash.” Avoided work is factual suffix work after the first
-unprotected elimination, including retries and partial failed attempts. The
-section also reports fixed probability-bin calibration and Brier score only for
-looks an active path would reach. It never uses held-out validation, is not an
-anytime-valid safety guarantee. Shadow runs retain this audit; active runs
-instead expose their observed allocation batches in `active_elimination`, tagged
-with the bound policy kind and method version. That section keeps projected
-unique-pair savings separate from factual compute:
-`gross_nominal_suffix_unique_pairs` sums the manifest tuning cases strictly after
-each first nominal elimination prefix, `audit_continuation_suffix_unique_pairs`
-restricts that sum to audited continuations, and
-`planned_unique_pair_savings` is their difference — the unique suffix pairs
-omitted for pruned candidates. It is prefix arithmetic, not observed wall time,
-and does not model retries or failures; actual attempts, games, iterations, and
-wall time come only from the compute ledger.
+`--tuning-pair-budget` and `--validation-pair-budget` are required total budgets
+for pair attempts, frozen under `safe-boundary-pair-attempts-v1`. The initial
+cohort always runs. The tuner admits a later cohort only when the remaining
+tuning budget covers its planned pairs, counting every started attempt, even one
+that fails or is interrupted. The number of cohorts is therefore an outcome of
+the budget, not another setting.
 
-`--tuning-pair-budget` and `--validation-pair-budget` are required total
-budgets over pair attempts, frozen in the manifest under the
-`safe-boundary-pair-attempts-v1` policy. The initial cohort always runs; a later
-challenger cohort is admitted at a completed-cohort boundary only when the
-remaining tuning budget (counting every started pair attempt, including ones
-that later fail or are interrupted) covers all of its planned new pairs. The
-validation budget divides evenly across the finalists and derives one common
-held-out prefix (`budget / finalists` pairs each, at least one complete panel
-cycle, never longer than `--production-validation-pairs`). The number of
-cohorts is an output of the budget, not a configuration.
+The validation budget divides evenly over finalists. Each finalist receives the
+same held-out prefix: `budget / finalists` pairs, at least one complete panel
+cycle, and no more than `--production-validation-pairs`.
 
-`--diagnostic-pair-budget` defaults to zero. When positive, it permits direct,
-seat-swapped candidate-versus-candidate pairs only after the final affordable
-cohort and before finalist selection. These pairs use the frozen tuning search
-effort and a deterministic graph policy; they never enter objective
-observations, proposal costs, elimination, held-out estimates, or deployment
-claims. The report exposes their separate compute bucket and direct matchup
-graph. A 95% Hoeffding interval must establish every edge of a directed cycle
-before one cycle-connected candidate outside the objective shortlist may take
-the last validation slot; the objective winner is always retained. Direct-edge
-intervals are per-edge and are not graph-wide multiplicity corrected.
+Budgets are soft caps at pair and cohort boundaries. The tuner never stops
+between the two seats of a pair or inside an admitted cohort, so a retry may
+exceed the declared cap. The compute ledger reports the actual attempts,
+completed pairs, failures, censored starts, games, iterations, wall time, and
+budget overrun or remainder.
 
-The budgets are soft caps at scientifically safe boundaries: the tuner never
-stops between the two seats of a pair or inside an admitted cohort, so a retry
-after a failure or interruption may push actual attempts over the declared cap.
-The report's `compute` section accounts for this truthfully — per-phase pair
-attempts, completed pairs, failed and censored attempts, physical games,
-actual search iterations, recorded game wall time, and unspent/overrun pair
-attempts relative to the frozen budgets.
+`--evaluator-workers` is operational rather than scientific and defaults to
+`1`. Each evaluator runs one search thread, so the value cannot exceed the
+available logical CPUs. Higher values start allocator-ordered, seat-swapped pair
+subprocesses concurrently, while terminal evidence is still committed in the
+same canonical order as a sequential run. A resumed run may use a different
+worker count.
 
-The run directory contains three version-4 artifacts:
+Tuning pairs retry once after a recorded failure. After two started but
+incomplete attempts, the frozen `terminal-candidate-refill-v1` policy records
+`candidate_failed`, preserves the candidate's factual work, removes it from the
+live cohort, and refills the vacancy from the scheduled source, or from
+`random_reserve` after the schedule ends. Validation failures require an
+explicit resume and never replace a finalist. Interrupting a run cancels active
+children; uncommitted starts are censored and count toward the same two-attempt
+limit when resumed.
 
-- `manifest.json` freezes the resolved objective/panel, full corpora and
-  selected prefixes, fidelity axes, mixed proposal schedule, model dependency
-  versions, total compute budgets, and derived objective epoch.
-- `evidence.jsonl` records append-only proposal, pair-atomic, contextual
-  observation, selection, and completion evidence.
-- `report.json` is a replaceable projection with proposal-search provenance, weighted held-out marginals,
-  per-opponent matchup rows, matched finalist differences, unresolved ties, and
-  the evidence-derived compute ledger and shadow-elimination audit.
+## Screening and active elimination
 
-Validation is `production` only when both axes reach their declared target:
-the selected held-out validation prefix is the complete production corpus and
-its search effort exactly equals the declared production effort. Every other result is
-`mechanics_smoke`, with the lower axis or axes named in the report.
+At a complete, non-final tuning prefix of at least 12 pairs, the tuner can
+record a deterministic, paired, stratum-aware `shadow_race_decided` disposition.
+The minimum, practical margin, and nominal threshold are frozen in the
+manifest. Shadow evidence does not prune candidates: each still reaches the
+maximum tuning prefix. A run without an eligible prefix is valid and records no
+shadow decision.
 
-Resume uses the same scientific options and objective file:
+`--shadow-policy {paired_bootstrap,successive_halving}` chooses the frozen
+screening policy and is resume-sensitive.
+
+- `paired_bootstrap` is the default stratum-aware bootstrap policy.
+- `successive_halving` ranks surviving candidates at each eligible common prefix
+  by point estimate, breaking ties by fingerprint. It begins with the full cohort
+  roster and applies its earlier batches before each ranking. It keeps
+  `max(finalists, ceil(survivors / 2), retained elites)`, and marks the rest as
+  eliminated. Retained elites are always protected.
+- With a positive `--shadow-halving-spare-margin`, a candidate within that
+  paired-mean margin of the last kept candidate continues to the next look.
+  A margin of `0.0` is the plain eta-2 cut. This policy makes no confidence
+  claim; `--shadow-practical-margin` defines only the audit's recovered
+  boundary, and cannot be paired with an explicitly non-default paired
+  threshold.
+
+`--active-elimination-audit-probability` activates allocation-validation mode
+only for a finite value strictly between zero and one. The tuner then records an
+`allocation_decided` batch at each eligible decision: candidates are pruned or
+deterministically continued as audits. `paired_bootstrap` accepts any setting.
+`successive_halving` requires a positive `--shadow-halving-spare-margin`, using
+`successive-halving-spare-near-tie-v1`; the plain eta-2 cut remains shadow-only.
+
+The active specification binds the policy, method version, and spare margin, so
+a resume cannot combine an audit with a different decision policy. Audits and
+their boundaries remain through the maximum prefix, and pruned candidates are
+not replaced within a cohort. If an audited candidate reaches its exact recorded
+boundary candidate at maximum tuning fidelity, later active pruning suspends;
+shadow decisions and full-cohort tuning continue.
+
+For paired decisions, `decision_margin` records the threshold, favorable
+probability, and their difference. For rank decisions, it records rank, target
+survivor count, ranks below the cutoff, and the spared-candidate count.
+
+## Reports and validation
+
+Each run directory contains three version-4 artifacts:
+
+- `manifest.json` is the frozen run specification.
+- `evidence.jsonl` is append-only proposal, pair-atomic observation, selection,
+  and completion evidence.
+- `report.json` is a replaceable projection with proposal provenance, weighted
+  held-out marginals, opponent matchups, finalist differences, unresolved ties,
+  and the compute ledger.
+
+`report.json` also projects candidate failures, replacements, and screening:
+
+- `candidate_lifecycle` records policy outcomes, terminal failures, and
+  replacement lineage.
+- `shadow_elimination` compares candidates with the same cohort's maximum-prefix
+  top set. Calibration and stratum reversals use the exact early boundary
+  candidate. It never uses held-out validation and is not an anytime-valid
+  safety guarantee.
+- Paired looks include calibration and Brier score. Successive-halving looks
+  include rank and survivor counts, with calibration fields marked not
+  applicable.
+- Active runs also have `active_elimination`, which distinguishes planned unique
+  pair savings from factual compute. `gross_nominal_suffix_unique_pairs` is the
+  suffix after every first nominal elimination;
+  `audit_continuation_suffix_unique_pairs` restricts that to audits; and
+  `planned_unique_pair_savings` is the difference. This prefix arithmetic
+  excludes retries, failures, and wall time; those belong to the compute ledger.
+
+`top_set_false_elimination_rate` uses eligible, unprotected top-set paths as its
+denominator. `trash_precision` uses counterfactual eliminations and calls only
+candidates outside that top set `trash`. Avoided work is factual suffix work
+after the first unprotected elimination, including retries and partial failures.
+Calibration uses fixed probability bins and Brier score only for looks an active
+path would reach.
+
+Validation is `production` only when the selected validation prefix is the whole
+production corpus and its search effort equals the declared production effort.
+Every other result is `mechanics_smoke`, with the lower axis or axes named in
+the report.
+
+## Diagnostic matchups
+
+`--diagnostic-pair-budget` defaults to zero. A positive value permits direct,
+seat-swapped candidate matchups after the final affordable cohort and before
+finalist selection. These pairs use frozen tuning effort and a deterministic
+graph policy, but never affect objective observations, proposal costs,
+elimination, held-out estimates, or deployment claims.
+
+The report exposes a separate compute bucket and direct-matchup graph. A 95%
+Hoeffding interval must establish every edge in a directed cycle before one
+cycle-connected candidate outside the objective shortlist can take the final
+validation slot. The objective winner remains. Direct-edge intervals are
+per-edge, not graph-wide multiplicity corrected.
+
+## Resume a run
+
+Resume with the same scientific options and objective file:
 
 ```bash
 uv run --project tuner tuner \
@@ -197,25 +208,22 @@ uv run --project tuner tuner \
   --production-max-time-ms 64
 ```
 
-Resume validates the manifest and complete evidence log before append. It
-rejects changed objective content/order/weights/configurations, task corpora,
-prefixes, efforts, budgets, or epoch before evaluating another game. The objective and
-binary paths may move when their resolved scientific identity is unchanged;
-`--pair-timeout-seconds` and `--evaluator-workers` remain operational. Resuming a completed run only
-rebuilds `report.json`. A resumed run reproduces the uninterrupted run's
-scientific projection, selection, and validation exactly; only the compute
-ledger truthfully records the extra censored or retried attempts, including any
-budget overrun they cause.
+Before append, resume validates the manifest and the complete evidence log. It
+rejects changes to objective content, order, weights, configurations, task
+corpora, prefixes, effort, budgets, or epoch. Objective and binary paths may
+move when their resolved scientific identity is unchanged.
 
-## Whole-run proposer policies and bake-offs
+`--pair-timeout-seconds` and `--evaluator-workers` remain operational. Resuming
+a completed run only rebuilds `report.json`. The scientific projection,
+selection, and validation match an uninterrupted run; the ledger retains any
+extra censored or retried attempts and resulting budget overrun.
 
-`--proposer-policy` selects one frozen whole-run proposal policy. Its default,
-`smac_mixed`, preserves the SMAC-guided schedule. The other measured policies
-are `random`, `qmc` (scrambled Sobol), and `irace_generational` (a stateless
-elite-centred baseline). The selection is manifest-sensitive; it never changes
-the default automatically.
+## Proposer bake-off
 
-Run a matched policy experiment with `tuner-proposer-bakeoff`:
+`--proposer-policy` selects a frozen whole-run proposal policy. The default,
+`smac_mixed`, keeps the SMAC-guided schedule. The measured alternatives are
+`random`, `qmc` (scrambled Sobol), and `irace_generational` (a stateless,
+elite-centred baseline).
 
 ```bash
 uv run --project tuner tuner-proposer-bakeoff \
@@ -223,28 +231,25 @@ uv run --project tuner tuner-proposer-bakeoff \
   --experiment-dir /tmp/druid-proposer-bakeoff
 ```
 
-The strict version-one specification fixes the four policies in this order:
-`random`, `qmc`, `smac_mixed`, `irace_generational`; it also fixes at least four
-proposal seeds, increasing tuning pair budgets, the task seed, objective, and
-all shared run settings. The experiment directory has an immutable
-`experiment.json`, ordinary replayable child run directories, and a replaceable
-`results.json`. `--resume` continues incomplete children through the normal
-foreground evidence path and rebuilds the result projection from completed
-child artifacts.
+The version-1 spec fixes policy order as `random`, `qmc`, `smac_mixed`, and
+`irace_generational`, along with at least four proposal seeds, increasing tuning
+budgets, the task seed, objective, and shared run settings. The experiment has
+an immutable `experiment.json`, replayable child runs, and a replaceable
+`results.json`. `--resume` completes unfinished children through the usual
+foreground evidence path, then rebuilds the result projection.
 
 ## Elimination bake-off
 
 `tuner-elimination-bakeoff` compares complete elimination systems at equal
-declared compute. It expands each `(tuning pair budget, proposal seed)` into
-three matched child runs that differ only in the elimination policy and its
-active specification:
+declared compute. For each `(tuning pair budget, proposal seed)`, it creates
+three matched child runs that differ only in elimination policy:
 
-- `no_elimination` records paired shadow evidence but never enforces it;
-- `paired_elimination` enforces the landed all-strata audited paired policy at
-  audit probability `0.25`;
-- `spare_near_tie` enforces the gate-approved audited spare-near-tie
-  successive-halving policy (`successive-halving-spare-near-tie-v1`, spare margin
-  `0.10`) at the same audit probability.
+- `no_elimination` records paired shadow evidence but never enforces it.
+- `paired_elimination` enforces the all-strata audited paired policy at audit
+  probability `0.25`.
+- `spare_near_tie` enforces the audited spare-near-tie successive-halving policy
+  (`successive-halving-spare-near-tie-v1`, spare margin `0.10`) at the same
+  audit probability.
 
 ```bash
 uv run --project tuner tuner-elimination-bakeoff \
@@ -252,23 +257,23 @@ uv run --project tuner tuner-elimination-bakeoff \
   --experiment-dir /tmp/druid-elimination-bakeoff
 ```
 
-The strict version-1 specification fixes the three policies in that order, the
-`smac_mixed` proposer, at least four distinct proposal seeds, at least two
-increasing tuning budgets, zero diagnostic budget, full production validation,
-and a `gate` block that must equal the landed authorization
-(`task-11-successive-halving-shadow-gate.md`, `PASS`,
-`successive-halving-spare-near-tie-v1`). The `results.json` reports the
-Session-11a held-out quality, simple regret, and top-set recall against a
-union-of-returned-finalists reference set, seed-paired policy contrasts,
-per-arm active-safety summaries, budget reinvestment versus continue-all, and
-one frozen largest-budget rule that emits exactly `keep_paired_elimination`,
-`change_to_spare_near_tie`, or `reject_active_elimination`. An active arm is
-`safe_in_bakeoff` only when every completed cell recorded zero audited boundary
-reversals and no suspension. The decision is evidence, not a self-modifying
-configuration; it never changes the normal tuner default. Zero audited
-reversals in a finite bake-off is not a universal safety guarantee.
+The version-1 spec fixes the policies in that order, the `smac_mixed` proposer,
+at least four distinct proposal seeds, at least two increasing tuning budgets,
+zero diagnostic budget, full production validation, and the authorization block
+for `successive-halving-spare-near-tie-v1`. `results.json` reports held-out
+quality, simple regret, top-set recall against a union-of-returned-finalists
+reference set, seed-paired contrasts, active-safety summaries, and budget
+reinvestment against continue-all. Its largest-budget rule emits exactly
+`keep_paired_elimination`, `change_to_spare_near_tie`, or
+`reject_active_elimination`.
 
-A tiny smoke spec (mechanics, replay, accounting, and result projection only):
+An active arm is `safe_in_bakeoff` only when every completed cell has zero
+audited boundary reversals and no suspension. That is evidence from a finite
+bake-off, not a universal safety guarantee, and it does not alter the normal
+tuner default.
+
+Here is a small smoke specification. It covers mechanics, replay, accounting,
+and result projection, rather than production-quality evidence.
 
 ```json
 {
@@ -306,12 +311,10 @@ A tiny smoke spec (mechanics, replay, accounting, and result projection only):
 }
 ```
 
-A production-equivalent run keeps the same structure with the full cohort,
-finalist, and validation counts, the full production search effort on all three
-phases, at least four seeds, and increasing budgets sized to admit several
-cohorts. The Task-11 allocation decision requires that completed
-production-equivalent `results.json`, whose experiment/child/result artifacts
-are preserved outside the repository. The experiment directory has an immutable
-`experiment.json`, ordinary replayable child run directories, and a replaceable
-`results.json`; `--resume` continues incomplete children and rebuilds the
-result projection byte-identically.
+A production-equivalent experiment uses the full cohort, finalist, and
+validation counts; production search effort for all three phases; at least four
+seeds; and increasing budgets that admit several cohorts. Its experiment and
+child artifacts are kept outside the repository. As with proposer bake-offs,
+the directory contains immutable `experiment.json`, replayable child runs, and
+replaceable `results.json`; `--resume` finishes incomplete children and rebuilds
+the projection byte-identically.
