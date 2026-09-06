@@ -32,6 +32,11 @@ Then open http://127.0.0.1:7878 and pick a game. The server is stateless; it
 spawns the per-game binaries (compiled as part of the workspace build) as child
 processes and talks to them over JSON-line stdin/stdout pipes.
 
+<p align="center">
+  <img src="docs/ui-margo.png" width="720"
+       alt="The web UI playing Margo, a 3D pyramidal board, with a panel reporting the search that chose the last move: iteration count, tree depth, transposition-table stats, and per-action visit shares">
+</p>
+
 For UI work with hot reload, run `pnpm dev` from `ui/` alongside the server
 instead of `pnpm build`. It serves the app on http://localhost:5173 with `/api/*`
 proxied to the Rust server. Other `ui/` commands: `pnpm typecheck`, `pnpm lint`,
