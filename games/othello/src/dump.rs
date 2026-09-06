@@ -387,6 +387,9 @@ struct EdaxParams {
     edax_exact_ply: u32,
     target_mode: String,
     squash_t: f32,
+    /// Wall-clock ceiling on a single Edax search; a slower one is aborted
+    /// and relabelled neutral rather than wedging the run.
+    eval_timeout_s: f64,
     edax_binary: String,
     edax_data_dir: String,
 }
@@ -419,7 +422,12 @@ impl EdaxLabel {
         };
         let level = level_override.unwrap_or(p.edax_level);
         EdaxLabel {
-            edax: crate::edax::EdaxEval::spawn(&p.edax_binary, &p.edax_data_dir, level),
+            edax: crate::edax::EdaxEval::spawn(
+                &p.edax_binary,
+                &p.edax_data_dir,
+                level,
+                std::time::Duration::from_secs_f64(p.eval_timeout_s),
+            ),
             level,
             exact_ply: p.edax_exact_ply,
             mode,
@@ -706,13 +714,14 @@ fn run_harvest(cfg: &Config) {
             ",\n  \"oracle\": \"edax\",\n  \"cpu\": {{\n    \
              \"selfplay_s\": {:.2},\n    \"edax_root_s\": {:.2},\n    \
              \"edax_harvest_s\": {:.2},\n    \"edax_calls\": {},\n    \
-             \"edax_nodes\": {},\n    \"edax_exact_hits\": {}\n  }}",
+             \"edax_nodes\": {},\n    \"edax_exact_hits\": {},\n    \"edax_timeouts\": {}\n  }}",
             t_selfplay.as_secs_f64(),
             t_edax_root.as_secs_f64(),
             t_edax_harvest.as_secs_f64(),
             o.edax.calls(),
             o.edax.total_nodes(),
             o.exact_hits,
+            o.edax.timeouts(),
         )
     } else {
         format!(",\n  \"oracle\": \"mcts\",\n  \"selfplay_s\": {:.2}", t_selfplay.as_secs_f64())

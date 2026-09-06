@@ -22,6 +22,12 @@ edax_exact_ply = 12        # empties <= this: raise to a full solve (level 60).
 target_mode    = "sign"    # "sign" = +1/0/-1 of the Edax score (primary)
                            # "squash" = tanh(score / squash_t)
 squash_t       = 10.0      # disc-difference scale; only used for target_mode="squash"
+eval_timeout_s = 30.0      # wall-clock ceiling on one Edax search. A slower
+                           # position (a hard mid-game board at a deep level)
+                           # is aborted, retried once shallow, then labelled
+                           # neutral -- one pathological board must not wedge
+                           # a multi-hour label run. Raise only if the run
+                           # reports many `edax_timeouts` at the chosen level.
 
 # The vendored Edax binary + weights (games/othello/edax/build-edax.sh).
 edax_binary    = "games/othello/edax/vendor/bin/mEdax-native"

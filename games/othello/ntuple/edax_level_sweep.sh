@@ -18,9 +18,13 @@ cd "$ROOT"
 export LIBRARY_PATH="${LIBRARY_PATH:-/opt/homebrew/lib}"
 
 WORK="${1:?usage: edax_level_sweep.sh <work-dir>}"
-LEVELS=(${LEVELS:-6 8 10 12 16})
-GAMES="${GAMES:-60}"               # ~60 games -> ~1.5-2k arm_b positions
-HELDOUT_LEVEL="${HELDOUT_LEVEL:-20}"
+LEVELS=(${LEVELS:-6 8 10 12})
+GAMES="${GAMES:-40}"               # ~40 games -> ~1-1.5k arm_b positions
+# Held-out relabel level: only needs to sit strictly above every training
+# level under test (D3), not to be exact ground truth. A deep level on the
+# mid-game boards in this corpus is minutes-to-hours per position; keep it
+# modest. `eval_timeout_s` in harvest_edax.toml bounds any single search.
+HELDOUT_LEVEL="${HELDOUT_LEVEL:-14}"
 HARVEST_CFG="games/othello/ntuple/harvest.toml"
 EDAX_CFG="games/othello/ntuple/harvest_edax.toml"
 MODEL_TOML="games/othello/ntuple/model.toml"

@@ -28,7 +28,10 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crate::{Move, Player, State};
 
@@ -107,6 +110,16 @@ pub struct EdaxScore {
 ///
 /// Pinned to a single thread (`-n 1`) so its wall-time is its CPU-time.
 ///
+/// ## Timeout
+///
+/// A `go` read is bounded by a wall-clock `timeout`: Edax's alpha-beta can
+/// spend minutes-to-hours on a hard mid-game position at a deep level, and a
+/// blocking read there would wedge a whole label run indefinitely. On
+/// timeout [`EdaxEval::eval`] aborts the search (any queued stdin line does
+/// that), resynchronises the line protocol against a full-board `*** Game
+/// Over ***` sentinel, and falls back the same way it does for an
+/// unparseable result -- one shallow retry, then a neutral score.
+///
 /// ## Score-line parse (pinned against `edax-reversi` v4.6, `mEdax-native`)
 ///
 /// Run without `-q`, Edax prints one search-result line per `go`, after a
@@ -126,16 +139,24 @@ pub struct EdaxScore {
 pub struct EdaxEval {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// Lines from Edax's stdout, pumped by a reader thread so `go` reads can
+    /// be bounded with [`Receiver::recv_timeout`].
+    lines: Receiver<String>,
+    reader: Option<JoinHandle<()>>,
+    binary: String,
+    eval_file: std::path::PathBuf,
+    timeout: Duration,
     current_level: u32,
     total_nodes: u64,
     calls: u64,
+    timeouts: u64,
 }
 
 impl EdaxEval {
     /// Spawn Edax pinned to `level` and to a single thread. Mirrors
-    /// `EdaxPlayer::spawn`'s binary / weight-file guards.
-    pub fn spawn(binary: &str, data_dir: &str, level: u32) -> EdaxEval {
+    /// `EdaxPlayer::spawn`'s binary / weight-file guards. `timeout` bounds
+    /// each `go` read (see the type-level "Timeout" note).
+    pub fn spawn(binary: &str, data_dir: &str, level: u32, timeout: Duration) -> EdaxEval {
         let eval_file = Path::new(data_dir).join("eval.dat");
         assert!(
             Path::new(binary).exists(),
@@ -146,10 +167,38 @@ impl EdaxEval {
             "eval weights not found at {} -- run games/othello/edax/build-edax.sh",
             eval_file.display()
         );
+        let (child, stdin, lines, reader) = Self::spawn_process(binary, &eval_file, level);
+        let mut e = EdaxEval {
+            child,
+            stdin,
+            lines,
+            reader: Some(reader),
+            binary: binary.to_string(),
+            eval_file,
+            timeout,
+            current_level: level,
+            total_nodes: 0,
+            calls: 0,
+            timeouts: 0,
+        };
+        // `mode 3`: manual mode, no auto-play, no pondering. Running without
+        // `-q` means each `go` also dumps the board; `eval` skips those lines.
+        writeln!(e.stdin, "mode 3").unwrap();
+        e.stdin.flush().unwrap();
+        e
+    }
+
+    /// Launch one Edax subprocess plus the stdout reader thread that feeds
+    /// its lines onto a channel.
+    fn spawn_process(
+        binary: &str,
+        eval_file: &Path,
+        level: u32,
+    ) -> (Child, ChildStdin, Receiver<String>, JoinHandle<()>) {
         let mut child = Command::new(binary)
             // No `-q`: it silences the search-result line this oracle parses.
             .args(["-n", "1", "-book-usage", "off", "-eval-file"])
-            .arg(&eval_file)
+            .arg(eval_file)
             .args(["-level", &level.to_string()])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -157,20 +206,23 @@ impl EdaxEval {
             .spawn()
             .expect("failed to spawn edax");
         let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut e = EdaxEval {
-            child,
-            stdin,
-            stdout,
-            current_level: level,
-            total_nodes: 0,
-            calls: 0,
-        };
-        // `mode 3`: manual mode, no auto-play, no pondering. Running without
-        // `-q` means each `go` also dumps the board; `eval` skips those lines.
-        writeln!(e.stdin, "mode 3").unwrap();
-        e.stdin.flush().unwrap();
-        e
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        let (tx, lines) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match stdout.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {
+                        if tx.send(line.trim_end().to_string()).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        (child, stdin, lines, reader)
     }
 
     /// Evaluate `state` at `level`, switching Edax's level first if it
@@ -213,11 +265,20 @@ impl EdaxEval {
         let empties = 64 - (state.black.bits() | state.white.bits()).count_ones();
         let mut last: Option<(f32, u32, bool, u64)> = None;
         let mut played = false;
-        let mut line = String::new();
         loop {
-            line.clear();
-            let n = self.stdout.read_line(&mut line).unwrap();
-            assert!(n != 0, "edax closed its output mid-search");
+            let line = match self.lines.recv_timeout(self.timeout) {
+                Ok(line) => line,
+                Err(RecvTimeoutError::Timeout) => {
+                    self.timeouts += 1;
+                    eprintln!(
+                        "warn: Edax search exceeded {:?} for {board} -- killing and restarting",
+                        self.timeout
+                    );
+                    self.restart();
+                    return None;
+                }
+                Err(RecvTimeoutError::Disconnected) => panic!("edax closed its output mid-search"),
+            };
             let t = line.trim();
             if t.contains("*** Game Over ***") {
                 self.calls += 1;
@@ -251,9 +312,38 @@ impl EdaxEval {
         })
     }
 
+    /// Kill the current Edax process and start a fresh one. Edax does not
+    /// reliably abort an in-progress `go` when a line is queued on its stdin
+    /// -- it runs the search to completion first -- so a runaway search can
+    /// only be stopped by killing the process. Respawn re-reads `eval.dat`
+    /// (tens of ms) and is only reached on a timeout, so the cost is
+    /// negligible against the search that was abandoned.
+    fn restart(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        let level = self.current_level;
+        let (child, stdin, lines, reader) =
+            Self::spawn_process(&self.binary, &self.eval_file, level);
+        self.child = child;
+        self.stdin = stdin;
+        self.lines = lines;
+        self.reader = Some(reader);
+        writeln!(self.stdin, "mode 3").unwrap();
+        self.stdin.flush().unwrap();
+    }
+
     /// Number of `eval` calls so far.
     pub fn calls(&self) -> u64 {
         self.calls
+    }
+
+    /// Number of searches aborted by the wall-clock timeout (each mapped to a
+    /// shallow retry, then a neutral score).
+    pub fn timeouts(&self) -> u64 {
+        self.timeouts
     }
 
     /// Total Edax nodes searched across all `eval` calls.
@@ -267,6 +357,9 @@ impl Drop for EdaxEval {
         let _ = writeln!(self.stdin, "quit");
         let _ = self.stdin.flush();
         let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
     }
 }
 
@@ -439,7 +532,7 @@ mod tests {
             eprintln!("skip: no Edax binary");
             return;
         }
-        let mut e = EdaxEval::spawn(BIN, DATA, 12);
+        let mut e = EdaxEval::spawn(BIN, DATA, 12, Duration::from_secs(120));
 
         // The opening is near-balanced.
         let opening = e.eval(&State::default(), 12);
@@ -467,6 +560,29 @@ mod tests {
             12,
         );
         assert!(from_white.score < -40.0, "same board, white to move: {}", from_white.score);
+    }
+
+    /// A sub-millisecond ceiling forces every search to time out; `eval`
+    /// must then fall back to a neutral score, resync, and stay usable for
+    /// the next position (proving the drain worked).
+    #[test]
+    #[ignore = "shells out to the vendored Edax binary"]
+    fn a_timed_out_search_falls_back_and_the_process_stays_usable() {
+        const BIN: &str = "edax/vendor/bin/mEdax-native";
+        const DATA: &str = "edax/vendor/data";
+        if !Path::new(BIN).exists() {
+            eprintln!("skip: no Edax binary");
+            return;
+        }
+        let mut e = EdaxEval::spawn(BIN, DATA, 18, Duration::from_millis(1));
+        let a = e.eval(&State::default(), 18);
+        assert_eq!(a.score, 0.0);
+        assert!(!a.exact);
+        let after_d3 = Othello::apply(State::default(), &Move(19));
+        let b = e.eval(&after_d3, 18);
+        assert_eq!(b.score, 0.0);
+        assert!(e.timeouts() >= 2, "both searches should have timed out");
+        assert_eq!(e.calls(), 2);
     }
 
     #[test]
