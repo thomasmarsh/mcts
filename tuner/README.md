@@ -30,11 +30,22 @@ uv run --project tuner tuner \
   --production-max-iterations 64
 ```
 
-The first cohort follows the bootstrap, SMAC, and random-reserve schedule. At
-each completed-cohort boundary, the top `--finalists` become retained elites.
-The tuner begins the next challenger cohort only when the remaining tuning
-budget funds all of its planned new pairs. Otherwise, it validates the latest
-cohort's finalists.
+The first cohort follows the bootstrap, SMAC, and random-reserve schedule.
+
+```mermaid
+flowchart TD
+    objective[Freeze objective and task corpora] --> cohort[Run an admitted cohort]
+    cohort --> rank[Rank its complete tuning prefix]
+    rank --> budget{Enough budget for another whole cohort?}
+    budget -- Yes --> elites[Retain the top finalists as elites]
+    elites --> challengers[Propose the next challengers]
+    challengers --> cohort
+    budget -- No --> validate[Validate the latest finalists on held-out tasks]
+    validate --> report[Write report.json]
+```
+
+The next cohort begins only when the remaining tuning budget funds all of its
+planned new pairs. Otherwise, the latest cohort's finalists are validated.
 
 ## What is frozen
 
@@ -56,6 +67,21 @@ This makes the scientific result reproducible even when a run is resumed.
   complete-cycle prefix before the full cohort is deepened.
 - `--finalists` is both the retained-elite count and the final shortlist count.
   Validation always uses a leading prefix of the frozen production corpus.
+
+```mermaid
+flowchart LR
+    inputs[Objective, options, and task seed] --> manifest[manifest.json]
+    manifest --> tuning[Tuning corpus]
+    manifest --> heldout[Held-out validation corpus]
+    tuning --> evidence[evidence.jsonl]
+    evidence --> finalists[Finalists]
+    finalists --> heldout
+    heldout --> report[report.json]
+    manifest --> report
+```
+
+Tuning evidence chooses the finalists. Held-out validation reports on that
+choice; it does not feed back into the tuner.
 
 ## Budgets and failures
 
@@ -130,6 +156,19 @@ their boundaries remain through the maximum prefix, and pruned candidates are
 not replaced within a cohort. If an audited candidate reaches its exact recorded
 boundary candidate at maximum tuning fidelity, later active pruning suspends;
 shadow decisions and full-cohort tuning continue.
+
+```mermaid
+flowchart TD
+    prefix[Eligible non-final tuning prefix] --> shadow[Record shadow decision]
+    shadow --> active{Finite audit probability between 0 and 1?}
+    active -- No --> continue[Continue every candidate to maximum tuning fidelity]
+    active -- Yes --> allocation[Record allocation: prune or continue as audit]
+    allocation --> boundary{Audit reaches its recorded boundary at maximum fidelity?}
+    boundary -- No --> next[Apply later active decisions]
+    next --> continue
+    boundary -- Yes --> suspend[Suspend later active pruning]
+    suspend --> continue
+```
 
 For paired decisions, `decision_margin` records the threshold, favorable
 probability, and their difference. For rank decisions, it records rank, target
