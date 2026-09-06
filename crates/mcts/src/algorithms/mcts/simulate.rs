@@ -432,6 +432,14 @@ where
         self.inner = inner;
         self
     }
+
+    /// Replace the `Default`-constructed evaluator. Needed when the evaluator
+    /// carries runtime state its `Default` impl can't supply -- e.g. a value
+    /// head whose weights are loaded from a file (`game_ttt::valuenet`).
+    pub fn evaluator(mut self, evaluator: E) -> Self {
+        self.evaluator = evaluator;
+        self
+    }
 }
 
 impl<G, E, S> Default for EvaluatedCutoff<G, E, S>

@@ -38,12 +38,15 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use mcts::algorithms::mcts::gumbel::GumbelConfig;
 use mcts::algorithms::Search;
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::selfplay::GumbelPlayer;
+use crate::valuenet::LinearValueNet;
 use crate::{HashedPosition, Piece, Position, TicTacToe};
 
 /// One dumped position. See the module docs for field semantics.
@@ -161,6 +164,12 @@ struct Config {
     engine: Option<String>,
     epsilon: f64,
     presets_path: PathBuf,
+    /// `--label gumbel` only: value-head weights (`az-train` output). Absent
+    /// == the all-zero generation-0 net.
+    weights: Option<PathBuf>,
+    /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
+    sims: u32,
+    max_considered: usize,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -171,6 +180,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut engine = None;
     let mut epsilon = 0.1f64;
     let mut presets_path = PathBuf::from("games/ttt/presets.json");
+    let mut weights = None;
+    let mut sims = 32u32;
+    let mut max_considered = 8usize;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -181,10 +193,17 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--engine" => engine = Some(val()),
             "--epsilon" => epsilon = val().parse().expect("--epsilon must be a float"),
             "--presets" => presets_path = PathBuf::from(val()),
+            "--weights" => weights = Some(PathBuf::from(val())),
+            "--sims" => sims = val().parse().expect("--sims must be an integer"),
+            "--max-considered" => {
+                max_considered = val().parse().expect("--max-considered must be an integer")
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-ttt dump --out <path> [--games N] [--seed N] \
-                     [--label outcome] [--engine <preset>] [--epsilon P] [--presets <path>]"
+                     [--label outcome|gumbel] [--engine <preset>] [--epsilon P] \
+                     [--presets <path>] [--weights <weights.bin>] [--sims N] \
+                     [--max-considered N]"
                 );
                 std::process::exit(0);
             }
@@ -192,12 +211,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         }
     }
     match label.as_str() {
-        "outcome" => {}
-        "gumbel" => panic!(
-            "--label gumbel (Gumbel Sequential-Halving self-play) is not implemented yet"
-        ),
+        "outcome" | "gumbel" => {}
         other => panic!("unknown --label mode: {other}"),
     }
+    assert!(sims >= 1, "--sims must be positive");
+    assert!(max_considered >= 1, "--max-considered must be positive");
     assert!(
         (0.0..=1.0).contains(&epsilon),
         "--epsilon must be in [0, 1], got {epsilon}"
@@ -210,6 +228,56 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         engine,
         epsilon,
         presets_path,
+        weights,
+        sims,
+        max_considered,
+    }
+}
+
+/// Play `cfg.games` Gumbel self-play games, pushing a [`Record`] with the
+/// Sequential-Halving visit distribution as its policy tail for every
+/// non-terminal position.
+fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
+    let net = match &cfg.weights {
+        Some(p) => LinearValueNet::load(p)
+            .unwrap_or_else(|e| panic!("cannot load weights {}: {e}", p.display())),
+        None => LinearValueNet::default(),
+    };
+    let gcfg = GumbelConfig {
+        sims: cfg.sims,
+        max_considered: cfg.max_considered,
+        ..GumbelConfig::default()
+    };
+
+    for g in 0..cfg.games {
+        let mut player = GumbelPlayer::new(
+            net.clone(),
+            gcfg,
+            cfg.seed.wrapping_add(g).wrapping_add(1),
+        );
+
+        let mut state = HashedPosition::new();
+        let first = records.len();
+        while !TicTacToe::is_terminal(&state) {
+            let outcome = player.choose(&state);
+            let policy: Vec<(u8, f32)> = outcome
+                .visit_distribution
+                .iter()
+                .map(|(m, p)| (m.0, *p))
+                .collect();
+            records.push(record_for(&state.position, None, policy));
+            state = TicTacToe::apply(state, &outcome.action);
+        }
+        finish_game(records, first, winner_of(&state));
+
+        if (g + 1) % 50 == 0 || g + 1 == cfg.games {
+            eprintln!(
+                "  played {}/{} gumbel games ({} records)",
+                g + 1,
+                cfg.games,
+                records.len()
+            );
+        }
     }
 }
 
@@ -266,28 +334,36 @@ fn dump_one_game(
 /// positioned just past the `dump` token.
 pub fn run(args: impl Iterator<Item = String>) {
     let cfg = parse_args(args);
-    debug_assert_eq!(cfg.label, "outcome");
 
-    let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
 
-    let preset_table = cfg.engine.as_ref().map(|_| {
-        PresetTable::load_from_path(&cfg.presets_path)
-            .unwrap_or_else(|e| panic!("cannot load {}: {e}", cfg.presets_path.display()))
-    });
+    if cfg.label == "gumbel" {
+        dump_gumbel_games(&cfg, &mut records);
+    } else {
+        let mut rng = SmallRng::seed_from_u64(cfg.seed);
+        let preset_table = cfg.engine.as_ref().map(|_| {
+            PresetTable::load_from_path(&cfg.presets_path)
+                .unwrap_or_else(|e| panic!("cannot load {}: {e}", cfg.presets_path.display()))
+        });
 
-    for g in 0..cfg.games {
-        match (&cfg.engine, &preset_table) {
-            (Some(preset), Some(table)) => {
-                let mut engine = table
-                    .build::<TicTacToe>(preset, cfg.seed.wrapping_add(g).wrapping_add(1))
-                    .unwrap_or_else(|e| panic!("preset {preset:?} did not resolve: {e}"));
-                dump_one_game(&mut rng, &mut records, Some(&mut *engine), cfg.epsilon);
+        for g in 0..cfg.games {
+            match (&cfg.engine, &preset_table) {
+                (Some(preset), Some(table)) => {
+                    let mut engine = table
+                        .build::<TicTacToe>(preset, cfg.seed.wrapping_add(g).wrapping_add(1))
+                        .unwrap_or_else(|e| panic!("preset {preset:?} did not resolve: {e}"));
+                    dump_one_game(&mut rng, &mut records, Some(&mut *engine), cfg.epsilon);
+                }
+                _ => dump_one_game(&mut rng, &mut records, None, cfg.epsilon),
             }
-            _ => dump_one_game(&mut rng, &mut records, None, cfg.epsilon),
-        }
-        if (g + 1) % 200 == 0 || g + 1 == cfg.games {
-            eprintln!("  dumped {}/{} games ({} records)", g + 1, cfg.games, records.len());
+            if (g + 1) % 200 == 0 || g + 1 == cfg.games {
+                eprintln!(
+                    "  dumped {}/{} games ({} records)",
+                    g + 1,
+                    cfg.games,
+                    records.len()
+                );
+            }
         }
     }
 
@@ -315,6 +391,80 @@ pub fn run(args: impl Iterator<Item = String>) {
 mod tests {
     use super::*;
     use crate::Move;
+
+    fn gumbel_player(seed: u64, cfg: GumbelConfig) -> GumbelPlayer {
+        GumbelPlayer::new(LinearValueNet::default(), cfg, seed)
+    }
+
+    /// Sequential Halving spends its budget on the candidate set only:
+    /// with `max_considered = 2` on a three-move root, at most two children
+    /// are ever visited, and the recorded distribution is over exactly
+    /// those.
+    #[test]
+    fn gumbel_visits_only_the_candidate_set() {
+        let mut state = HashedPosition::new();
+        for m in [0u8, 1, 2, 3, 4, 5] {
+            state = TicTacToe::apply(state, &Move(m));
+        }
+        let cfg = GumbelConfig {
+            sims: 12,
+            max_considered: 2,
+            ..GumbelConfig::default()
+        };
+        let out = gumbel_player(7, cfg).choose(&state);
+
+        assert!(out.visit_distribution.len() <= 2);
+        let mut legal = Vec::new();
+        TicTacToe::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&out.action));
+        let sum: f32 = out.visit_distribution.iter().map(|(_, p)| p).sum();
+        assert!((sum - 1.0).abs() < 1e-4, "distribution sums to {sum}");
+        for (m, _) in &out.visit_distribution {
+            assert!(legal.contains(m));
+        }
+    }
+
+    #[test]
+    fn gumbel_move_is_seed_deterministic() {
+        let mut state = HashedPosition::new();
+        for m in [4u8, 0] {
+            state = TicTacToe::apply(state, &Move(m));
+        }
+        let cfg = GumbelConfig {
+            sims: 16,
+            ..GumbelConfig::default()
+        };
+        let a = gumbel_player(1, cfg).choose(&state).action;
+        let b = gumbel_player(1, cfg).choose(&state).action;
+        let c = gumbel_player(2, cfg).choose(&state).action;
+        assert_eq!(a, b);
+        let _ = c; // a different seed may or may not differ; determinism per seed is the contract.
+    }
+
+    #[test]
+    fn a_gumbel_selfplay_game_records_a_policy_tail_per_position() {
+        let cfg = Config {
+            out: PathBuf::new(),
+            games: 2,
+            seed: 3,
+            label: "gumbel".to_string(),
+            engine: None,
+            epsilon: 0.0,
+            presets_path: PathBuf::new(),
+            weights: None,
+            sims: 16,
+            max_considered: 4,
+        };
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+        assert!(!records.is_empty());
+        for r in &records {
+            assert!([1.0f32, -1.0, 0.0].contains(&r.value));
+            assert!(!r.policy.is_empty(), "gumbel positions carry a policy target");
+            let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
+            assert!((sum - 1.0).abs() < 1e-4);
+        }
+    }
 
     fn sample_positions() -> Vec<Position> {
         let mut p1 = Position::new();

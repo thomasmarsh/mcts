@@ -394,6 +394,7 @@ where
                             select_strategy,
                             &mut rng,
                             prior_strategy.as_deref_mut(),
+                            None,
                         );
 
                         if let Some(utilities) = correction {

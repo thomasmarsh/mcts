@@ -48,12 +48,12 @@ for L in "${LEVELS[@]}"; do
   d="$WORK/lvl_$L"
   [[ -f "$d/arm_b.bin" ]] || dump --out "$d" --seed 4242 --games "$GAMES" --edax-level "$L"
   [[ -f "$WORK/weights_$L/weights.bin" ]] || \
-    uv run --project othello-eval othello-eval-train \
+    uv run --project research/othello-eval othello-eval-train \
       --positions "$d/arm_b.bin" --model "$MODEL_TOML" --config "$TRAIN_CFG" \
       --out "$WORK/weights_$L"
-  uv run --project othello-eval othello-eval-mse --held "$WORK/heldout/arm_b.bin" \
+  uv run --project research/othello-eval othello-eval-mse --held "$WORK/heldout/arm_b.bin" \
     --weights "L$L=$WORK/weights_$L" --json-out "$WORK/mse_$L.json"
-  python - "$WORK/mse_$L.json" "$L" "$(wc -c < "$d/arm_b.bin")" "$CSV" <<'PY'
+  python3 - "$WORK/mse_$L.json" "$L" "$(wc -c < "$d/arm_b.bin")" "$CSV" <<'PY'
 import json, sys
 rep = json.load(open(sys.argv[1])); lvl = sys.argv[2]
 n = int(sys.argv[3]) // 22

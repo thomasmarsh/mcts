@@ -629,6 +629,12 @@ fn reborrow_prior<'p, G: Game>(
     }
 }
 
+/// One tree-descent iteration. `forced_root_action`, when set, overrides the
+/// tree policy at the root only: descent takes the root edge for exactly that
+/// action and then hands off to normal selection below it. Every non-root
+/// node -- and every call with `forced_root_action == None` -- is untouched.
+/// This is the seam the Gumbel root schedule (`algorithms::mcts::gumbel`)
+/// uses to spend its simulation budget on a chosen candidate.
 #[allow(clippy::too_many_arguments)]
 pub fn select_step<G: Game>(
     shared: &Shared<'_, G>,
@@ -637,6 +643,7 @@ pub fn select_step<G: Game>(
     select_strategy: &mut impl SelectPolicy<G>,
     rng: &mut SmallRng,
     mut prior: Option<&mut (dyn crate::algorithms::mcts::prior::PriorPolicyDyn<G> + 'static)>,
+    forced_root_action: Option<&G::A>,
 ) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());
     let grave = shared.global.grave.read().unwrap();
@@ -747,7 +754,12 @@ pub fn select_step<G: Game>(
             return None;
         }
 
-        let best_idx =
+        let best_idx = if let Some(forced) = forced_root_action.filter(|_| node.is_root()) {
+            let children = node.children();
+            (0..children.len())
+                .find(|&i| children.action(i) == *forced)
+                .expect("forced_root_action is not one of the root's legal moves")
+        } else {
             match proven_win_child::<G>(shared.use_mcts_solver, node, shared.index, player) {
                 Some(idx) => idx,
                 None => {
@@ -781,7 +793,8 @@ pub fn select_step<G: Game>(
                         None => select_strategy.best_child(&select_ctx, rng),
                     }
                 }
-            };
+            }
+        };
         incoming_idx = best_idx;
 
         let children = shared.index.get(ctx.current_id).children();

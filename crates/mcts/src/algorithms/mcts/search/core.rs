@@ -141,6 +141,51 @@ where
             &mut self.config.select,
             &mut self.config.rng,
             self.config.prior.as_deref_mut(),
+            None,
+        )
+    }
+
+    /// One `select` iteration whose root edge is forced to `root_action`,
+    /// delegating to normal selection at every node below it. The Gumbel
+    /// root schedule (`algorithms::mcts::gumbel`) calls this to spend a
+    /// Sequential-Halving simulation on a specific root candidate; `ctx`
+    /// must start at the root, exactly as for `select`.
+    #[inline]
+    pub fn descend_from(
+        &mut self,
+        root_action: &G::A,
+        ctx: &mut SearchContext<G>,
+    ) -> Option<Vec<f64>> {
+        debug_assert!(self.stack.is_empty());
+        self.root_state = Some(ctx.state.clone());
+        select_step(
+            &Shared {
+                index: &self.index,
+                root_state: self.root_state.as_ref().unwrap(),
+                root_stats: &self.root_stats,
+                table: &self.table,
+                global: &self.stats,
+                expand_threshold: self.config.expand_threshold,
+                q_init: self.config.q_init,
+                use_transpositions: self.config.uses_transpositions(),
+                canonicalizes: self.config.canonicalizes(),
+                graph_stats: self.config.graph_stats(),
+                explicit_dag: matches!(self.config.graph_search, GraphSearch::Dag(_)),
+                keying: self.config.transposition_keying,
+                use_mcts_solver: self.config.use_mcts_solver,
+                max_playout_depth: self.config.max_playout_depth,
+                solver_loss_threshold: self.config.solver_loss_threshold,
+                has_amaf: self.config.requirements().amaf,
+                mcgs_correction: self.config.mcgs_correction,
+                use_ismcts: self.config.ismcts_mode == IsmctsMode::SingleTree,
+                ismcts_redeterminize: self.config.ismcts_redeterminize,
+            },
+            ctx,
+            &mut self.stack,
+            &mut self.config.select,
+            &mut self.config.rng,
+            self.config.prior.as_deref_mut(),
+            Some(root_action),
         )
     }
 

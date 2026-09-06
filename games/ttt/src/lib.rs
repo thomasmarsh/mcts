@@ -1,4 +1,6 @@
 pub mod dump;
+pub mod selfplay;
+pub mod valuenet;
 
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
