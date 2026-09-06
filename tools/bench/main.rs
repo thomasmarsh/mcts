@@ -97,7 +97,7 @@ enum Command {
     },
 
     /// Launch a tuner hyperparameter-optimisation run.  Runs
-    /// ``uv run --project tuner/ tuner ...`` in the foreground
+    /// ``uv run --project tools/tuner/ tuner ...`` in the foreground
     /// (streaming JSONL to stdout) or, with ``--background``, through the
     /// detached-process launcher so the run survives the launching
     /// process and appears in DuckDB/the UI.
@@ -433,14 +433,14 @@ fn tuner_artifact_root(physical_run_id: &str) -> String {
         .into_owned()
 }
 
-/// Build the argv for a ``uv run --project tuner/ tuner ...``
+/// Build the argv for a ``uv run --project tools/tuner/ tuner ...``
 /// invocation, incorporating the config file, overrides, and git SHA.
 ///
 /// `game` is translated into a `target.binary=target/release/game-<game>`
 /// override unless `target_binary` names an external game-host executable.
 /// This lets the tuner use a game that lives outside this workspace while
 /// retaining `game` as its bench/lifecycle attribution --
-/// `tuner/config/default.yaml`'s `target.binary` is just a fallback default
+/// `tools/tuner/config/default.yaml`'s `target.binary` is just a fallback default
 /// (currently `game-traffic-lights`, the reference wiring's game), not
 /// something any caller of `bench tuner --game ...` should rely on. This is
 /// pushed before `overrides` so an explicit `target.binary=...` override
@@ -467,7 +467,7 @@ fn build_tuner_command(
         "uv".to_string(),
         "run".to_string(),
         "--project".to_string(),
-        "tuner/".to_string(),
+        "tools/tuner/".to_string(),
         "tuner".to_string(),
     ];
 

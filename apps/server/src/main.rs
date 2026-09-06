@@ -347,14 +347,14 @@ async fn main() {
     );
     let bench_adapters =
         BenchAdapters::open(&bench_db_path).expect("failed to open benchmark database");
-    // Frozen-objective JSON files. The checked-in `tuner/objectives` is the
+    // Frozen-objective JSON files. The checked-in `tools/tuner/objectives` is the
     // read-only seed corpus (`MCTS_TUNER_OBJECTIVES_DIR` overrides it); user
     // edits live in the writable dir under the gitignored bench-runs tree
     // (`MCTS_TUNER_USER_OBJECTIVES_DIR` overrides that). On start-up every
     // seed stem not already present in the writable dir is copied over.
     let tuner_seed_objectives_dir = std::env::var_os("MCTS_TUNER_OBJECTIVES_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("tuner/objectives"));
+        .unwrap_or_else(|| PathBuf::from("tools/tuner/objectives"));
     let tuner_objectives_dir = std::env::var_os("MCTS_TUNER_USER_OBJECTIVES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| bench_runs_dir.join("tuner-objectives"));
@@ -362,7 +362,7 @@ async fn main() {
     // Launch-profile JSON files, seeded and overridden the same way.
     let tuner_seed_profiles_dir = std::env::var_os("MCTS_TUNER_PROFILES_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("tuner/profiles"));
+        .unwrap_or_else(|| PathBuf::from("tools/tuner/profiles"));
     let tuner_profiles_dir = std::env::var_os("MCTS_TUNER_USER_PROFILES_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| bench_runs_dir.join("tuner-profiles"));

@@ -4,7 +4,7 @@
 // `tuner.conditions` from `GET /api/bench/tuner/kinds`) and the editor's
 // per-parameter row state, it derives the unified `constraints` wire form and
 // applies the same narrow-not-widen / non-empty-residual checks as the server
-// (`tuner/src/tuner_cli/constraints.py`), so the operator sees an error before
+// (`tools/tuner/src/tuner_cli/constraints.py`), so the operator sees an error before
 // the debounced preflight round-trip.
 //
 // Zero hardcoded parameter or algorithm names: everything here is a function

@@ -26,7 +26,7 @@ const ATARIGO: TunerInfo = {
   },
 };
 
-// Copies of the checked-in seed corpus (`tuner/objectives/*.json`), kept here
+// Copies of the checked-in seed corpus (`tools/tuner/objectives/*.json`), kept here
 // so the round-trip is exercised without a filesystem read. If a seed's
 // canonical shape changes, update both.
 const SEEDS: Record<string, JsonValue> = {

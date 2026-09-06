@@ -62,7 +62,7 @@ def build_spec() -> EliminationBakeoffSpec:
     return EliminationBakeoffSpec(
         experiment_id="druid-elimination-bakeoff-v1",
         game_binary=Path("target/release/game-druid"),
-        objective_file=Path("tuner/objectives/druid-reference-v1.json"),
+        objective_file=Path("tools/tuner/objectives/druid-reference-v1.json"),
         proposal_seeds=_SEEDS,
         task_seed=43,
         tuning_pair_budgets=_BUDGETS,

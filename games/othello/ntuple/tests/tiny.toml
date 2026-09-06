@@ -1,5 +1,5 @@
 # Tiny hand-built n-tuple geometry for unit tests only (see
-# games/othello/src/ntuple.rs and othello-eval/tests/test_ntuple.py). Two
+# games/othello/src/ntuple.rs and research/othello-eval/tests/test_ntuple.py). Two
 # small tuples; the committed weights.bin is hand-crafted to be
 # antisymmetric under the own/opponent trit swap.
 

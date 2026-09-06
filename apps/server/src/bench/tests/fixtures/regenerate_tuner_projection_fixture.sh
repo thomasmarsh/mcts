@@ -15,7 +15,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../../.." && pwd)"
-fixtures="$repo_root/tuner/tests/fixtures/projection-root"
+fixtures="$repo_root/tools/tuner/tests/fixtures/projection-root"
 out="$repo_root/apps/server/src/bench/tests/fixtures/tuner-projection.sqlite"
 
 staging="$(mktemp -d)"
@@ -35,6 +35,6 @@ rm -f "$staging/version4-partial/report.json" \
 head -160 "$fixtures/version4/evidence.jsonl" > "$staging/version4-partial/evidence.jsonl"
 
 rm -f "$out"
-uv run --project "$repo_root/tuner" tuner-project \
+uv run --project "$repo_root/tools/tuner" tuner-project \
     --runs-root "$staging" --db "$out" --rebuild
 echo "wrote $out"

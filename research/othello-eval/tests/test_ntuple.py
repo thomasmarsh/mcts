@@ -21,7 +21,7 @@ from othello_eval.ntuple import (
 )
 from othello_eval.records import RECORD_DTYPE
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 TINY_DIR = REPO_ROOT / "games/othello/ntuple/tests"
 
 

@@ -292,10 +292,10 @@ def _check_protocol(binary: Path) -> None:
 
 
 def main() -> None:
-    root = Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[4]
     workers = 2 if (os.cpu_count() or 1) >= 2 else 1
     ttt = root / "target/release/game-ttt"
-    ttt_objective = root / "tuner/tests/e2e/objectives/ttt-smoke-v1.json"
+    ttt_objective = root / "tools/tuner/tests/e2e/objectives/ttt-smoke-v1.json"
     # The weighted-six tic-tac-toe panel drives the full state machine -- three
     # cohorts, retained elites, a twelve-pair shadow race per cohort, and an
     # exact report rebuild on resume -- on the cheapest available game.

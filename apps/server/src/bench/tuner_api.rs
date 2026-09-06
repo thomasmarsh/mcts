@@ -1224,12 +1224,12 @@ pub(crate) fn parse_refresh_counts(stdout: &str) -> std::io::Result<[i64; 4]> {
     ])
 }
 
-/// Shell `uv run --project tuner tuner-project --runs-root <root> --db <db>`
+/// Shell `uv run --project tools/tuner tuner-project --runs-root <root> --db <db>`
 /// from the repository root and parse its summary line. This is the production
 /// [`BenchState::tuner_projection_refresh`]; tests inject a stub.
 pub fn shell_refresh(runs_root: &Path, db: &Path) -> std::io::Result<[i64; 4]> {
     let output = std::process::Command::new("uv")
-        .args(["run", "--project", "tuner", "tuner-project", "--runs-root"])
+        .args(["run", "--project", "tools/tuner", "tuner-project", "--runs-root"])
         .arg(runs_root)
         .arg("--db")
         .arg(db)

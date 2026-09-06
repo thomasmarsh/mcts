@@ -54,10 +54,10 @@ proxied to the Rust server. Other `ui/` commands: `pnpm typecheck`, `pnpm lint`,
   serializes to JSON and reports its own tunable parameters, so the tuner never
   needs to hardcode what it can vary.
 - `tools/gdl/` - an early, exploratory GDL-to-Rust compiler pipeline (see below).
-- `tuner/` - the tuning layer (see below).
+- `tools/tuner/` - the tuning layer (see below).
 - `apps/server/`, `apps/ui/`, `tools/bench/` - the server, browser UI, and
   operational bench command.
-- `othello-eval/` - offline learned-evaluation experiments for Othello.
+- `research/othello-eval/` - offline learned-evaluation experiments for Othello.
 - `examples/*.rs` and per-crate `examples/` - strength comparisons, benchmarks,
   and instrumentation, kept around as reusable tooling.
 - `local/` - ignored run output, generated opening books, and working material;
@@ -127,7 +127,7 @@ hand-written `games/ttt/`.
 material. See `tools/gdl/README.md` and `tools/gdl/DESIGN.md` for the reasoning and the
 current status.
 
-## Tuning (`tuner/`)
+## Tuning (`tools/tuner/`)
 
 The tuning layer is inspired by [irace](https://mlopez-ibanez.github.io/irace/):
 freeze an explicit deployment objective, then run repeated cohorts of candidate
@@ -135,14 +135,14 @@ configurations against held opponents, retaining elites between cohorts and
 giving the survivors held-out validation at the end. Under the hood it drives
 [SMAC3](https://automl.github.io/SMAC3/) for the model-guided proposals, mixed
 with a bootstrap schedule and a random reserve. Runs are foreground and
-reproducible from their evidence log. See `tuner/README.md` for the full command
+reproducible from their evidence log. See `tools/tuner/README.md` for the full command
 surface.
 
-There is also a Haskell domain model in `tuner/domain-model/`: types and function
+There is also a Haskell domain model in `tools/tuner/domain-model/`: types and function
 signatures only, no implementation. It exists to pin down the concepts -
 candidates, objectives, evidence, comparison rules - before they are expressed in
 Python and Rust. It has its own
-[tutorial](tuner/domain-model/TUTORIAL.md) and reference README. Working through
+[tutorial](tools/tuner/domain-model/TUTORIAL.md) and reference README. Working through
 category-theory framing is a thinking tool for me here.
 
 ## Related work

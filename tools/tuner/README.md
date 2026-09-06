@@ -12,14 +12,14 @@ and labels reduced-fidelity results as `mechanics_smoke`, not `production`.
 ## Start a run
 
 The checked-in Druid objective is
-`tuner/objectives/druid-reference-v1.json`. It contains the schema default and
+`tools/tuner/objectives/druid-reference-v1.json`. It contains the schema default and
 raw, inline historical opponent configurations. Python does not resolve named
 Rust presets at runtime.
 
 ```bash
-uv run --project tuner tuner \
+uv run --project tools/tuner tuner \
   --game-binary target/release/game-druid \
-  --objective-file tuner/objectives/druid-reference-v1.json \
+  --objective-file tools/tuner/objectives/druid-reference-v1.json \
   --run-dir /tmp/mcts-tuner-druid \
   --seed 7 --task-seed 11 --cohort-size 8 --finalists 2 \
   --bootstrap-candidates 3 --random-reserve-candidates 2 \
@@ -234,9 +234,9 @@ per-edge, not graph-wide multiplicity corrected.
 Resume with the same scientific options and objective file:
 
 ```bash
-uv run --project tuner tuner \
+uv run --project tools/tuner tuner \
   --game-binary target/release/game-druid \
-  --objective-file tuner/objectives/druid-reference-v1.json \
+  --objective-file tools/tuner/objectives/druid-reference-v1.json \
   --run-dir /tmp/mcts-tuner-druid --resume \
   --seed 7 --task-seed 11 --cohort-size 8 --finalists 2 \
   --bootstrap-candidates 3 --random-reserve-candidates 2 \
@@ -265,7 +265,7 @@ extra censored or retried attempts and resulting budget overrun.
 elite-centred baseline).
 
 ```bash
-uv run --project tuner tuner-proposer-bakeoff \
+uv run --project tools/tuner tuner-proposer-bakeoff \
   --spec /tmp/druid-proposer-bakeoff.json \
   --experiment-dir /tmp/druid-proposer-bakeoff
 ```
@@ -291,7 +291,7 @@ three matched child runs that differ only in elimination policy:
   audit probability.
 
 ```bash
-uv run --project tuner tuner-elimination-bakeoff \
+uv run --project tools/tuner tuner-elimination-bakeoff \
   --spec /tmp/druid-elimination-bakeoff.json \
   --experiment-dir /tmp/druid-elimination-bakeoff
 ```
@@ -319,7 +319,7 @@ and result projection, rather than production-quality evidence.
   "schema_version": 1,
   "experiment_id": "druid-elimination-smoke",
   "game_binary": "target/release/game-druid",
-  "objective_file": "tuner/objectives/druid-reference-v1.json",
+  "objective_file": "tools/tuner/objectives/druid-reference-v1.json",
   "policies": ["no_elimination", "paired_elimination", "spare_near_tie"],
   "proposal_seeds": [1, 2, 3, 4],
   "task_seed": 43,

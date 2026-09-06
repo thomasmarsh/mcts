@@ -1,7 +1,7 @@
 // objective-model.ts — the bidirectional bridge between the ObjectiveEditor's
 // form state and the frozen objective wire JSON, plus the client-side panel
 // validator. Pure: no rendering, no fetch. The server
-// (`tuner/src/tuner_cli/objective.py::resolve_objective`) stays the authority
+// (`tools/tuner/src/tuner_cli/objective.py::resolve_objective`) stays the authority
 // on panel semantics; this module just makes the legal panel the easy one to
 // build and catches the common mistakes before a round-trip.
 

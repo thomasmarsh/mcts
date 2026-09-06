@@ -520,7 +520,7 @@ impl GameAdapter for DruidAdapter {
             // sides to a single thread instead of this preset's own
             // deployed thread count (all cores, for strong/master). tuner
             // already runs `n_workers` trials concurrently
-            // (`tuner/config/default.yaml`'s `optimizer.n_workers`, sized
+            // (`tools/tuner/config/default.yaml`'s `optimizer.n_workers`, sized
             // assuming ~1 core per worker); every trial subprocess also
             // claiming every core for its own tree search means
             // `n_workers`-many processes all fighting for the whole
