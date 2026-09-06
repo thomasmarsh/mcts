@@ -11,7 +11,7 @@
 //!     [--top-epsilon F] [--seed N] [--workers N] [--top N] \
 //!     [--out PATH] [--fresh]
 //!
-//! `--out` defaults to `books/gonnect-{size}.json` -- the path
+//! `--out` defaults to `local/generated/opening-books/gonnect-{size}.json` -- the path
 //! `game_gonnect::book::BookIndex::load` (consulted by `main.rs`'s
 //! `ai_move`/`analyze`) looks for at that size, so a run without `--out`
 //! is immediately picked up by live play. Run from the repo root: nothing
@@ -107,7 +107,7 @@ fn run(args: &Args) {
     let out = args
         .out
         .clone()
-        .unwrap_or_else(|| format!("books/gonnect-{}.json", args.size));
+        .unwrap_or_else(|| format!("local/generated/opening-books/gonnect-{}.json", args.size));
 
     // Load `out` as a seed unless `--fresh` was passed -- a missing or
     // unparseable file (the common case for a first run at this size) just

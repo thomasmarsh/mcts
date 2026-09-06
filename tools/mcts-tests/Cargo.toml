@@ -1,0 +1,24 @@
+[package]
+name = "mcts-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mcts = { path = "../../crates/mcts" }
+bitboard = { path = "../../crates/bitboard" }
+game-core = { path = "../../games/game-core" }
+game-othello = { path = "../../games/othello" }
+game-atarigo = { path = "../../games/atarigo" }
+game-breakthrough = { path = "../../games/breakthrough" }
+game-knightthrough = { path = "../../games/knightthrough" }
+game-druid = { path = "../../games/druid" }
+game-ttt = { path = "../../games/ttt" }
+game-traffic-lights = { path = "../../games/traffic-lights" }
+rustc-hash = "1.1.0"
+rand = "0.8.5"
+rand_core = "0.6.4"
+rand_xorshift = "0.3.0"
+
+[lints]
+workspace = true

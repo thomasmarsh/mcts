@@ -1,0 +1,19 @@
+[package]
+name = "bench"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mcts-bench = { path = "../../crates/mcts-bench" }
+game-host = { path = "../../apps/game-host" }
+mcts = { path = "../../crates/mcts" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "bench"
+path = "main.rs"
+
+[lints]
+workspace = true

@@ -23,7 +23,7 @@ building the server and bench crates also needs `LIBRARY_PATH=/opt/homebrew/lib`
 so the DuckDB dependency links.
 
 ```sh
-(cd ui && pnpm install && pnpm build)
+(cd apps/ui && pnpm install && pnpm build)
 cargo build --release
 cargo run --release -p server
 ```
@@ -37,30 +37,33 @@ processes and talks to them over JSON-line stdin/stdout pipes.
        alt="The web UI playing Margo, a 3D pyramidal board, with a panel reporting the search that chose the last move: iteration count, tree depth, transposition-table stats, and per-action visit shares">
 </p>
 
-For UI work with hot reload, run `pnpm dev` from `ui/` alongside the server
+For UI work with hot reload, run `pnpm dev` from `apps/ui/` alongside the server
 instead of `pnpm build`. It serves the app on http://localhost:5173 with `/api/*`
 proxied to the Rust server. Other `ui/` commands: `pnpm typecheck`, `pnpm lint`,
 `pnpm test`.
 
 ## What is in here
 
-- `mcts/` - the core search engine: bandit algorithms, negamax, and MCTS with a
+- `crates/mcts/` - the core search engine: bandit algorithms, negamax, and MCTS with a
   pluggable selection, simulation, backup architecture.
 - `games/` - game implementations, each its own crate.
-- `game-core/`, `game-host/` - the shared `Game` support and the subprocess
+- `games/game-core/`, `apps/game-host/` - the shared `Game` support and the subprocess
   protocol (`describe`, `compare validate`, `compare eval`) that the server, the
   bench harness, and the tuner all speak.
-- `mcts-tune/` - self-describing search configurations: every strategy axis
+- `crates/mcts-tune/` - self-describing search configurations: every strategy axis
   serializes to JSON and reports its own tunable parameters, so the tuner never
   needs to hardcode what it can vary.
-- `gdl/` - an early, exploratory GDL-to-Rust compiler pipeline (see below).
+- `tools/gdl/` - an early, exploratory GDL-to-Rust compiler pipeline (see below).
 - `tuner/` - the tuning layer (see below).
-- `server/`, `ui/`, `bench/` - the browser UI and the benchmarking harness.
+- `apps/server/`, `apps/ui/`, `tools/bench/` - the server, browser UI, and
+  operational bench command.
 - `othello-eval/` - offline learned-evaluation experiments for Othello.
 - `examples/*.rs` and per-crate `examples/` - strength comparisons, benchmarks,
   and instrumentation, kept around as reusable tooling.
+- `local/` - ignored run output, generated opening books, and working material;
+  see [the repository layout](docs/repository-layout.md).
 
-## The core engine (`mcts/`)
+## The core engine (`crates/mcts/`)
 
 The engine has three families of search under one roof.
 
@@ -108,7 +111,7 @@ connect4, druid, focus, gonnect, generated hex variants, ingenious, knightthroug
 margo, nim, oh hell, othello, phantom (dark) chess pieces, strata, tak, tanbo,
 traffic lights, and tic-tac-toe (hand-written and generated).
 
-## Game description compiler (`gdl/`)
+## Game description compiler (`tools/gdl/`)
 
 `gdl/` is preliminary investigation, not a core part of the project yet. The idea
 is a compiler pipeline that takes a game description and emits an optimized Rust
@@ -121,7 +124,7 @@ generated crate, `games/ttt-gen/`, is checked in and cross-checked against the
 hand-written `games/ttt/`.
 
 [Ludii](https://ludii.games/)'s `.lud` corpus is used as spec and oracle
-material. See `gdl/README.md` and `gdl/DESIGN.md` for the reasoning and the
+material. See `tools/gdl/README.md` and `tools/gdl/DESIGN.md` for the reasoning and the
 current status.
 
 ## Tuning (`tuner/`)

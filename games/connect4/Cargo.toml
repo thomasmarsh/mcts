@@ -8,9 +8,9 @@ publish = false
 name = "game_connect4"
 
 [dependencies]
-mcts = { path = "../../mcts" }
+mcts = { path = "../../crates/mcts" }
 game-core = { path = "../game-core" }
-bitboard = { path = "../../bitboard" }
+bitboard = { path = "../../crates/bitboard" }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

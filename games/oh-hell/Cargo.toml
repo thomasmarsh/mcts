@@ -8,7 +8,7 @@ publish = false
 name = "game_oh_hell"
 
 [dependencies]
-mcts = { path = "../../mcts" }
+mcts = { path = "../../crates/mcts" }
 serde = { version = "1", features = ["derive"] }
 rand = { version = "0.8.5", features = ["small_rng"] }
 

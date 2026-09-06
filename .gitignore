@@ -1,5 +1,5 @@
 /target
-plan/
+/local/
 Cargo.lock
 __pycache__
 optuna_output
@@ -13,19 +13,12 @@ othello-eval/.venv/
 *.egg-info/
 # pnpm workspace (ui/)
 ui/node_modules/
-ui/pnpm-lock.yaml
+apps/ui/pnpm-lock.yaml
 # Vite build output (served by the cargo server's ServeDir)
-server/static/dist/
+apps/server/static/dist/
 AGENTS.md
 CLAUDE.md
 .claude
-bench-runs/
-# Transient background-job logs and working files
-scratchpad/
-# Generated opening-book files (examples/build_book.rs and friends) --
-# regenerate with the relevant game's `build_book` example rather than
-# committing what's essentially large, easily-reproducible binary data.
-books/
 
 # Vendored Edax build (games/othello/edax/build-edax.sh regenerates it) --
 # a third-party C engine used only as an external Othello strength yardstick.
@@ -34,4 +27,3 @@ games/othello/edax/vendor/
 # Per-machine Cargo build configuration (machine-specific paths like
 # DUCKDB_LIB_DIR, DUCKDB_INCLUDE_DIR for Homebrew-installed DuckDB)
 .cargo/config.toml
-

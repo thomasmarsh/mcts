@@ -10,7 +10,7 @@
 // blends the power mean with the plain max (`alpha = 1` is the Full-Bellman
 // max backup, Asai & Wissow AAAI 2025); the mixed arms sweep its interior.
 //
-// Two games spanning the roster, per `plan/selection-backup/phase-a.md`:
+// Two games spanning the roster:
 //   - Breakthrough 8x8: tactical sudden-death, no draws -- the game Baier &
 //     Winands' MCTS-minimax-hybrid papers use, so a max-ward backup bias has
 //     a clear place to help or hurt.

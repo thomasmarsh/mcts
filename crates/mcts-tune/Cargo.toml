@@ -1,0 +1,19 @@
+[package]
+name = "mcts-tune"
+version = "0.1.0"
+edition = "2021"
+description = "Generic multi-algorithm strategy-tuning harness shared across game crates"
+publish = false
+
+[dependencies]
+mcts = { path = "../mcts" }
+game-host = { path = "../../apps/game-host" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = { version = "0.8.5", features = ["small_rng"] }
+
+[dev-dependencies]
+game-nim = { path = "../../games/nim" }
+
+[lints]
+workspace = true

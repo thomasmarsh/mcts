@@ -14,9 +14,9 @@ edition = "2021"
 publish = false
 
 [dependencies]
-mcts = { path = "mcts" }
-mcts-bench = { path = "mcts-bench" }
-mcts-tune = { path = "mcts-tune" }
+mcts = { path = "crates/mcts" }
+mcts-bench = { path = "crates/mcts-bench" }
+mcts-tune = { path = "crates/mcts-tune" }
 game-druid = { path = "games/druid" }
 game-knightthrough = { path = "games/knightthrough" }
 game-gonnect = { path = "games/gonnect" }
@@ -38,13 +38,13 @@ workspace = true
 [workspace]
 resolver = "2"
 members = [
-    "bitboard",
-    "pyramid",
-    "mcts",
-    "mcts-bench",
-    "mcts-tune",
+    "crates/bitboard",
+    "crates/pyramid",
+    "crates/mcts",
+    "crates/mcts-bench",
+    "crates/mcts-tune",
     "games/game-core",
-    "game-host",
+    "apps/game-host",
     "games/breakthrough",
     "games/knightthrough",
     "games/othello",
@@ -54,7 +54,7 @@ members = [
     "games/ttt-gen",
     "games/hex-gen",
     "games/hex3-gen",
-    "mcts-tests",
+    "tools/mcts-tests",
     "games/atarigo",
     "games/bid_ttt",
     "games/connect4",
@@ -69,9 +69,9 @@ members = [
     "games/focus",
     "games/phantom",
     "games/oh-hell",
-    "gdl",
-    "server",
-    "bench",
+    "tools/gdl",
+    "apps/server",
+    "tools/bench",
 ]
 # Bare `cargo check`/`clippy`/`test` from the workspace root (no `-p`/
 # `--workspace`) build only the *default* members, and adding a real
@@ -84,13 +84,13 @@ members = [
 # is still a full member, just reachable only via `--workspace` or `-p
 # mcts-examples --example foo`, matching how it's actually invoked.
 default-members = [
-    "bitboard",
-    "pyramid",
-    "mcts",
-    "mcts-bench",
-    "mcts-tune",
+    "crates/bitboard",
+    "crates/pyramid",
+    "crates/mcts",
+    "crates/mcts-bench",
+    "crates/mcts-tune",
     "games/game-core",
-    "game-host",
+    "apps/game-host",
     "games/breakthrough",
     "games/knightthrough",
     "games/othello",
@@ -100,7 +100,7 @@ default-members = [
     "games/ttt-gen",
     "games/hex-gen",
     "games/hex3-gen",
-    "mcts-tests",
+    "tools/mcts-tests",
     "games/atarigo",
     "games/bid_ttt",
     "games/connect4",
@@ -115,8 +115,8 @@ default-members = [
     "games/focus",
     "games/phantom",
     "games/oh-hell",
-    "server",
-    "bench",
+    "apps/server",
+    "tools/bench",
 ]
 
 [profile.dev]

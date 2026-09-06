@@ -1,6 +1,6 @@
 //! Opening-book construction via Quasi-Best-First self-play (Chaslot,
 //! Winands & Van Den Herik, "Parallel Monte-Carlo Tree Search", 2008 --
-//! Algorithm 1, `REFERENCES.md`). Shared between `examples/build_book.rs`
+//! Algorithm 1, `docs/references.md`). Shared between `examples/build_book.rs`
 //! (human-facing report + file output) and `main.rs`'s `book_build`
 //! `GameAdapter` method (the subprocess-protocol path), so the two never
 //! drift apart on how the strategy is wired up.

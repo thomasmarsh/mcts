@@ -194,7 +194,7 @@ fn state_from_wire(w: &WireState) -> Result<State, HostError> {
 /// Path convention for a size-`N` opening book, matching what `book build`
 /// (`examples/build_book.rs`'s default `--out`) writes.
 fn book_path(n: usize) -> std::path::PathBuf {
-    std::path::PathBuf::from(format!("books/gonnect-{n}.json"))
+    std::path::PathBuf::from(format!("local/generated/opening-books/gonnect-{n}.json"))
 }
 
 /// Holds each supported board size's opening book (if one has been built --

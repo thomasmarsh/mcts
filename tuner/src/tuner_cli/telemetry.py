@@ -4,7 +4,7 @@
 time actually goes while a run turns its loop -- the cold fold, the per-turn
 tail fold, model proposal, pair dispatch, and the wait on game subprocesses,
 each tagged with the phase it served. It carries exactly the timestamps
-``evidence.jsonl`` deliberately omits (`plan/tuner/north-star.md`): no replay,
+``evidence.jsonl`` deliberately omits: no replay,
 fingerprint, projection, or scientific-event count ever reads this file.
 
 ``tuner trace <run-dir>`` renders the sidecar as a Chrome / Perfetto JSON Trace

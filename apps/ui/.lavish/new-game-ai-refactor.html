@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>New Game: opponent-picker refactor (rev 2)</title>
+<style>
+  :root {
+    --bg: #16171c;
+    --panel: #1e1f26;
+    --panel-2: #24252c;
+    --field: #2a2c34;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-soft: rgba(255, 255, 255, 0.06);
+    --text: #e8e8ec;
+    --muted: #b7b8c2;
+    --faint: #8a8b95;
+    --accent: #5b7fd6;
+    --accent-ink: #0d0e12;
+    --good: #6bbf7b;
+    --warn: #e0b872;
+    --bad: #e08a8a;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 40px 24px 120px; }
+  h1 { font-size: 26px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  h2 { font-size: 19px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 15px; margin: 22px 0 8px; color: var(--text); }
+  p { margin: 0 0 12px; color: var(--muted); }
+  .lede { font-size: 16px; color: var(--muted); max-width: 76ch; }
+  code { background: var(--field); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; color: #d7dce8; }
+  a { color: var(--accent); }
+  strong { color: var(--text); }
+  ul, ol { color: var(--muted); margin: 0 0 12px; padding-left: 22px; }
+  li { margin: 5px 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line-soft);
+    border-radius: var(--radius); padding: 18px 20px;
+  }
+  .card h3:first-child { margin-top: 0; }
+  .banner {
+    background: rgba(107,191,123,0.1); border: 1px solid rgba(107,191,123,0.35);
+    border-radius: var(--radius); padding: 14px 18px; margin: 18px 0; font-size: 14px; color: var(--muted);
+  }
+  .banner strong { color: var(--good); }
+
+  .mock {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+    padding: 18px 20px; font-size: 13px; color: var(--text);
+  }
+  .mock-title { font-size: 16px; font-weight: 600; margin: 0 0 14px; display:flex; justify-content:space-between; align-items:center; }
+  .mock-title .x { color: var(--faint); font-weight: 400; }
+  .mock label {
+    display: flex; flex-direction: column; gap: 4px;
+    font-size: 13px; color: var(--muted); margin-bottom: 12px;
+  }
+  .mock label.row { flex-direction: row; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .mock select, .mock input[type="number"], .mock input[type="text"] {
+    background: var(--field); color: var(--text);
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
+    padding: 6px 8px; font-size: 13px; font-family: inherit; width: 100%;
+  }
+  .mock input[type="number"].sm { width: 84px; }
+  .mock .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .mock button {
+    background: var(--field); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 14px; font-size: 13px; cursor: default; font-family: inherit;
+  }
+  .mock button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .mock .section {
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); margin: 16px 0 6px;
+  }
+  .mock .nest {
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+  }
+  .mock .nest-2 {
+    margin-left: 8px; padding-left: 10px; border: none;
+    border-left: 2px solid rgba(91,127,214,0.4); border-radius: 0; background: transparent;
+  }
+  .mock .axis-label {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 4px;
+  }
+  .mock .fieldgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+  .mock .fieldgrid label { margin-bottom: 0; }
+  .mock .toggle {
+    display: inline-flex; background: var(--field); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px; gap: 2px; margin-bottom: 12px;
+  }
+  .mock .toggle span { padding: 5px 12px; font-size: 12px; border-radius: 999px; color: var(--muted); }
+  .mock .toggle span.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .mock .axis-row {
+    display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 9px 12px; margin-bottom: 7px;
+  }
+  .mock .axis-row .k { font-weight: 600; font-size: 12px; }
+  .mock .axis-row .v { font-size: 11px; color: var(--faint); }
+  .mock .axis-row .adj { color: var(--accent); font-size: 12px; }
+  .mock .axis-row.open { display: block; border-color: rgba(91,127,214,0.4); }
+  .mock .seatcard {
+    display: grid; grid-template-columns: 78px 1fr auto; align-items: center; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--line-soft);
+    border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+  }
+  .mock .seatcard .who { font-weight: 600; display:flex; align-items:center; gap:6px; }
+  .mock .seatcard .sub { font-size: 11px; color: var(--faint); }
+  .mock .linkish { color: var(--accent); font-size: 12px; }
+  .mock .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; border:1px solid #0006; }
+  .mock .hgroup { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing:.06em; padding: 4px 0 2px; }
+  .mock .note { font-size: 11px; color: var(--faint); margin-top: 4px; }
+
+  .callouts { display: grid; gap: 8px; margin-top: 12px; }
+  .callout { display: grid; grid-template-columns: 22px 1fr; gap: 10px; align-items: start; font-size: 13px; color: var(--muted); }
+  .callout .n { background: var(--bad); color: #1a0d0d; font-weight: 700; font-size: 11px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; }
+  .mono-note { font-size: 12px; color: var(--faint); }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 16px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { color: var(--faint); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  td.now { color: var(--muted); }
+  td.next { color: var(--text); }
+
+  .risk { border-left: 3px solid var(--warn); padding: 4px 0 4px 14px; margin: 14px 0; }
+  .risk h3 { margin: 0 0 4px; }
+
+  .layer { display:grid; grid-template-columns: 34px 1fr; gap: 12px; margin: 10px 0; align-items:start; }
+  .layer .step { background: var(--accent); color: var(--accent-ink); font-weight:700; border-radius: 8px; display:grid; place-items:center; height:34px; }
+  .layer .body { background: var(--panel); border:1px solid var(--line-soft); border-radius:8px; padding: 12px 14px; }
+  .layer .body h3 { margin:0 0 4px; }
+  .layer .body p { margin:0; font-size:13px; }
+  .pill { font-size:11px; padding:2px 7px; border-radius:999px; background:var(--field); color:var(--muted); border:1px solid var(--line-soft); margin-left:6px; }
+  .pill.wire { color: var(--warn); border-color: rgba(224,184,114,.3); }
+  .pill.nowire { color: var(--good); border-color: rgba(107,191,123,.3); }
+
+  form.q { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; margin: 16px 0; }
+  form.q h3 { margin-top: 0; }
+  form.q label { display: block; padding: 9px 12px; margin: 6px 0; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line-soft); cursor: pointer; color: var(--muted); font-size: 13.5px; }
+  form.q label:hover { border-color: var(--line); }
+  form.q input[type="radio"], form.q input[type="checkbox"] { margin-right: 9px; }
+  form.q .hint { font-size: 12px; color: var(--faint); margin-left: 25px; display: block; }
+  form.q button { margin-top: 12px; background: var(--accent); border: 1px solid var(--accent); color: var(--accent-ink); font-weight: 600; border-radius: 7px; padding: 8px 16px; font-size: 13px; cursor: pointer; font-family: inherit; }
+  form.q textarea { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--line-soft); border-radius: 7px; padding: 8px 10px; font-family: inherit; font-size: 13px; margin-top: 8px; }
+  .queued { color: var(--good); font-size: 12px; margin-top: 8px; display: none; }
+
+  svg { display: block; width: 100%; height: auto; }
+  figure { margin: 16px 0; }
+  figcaption { font-size: 12.5px; color: var(--faint); margin-top: 8px; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+  .decided { text-decoration: line-through; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>New Game &rarr; opponent selection: a refactor <span class="pill">rev 2</span></h1>
+  <p class="lede">
+    Revised after your feedback. The two big shifts: the strategy editor becomes <strong>one
+    progressively-disclosed form</strong> (no more &ldquo;free composition&rdquo; vs &ldquo;by algorithm&rdquo; split &mdash;
+    that&rsquo;s two mental models for one job), and custom opponents become <strong>server-persisted
+    named profiles</strong> that sit right alongside the built-in presets.
+  </p>
+
+  <div class="banner">
+    <strong>Locked from rev 1:</strong>
+    editor opens as a <strong>slide-over side panel</strong> (not a nested modal) &middot;
+    saved profiles are <strong>server-persisted alongside presets</strong> &middot;
+    the flat seat <code>&lt;select&gt;</code> becomes grouped seat rows &middot;
+    <code>AiPresetInfo.description</code> gets surfaced.
+  </div>
+
+  <h2>1 &nbsp;Your feedback, and what it changes</h2>
+  <table>
+    <thead><tr><th style="width:30%">You said</th><th>Change in this revision</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="now">&ldquo;[Time and iterations] can both be true at the same time.&rdquo;</td>
+        <td class="next">Rev 1&rsquo;s single time/iterations radio was wrong. Both limits can be active together (whichever fires first ends the search &mdash; matches <code>SearchConfig</code> today). New framing: a <strong>Stop conditions</strong> block with two optional limits; the UI just guarantees <em>at least one</em> stays on, so the &ldquo;both off&rdquo; invalid state still can&rsquo;t occur.</td>
+      </tr>
+      <tr>
+        <td class="now">&ldquo;A &lsquo;light&rsquo; algorithm selection and a &lsquo;per axis&rsquo; approach means two mental models.&rdquo;</td>
+        <td class="next">The <code>mode: "free" | "params"</code> toggle is <strong>deleted</strong>. One form: pick an algorithm, see its few primary knobs, and each of the four axes is a row you <strong>expand only if you want to override it</strong>. Free axis composition is the <em>same form, expanded</em> &mdash; not a separate mode.</td>
+      </tr>
+      <tr>
+        <td class="now">&ldquo;Consider expanding <code>config_ir</code> to have more structure that helps the UI.&rdquo;</td>
+        <td class="next">The plan now moves display metadata into the schema itself: <code>axis_schema()</code> / <code>strategy-algorithms</code> emit <code>label</code>, <code>help</code>, and <code>tier</code> (<code>primary</code> / <code>advanced</code>) per field and variant. The UI renders generically from that &mdash; no hand-maintained label map to drift. See &sect;3.3 and decision&nbsp;1.</td>
+      </tr>
+      <tr>
+        <td class="now">&ldquo;A notion of expanding as needed, along with reasonable defaults.&rdquo;</td>
+        <td class="next">Progressive disclosure is now the core idea, not a footnote. Everything unexpanded shows its <em>effective default</em> as a summary line; you only ever touch what you care about.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2 &nbsp;Goal</h2>
+  <ul>
+    <li>&ldquo;Human vs. Strong AI&rdquo; is one glance, one click per seat.</li>
+    <li>Tuning an opponent is <em>one</em> mental model that gets deeper as you scroll/expand &mdash; never a fork between &ldquo;easy mode&rdquo; and &ldquo;real mode&rdquo;.</li>
+    <li>A tuned opponent is a <strong>named, saved, server-side profile</strong> &mdash; reusable across seats, games, and sessions, and indistinguishable from a built-in preset at the point of use.</li>
+    <li>No invalid states, no raw Rust identifiers as labels.</li>
+  </ul>
+
+  <h2>3 &nbsp;Proposed design</h2>
+
+  <h3>3.1 &nbsp;Match setup dialog</h3>
+  <div class="split">
+    <div class="mock">
+      <p class="mock-title">New Game</p>
+      <label>Game
+        <select><option>Othello</option></select>
+      </label>
+      <div class="section">Players</div>
+      <div class="seatcard">
+        <span class="who"><span class="swatch" style="background:#1c1c1c"></span> Black</span>
+        <span><select><option>You (human)</option></select></span>
+        <span></span>
+      </div>
+      <div class="seatcard">
+        <span class="who"><span class="swatch" style="background:#efefef"></span> White</span>
+        <span>
+          <select><option>Strong &mdash; deep MCTS-Solver, plays strongly</option></select>
+          <span class="sub">~1000 ms / move &middot; built-in</span>
+        </span>
+        <span class="linkish">Edit&hellip;</span>
+      </div>
+      <label class="row"><input type="checkbox" /> Mirror Black&rsquo;s opponent onto other seats</label>
+      <div class="actions">
+        <button>Swap seats</button>
+        <button>Cancel</button>
+        <button class="primary">Start</button>
+      </div>
+      <div class="note">Seat dropdown, expanded:</div>
+      <div class="nest" style="margin-top:6px">
+        <div class="hgroup">Human</div>
+        <div>You (human)</div>
+        <div class="hgroup">Built-in</div>
+        <div>Easy &mdash; shallow budget, obvious mistakes</div>
+        <div>Medium &mdash; moderate budget, plays competently</div>
+        <div>Strong &mdash; deep MCTS-Solver, plays strongly</div>
+        <div class="hgroup">Saved</div>
+        <div>My aggressive NST</div>
+        <div>Blitz 200ms</div>
+        <div class="hgroup">&nbsp;</div>
+        <div class="linkish">+ New custom opponent&hellip;</div>
+      </div>
+    </div>
+    <div>
+      <h3 style="margin-top:0">Notes</h3>
+      <ul>
+        <li><strong>Seat rows.</strong> Colour swatch + chosen opponent + a one-line summary (budget &middot; origin). Generalises to Focus&rsquo;s 3&ndash;4 seats.</li>
+        <li><strong>One grouped dropdown</strong> per seat: <em>Human</em> / <em>Built-in</em> / <em>Saved</em> / <em>+ New custom opponent&hellip;</em>. Built-in and Saved options both read as &ldquo;name &mdash; description&rdquo; (<code>AiPresetInfo.description</code>, currently fetched and dropped).</li>
+        <li><strong>&ldquo;Edit&hellip;&rdquo;</strong> on a Saved or custom row opens the slide-over. Editing a built-in offers &ldquo;Duplicate &amp; edit&rdquo; (built-ins stay read-only).</li>
+        <li><strong>Mirror / Swap</strong> symmetry helpers. <code>NewGameFields</code> + variant picker keep their slot between Game and Players.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>3.2 &nbsp;Opponent editor &mdash; one progressive form, in a slide-over</h3>
+  <div class="split">
+    <div class="mock">
+      <p class="mock-title">Edit opponent <span class="x">&rsaquo;&#8202;slide-over</span></p>
+      <label>Name<input type="text" value="My aggressive NST" /></label>
+      <label>Based on<select><option>Strong (built-in)</option><option>Blank</option></select></label>
+
+      <div class="section">Stop conditions <span class="note" style="text-transform:none;letter-spacing:0">&mdash; search ends when the first one is hit</span></div>
+      <div class="nest">
+        <label class="row"><input type="checkbox" checked /> Time&nbsp; <input type="number" class="sm" value="1000" /> &nbsp;ms / move</label>
+        <label class="row" style="margin-bottom:0"><input type="checkbox" /> Iterations&nbsp; <input type="number" class="sm" value="10000" disabled /> &nbsp;/ move</label>
+        <div class="note">One must stay checked. Both allowed.</div>
+      </div>
+      <label>CPU threads <span class="note" style="text-transform:none">0 = all cores</span><input type="number" class="sm" value="0" /></label>
+
+      <div class="section">Algorithm</div>
+      <label><select><option>MCTS-Solver</option><option>MCTS (UCT)</option><option>RAVE / AMAF</option></select></label>
+      <div class="fieldgrid">
+        <label>Exploration (c)<input type="number" value="1.41" /></label>
+        <label>First-play value<select><option>Optimistic</option><option>Parent</option><option>Loss</option></select></label>
+      </div>
+      <div class="note">Primary knobs for the chosen algorithm (schema <code>tier: primary</code>). Everything else has a sensible default and lives below.</div>
+
+      <div class="section">Fine-tuning <span class="note" style="text-transform:none;letter-spacing:0">&mdash; expand only what you want to change</span></div>
+      <div class="axis-row">
+        <span><span class="k">Selection</span> &middot; <span class="v">UCB1 (default)</span></span>
+        <span class="adj">Adjust</span>
+      </div>
+      <div class="axis-row open">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="k">Simulation</span><span class="adj">Collapse</span>
+        </div>
+        <div style="margin-top:8px">
+          <label style="margin-bottom:8px">Rollout policy
+            <select><option>Decisive-move (win/loss aware)</option><option>Uniform random</option></select>
+          </label>
+          <div class="nest nest-2">
+            <div class="axis-label">Decisive-move mode</div>
+            <select><option>Win &amp; loss</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="axis-row">
+        <span><span class="k">Backprop</span> &middot; <span class="v">Plain average (default)</span></span>
+        <span class="adj">Adjust</span>
+      </div>
+      <div class="axis-row">
+        <span><span class="k">Final move choice</span> &middot; <span class="v">Most-visited child (default)</span></span>
+        <span class="adj">Adjust</span>
+      </div>
+      <div class="axis-row">
+        <span><span class="k">Graph search &amp; transpositions</span> &middot; <span class="v">Off (default)</span></span>
+        <span class="adj">Adjust</span>
+      </div>
+
+      <div class="actions"><button>Cancel</button><button class="primary">Save opponent</button></div>
+    </div>
+    <div>
+      <h3 style="margin-top:0">How the one-model form works</h3>
+      <ul>
+        <li><strong>Top of form = the 90% case.</strong> Name, stop conditions, algorithm, its 2&ndash;3 primary knobs. A player who just wants &ldquo;a strong Othello bot that thinks 2s&rdquo; never scrolls past here.</li>
+        <li><strong>&ldquo;Fine-tuning&rdquo; = the old free composition</strong>, but each axis is a collapsed row showing its <em>effective</em> value (&ldquo;UCB1 (default)&rdquo;). Expand a row to override it with the full variant picker + fields. Collapsed rows contribute their default.</li>
+        <li><strong>No mode toggle.</strong> There is exactly one form; depth is opt-in per axis. The thing people actually want to do &mdash; nudge one axis &mdash; is one expand, not a mode switch that re-defaults everything.</li>
+        <li><strong>Labels + help come from the schema</strong> (&sect;3.3). &ldquo;Decisive-move (win/loss aware)&rdquo;, not <code>decisive_move</code>. Hover help on every field.</li>
+        <li><strong>&ldquo;Based on&rdquo;</strong> seeds the whole form from a preset&rsquo;s resolved params, so you start from something that plays well.</li>
+        <li><strong>Slide-over</strong>: right-docked panel, ~420px, its own scroll. The board stays visible behind it; no modal-over-modal.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3>3.3 &nbsp;Schema-carried display metadata (the <code>config_ir</code> change)</h3>
+  <p>
+    Rather than a hand-maintained <code>wire-labels.ts</code> that silently falls behind the Rust
+    schema, the schema endpoints grow optional presentation fields. Additive and backward-compatible
+    &mdash; older clients ignore them.
+  </p>
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-labelledby="schematitle">
+      <title id="schematitle">Schema metadata flows from Rust to a generic renderer</title>
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#8a8b95" />
+        </marker>
+      </defs>
+      <g font-family="-apple-system, sans-serif" font-size="12" fill="#e8e8ec">
+        <rect x="16" y="46" width="270" height="150" rx="10" fill="#1e1f26" stroke="#5b7fd6"/>
+        <text x="32" y="70" font-weight="600" font-size="13">Rust: config_ir_schema</text>
+        <text x="32" y="94" fill="#b7b8c2">field "c" {</text>
+        <text x="46" y="112" fill="#b7b8c2">type: float, bounds, default,</text>
+        <text x="46" y="130" fill="#6bbf7b">label: "Exploration (c)",</text>
+        <text x="46" y="148" fill="#6bbf7b">help: "Higher = more...",</text>
+        <text x="46" y="166" fill="#6bbf7b">tier: "primary" }</text>
+        <text x="32" y="188" fill="#8a8b95" font-size="11">green = new, additive fields</text>
+
+        <rect x="340" y="66" width="200" height="110" rx="10" fill="#1e1f26" stroke="#ffffff30"/>
+        <text x="440" y="92" text-anchor="middle" font-weight="600" font-size="13">GET /api/strategy-schema</text>
+        <text x="440" y="114" text-anchor="middle" fill="#b7b8c2">/ .../strategy-algorithms</text>
+        <text x="440" y="140" text-anchor="middle" fill="#b7b8c2">AxisSchema + TunerInfo,</text>
+        <text x="440" y="158" text-anchor="middle" fill="#b7b8c2">now carrying label/help/tier</text>
+
+        <rect x="600" y="46" width="284" height="150" rx="10" fill="#1e1f26" stroke="#ffffff30"/>
+        <text x="616" y="70" font-weight="600" font-size="13">Generic editor renderer</text>
+        <text x="616" y="94" fill="#b7b8c2">tier:"primary" &rarr; top of form</text>
+        <text x="616" y="114" fill="#b7b8c2">tier:"advanced" &rarr; axis row</text>
+        <text x="616" y="134" fill="#b7b8c2">label &rarr; control label</text>
+        <text x="616" y="154" fill="#b7b8c2">help &rarr; tooltip</text>
+        <text x="616" y="178" fill="#8a8b95" font-size="11">missing meta &rarr; title-cased tag fallback</text>
+
+        <line x1="286" y1="120" x2="336" y2="120" stroke="#8a8b95" marker-end="url(#ah)"/>
+        <line x1="540" y1="120" x2="596" y2="120" stroke="#8a8b95" marker-end="url(#ah)"/>
+      </g>
+    </svg>
+    <figcaption>New fields are optional. The renderer degrades to today&rsquo;s behaviour (title-cased tag) for anything without metadata, so Rust and UI can land independently.</figcaption>
+  </figure>
+
+  <h3>3.4 &nbsp;Where an opponent lives</h3>
+  <figure>
+    <svg viewBox="0 0 900 250" role="img" aria-labelledby="flowtitle">
+      <title id="flowtitle">Opponent data flow with server-persisted profiles</title>
+      <defs>
+        <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0 0 L10 5 L0 10 z" fill="#8a8b95" />
+        </marker>
+      </defs>
+      <g font-family="-apple-system, sans-serif" font-size="12" fill="#e8e8ec">
+        <rect x="16" y="40" width="250" height="140" rx="10" fill="#1e1f26" stroke="#5b7fd6"/>
+        <text x="32" y="64" font-weight="600" font-size="13">Server preset store</text>
+        <text x="32" y="88" fill="#b7b8c2">built-in: games/*/presets.json</text>
+        <text x="32" y="108" fill="#6bbf7b">user: &lt;data-dir&gt;/opponents/</text>
+        <text x="32" y="128" fill="#b7b8c2">GET  /ai_presets  (both)</text>
+        <text x="32" y="146" fill="#6bbf7b">POST/PUT/DELETE  user only</text>
+        <text x="32" y="166" fill="#8a8b95" font-size="11">built-ins immutable; user ones CRUD</text>
+
+        <rect x="330" y="60" width="190" height="96" rx="10" fill="#1e1f26" stroke="#ffffff30"/>
+        <text x="425" y="86" text-anchor="middle" font-weight="600" font-size="13">Seat assignment</text>
+        <text x="425" y="110" text-anchor="middle" fill="#b7b8c2">seats[player] =</text>
+        <text x="425" y="130" text-anchor="middle" fill="#b7b8c2">"human" | {preset: id}</text>
+
+        <rect x="590" y="40" width="294" height="140" rx="10" fill="#1e1f26" stroke="#ffffff30"/>
+        <text x="606" y="64" font-weight="600" font-size="13">Wire request</text>
+        <text x="606" y="90" fill="#b7b8c2">ai_move / analyze:</text>
+        <text x="606" y="112" fill="#e8e8ec">{ preset: "strong" }</text>
+        <text x="606" y="130" fill="#e8e8ec">{ preset: "my-aggressive-nst" }</text>
+        <text x="606" y="156" fill="#8a8b95" font-size="11">a saved profile IS a preset id &mdash;</text>
+        <text x="606" y="172" fill="#8a8b95" font-size="11">no {custom} blob on the wire</text>
+
+        <line x1="266" y1="110" x2="326" y2="110" stroke="#8a8b95" marker-end="url(#ah2)"/>
+        <line x1="520" y1="110" x2="586" y2="110" stroke="#8a8b95" marker-end="url(#ah2)"/>
+      </g>
+    </svg>
+    <figcaption>
+      Because saved profiles live server-side alongside built-ins, a seat only ever needs
+      <code>{preset: id}</code>. The inline <code>{kind:"custom", spec}</code> path collapses to a
+      single narrow use: an <em>unsaved</em> edit in the slide-over that hasn&rsquo;t been named yet
+      (see decision&nbsp;3).
+    </figcaption>
+  </figure>
+
+  <h2>4 &nbsp;Before &rarr; after</h2>
+  <table>
+    <thead><tr><th style="width:22%">Aspect</th><th style="width:39%">Today</th><th style="width:39%">Proposed</th></tr></thead>
+    <tbody>
+      <tr><td>Seat picker</td><td class="now">One flat <code>&lt;select&gt;</code></td><td class="next">Seat row + grouped dropdown (Human / Built-in / Saved / New)</td></tr>
+      <tr><td>Preset description</td><td class="now">Fetched, never shown</td><td class="next">Option label + row summary</td></tr>
+      <tr><td>Editor location</td><td class="now">Inline in dialog, once per seat</td><td class="next">Right-docked slide-over, one opponent at a time</td></tr>
+      <tr><td>Editor structure</td><td class="now">Two modes (<code>free</code> / <code>params</code>) via a toggle that re-defaults on switch</td><td class="next">One form; primary knobs on top, per-axis expanders below</td></tr>
+      <tr><td>Budget</td><td class="now">2 checkboxes, &ldquo;both off&rdquo; = error state</td><td class="next">Stop conditions: 2 optional limits, &ge;1 always on</td></tr>
+      <tr><td>Labels &amp; help</td><td class="now">Raw serde tags, no help</td><td class="next">From schema <code>label</code>/<code>help</code>/<code>tier</code>; title-cased fallback</td></tr>
+      <tr><td>Custom reuse</td><td class="now">Rebuilt per seat, lost on close</td><td class="next">Named server profile; reusable everywhere, survives sessions</td></tr>
+      <tr><td>Wire (seat)</td><td class="now"><code>{preset}</code> or <code>{preset:"custom", custom}</code></td><td class="next"><code>{preset: id}</code> for saved &amp; built-in; <code>{custom}</code> only for unsaved edits</td></tr>
+    </tbody>
+  </table>
+
+  <h2>5 &nbsp;Build sequence</h2>
+
+  <div class="layer"><div class="step">1</div><div class="body">
+    <h3>Slide-over shell + extract the editor <span class="pill nowire">no wire</span></h3>
+    <p>Move <code>StrategyConfigEditor</code> out of the inline seat loop in <code>GameShell.tsx</code> into a right-docked slide-over opened by &ldquo;Edit&hellip;&rdquo;. Behaviour otherwise unchanged. Covered by the existing <code>GameShell.test.tsx</code> mocked-env harness.</p>
+  </div></div>
+  <div class="layer"><div class="step">2</div><div class="body">
+    <h3>Seat rows + grouped dropdown + descriptions <span class="pill nowire">no wire</span></h3>
+    <p>Replace the flat <code>&lt;select&gt;</code> with a seat-row component; group options; wire <code>AiPresetInfo.description</code> into labels and the summary line. Mirror/Swap helpers.</p>
+  </div></div>
+  <div class="layer"><div class="step">3</div><div class="body">
+    <h3>Collapse the editor to one progressive form <span class="pill nowire">no wire</span></h3>
+    <p>Delete the <code>mode</code> toggle and <code>switchToFree</code>/<code>switchToNamed</code>. Render: stop-conditions block (2 optional limits, &ge;1 enforced), algorithm + its <code>tier:"primary"</code> knobs, then per-axis expander rows that fall back to defaults when collapsed. <code>AlgorithmFields</code>&rsquo; <code>activeNames</code>/<code>withDefaultsFilled</code> logic is reused for the &ldquo;effective value&rdquo; summaries.</p>
+  </div></div>
+  <div class="layer"><div class="step">4</div><div class="body">
+    <h3>Schema display metadata <span class="pill wire">Rust + wire</span></h3>
+    <p>Add optional <code>label</code> / <code>help</code> / <code>tier</code> to <code>config_ir_schema::axis_schema()</code> and the <code>strategy-algorithms</code> payload; extend the TS <code>AxisFieldSchema</code>/<code>AxisVariantSchema</code>/<code>TunerParameter</code> types. Renderer consumes them with a title-cased-tag fallback. Additive; UI step 3 works without it and improves once it lands.</p>
+  </div></div>
+  <div class="layer"><div class="step">5</div><div class="body">
+    <h3>Server-persisted user profiles <span class="pill wire">Rust + wire</span></h3>
+    <p>User preset store (<code>&lt;data-dir&gt;/opponents/*.json</code>), folded into <code>GET /ai_presets</code> with an <code>origin: "builtin" | "user"</code> flag; <code>POST</code>/<code>PUT</code>/<code>DELETE</code> for user ones. UI: &ldquo;Saved&rdquo; group, save/duplicate/delete in the slide-over. Seat refs for saved profiles become plain <code>{preset: id}</code>.</p>
+  </div></div>
+  <div class="layer"><div class="step">6</div><div class="body">
+    <h3>Polish <span class="pill nowire">no wire</span></h3>
+    <p>Slide-over transitions, focus management, keyboard, invalid-profile badges (&sect;6 risk), empty-state for the Saved group.</p>
+  </div></div>
+
+  <p class="mono-note">Steps 1&ndash;3 remove the confusion with zero backend work and can ship as a unit. Steps 4&ndash;5 are the &ldquo;more schema structure&rdquo; and &ldquo;server-persisted&rdquo; investments and each stand alone.</p>
+
+  <h2>6 &nbsp;Risks &amp; failure modes</h2>
+  <div class="risk">
+    <h3>Effective-default summaries can mislead</h3>
+    <p>A collapsed axis row claims &ldquo;UCB1 (default)&rdquo;. If the real default for the chosen algorithm is something else, the summary lies. Mitigation: derive every summary from the same <code>withDefaultsFilled</code> pass that builds the submitted spec &mdash; the summary and the payload read from one source, so they cannot disagree.</p>
+  </div>
+  <div class="risk">
+    <h3>Saved profile references a removed variant/field</h3>
+    <p>A persisted spec can name an axis variant or field deleted by a later Rust change. Mitigation: validate against the live <code>AxisSchema</code> on load; flag invalid profiles with a &ldquo;needs review&rdquo; badge, keep them out of seat assignment until re-saved. Never silently drop or crash.</p>
+  </div>
+  <div class="risk">
+    <h3>Schema metadata is a second source of truth for labels</h3>
+    <p>Even in Rust, <code>label</code>/<code>help</code> can rot relative to the field&rsquo;s actual behaviour. Mitigation: keep them terminal (no logic depends on them), and add a schema test asserting every <code>tier:"primary"</code> field has a non-empty <code>label</code>+<code>help</code> so the important ones can&rsquo;t regress to blank.</p>
+  </div>
+  <div class="risk">
+    <h3>Migration: existing in-flight custom seats</h3>
+    <p>Nothing persists custom seat configs today, so there is no stored data to migrate. The only compat surface is the wire <code>{preset:"custom", custom}</code> shape, which stays valid. Built-in preset ids are unchanged.</p>
+  </div>
+
+  <h2>7 &nbsp;Decisions I need from you</h2>
+  <p>Two rev-1 questions are settled (slide-over; server-persisted) and folded in above. Four open:</p>
+
+  <form class="q" data-lavish-question="metadata" onsubmit="qsub(event,'metadata','Schema metadata timing')">
+    <h3>1. Schema display metadata &mdash; now or later?</h3>
+    <label><input type="radio" name="metadata" value="Do the config_ir label/help/tier change as step 4 of this work" checked /> Do it now, as step 4
+      <span class="hint">One coherent pass; UI ships its fallback first (step 3), then gets better when the Rust side lands.</span></label>
+    <label><input type="radio" name="metadata" value="Ship UI with a hand-maintained TS label map now; do the schema change as a separate follow-up" /> Hand-maintained TS map now, schema change as a separate follow-up
+      <span class="hint">Faster to a usable UI; accepts the drift risk until the follow-up.</span></label>
+    <label><input type="radio" name="metadata" value="Design the config_ir metadata shape in its own plan doc before committing to it" /> Spin the schema shape into its own plan doc first
+      <span class="hint">If the metadata model (tiers? groups? ordering? per-game overrides?) needs real design.</span></label>
+    <button type="submit">Queue answer</button><div class="queued">Queued &check;</div>
+  </form>
+
+  <form class="q" data-lavish-question="unsaved" onsubmit="qsub(event,'unsaved','Unsaved custom opponents')">
+    <h3>2. Can a seat use an <em>unsaved</em> custom opponent?</h3>
+    <label><input type="radio" name="unsaved" value="Yes - allow an ephemeral unnamed custom opponent per seat, keeping the {custom} wire path" /> Yes &mdash; keep an ephemeral path
+      <span class="hint">Quick one-offs without naming. Retains <code>{preset:"custom", custom}</code> on the wire and an <code>AiStrategyRef</code> custom kind.</span></label>
+    <label><input type="radio" name="unsaved" value="No - you must Save the profile (name it) before it can be assigned to a seat" checked /> No &mdash; must save (name) before assigning
+      <span class="hint">Simplest model: every opponent is a named preset id. <code>{custom}</code> wire path and the <code>AiStrategyRef</code> union both go away. &ldquo;Save&rdquo; can auto-suggest a name.</span></label>
+    <button type="submit">Queue answer</button><div class="queued">Queued &check;</div>
+  </form>
+
+  <form class="q" data-lavish-question="advanced" onsubmit="qsub(event,'advanced','Advanced axis depth')">
+    <h3>3. How much of free composition stays reachable?</h3>
+    <label><input type="radio" name="advanced" value="Full parity - every axis, every variant, every wraps nesting reachable through the expander rows" checked /> Full parity &mdash; every axis / variant / <code>wraps</code> nesting still reachable, just collapsed by default</label>
+    <label><input type="radio" name="advanced" value="Primary axes expandable in the slide-over; deep wraps nesting (epsilon_greedy/decisive_move inner) only via a raw JSON escape hatch" /> Common axes in the form; deepest <code>wraps</code> nesting via a raw-JSON escape hatch only</label>
+    <label><input type="radio" name="advanced" value="Curated subset only - drop the rarely-used axis variants from the UI entirely" /> Curated subset &mdash; drop rarely-used variants from the UI entirely
+      <span class="hint">Cleanest UI; anyone needing the exotic combos uses the tuner/CLI.</span></label>
+    <button type="submit">Queue answer</button><div class="queued">Queued &check;</div>
+  </form>
+
+  <form class="q" data-lavish-question="scope" onsubmit="qsub(event,'scope','Delivery scope')">
+    <h3>4. Delivery scope for the first PR?</h3>
+    <label><input type="radio" name="scope" value="Steps 1-3 only (slide-over + seat rows + one-form editor), no backend; steps 4-6 follow" checked /> Steps 1&ndash;3 &mdash; UI-only confusion fix, no backend. 4&ndash;6 as follow-ups.</label>
+    <label><input type="radio" name="scope" value="Steps 1-5 as one body of work including schema metadata and server-persisted profiles" /> Steps 1&ndash;5 &mdash; the whole thing including backend, as one body of work.</label>
+    <label><input type="radio" name="scope" value="Write a plan/ doc for the full six steps first, implement nothing yet" /> Write a <code>plan/</code> doc for all six steps first, implement nothing yet.</label>
+    <button type="submit">Queue answer</button><div class="queued">Queued &check;</div>
+  </form>
+
+  <form class="q" data-lavish-question="notes" onsubmit="event.preventDefault();var v=this.querySelector('textarea').value;if(v.trim())window.lavish.queuePrompt('Further notes on the opponent-picker refactor (rev 2): '+v,{tag:'notes',text:'Extra notes'});this.querySelector('.queued').style.display='block';">
+    <h3>Anything else</h3>
+    <p>Naming (&ldquo;opponent&rdquo; / &ldquo;AI profile&rdquo; / &ldquo;player&rdquo;), the schema-metadata model, other pain points.</p>
+    <textarea rows="3" placeholder="Optional&hellip;"></textarea>
+    <button type="submit">Queue notes</button><div class="queued">Queued &check;</div>
+  </form>
+
+  <p class="mono-note">Queue your answers, then hit <strong>Send to Agent</strong> in the Lavish bar.</p>
+</div>
+
+<script>
+  function qsub(e, name, text) {
+    e.preventDefault();
+    var v = new FormData(e.currentTarget).get(name);
+    if (!v) return;
+    window.lavish.queuePrompt('Decision — ' + text + ': ' + v, {
+      tag: 'choice', text: text + ': ' + v, element: e.currentTarget,
+      data: { question: name, answer: v }
+    });
+    var q = e.currentTarget.querySelector('.queued');
+    if (q) q.style.display = 'block';
+  }
+</script>
+</body>
+</html>

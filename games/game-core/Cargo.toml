@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-bitboard = { path = "../../bitboard" }
+bitboard = { path = "../../crates/bitboard" }
 serde = { version = "1", features = ["derive"] }
 
 [lints]

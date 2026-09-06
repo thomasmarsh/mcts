@@ -13,9 +13,9 @@ name = "game-druid"
 path = "src/main.rs"
 
 [dependencies]
-mcts = { path = "../../mcts" }
-mcts-tune = { path = "../../mcts-tune" }
-game-host = { path = "../../game-host" }
+mcts = { path = "../../crates/mcts" }
+mcts-tune = { path = "../../crates/mcts-tune" }
+game-host = { path = "../../apps/game-host" }
 rustc-hash = "1.1.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 serde = { version = "1", features = ["derive"] }
