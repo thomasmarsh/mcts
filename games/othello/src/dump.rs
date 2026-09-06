@@ -26,20 +26,30 @@
 //!
 //! ## Label modes
 //!
-//! Only `--label outcome` is implemented: uniform-random seeded self-play,
-//! every non-terminal position labelled with the final outcome. The
+//! Only `--label outcome` is implemented: seeded self-play, every
+//! non-terminal position labelled with the final outcome. The
 //! `treestrap` / `root_value` search-labelled harvest modes are not built
 //! yet -- the `match` arm for them `unimplemented!()`s with a pointer.
+//!
+//! ## Position source
+//!
+//! Without `--engine`, moves are uniform-random. With `--engine <preset>`,
+//! moves come from that `games/othello/presets.json` engine, except that
+//! with probability `--epsilon` (default 0.1) a uniform-random legal move
+//! is played instead -- diversity so a deterministic seeded engine doesn't
+//! emit the same game repeatedly. The label is unchanged either way.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use mcts::algorithms::Search;
 use mcts::game::Game;
+use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::{Othello, Player, State};
+use crate::{Move, Othello, Player, State};
 
 /// One dumped position. See the module docs for field semantics.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -109,6 +119,9 @@ struct Config {
     manifest: Option<PathBuf>,
     games: u64,
     seed: u64,
+    engine: Option<String>,
+    epsilon: f64,
+    presets_path: PathBuf,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -117,6 +130,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut games = 1000u64;
     let mut seed = 0u64;
     let mut label = "outcome".to_string();
+    let mut engine = None;
+    let mut epsilon = 0.1f64;
+    let mut presets_path = PathBuf::from("games/othello/presets.json");
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -125,10 +141,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--games" => games = val().parse().expect("--games must be an integer"),
             "--seed" => seed = val().parse().expect("--seed must be an integer"),
             "--label" => label = val(),
+            "--engine" => engine = Some(val()),
+            "--epsilon" => epsilon = val().parse().expect("--epsilon must be a float"),
+            "--presets" => presets_path = PathBuf::from(val()),
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-othello dump --out <path> [--games N] [--seed N] \
-                     [--label outcome] [--manifest <path>]"
+                     [--label outcome] [--engine <preset>] [--epsilon P] \
+                     [--presets <path>] [--manifest <path>]"
                 );
                 std::process::exit(0);
             }
@@ -143,11 +163,35 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         ),
         other => panic!("unknown --label mode: {other}"),
     }
+    assert!(
+        (0.0..=1.0).contains(&epsilon),
+        "--epsilon must be in [0, 1], got {epsilon}"
+    );
     Config {
         out: out.expect("--out is required"),
         manifest,
         games,
         seed,
+        engine,
+        epsilon,
+        presets_path,
+    }
+}
+
+/// Backfill the final-outcome target into every record pushed for this
+/// game (those from index `first` onward), now that `winner` is known.
+fn finish_game(records: &mut [Record], first: usize, winner: Option<Player>) {
+    for rec in &mut records[first..] {
+        let side_player = if rec.side == 0 {
+            Player::Black
+        } else {
+            Player::White
+        };
+        rec.target = match winner {
+            None => 0.0,
+            Some(w) if w == side_player => 1.0,
+            Some(_) => -1.0,
+        };
     }
 }
 
@@ -168,19 +212,38 @@ fn dump_one_game(rng: &mut SmallRng, records: &mut Vec<Record>) {
         let action = actions[rng.gen_range(0..actions.len())];
         state = Othello::apply(state, &action);
     }
-    let winner = Othello::winner(&state);
-    for rec in &mut records[first..] {
-        let side_player = if rec.side == 0 {
-            Player::Black
+    finish_game(records, first, Othello::winner(&state));
+}
+
+/// Play one game driven by `engine`, except that with probability `epsilon`
+/// a uniform-random legal move is substituted. Same labelling as
+/// [`dump_one_game`].
+fn dump_one_game_engine(
+    rng: &mut SmallRng,
+    records: &mut Vec<Record>,
+    engine: &mut dyn Search<G = Othello>,
+    epsilon: f64,
+) {
+    let mut state = State::default();
+    let mut actions = Vec::new();
+    let first = records.len();
+    while !Othello::is_terminal(&state) {
+        actions.clear();
+        Othello::generate_actions(&state, &mut actions);
+        if actions.is_empty() {
+            break;
+        }
+        records.push(record_for(&state, None));
+        let action = if actions == [Move::PASS] {
+            Move::PASS
+        } else if rng.gen_bool(epsilon) {
+            actions[rng.gen_range(0..actions.len())]
         } else {
-            Player::White
+            engine.choose_action(&state)
         };
-        rec.target = match winner {
-            None => 0.0,
-            Some(w) if w == side_player => 1.0,
-            Some(_) => -1.0,
-        };
+        state = Othello::apply(state, &action);
     }
+    finish_game(records, first, Othello::winner(&state));
 }
 
 /// Entry point for `game-othello dump ...`. `args` is the argument iterator
@@ -189,8 +252,27 @@ pub fn run(args: impl Iterator<Item = String>) {
     let cfg = parse_args(args);
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
-    for _ in 0..cfg.games {
-        dump_one_game(&mut rng, &mut records);
+
+    let preset_table = cfg.engine.as_ref().map(|_| {
+        PresetTable::load_from_path(&cfg.presets_path)
+            .unwrap_or_else(|e| panic!("cannot load {}: {e}", cfg.presets_path.display()))
+    });
+
+    for g in 0..cfg.games {
+        match (&cfg.engine, &preset_table) {
+            (Some(preset), Some(table)) => {
+                // Rebuild per game with a game-specific seed so a persistent
+                // search tree can't carry across games.
+                let mut engine = table
+                    .build::<Othello>(preset, cfg.seed.wrapping_add(g).wrapping_add(1))
+                    .unwrap_or_else(|e| panic!("preset {preset:?} did not resolve: {e}"));
+                dump_one_game_engine(&mut rng, &mut records, &mut *engine, cfg.epsilon);
+            }
+            _ => dump_one_game(&mut rng, &mut records),
+        }
+        if (g + 1) % 100 == 0 || g + 1 == cfg.games {
+            eprintln!("  dumped {}/{} games ({} records)", g + 1, cfg.games, records.len());
+        }
     }
 
     let mut buf = Vec::with_capacity(records.len() * RECORD_BYTES);
@@ -226,7 +308,6 @@ pub fn run(args: impl Iterator<Item = String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Move;
 
     fn sample_states() -> Vec<State> {
         let d3 = Othello::apply(State::default(), &Move(19));

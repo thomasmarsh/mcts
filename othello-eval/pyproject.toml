@@ -2,8 +2,11 @@
 name = "othello-eval"
 version = "0.1.0"
 description = "numpy reader for game-othello dump position records"
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.14"
 dependencies = ["numpy>=2,<3"]
+
+[project.scripts]
+othello-eval-train = "othello_eval.ntuple:train_cli"
 
 [dependency-groups]
 dev = [
@@ -17,7 +20,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

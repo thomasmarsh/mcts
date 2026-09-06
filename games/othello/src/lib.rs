@@ -14,6 +14,7 @@ pub const BOARD_SIZE: usize = 8;
 
 pub mod dump;
 pub mod edax;
+pub mod ntuple;
 
 pub const USE_SYMMETRY: bool = true;
 

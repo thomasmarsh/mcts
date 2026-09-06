@@ -1,0 +1,37 @@
+# N-tuple geometry for the Othello sparse-linear evaluator. This file is the
+# single source of truth for tuple shapes: the Rust evaluator
+# (games/othello/src/ntuple.rs) and the Python trainer (othello-eval) both
+# read it, and its SHA-256 is checked against the trained weights.
+#
+# Square indices are bit indices 0..63 with row = i / 8, col = i % 8, so
+# square 0 is a1 and square 63 is h8. Each tuple's weights are shared across
+# all 8 D4 board orientations, so only one representative per symmetry orbit
+# is listed here -- the evaluator's forward pass sums over the 8 images of
+# each tuple automatically. Feature index per tuple is base-3, least
+# significant digit first: 0 empty, 1 side-to-move disc, 2 opponent disc.
+#
+# Weight count: 6561 + 19683 + 6561 + 2187 + 19683 + 59049 = 113724.
+
+[[tuple]]
+name = "edge"
+squares = [0, 1, 2, 3, 4, 5, 6, 7]
+
+[[tuple]]
+name = "edge-plus-x"
+squares = [0, 1, 2, 3, 4, 5, 6, 7, 9]
+
+[[tuple]]
+name = "main-diagonal"
+squares = [0, 9, 18, 27, 36, 45, 54, 63]
+
+[[tuple]]
+name = "off-diagonal-7"
+squares = [8, 17, 26, 35, 44, 53, 62]
+
+[[tuple]]
+name = "corner-3x3"
+squares = [0, 1, 2, 8, 9, 10, 16, 17, 18]
+
+[[tuple]]
+name = "edge-rect-2x5"
+squares = [0, 1, 2, 3, 4, 8, 9, 10, 11, 12]

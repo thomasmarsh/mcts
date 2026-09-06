@@ -1,0 +1,12 @@
+# Configuration for `cargo run --release --example ntuple_match`.
+#
+# The gate: MCTS with the n-tuple evaluator vs MCTS without it, at *equal*
+# max_iterations. `ks` are the node-budget rungs (one near the
+# `strong` preset's 10000, one smaller). `depths` are the contender's
+# max_playout_depth: 0 is a pure value-net leaf, >0 is a short rollout ended
+# by the evaluator. Weights come from $OTHELLO_NTUPLE_WEIGHTS, not this file.
+
+ks = [2000, 10000]
+depths = [0, 4, 8]
+games_per_pairing = 40
+seed = 0

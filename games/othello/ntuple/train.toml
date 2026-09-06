@@ -1,0 +1,12 @@
+# Training hyperparameters for the Othello n-tuple evaluator. Every value
+# here is something a re-run varies; none of it is compiled in.
+
+epochs = 400
+lr = 0.05
+l2 = 1e-6
+batch = 262144
+val_fraction = 0.05
+seed = 0
+
+# How often (in epochs) to print train/val BCE + accuracy.
+report_every = 20

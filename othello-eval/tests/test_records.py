@@ -19,7 +19,7 @@ from othello_eval.records import RECORD_DTYPE, load_positions
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _dump(tmp_path: Path) -> tuple[Path, Path]:
+def _dump(tmp_path: Path, extra: list[str] | None = None) -> tuple[Path, Path]:
     bin_path = tmp_path / "positions.bin"
     manifest = tmp_path / "positions.json"
     cmd = [
@@ -38,6 +38,7 @@ def _dump(tmp_path: Path) -> tuple[Path, Path]:
         str(bin_path),
         "--manifest",
         str(manifest),
+        *(extra or []),
     ]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -79,3 +80,18 @@ def test_targets_and_sides_are_in_range(tmp_path: Path) -> None:
     targets = {float(x) for x in rows["target"].tolist()}
     assert sides <= {0, 1}
     assert targets <= {-1.0, 0.0, 1.0}
+
+
+def test_engine_dump_round_trips_too(tmp_path: Path) -> None:
+    # `--engine <preset>` swaps the position source (a real MCTS engine,
+    # epsilon-randomised) but not the record format or the labelling.
+    # `easy` (30 iterations) keeps this in the fast suite; the engine code
+    # path is identical for every preset.
+    bin_path, manifest_path = _dump(tmp_path, ["--engine", "easy", "--epsilon", "0.2"])
+    rows = load_positions(str(bin_path))
+    manifest = json.loads(manifest_path.read_text())
+    assert len(rows) == len(manifest) > 0
+    assert rows.tobytes() == bin_path.read_bytes()
+    for row, ref in zip(rows, manifest, strict=True):
+        assert int(row["black"]) == int(ref["black"], 16)
+        assert float(row["target"]) in (-1.0, 0.0, 1.0)
