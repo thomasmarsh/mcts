@@ -30,6 +30,7 @@
 //! `D4Dyn`, just with 2 slots instead of 8.
 
 mod heuristic;
+pub mod valuenet;
 
 use bitboard::{Board, Const};
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
