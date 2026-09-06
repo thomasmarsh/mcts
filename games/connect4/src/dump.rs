@@ -32,8 +32,9 @@
 //! `(column_index, probability)` from a Gumbel Sequential-Halving visit
 //! distribution -- and is empty for `--label outcome` dumps, which record
 //! positions from uniform-random self-play with no search-derived policy.
-//! The Gumbel self-play path is a later slice of the port; this module
-//! establishes the record format and its reader.
+//! `--label gumbel` runs Gumbel self-play with the n-tuple value head
+//! (`--weights`), recording the Sequential-Halving visit distribution as
+//! the policy target.
 //!
 //! v2 records are variable-width, so a reader must walk them sequentially
 //! (`research/az-train/`'s `az_train.records_c4`).
@@ -42,11 +43,28 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use mcts::algorithms::mcts::gumbel::GumbelConfig;
 use mcts::game::Game;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::selfplay::GumbelPlayer;
+use crate::valuenet::NTupleValueNet;
 use crate::{BitBoard, Move, Player, Standard, State};
+
+/// Draw one move from a Sequential-Halving visit distribution (probabilities
+/// summing to 1), falling back to the first entry on a rounding shortfall.
+fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
+    let r: f32 = rng.gen_range(0.0..1.0);
+    let mut acc = 0.0f32;
+    for (m, p) in dist {
+        acc += *p;
+        if r < acc {
+            return *m;
+        }
+    }
+    dist[0].0
+}
 
 /// Bottom-row-origin cell count of the standard board.
 const CELLS: usize = 42;
@@ -186,18 +204,34 @@ fn dump_one_game(rng: &mut SmallRng, records: &mut Vec<Record>) {
         let action = actions[rng.gen_range(0..actions.len())];
         state = Standard::apply(state, &action);
     }
-    let winner = if state.has_winner() {
-        Some(Standard::winner(&state).expect("has_winner implies a winner"))
+    finish_game(records, first, winner_of(&state));
+}
+
+fn winner_of(state: &State<6, 7>) -> Option<Player> {
+    if state.has_winner() {
+        Some(Standard::winner(state).expect("has_winner implies a winner"))
     } else {
         None
-    };
-    finish_game(records, first, winner);
+    }
 }
 
 struct Config {
     out: PathBuf,
     games: u64,
     seed: u64,
+    label: String,
+    /// `--label gumbel` only: value-head weights (`az-train` output). Absent
+    /// == the all-zero generation-0 net.
+    weights: Option<PathBuf>,
+    /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
+    sims: u32,
+    max_considered: usize,
+    /// `--label gumbel` only: number of opening plies whose move is *sampled*
+    /// from the Sequential-Halving visit distribution rather than taken as
+    /// the argmax. Keeps self-play trajectories diverse so the value head
+    /// trains on a distribution that does not collapse onto its own current
+    /// best line each generation.
+    temp_moves: u8,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -205,6 +239,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut games = 1000u64;
     let mut seed = 0u64;
     let mut label = "outcome".to_string();
+    let mut weights = None;
+    let mut sims = 32u32;
+    let mut max_considered = 8usize;
+    let mut temp_moves = 6u8;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -212,24 +250,90 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--games" => games = val().parse().expect("--games must be an integer"),
             "--seed" => seed = val().parse().expect("--seed must be an integer"),
             "--label" => label = val(),
+            "--weights" => weights = Some(PathBuf::from(val())),
+            "--sims" => sims = val().parse().expect("--sims must be an integer"),
+            "--max-considered" => {
+                max_considered = val().parse().expect("--max-considered must be an integer")
+            }
+            "--temp-moves" => temp_moves = val().parse().expect("--temp-moves must be an integer"),
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
-                     [--label outcome]"
+                     [--label outcome|gumbel] [--weights <weights.bin>] [--sims N] \
+                     [--max-considered N] [--temp-moves N]"
                 );
                 std::process::exit(0);
             }
             other => panic!("unknown dump argument: {other}"),
         }
     }
-    assert_eq!(
-        label, "outcome",
-        "only --label outcome is supported so far (Gumbel self-play is a later slice)"
-    );
+    match label.as_str() {
+        "outcome" | "gumbel" => {}
+        other => panic!("unknown --label mode: {other}"),
+    }
+    assert!(sims >= 1, "--sims must be positive");
+    assert!(max_considered >= 1, "--max-considered must be positive");
     Config {
         out: out.expect("--out is required"),
         games,
         seed,
+        label,
+        weights,
+        sims,
+        max_considered,
+        temp_moves,
+    }
+}
+
+/// Play `cfg.games` Gumbel self-play games, pushing a [`Record`] with the
+/// Sequential-Halving visit distribution as its policy tail for every
+/// non-terminal position.
+fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
+    let net = match &cfg.weights {
+        Some(p) => NTupleValueNet::load(p)
+            .unwrap_or_else(|e| panic!("cannot load weights {}: {e}", p.display())),
+        None => NTupleValueNet::default(),
+    };
+    let gcfg = GumbelConfig {
+        sims: cfg.sims,
+        max_considered: cfg.max_considered,
+        ..GumbelConfig::default()
+    };
+
+    for g in 0..cfg.games {
+        let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+        let mut player = GumbelPlayer::new(net.clone(), gcfg, game_seed);
+        let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
+
+        let mut state = State::<6, 7>::default();
+        let first = records.len();
+        let mut ply = 0u8;
+        while !Standard::is_terminal(&state) {
+            let outcome = player.choose(&state);
+            let policy: Vec<(u8, f32)> = outcome
+                .visit_distribution
+                .iter()
+                .map(|(m, p)| (m.0, *p))
+                .collect();
+            records.push(record_for(&state, policy));
+            let action = if ply < cfg.temp_moves {
+                sample_visit_distribution(&outcome.visit_distribution, &mut move_rng)
+            } else {
+                outcome.action
+            };
+            state = Standard::apply(state, &action);
+            ply += 1;
+        }
+        finish_game(records, first, winner_of(&state));
+
+        if (g + 1) % 25 == 0 || g + 1 == cfg.games {
+            eprintln!(
+                "  played {}/{} gumbel games ({} records)",
+                g + 1,
+                cfg.games,
+                records.len()
+            );
+        }
     }
 }
 
@@ -237,18 +341,22 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
 /// iterator positioned just past the `dump` token.
 pub fn run(args: impl Iterator<Item = String>) {
     let cfg = parse_args(args);
-    let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
 
-    for g in 0..cfg.games {
-        dump_one_game(&mut rng, &mut records);
-        if (g + 1) % 200 == 0 || g + 1 == cfg.games {
-            eprintln!(
-                "  dumped {}/{} games ({} records)",
-                g + 1,
-                cfg.games,
-                records.len()
-            );
+    if cfg.label == "gumbel" {
+        dump_gumbel_games(&cfg, &mut records);
+    } else {
+        let mut rng = SmallRng::seed_from_u64(cfg.seed);
+        for g in 0..cfg.games {
+            dump_one_game(&mut rng, &mut records);
+            if (g + 1) % 200 == 0 || g + 1 == cfg.games {
+                eprintln!(
+                    "  dumped {}/{} games ({} records)",
+                    g + 1,
+                    cfg.games,
+                    records.len()
+                );
+            }
         }
     }
 
@@ -286,6 +394,35 @@ pub fn me_opp_planes(black: u64, white: u64, side: u8) -> ([f32; CELLS], [f32; C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gumbel_config() -> Config {
+        Config {
+            out: PathBuf::new(),
+            games: 2,
+            seed: 3,
+            label: "gumbel".to_string(),
+            weights: None,
+            sims: 8,
+            max_considered: 4,
+            temp_moves: 6,
+        }
+    }
+
+    #[test]
+    fn a_gumbel_selfplay_game_records_a_policy_tail_per_position() {
+        let mut records = Vec::new();
+        dump_gumbel_games(&gumbel_config(), &mut records);
+        assert!(!records.is_empty());
+        for r in &records {
+            assert!([1.0f32, -1.0, 0.0].contains(&r.value));
+            assert!(!r.policy.is_empty(), "gumbel positions carry a policy target");
+            let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
+            assert!((sum - 1.0).abs() < 1e-4, "policy tail sums to {sum}");
+            for (col, _) in &r.policy {
+                assert!((*col as usize) < 7);
+            }
+        }
+    }
 
     fn sample_states() -> Vec<State<6, 7>> {
         let mut a = State::<6, 7>::default();

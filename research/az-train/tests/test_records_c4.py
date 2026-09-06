@@ -17,7 +17,13 @@ import numpy as np
 import pytest
 
 from az_train.ntuple_c4 import CELLS, N_WINDOWS, features
-from az_train.records_c4 import decode_records, encode_records, load_positions, me_opp_planes
+from az_train.records_c4 import (
+    COLS,
+    decode_records,
+    encode_records,
+    load_positions,
+    me_opp_planes,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -75,3 +81,17 @@ def test_planes_feed_the_ntuple_design_matrix(tmp_path: Path) -> None:
     x = features(me, opp)
     # One bias column plus one selected column per window.
     assert np.allclose(x.sum(axis=1), 1 + N_WINDOWS)
+
+
+def test_gumbel_dump_carries_a_policy_tail(tmp_path: Path) -> None:
+    extra = ["--label", "gumbel", "--sims", "16", "--max-considered", "4"]
+    raw = _dump(tmp_path, extra).read_bytes()
+    pos = decode_records(raw)
+    assert len(pos) > 0
+    assert encode_records(pos) == raw
+    for entries in pos.policy:
+        assert len(entries) > 0, "gumbel positions carry a Sequential-Halving policy target"
+        cols = [c for c, _ in entries]
+        assert all(0 <= c < COLS for c in cols)
+        assert len(set(cols)) == len(cols)
+        assert abs(sum(p for _, p in entries) - 1.0) < 1e-4

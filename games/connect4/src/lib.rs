@@ -31,6 +31,7 @@
 
 pub mod dump;
 mod heuristic;
+pub mod selfplay;
 pub mod valuenet;
 
 use bitboard::{Board, Const};
