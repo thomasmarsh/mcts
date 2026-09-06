@@ -29,6 +29,7 @@
 //! hashing/canonicalization pattern as `ttt`'s `D4Symmetry<3>` and Gonnect's
 //! `D4Dyn`, just with 2 slots instead of 8.
 
+pub mod dump;
 mod heuristic;
 pub mod valuenet;
 

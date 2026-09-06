@@ -7,13 +7,15 @@ publish = false
 [lib]
 name = "game_connect4"
 
+[[bin]]
+name = "game-connect4"
+path = "src/main.rs"
+
 [dependencies]
 mcts = { path = "../../crates/mcts" }
 game-core = { path = "../game-core" }
 bitboard = { path = "../../crates/bitboard" }
 serde = { version = "1", features = ["derive"] }
-
-[dev-dependencies]
 rand = { version = "0.8.5", features = ["small_rng"] }
 
 [lints]
