@@ -26,7 +26,7 @@ use mcts::game::{Game, PlayerIndex};
 use mcts::util::battle_royale;
 
 use game_ttt::selfplay::GumbelPlayer;
-use game_ttt::valuenet::LinearValueNet;
+use game_ttt::valuenet::NTupleValueNet;
 use game_ttt::{HashedPosition, TicTacToe};
 
 /// Exact value of `state` for the player to move: `+1` win, `0` draw, `-1`
@@ -90,7 +90,7 @@ fn wilson_lower_bound(successes: f64, n: usize, z: f64) -> f64 {
     (center - margin) / denom
 }
 
-fn agreement_rate(net: &LinearValueNet, cfg: GumbelConfig, positions: &[HashedPosition]) -> f64 {
+fn agreement_rate(net: &NTupleValueNet, cfg: GumbelConfig, positions: &[HashedPosition]) -> f64 {
     let seeds = [0xA2_5EEDu64, 0xB0_1234, 0xC0_FFEE];
     let mut optimal = 0usize;
     let mut total = 0usize;
@@ -122,8 +122,8 @@ fn agreement_rate(net: &LinearValueNet, cfg: GumbelConfig, positions: &[HashedPo
     optimal as f64 / total as f64
 }
 
-fn load(path: &str) -> LinearValueNet {
-    LinearValueNet::load(path).unwrap_or_else(|e| panic!("cannot load {path}: {e}"))
+fn load(path: &str) -> NTupleValueNet {
+    NTupleValueNet::load(path).unwrap_or_else(|e| panic!("cannot load {path}: {e}"))
 }
 
 fn main() -> ExitCode {

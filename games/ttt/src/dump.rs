@@ -46,7 +46,7 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
 use crate::selfplay::GumbelPlayer;
-use crate::valuenet::LinearValueNet;
+use crate::valuenet::NTupleValueNet;
 use crate::{HashedPosition, Move, Piece, Position, TicTacToe};
 
 /// Draw one move from a Sequential-Halving visit distribution (probabilities
@@ -262,9 +262,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
 /// non-terminal position.
 fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
     let net = match &cfg.weights {
-        Some(p) => LinearValueNet::load(p)
+        Some(p) => NTupleValueNet::load(p)
             .unwrap_or_else(|e| panic!("cannot load weights {}: {e}", p.display())),
-        None => LinearValueNet::default(),
+        None => NTupleValueNet::default(),
     };
     let gcfg = GumbelConfig {
         sims: cfg.sims,
@@ -421,7 +421,7 @@ mod tests {
     use crate::Move;
 
     fn gumbel_player(seed: u64, cfg: GumbelConfig) -> GumbelPlayer {
-        GumbelPlayer::new(LinearValueNet::default(), cfg, seed)
+        GumbelPlayer::new(NTupleValueNet::default(), cfg, seed)
     }
 
     /// Sequential Halving spends its budget on the candidate set only:

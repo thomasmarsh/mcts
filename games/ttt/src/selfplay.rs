@@ -9,12 +9,12 @@ use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
-use crate::valuenet::LinearValueNet;
+use crate::valuenet::NTupleValueNet;
 use crate::{HashedPosition, Move, TicTacToe};
 
 /// Completed-Q interior selection (a PUCT stub today) over a linear value
 /// head consulted at every leaf (`max_playout_depth == 0`).
-pub type GumbelProfile = Mcts<GumbelCompletedQ, EvaluatedCutoff<TicTacToe, LinearValueNet>>;
+pub type GumbelProfile = Mcts<GumbelCompletedQ, EvaluatedCutoff<TicTacToe, NTupleValueNet>>;
 
 /// One generation's player: a persistent `TreeSearch` re-rooted per move by
 /// the Gumbel schedule.
@@ -25,7 +25,7 @@ pub struct GumbelPlayer {
 }
 
 impl GumbelPlayer {
-    pub fn new(net: LinearValueNet, cfg: GumbelConfig, seed: u64) -> Self {
+    pub fn new(net: NTupleValueNet, cfg: GumbelConfig, seed: u64) -> Self {
         Self::with_playout_depth(net, cfg, seed, 0)
     }
 
@@ -35,7 +35,7 @@ impl GumbelPlayer {
     /// terminal and backs up the true result, making the value head moot --
     /// the baseline for "does the net help at all".
     pub fn with_playout_depth(
-        net: LinearValueNet,
+        net: NTupleValueNet,
         cfg: GumbelConfig,
         seed: u64,
         max_playout_depth: usize,
@@ -85,7 +85,7 @@ mod tests {
     use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
     use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 
-    use crate::valuenet::N_WEIGHTS;
+    use crate::valuenet::NT_WEIGHTS;
     use crate::{Piece, Position};
 
     fn wide_cfg() -> GumbelConfig {
@@ -98,8 +98,28 @@ mod tests {
         }
     }
 
-    fn player_with(weights: [f32; N_WEIGHTS], seed: u64) -> GumbelPlayer {
-        GumbelPlayer::new(LinearValueNet::from_weights(weights), wide_cfg(), seed)
+    fn player_with(net: NTupleValueNet, seed: u64) -> GumbelPlayer {
+        GumbelPlayer::new(net, wide_cfg(), seed)
+    }
+
+    /// An n-tuple net whose only signal is: along either main diagonal, the
+    /// side to move seeing the *opponent* on the centre cell is worth
+    /// `sign * 10` (pre-`tanh`). Centre is index 1 (place 3) in both diagonal
+    /// tuples `[0,4,8]` and `[2,4,6]`; digit 2 there means `(feat / 3) % 3 == 2`
+    /// for any occupancy of the diagonal's end cells.
+    fn centre_poison_net(sign: f32) -> NTupleValueNet {
+        let mut w = vec![0.0f32; NT_WEIGHTS];
+        // Weight tables: bias at 0, then eight 27-wide line tables. The two
+        // main diagonals are lines 6 and 7 (offsets 1 + 6*27 and 1 + 7*27).
+        for line in [6usize, 7] {
+            let base = 1 + line * 27;
+            for feat in 0..27 {
+                if (feat / 3) % 3 == 2 {
+                    w[base + feat] = sign * 10.0;
+                }
+            }
+        }
+        NTupleValueNet::from_weights(w)
     }
 
     /// A terminal win reached through the forced root edge must credit the
@@ -118,7 +138,7 @@ mod tests {
         let state = HashedPosition::from_position(pos);
 
         for seed in [1u64, 2, 3, 4, 5] {
-            let action = player_with([0.0; N_WEIGHTS], seed).choose_action(&state);
+            let action = player_with(NTupleValueNet::default(), seed).choose_action(&state);
             assert_eq!(action, Move(2), "seed {seed} missed the winning move");
         }
     }
@@ -130,21 +150,16 @@ mod tests {
     /// edge stats keep the leaf value pointed the right way.
     #[test]
     fn gumbel_value_sign_favours_a_move_that_is_bad_for_the_opponent() {
-        let mut good = [0.0f32; N_WEIGHTS];
-        good[1 + 9 + 4] = -10.0; // opp-plane, cell 4: opponent holding it is ~ -1 for them
-        let mut bad = [0.0f32; N_WEIGHTS];
-        bad[1 + 9 + 4] = 10.0; // opponent holding cell 4 is ~ +1 for them
-
         let state = HashedPosition::new(); // empty board, X to move
 
         for seed in [1u64, 2, 3] {
             assert_eq!(
-                player_with(good, seed).choose_action(&state),
+                player_with(centre_poison_net(-1.0), seed).choose_action(&state),
                 Move(4),
                 "seed {seed}: X should grab the cell the net rates as opponent-poison"
             );
             assert_ne!(
-                player_with(bad, seed).choose_action(&state),
+                player_with(centre_poison_net(1.0), seed).choose_action(&state),
                 Move(4),
                 "seed {seed}: X should avoid handing the opponent a net-favoured cell"
             );
@@ -157,7 +172,7 @@ mod tests {
     #[test]
     fn forced_descent_credits_the_root_player() {
         fn root_child_score(pos: Position, forced: Move) -> f64 {
-            let net = LinearValueNet::from_weights([0.0; N_WEIGHTS]);
+            let net = NTupleValueNet::default();
             let mut search: TreeSearch<TicTacToe, GumbelProfile> =
                 TreeSearch::default().config(
                     SearchConfig::default()

@@ -9,6 +9,9 @@
 //! `[bias, me[0..9], opp[0..9]]` -- byte-for-byte what
 //! `research/az-train/`'s `az_train.model.write_weights` produces, so the
 //! two sides need no schema beyond this comment.
+//!
+//! [`NTupleValueNet`] is the higher-capacity head the self-play loop
+//! actually promotes; see its own doc comment for that layout.
 
 use std::path::Path;
 
@@ -94,6 +97,151 @@ impl Evaluator<TicTacToe> for LinearValueNet {
     }
 }
 
+/// The 8 structural lines (3 rows, 3 columns, 2 diagonals) followed by the
+/// 4 overlapping 2x2 squares. Cells are row-major (`row * 3 + col`); the
+/// order within a tuple fixes the base-3 digit order (first cell is the
+/// least-significant trit), matching `az_train.ntuple`.
+const NT_LINES: [[usize; 3]; 8] = [
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
+    [0, 4, 8],
+    [2, 4, 6],
+];
+const NT_SQUARES: [[usize; 4]; 4] = [[0, 1, 3, 4], [1, 2, 4, 5], [3, 4, 6, 7], [4, 5, 7, 8]];
+
+/// `1` bias + `8 * 3^3` line weights + `4 * 3^4` square weights.
+pub const NT_WEIGHTS: usize = 1 + 8 * 27 + 4 * 81;
+
+/// N-tuple value head for tic-tac-toe: a bias term plus one weight table per
+/// structural line and per 2x2 square, indexed by the base-3 code of the
+/// tuple's cells (digit 0 empty, 1 side-to-move piece, 2 opponent piece,
+/// least-significant digit first). The pre-`tanh` score is the sum of the
+/// one selected weight per tuple; `value` squashes it into `[-1, 1]`.
+///
+/// Weights are a flat little-endian `f32` array in the order
+///
+/// ```text
+/// [bias,
+///  line[0][0..27], ..., line[7][0..27],
+///  square[0][0..81], ..., square[3][0..81]]
+/// ```
+///
+/// 1 + 8*27 + 4*81 = 541 floats -- byte-for-byte what
+/// `research/az-train/`'s `az_train.ntuple.write_weights` produces.
+/// `Default` is the all-zero net (every position scores as a draw).
+#[derive(Clone, Debug)]
+pub struct NTupleValueNet {
+    weights: Vec<f32>,
+}
+
+impl Default for NTupleValueNet {
+    fn default() -> Self {
+        Self {
+            weights: vec![0.0; NT_WEIGHTS],
+        }
+    }
+}
+
+impl NTupleValueNet {
+    pub fn from_weights(weights: Vec<f32>) -> Self {
+        assert_eq!(weights.len(), NT_WEIGHTS, "n-tuple head needs {NT_WEIGHTS} weights");
+        Self { weights }
+    }
+
+    /// Read the flat little-endian `f32` weight array written by `az-train
+    /// --head ntuple`.
+    pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        if bytes.len() != NT_WEIGHTS * 4 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "expected {} bytes ({NT_WEIGHTS} f32), got {}",
+                    NT_WEIGHTS * 4,
+                    bytes.len()
+                ),
+            ));
+        }
+        let weights = bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        Ok(Self { weights })
+    }
+
+    pub fn weights(&self) -> &[f32] {
+        &self.weights
+    }
+
+    /// Per-cell base-3 digit from the side-to-move perspective: 0 empty,
+    /// 1 own piece, 2 opponent piece.
+    #[inline]
+    fn trit(pos: &Position, cell: usize) -> usize {
+        let side_x = pos.turn == Piece::X;
+        match (pos.board >> (cell * 2)) & 0b11 {
+            0 => 0,
+            1 => {
+                if side_x {
+                    1
+                } else {
+                    2
+                }
+            }
+            2 => {
+                if side_x {
+                    2
+                } else {
+                    1
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[inline]
+    fn table_score(pos: &Position, cells: &[usize], weights: &[f32], offset: usize) -> (f32, usize) {
+        let mut feat = 0usize;
+        let mut place = 1usize;
+        for &c in cells {
+            feat += Self::trit(pos, c) * place;
+            place *= 3;
+        }
+        (weights[offset + feat], place)
+    }
+
+    /// Pre-`tanh` linear score for `pos`, side-to-move perspective.
+    fn raw_score(&self, pos: &Position) -> f32 {
+        let mut acc = self.weights[0];
+        let mut offset = 1usize;
+        for line in &NT_LINES {
+            let (w, span) = Self::table_score(pos, line, &self.weights, offset);
+            acc += w;
+            offset += span;
+        }
+        for square in &NT_SQUARES {
+            let (w, span) = Self::table_score(pos, square, &self.weights, offset);
+            acc += w;
+            offset += span;
+        }
+        acc
+    }
+
+    /// Value estimate in `[-1, 1]`, side-to-move perspective.
+    pub fn value(&self, pos: &Position) -> f32 {
+        self.raw_score(pos).tanh()
+    }
+}
+
+impl Evaluator<TicTacToe> for NTupleValueNet {
+    fn evaluate(&self, state: &HashedPosition) -> Score {
+        (self.value(&state.position) * EVAL_MAGNITUDE_LIMIT as f32).round() as Score
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +277,56 @@ mod tests {
         pos.set(0, Piece::X);
         pos.set(4, Piece::O);
         assert!((net.value(&pos) - (-0.833_654_6)).abs() < 1e-5);
+    }
+
+    /// Cross-language check for the n-tuple head against
+    /// `research/az-train`'s `az_train.ntuple`: the fixture is
+    /// `write_weights((arange(541) - 270.5) * 0.0005)` and
+    /// `az_train.ntuple.predict` scores the board {X@0, O@4, X to move} at
+    /// `-0.5684636`.
+    #[test]
+    fn ntuple_value_matches_python_reference_prediction() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ntuple_weights_sample.bin"
+        );
+        let net = NTupleValueNet::load(path).unwrap();
+        let mut pos = Position::new(); // X to move
+        pos.set(0, Piece::X);
+        pos.set(4, Piece::O);
+        assert!((net.value(&pos) - (-0.568_463_6)).abs() < 1e-5);
+    }
+
+    /// The n-tuple head represents a conjunction the linear head cannot: a
+    /// weight placed only on the "mover owns all of cells 0,1,2" feature of
+    /// the top-row tuple fires for that board and nothing else.
+    #[test]
+    fn ntuple_row_tuple_isolates_a_completed_line() {
+        let mut w = vec![0.0f32; NT_WEIGHTS];
+        // Top row is line 0, table starts at offset 1. Feature index for
+        // "all three cells hold the mover" is 1 + 3 + 9 = 13.
+        w[1 + 13] = 2.0;
+        let net = NTupleValueNet::from_weights(w);
+
+        let mut all_mine = Position::new();
+        all_mine.set(0, Piece::X);
+        all_mine.set(1, Piece::X);
+        all_mine.set(2, Piece::X);
+        assert!((net.value(&all_mine) - 2.0f32.tanh()).abs() < 1e-6);
+
+        let mut two_of_three = Position::new();
+        two_of_three.set(0, Piece::X);
+        two_of_three.set(1, Piece::X);
+        assert_eq!(net.value(&two_of_three), 0.0);
+    }
+
+    #[test]
+    fn ntuple_default_scores_every_position_as_a_draw() {
+        let net = NTupleValueNet::default();
+        assert_eq!(net.value(&Position::new()), 0.0);
+        let mut p = Position::new();
+        p.apply(crate::Move(4));
+        assert_eq!(net.value(&p), 0.0);
     }
 
     #[test]

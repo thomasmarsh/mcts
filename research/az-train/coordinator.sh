@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gumbel AlphaZero Phase-0 coordinator: self-play -> train -> repeat, on
-# tic-tac-toe, with the linear value head and a uniform policy stub.
+# tic-tac-toe, with the n-tuple value head and a uniform policy stub.
 #
 #   research/az-train/coordinator.sh [run_dir]
 #
@@ -25,8 +25,10 @@ export LIBRARY_PATH=${LIBRARY_PATH:-/opt/homebrew/lib}
 cargo build --release -p game-ttt
 BIN="$ROOT/target/release/game-ttt"
 
-# Generation 0 weights: the all-zero net (every position scores as a draw).
-python3 -c "import struct; open('$RUN_DIR/weights/gen_0.bin','wb').write(struct.pack('<19f', *([0.0]*19)))"
+# Generation 0 weights: the all-zero n-tuple net (541 f32; every position
+# scores as a draw). Layout: az_train.ntuple / game_ttt::valuenet::NTupleValueNet.
+NT_WEIGHTS=541
+python3 -c "import struct,sys; n=int(sys.argv[1]); open('$RUN_DIR/weights/gen_0.bin','wb').write(struct.pack('<%df'%n, *([0.0]*n)))" "$NT_WEIGHTS"
 
 for g in $(seq 0 $((GENS - 1))); do
   echo "=== generation $g: self-play ==="
@@ -42,7 +44,7 @@ for g in $(seq 0 $((GENS - 1))); do
   for s in $(seq 0 "$g"); do parts="$parts$ROOT/$RUN_DIR/shards/gen_$s.bin,"; done
 
   echo "=== generation $g -> $((g + 1)): train ==="
-  ( cd research/az-train && uv run az-train \
+  ( cd research/az-train && uv run az-train --head ntuple \
       --positions "${parts%,}" \
       --out "$ROOT/$RUN_DIR/weights/gen_$((g + 1)).bin" )
 done

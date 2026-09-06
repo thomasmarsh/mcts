@@ -28,7 +28,7 @@ use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
 
 use game_ttt::selfplay::GumbelPlayer;
-use game_ttt::valuenet::LinearValueNet;
+use game_ttt::valuenet::NTupleValueNet;
 use game_ttt::{HashedPosition, TicTacToe};
 
 fn exact_value(state: &HashedPosition) -> i32 {
@@ -75,7 +75,7 @@ fn opening_positions(max_ply: u32) -> Vec<HashedPosition> {
 }
 
 fn agreement(
-    net: &LinearValueNet,
+    net: &NTupleValueNet,
     depth: usize,
     cfg: GumbelConfig,
     positions: &[HashedPosition],
@@ -111,13 +111,13 @@ fn agreement(
 fn main() {
     let weight_paths: Vec<String> = std::env::args().skip(1).collect();
     let positions = opening_positions(4);
-    let zero = LinearValueNet::default();
-    let trained: Vec<(String, LinearValueNet)> = weight_paths
+    let zero = NTupleValueNet::default();
+    let trained: Vec<(String, NTupleValueNet)> = weight_paths
         .iter()
         .map(|p| {
             (
                 p.clone(),
-                LinearValueNet::load(p).unwrap_or_else(|e| panic!("cannot load {p}: {e}")),
+                NTupleValueNet::load(p).unwrap_or_else(|e| panic!("cannot load {p}: {e}")),
             )
         })
         .collect();
@@ -147,7 +147,7 @@ fn main() {
             "  {:<18} {:>8} {:>8} {:>8} {:>8} {:>8}",
             "config", "sims=8", "16", "32", "64", "128"
         );
-        let row = |label: &str, net: &LinearValueNet, depth: usize| {
+        let row = |label: &str, net: &NTupleValueNet, depth: usize| {
             print!("  {label:<18}");
             for &sims in &[8u32, 16, 32, 64, 128] {
                 let cfg = GumbelConfig {
