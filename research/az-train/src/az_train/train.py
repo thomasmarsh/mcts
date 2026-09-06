@@ -5,10 +5,18 @@
 
     az-train --positions gen_0/a.bin,gen_0/b.bin --out weights/gen_1.bin
 
-Fits a value head only (no policy head) by least-squares. ``--head ntuple``
-(the default) uses the tic-tac-toe n-tuple head (``az_train.ntuple``, 541
-weights); ``--head linear`` uses the 19-weight linear head
-(``az_train.model``). Writes ``<out>`` (flat ``f32``) and ``<out>.meta.json``.
+Fits a value head only (no policy head) by least-squares.
+
+``--game ttt`` (the default) reads tic-tac-toe dumps (``az_train.records``)
+and fits either the n-tuple head (``--head ntuple``, 541 weights,
+``az_train.ntuple``) or the 19-weight linear head (``--head linear``,
+``az_train.model``).
+
+``--game connect4`` reads v2-connect4 dumps (``az_train.records_c4``) and
+fits the 6x7 n-tuple head (``az_train.ntuple_c4``, 5590 weights). Only
+``--head ntuple`` is defined for connect4.
+
+Writes ``<out>`` (flat ``f32``) and ``<out>.meta.json``.
 """
 
 from __future__ import annotations
@@ -25,15 +33,21 @@ from az_train.model import write_weights as write_linear
 from az_train.ntuple import fit_value_head as fit_ntuple
 from az_train.ntuple import predict as predict_ntuple
 from az_train.ntuple import write_weights as write_ntuple
+from az_train.ntuple_c4 import fit_value_head as fit_ntuple_c4
+from az_train.ntuple_c4 import predict as predict_ntuple_c4
+from az_train.ntuple_c4 import write_weights as write_ntuple_c4
 from az_train.records import Positions, load_positions
+from az_train.records_c4 import Positions as PositionsC4
+from az_train.records_c4 import load_positions as load_positions_c4
+from az_train.records_c4 import me_opp_planes as me_opp_planes_c4
 
-_HEADS = {
+_TTT_HEADS = {
     "linear": (fit_linear, predict_linear, write_linear),
     "ntuple": (fit_ntuple, predict_ntuple, write_ntuple),
 }
 
 
-def _concat(parts: list[Positions]) -> Positions:
+def _concat_ttt(parts: list[Positions]) -> Positions:
     if len(parts) == 1:
         return parts[0]
     return Positions(
@@ -45,30 +59,69 @@ def _concat(parts: list[Positions]) -> Positions:
     )
 
 
+def _concat_c4(parts: list[PositionsC4]) -> PositionsC4:
+    if len(parts) == 1:
+        return parts[0]
+    return PositionsC4(
+        black=np.concatenate([p.black for p in parts]),
+        white=np.concatenate([p.white for p in parts]),
+        side=np.concatenate([p.side for p in parts]),
+        ply=np.concatenate([p.ply for p in parts]),
+        value=np.concatenate([p.value for p in parts]),
+        policy=[e for p in parts for e in p.policy],
+    )
+
+
+def _fit_ttt(paths: list[str], head: str, l2: float | None) -> tuple[np.ndarray, float, int]:
+    fit, predict, _ = _TTT_HEADS[head]
+    pos = _concat_ttt([load_positions(p) for p in paths])
+    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
+    w = fit(pos) if l2 is None else fit(pos, l2=l2)
+    mse = float(np.mean((predict(w, pos) - pos.value) ** 2))
+    return w, mse, len(pos)
+
+
+def _fit_c4(paths: list[str], head: str, l2: float | None) -> tuple[np.ndarray, float, int]:
+    if head != "ntuple":
+        raise SystemExit(f"--game connect4 only supports --head ntuple (got {head})")
+    pos = _concat_c4([load_positions_c4(p) for p in paths])
+    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
+    me, opp = me_opp_planes_c4(pos)
+    w = (
+        fit_ntuple_c4(me, opp, pos.value)
+        if l2 is None
+        else fit_ntuple_c4(me, opp, pos.value, l2=l2)
+    )
+    mse = float(np.mean((predict_ntuple_c4(w, me, opp) - pos.value) ** 2))
+    return w, mse, len(pos)
+
+
 def train_cli(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="az-train")
     ap.add_argument("--positions", required=True, help="comma-separated dump .bin files")
     ap.add_argument("--out", required=True, help="output weights.bin path")
-    ap.add_argument("--head", choices=sorted(_HEADS), default="ntuple")
+    ap.add_argument("--game", choices=("ttt", "connect4"), default="ttt")
+    ap.add_argument("--head", choices=("linear", "ntuple"), default="ntuple")
     ap.add_argument("--l2", type=float, default=None,
                     help="ridge penalty (default: the head's own default)")
     args = ap.parse_args(argv)
 
-    fit, predict, write_weights = _HEADS[args.head]
     paths = [p.strip() for p in args.positions.split(",") if p.strip()]
-    pos = _concat([load_positions(p) for p in paths])
-    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
-
-    w = fit(pos) if args.l2 is None else fit(pos, l2=args.l2)
-    pred = predict(w, pos)
-    mse = float(np.mean((pred - pos.value) ** 2))
+    if args.game == "connect4":
+        w, mse, n_pos = _fit_c4(paths, args.head, args.l2)
+        write_weights = write_ntuple_c4
+    else:
+        w, mse, n_pos = _fit_ttt(paths, args.head, args.l2)
+        write_weights = _TTT_HEADS[args.head][2]
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_weights(str(out), w)
     meta = {
+        "game": args.game,
+        "head": args.head,
         "n_weights": int(w.shape[0]),
-        "positions": int(len(pos)),
+        "positions": n_pos,
         "sources": paths,
         "l2": args.l2,
         "train_mse": mse,
