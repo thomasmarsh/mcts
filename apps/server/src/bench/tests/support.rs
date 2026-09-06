@@ -48,7 +48,7 @@ pub(super) const DEFAULT_RUN_ID: &str = "rr-druid-20260101T000000-abc1234";
 /// with `tests/fixtures/regenerate_tuner_projection_fixture.sh`.
 pub(super) fn tuner_projection_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("apps/server/src/bench/tests/fixtures/tuner-projection.sqlite")
+        .join("src/bench/tests/fixtures/tuner-projection.sqlite")
 }
 
 pub(super) static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =

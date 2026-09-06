@@ -223,7 +223,10 @@ impl GameAdapter for SubprocessGameAdapter {
 /// target directory, matching the current build profile (debug or release).
 fn binary_path(pkg_name: &str) -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest.parent().expect("server is a workspace member");
+    let workspace = manifest
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("server is nested under apps in the workspace");
     let profile = if cfg!(debug_assertions) {
         "debug"
     } else {
