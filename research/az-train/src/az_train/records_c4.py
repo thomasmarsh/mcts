@@ -67,6 +67,68 @@ class Positions:
         return len(self.value)
 
 
+def game_slices(pos: Positions) -> list[slice]:
+    """Recover contiguous games from their recorded plies.
+
+    A dump is a concatenation of complete games.  Checking this here keeps a
+    training/validation split from accidentally treating neighbouring boards
+    from one game as independent examples.
+    """
+    if not len(pos):
+        return []
+    if int(pos.ply[0]) != 0:
+        raise ValueError(f"first record has ply {int(pos.ply[0])}, expected 0")
+    starts = np.flatnonzero(pos.ply == 0)
+    out: list[slice] = []
+    for i, start in enumerate(starts):
+        end = int(starts[i + 1]) if i + 1 < len(starts) else len(pos)
+        expected = np.arange(end - int(start), dtype=np.uint8)
+        actual = pos.ply[int(start):end]
+        if not np.array_equal(actual, expected):
+            bad = int(np.flatnonzero(actual != expected)[0])
+            raise ValueError(
+                f"game starting at record {int(start)} has ply {int(actual[bad])} "
+                f"at offset {bad}, expected {int(expected[bad])}"
+            )
+        out.append(slice(int(start), end))
+    return out
+
+
+def select_rows(pos: Positions, rows: np.ndarray) -> Positions:
+    """Return records at ``rows``, preserving their byte-stream fields."""
+    return Positions(
+        black=pos.black[rows], white=pos.white[rows], side=pos.side[rows],
+        ply=pos.ply[rows], value=pos.value[rows],
+        policy=[pos.policy[int(i)] for i in rows],
+    )
+
+
+def split_by_game(
+    pos: Positions, validation_fraction: float = 0.2, seed: int = 0
+) -> tuple[Positions, Positions, int, int]:
+    """Deterministically split complete games into train and validation sets."""
+    if not 0.0 < validation_fraction < 1.0:
+        raise ValueError("validation_fraction must be strictly between 0 and 1")
+    games = game_slices(pos)
+    if len(games) < 2:
+        raise ValueError("need at least two complete games for a train/validation split")
+    n_validation = min(len(games) - 1, max(1, round(len(games) * validation_fraction)))
+    order = np.random.default_rng(seed).permutation(len(games))
+    validation_games = set(int(i) for i in order[:n_validation])
+    train_rows = np.concatenate([
+        np.arange(s.start, s.stop) for i, s in enumerate(games) if i not in validation_games
+    ])
+    validation_rows = np.concatenate([
+        np.arange(s.start, s.stop) for i, s in enumerate(games) if i in validation_games
+    ])
+    return (
+        select_rows(pos, train_rows),
+        select_rows(pos, validation_rows),
+        len(games) - n_validation,
+        n_validation,
+    )
+
+
 def decode_records(raw: bytes) -> Positions:
     blacks: list[int] = []
     whites: list[int] = []

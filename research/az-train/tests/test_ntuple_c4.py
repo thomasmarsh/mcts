@@ -16,8 +16,10 @@ from az_train.ntuple_c4 import (
     N_WINDOWS,
     OFFSETS,
     WINDOWS,
+    active_indices,
     features,
     fit_value_head,
+    fit_value_head_with_diagnostics,
     predict,
     read_weights,
     write_weights,
@@ -42,6 +44,9 @@ def test_features_select_one_column_per_window() -> None:
     x = features(me, opp)
     assert np.allclose(x.sum(axis=1), 1 + N_WINDOWS)
     assert np.array_equal(x[:, 0], np.ones(16, dtype=np.float32))
+    active = active_indices(me, opp)
+    assert active.shape == (16, 1 + N_WINDOWS)
+    assert np.allclose(x[np.arange(16)[:, None], active], 1.0)
 
 
 def _bottom_row_win(n: int = 6000) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -65,6 +70,30 @@ def test_ntuple_head_fits_a_four_cell_conjunction() -> None:
     assert w.shape == (N_WEIGHTS,)
     pred = predict(w, me, opp)
     assert np.mean(np.sign(pred) == np.sign(value)) > 0.98
+
+
+def test_direct_target_keeps_terminal_labels_at_unit_magnitude() -> None:
+    me = np.zeros((2, CELLS), dtype=np.float32)
+    opp = np.zeros_like(me)
+    direct, _ = fit_value_head_with_diagnostics(me, opp, np.array([1.0, 1.0]), 1.0, "direct")
+    atanh, _ = fit_value_head_with_diagnostics(me, opp, np.array([1.0, 1.0]), 1.0, "atanh")
+    # The direct target's normal-equation RHS is +/- 1, never the clipped
+    # atanh magnitude (~3.8) used by the legacy target.
+    assert np.max(np.abs(direct)) < np.max(np.abs(atanh))
+
+
+def test_matrix_free_ridge_matches_dense_solution() -> None:
+    me, opp, value = _bottom_row_win(32)
+    l2 = 0.7
+    w, diagnostics = fit_value_head_with_diagnostics(
+        me, opp, value, l2, "direct", tolerance=1e-11, max_iterations=1000
+    )
+    x = features(me, opp).astype(np.float64)
+    reg = np.eye(N_WEIGHTS)
+    reg[0, 0] = 0.0
+    dense = np.linalg.solve(x.T @ x + l2 * reg, x.T @ value).astype(np.float32)
+    assert np.allclose(w, dense, atol=2e-5)
+    assert diagnostics["cg_final_residual"] < 1e-6
 
 
 def test_weights_round_trip(tmp_path: Path) -> None:

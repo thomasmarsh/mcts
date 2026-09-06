@@ -19,11 +19,14 @@ import pytest
 from az_train.ntuple_c4 import CELLS, N_WINDOWS, features
 from az_train.records_c4 import (
     COLS,
+    Positions,
     decode_records,
     encode_records,
     load_positions,
     me_opp_planes,
+    split_by_game,
 )
+from az_train.train import train_cli, value_metrics
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -95,3 +98,52 @@ def test_gumbel_dump_carries_a_policy_tail(tmp_path: Path) -> None:
         assert all(0 <= c < COLS for c in cols)
         assert len(set(cols)) == len(cols)
         assert abs(sum(p for _, p in entries) - 1.0) < 1e-4
+
+
+def _synthetic_games() -> Positions:
+    # Three games with distinct board words make leakage easy to detect.
+    ply = np.asarray([0, 1, 2, 0, 1, 0, 1, 2, 3], dtype=np.uint8)
+    return Positions(
+        black=np.arange(len(ply), dtype=np.uint64), white=np.zeros(len(ply), dtype=np.uint64),
+        side=ply % 2, ply=ply, value=np.ones(len(ply), dtype=np.float32),
+        policy=[[] for _ in ply],
+    )
+
+
+def test_whole_games_never_straddle_the_split() -> None:
+    train, validation, train_games, validation_games = split_by_game(_synthetic_games(), 0.34, 9)
+    assert train_games + validation_games == 3
+    assert set(train.black.tolist()).isdisjoint(validation.black.tolist())
+    # A game marker identifies all of its records: every game lands together.
+    assert {len(train), len(validation)} in ({2, 7}, {3, 6}, {4, 5})
+
+
+def test_bad_ply_sequence_has_a_useful_error() -> None:
+    pos = _synthetic_games()
+    pos.ply[2] = 4
+    with pytest.raises(ValueError, match="expected 2"):
+        split_by_game(pos)
+
+
+def test_constant_metric_cases_are_json_safe() -> None:
+    metrics = value_metrics(np.zeros(3), np.zeros(3))
+    assert metrics["pearson"] == 0.0
+    assert metrics["sign_agreement"] == 0.0
+    import json
+    assert "NaN" not in json.dumps(metrics, allow_nan=False)
+
+
+def test_connect4_cli_defaults_to_direct_and_writes_held_out_games(tmp_path: Path) -> None:
+    source = tmp_path / "source.bin"
+    source.write_bytes(encode_records(_synthetic_games()))
+    out = tmp_path / "weights.bin"
+    held_out = tmp_path / "validation.bin"
+    train_cli([
+        "--game", "connect4", "--positions", str(source), "--out", str(out),
+        "--l2", "1", "--validation-records-out", str(held_out),
+    ])
+    import json
+    meta = json.loads(out.with_suffix(".bin.meta.json").read_text())
+    assert meta["value_target"] == "direct"
+    assert meta["metrics"]["train_games"] + meta["metrics"]["validation_games"] == 3
+    assert len(decode_records(held_out.read_bytes())) > 0
