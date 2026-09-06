@@ -47,7 +47,21 @@ use rand::{Rng, SeedableRng};
 
 use crate::selfplay::GumbelPlayer;
 use crate::valuenet::LinearValueNet;
-use crate::{HashedPosition, Piece, Position, TicTacToe};
+use crate::{HashedPosition, Move, Piece, Position, TicTacToe};
+
+/// Draw one move from a Sequential-Halving visit distribution (probabilities
+/// summing to 1), falling back to the first entry on a rounding shortfall.
+fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
+    let r: f32 = rng.gen_range(0.0..1.0);
+    let mut acc = 0.0f32;
+    for (m, p) in dist {
+        acc += *p;
+        if r < acc {
+            return *m;
+        }
+    }
+    dist[0].0
+}
 
 /// One dumped position. See the module docs for field semantics.
 #[derive(Debug, Clone, PartialEq)]
@@ -170,6 +184,12 @@ struct Config {
     /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
     sims: u32,
     max_considered: usize,
+    /// `--label gumbel` only: number of opening plies whose move is *sampled*
+    /// from the Sequential-Halving visit distribution rather than taken as
+    /// the argmax. Keeps self-play trajectories diverse so the value head
+    /// trains on a distribution that does not collapse onto its own current
+    /// best line each generation.
+    temp_moves: u8,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -183,6 +203,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut weights = None;
     let mut sims = 32u32;
     let mut max_considered = 8usize;
+    let mut temp_moves = 3u8;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -198,12 +219,13 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--max-considered" => {
                 max_considered = val().parse().expect("--max-considered must be an integer")
             }
+            "--temp-moves" => temp_moves = val().parse().expect("--temp-moves must be an integer"),
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-ttt dump --out <path> [--games N] [--seed N] \
                      [--label outcome|gumbel] [--engine <preset>] [--epsilon P] \
                      [--presets <path>] [--weights <weights.bin>] [--sims N] \
-                     [--max-considered N]"
+                     [--max-considered N] [--temp-moves N]"
                 );
                 std::process::exit(0);
             }
@@ -231,6 +253,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         weights,
         sims,
         max_considered,
+        temp_moves,
     }
 }
 
@@ -250,14 +273,13 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
     };
 
     for g in 0..cfg.games {
-        let mut player = GumbelPlayer::new(
-            net.clone(),
-            gcfg,
-            cfg.seed.wrapping_add(g).wrapping_add(1),
-        );
+        let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+        let mut player = GumbelPlayer::new(net.clone(), gcfg, game_seed);
+        let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
 
         let mut state = HashedPosition::new();
         let first = records.len();
+        let mut ply = 0u8;
         while !TicTacToe::is_terminal(&state) {
             let outcome = player.choose(&state);
             let policy: Vec<(u8, f32)> = outcome
@@ -266,7 +288,13 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
                 .map(|(m, p)| (m.0, *p))
                 .collect();
             records.push(record_for(&state.position, None, policy));
-            state = TicTacToe::apply(state, &outcome.action);
+            let action = if ply < cfg.temp_moves {
+                sample_visit_distribution(&outcome.visit_distribution, &mut move_rng)
+            } else {
+                outcome.action
+            };
+            state = TicTacToe::apply(state, &action);
+            ply += 1;
         }
         finish_game(records, first, winner_of(&state));
 
@@ -454,6 +482,7 @@ mod tests {
             weights: None,
             sims: 16,
             max_considered: 4,
+            temp_moves: 3,
         };
         let mut records = Vec::new();
         dump_gumbel_games(&cfg, &mut records);
