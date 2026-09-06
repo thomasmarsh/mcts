@@ -75,8 +75,7 @@ data GameSpec = GameSpec
 decodeGameSpec :: JsonValue -> String -> String -> GameSpec
 decodeGameSpec = undefined
 
--- | Build a concrete conditional space from a schema and seed, honoring the
--- frozen family-exclusion policy.
+-- | Build a concrete conditional space from a schema and seed.
 buildSpace :: TuningSchema -> Int -> [String] -> ConfigSpace
 buildSpace = undefined
 

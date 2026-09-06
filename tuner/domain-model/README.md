@@ -29,10 +29,6 @@ held-out validation, and an auditable decision trail.
 - A frozen manifest and append-only evidence log make a run inspectable and
   replayable.
 
-The model has no family-level quotas. A named family can be excluded by a
-frozen policy, but otherwise a family is a normal categorical choice in the
-configuration space.
-
 ## Relationship to the implementation
 
 The running tuner is under [`../src/tuner_cli/`](../src/tuner_cli/). This model

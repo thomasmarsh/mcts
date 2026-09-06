@@ -45,9 +45,9 @@ make a generic tournament framework.
 
 ## A small running example
 
-We will tune a made-up Tak player. Its configuration has a `family`, an
-`exploration` value, and an `iteration_budget` that is active only for one
-family. We will call three canonical configurations A, B, and C.
+We will tune a made-up Tak player. Its configuration has an `exploration`
+value, a `widening` switch, and a `widening_width` that is active only when
+widening is enabled. We will call three canonical configurations A, B, and C.
 
 Our frozen objective uses two opponents: `weak-baseline` with weight one and
 `strong-baseline` with weight two. One tuning block therefore has three cases:
@@ -74,7 +74,7 @@ flowchart TD
 A configuration is an assignment of values, such as:
 
 ```text
-{ family: mcts, exploration: 0.7, iteration_budget: 200 }
+{ exploration: 0.7, widening: true, widening_width: 4 }
 ```
 
 Before it is a candidate, the configuration is checked against activation,
@@ -245,9 +245,7 @@ never looks outside its early hunches cannot discover that it is wrong.
 
 Each proposal records its source and the observation frontier available when it
 was made. This means we can later ask what the proposer knew, rather than
-reconstructing a flattering story from the final result. Families receive no
-quota or protected budget. A family can be excluded by a frozen policy, but
-otherwise it is an ordinary categorical parameter.
+reconstructing a flattering story from the final result.
 
 ## Treat pruning as a hypothesis
 
