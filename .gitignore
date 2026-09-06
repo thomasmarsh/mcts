@@ -8,6 +8,7 @@ optuna_output
 node_modules
 # Python virtual environment (uv project)
 tuner/.venv/
+othello-eval/.venv/
 # setuptools build metadata
 *.egg-info/
 # pnpm workspace (ui/)
@@ -25,6 +26,10 @@ scratchpad/
 # regenerate with the relevant game's `build_book` example rather than
 # committing what's essentially large, easily-reproducible binary data.
 books/
+
+# Vendored Edax build (games/othello/edax/build-edax.sh regenerates it) --
+# a third-party C engine used only as an external Othello strength yardstick.
+games/othello/edax/vendor/
 
 # Per-machine Cargo build configuration (machine-specific paths like
 # DUCKDB_LIB_DIR, DUCKDB_INCLUDE_DIR for Homebrew-installed DuckDB)

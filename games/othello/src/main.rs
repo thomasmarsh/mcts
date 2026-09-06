@@ -302,6 +302,14 @@ impl GameAdapter for OthAdapter {
 }
 
 fn main() {
+    // Othello-specific scaffolding for offline learned-evaluation work:
+    // `game-othello dump ...` writes fixed-width self-play records. Intercept
+    // it here so `game-host`'s generic CLI never has to know about it.
+    let mut args = env::args().skip(1);
+    if args.next().as_deref() == Some("dump") {
+        game_othello::dump::run(args);
+        return;
+    }
     run_cli(OthAdapter);
 }
 

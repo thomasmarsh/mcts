@@ -1,0 +1,13 @@
+# Configuration for `cargo run --release --example edax_match`.
+#
+# Everything a rerun wants to vary without recompiling: the engine binary,
+# the weight file, which of our presets to place on the ladder, the Edax
+# levels to test, how many games per level, and the RNG seed for
+# colour-alternation bookkeeping.
+
+edax_binary   = "games/othello/edax/vendor/bin/mEdax-native"
+edax_data_dir = "games/othello/edax/vendor/data"
+our_preset    = "strong"
+levels        = [1, 2, 3, 4, 6, 8, 10, 12]
+games_per_level = 40
+seed          = 1

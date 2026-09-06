@@ -12,6 +12,9 @@ pub const INITIAL_WHITE: u64 = (1 << 27) | (1 << 36); // d4, e5
 
 pub const BOARD_SIZE: usize = 8;
 
+pub mod dump;
+pub mod edax;
+
 pub const USE_SYMMETRY: bool = true;
 
 /// The disc count (`state.occupied().count_ones()`) past which

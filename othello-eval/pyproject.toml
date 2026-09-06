@@ -1,0 +1,30 @@
+[project]
+name = "othello-eval"
+version = "0.1.0"
+description = "numpy reader for game-othello dump position records"
+requires-python = ">=3.10,<3.14"
+dependencies = ["numpy>=2,<3"]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.411",
+    "pytest>=8.0.0",
+    "ruff>=0.15.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
