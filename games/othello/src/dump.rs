@@ -26,10 +26,17 @@
 //!
 //! ## Label modes
 //!
-//! Only `--label outcome` is implemented: seeded self-play, every
-//! non-terminal position labelled with the final outcome. The
-//! `treestrap` / `root_value` search-labelled harvest modes are not built
-//! yet -- the `match` arm for them `unimplemented!()`s with a pointer.
+//! - `--label outcome` (default): seeded self-play, every non-terminal
+//!   position labelled with the final game outcome.
+//! - `--label harvest --out <dir>`: one search-per-move self-play pass
+//!   (config from `games/othello/ntuple/harvest.toml`, or
+//!   `--harvest-config`) writing four label streams from the *same*
+//!   searches -- `arm_a` (played root <- outcome), `arm_b` (played root <-
+//!   its searched value), `arm_c` (every internal node <- its searched
+//!   value, TreeStrap; see `harvest.rs`), `arm_d` (played root <- the
+//!   TD(lambda) return along the game). Each `arm_*.bin` has a matching
+//!   `arm_*.json` manifest; `harvest.json` records the counts and the
+//!   harvest ratio.
 //!
 //! ## Position source
 //!
@@ -122,6 +129,10 @@ struct Config {
     engine: Option<String>,
     epsilon: f64,
     presets_path: PathBuf,
+    label: String,
+    harvest_config: PathBuf,
+    games_overridden: bool,
+    seed_overridden: bool,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -133,22 +144,35 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut engine = None;
     let mut epsilon = 0.1f64;
     let mut presets_path = PathBuf::from("games/othello/presets.json");
+    let mut harvest_config = PathBuf::from("games/othello/ntuple/harvest.toml");
+    let mut games_overridden = false;
+    let mut seed_overridden = false;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
             "--out" => out = Some(PathBuf::from(val())),
             "--manifest" => manifest = Some(PathBuf::from(val())),
-            "--games" => games = val().parse().expect("--games must be an integer"),
-            "--seed" => seed = val().parse().expect("--seed must be an integer"),
+            "--games" => {
+                games = val().parse().expect("--games must be an integer");
+                games_overridden = true;
+            }
+            "--seed" => {
+                seed = val().parse().expect("--seed must be an integer");
+                seed_overridden = true;
+            }
             "--label" => label = val(),
             "--engine" => engine = Some(val()),
             "--epsilon" => epsilon = val().parse().expect("--epsilon must be a float"),
             "--presets" => presets_path = PathBuf::from(val()),
+            "--harvest-config" => harvest_config = PathBuf::from(val()),
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-othello dump --out <path> [--games N] [--seed N] \
-                     [--label outcome] [--engine <preset>] [--epsilon P] \
-                     [--presets <path>] [--manifest <path>]"
+                     [--label outcome|harvest] [--engine <preset>] [--epsilon P] \
+                     [--presets <path>] [--manifest <path>] [--harvest-config <path>]\n\
+                     \n\
+                     --label harvest: --out is a directory; writes arm_{{a,b,c,d}}.bin \
+                     + manifests + harvest.json"
                 );
                 std::process::exit(0);
             }
@@ -156,10 +180,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         }
     }
     match label.as_str() {
-        "outcome" => {}
-        "treestrap" | "root_value" => unimplemented!(
-            "--label {label} (search-labelled harvest) is not implemented yet; only \
-             --label outcome is available"
+        "outcome" | "harvest" => {}
+        "treestrap" | "root_value" => panic!(
+            "--label {label} is superseded by --label harvest, which emits arms a/b/c/d \
+             (outcome, root searched value, TreeStrap, TD(lambda)) from one self-play pass"
         ),
         other => panic!("unknown --label mode: {other}"),
     }
@@ -175,6 +199,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         engine,
         epsilon,
         presets_path,
+        label,
+        harvest_config,
+        games_overridden,
+        seed_overridden,
     }
 }
 
@@ -250,6 +278,9 @@ fn dump_one_game_engine(
 /// positioned just past the `dump` token.
 pub fn run(args: impl Iterator<Item = String>) {
     let cfg = parse_args(args);
+    if cfg.label == "harvest" {
+        return run_harvest(&cfg);
+    }
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
 
@@ -302,6 +333,259 @@ pub fn run(args: impl Iterator<Item = String>) {
         buf.len(),
         cfg.games,
         cfg.out.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// `--label harvest`: one search-per-move self-play pass, four label streams
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct HarvestParams {
+    #[allow(dead_code)]
+    engine: String,
+    label_iters: usize,
+    epsilon: f64,
+    opening_plies: usize,
+    games: u64,
+    seed: u64,
+    min_visits: u32,
+    max_per_search: usize,
+    dedup: bool,
+    td_lambda: f64,
+}
+
+/// Encode `records` to `<dir>/<name>.bin` and a matching JSON manifest at
+/// `<dir>/<name>.json`.
+fn write_arm(dir: &std::path::Path, name: &str, records: &[Record]) {
+    let mut buf = Vec::with_capacity(records.len() * RECORD_BYTES);
+    for r in records {
+        r.encode(&mut buf);
+    }
+    std::fs::write(dir.join(format!("{name}.bin")), &buf).expect("cannot write arm .bin");
+
+    let mut json = String::from("[\n");
+    for (i, r) in records.iter().enumerate() {
+        json.push_str(&format!(
+            "  {{\"black\": \"{:016x}\", \"white\": \"{:016x}\", \"side\": {}, \"ply\": {}, \"target\": {}}}",
+            r.black, r.white, r.side, r.ply, r.target
+        ));
+        json.push_str(if i + 1 == records.len() { "\n" } else { ",\n" });
+    }
+    json.push_str("]\n");
+    std::fs::write(dir.join(format!("{name}.json")), json).expect("cannot write arm .json");
+}
+
+/// Play `opening_plies` uniform-random real (non-pass) plies from the start,
+/// retrying if a line ends early.
+fn random_opening(rng: &mut SmallRng, opening_plies: usize) -> State {
+    'outer: loop {
+        let mut state = State::default();
+        let mut actions = Vec::new();
+        for _ in 0..opening_plies {
+            if Othello::is_terminal(&state) {
+                continue 'outer;
+            }
+            actions.clear();
+            Othello::generate_actions(&state, &mut actions);
+            if actions == [Move::PASS] {
+                continue 'outer;
+            }
+            let a = actions[rng.gen_range(0..actions.len())];
+            state = Othello::apply(state, &a);
+        }
+        return state;
+    }
+}
+
+fn run_harvest(cfg: &Config) {
+    use crate::harvest::{harvest_tree_scored, label_search, root_value, HarvestFilter};
+    use mcts::algorithms::Search;
+    use mcts::game::PlayerIndex;
+
+    let text = std::fs::read_to_string(&cfg.harvest_config)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", cfg.harvest_config.display()));
+    let mut params: HarvestParams =
+        toml::from_str(&text).expect("harvest config must parse");
+    if cfg.games_overridden {
+        params.games = cfg.games;
+    }
+    if cfg.seed_overridden {
+        params.seed = cfg.seed;
+    }
+    assert!(
+        (0.0..=1.0).contains(&params.epsilon),
+        "harvest epsilon must be in [0, 1]"
+    );
+    assert!(
+        (0.0..=1.0).contains(&params.td_lambda),
+        "td_lambda must be in [0, 1]"
+    );
+
+    let dir = &cfg.out;
+    std::fs::create_dir_all(dir).expect("cannot create --out directory");
+
+    let filter = HarvestFilter {
+        min_visits: params.min_visits,
+        max_per_search: params.max_per_search,
+        max_depth: None,
+    };
+
+    let mut arm_a: Vec<Record> = Vec::new();
+    let mut arm_b: Vec<Record> = Vec::new();
+    let mut arm_c: Vec<(u32, Record)> = Vec::new();
+    let mut arm_d: Vec<Record> = Vec::new();
+
+    for g in 0..params.games {
+        let mut walk_rng = SmallRng::seed_from_u64(params.seed.wrapping_add(g).wrapping_add(1));
+        let mut engine = label_search(
+            params.label_iters,
+            params.seed.wrapping_add(g).wrapping_add(1),
+        );
+        let mut state = random_opening(&mut walk_rng, params.opening_plies);
+        let a_first = arm_a.len();
+
+        // Per label-search ply: (arm_a record index, side, root value in the
+        // fixed Black-to-move perspective).
+        let mut traj: Vec<(usize, u8, f64)> = Vec::new();
+        let mut actions = Vec::new();
+
+        while !Othello::is_terminal(&state) {
+            actions.clear();
+            Othello::generate_actions(&state, &mut actions);
+            if actions.is_empty() {
+                break;
+            }
+            if actions == [Move::PASS] {
+                state = Othello::apply(state, &Move::PASS);
+                continue;
+            }
+            if walk_rng.gen_bool(params.epsilon) {
+                let a = actions[walk_rng.gen_range(0..actions.len())];
+                state = Othello::apply(state, &a);
+                continue;
+            }
+
+            let action = engine.choose_action(&state);
+            let pidx = state.turn.to_index();
+            let rv = root_value(&engine, &state, pidx);
+            let rv_black = if state.turn == Player::Black { rv } else { -rv };
+
+            let mut rec = record_for(&state, None);
+            arm_a.push(rec); // outcome target backfilled below
+            rec.target = rv as f32;
+            arm_b.push(rec);
+            arm_c.extend(harvest_tree_scored(&engine, &state, &filter));
+            traj.push((arm_a.len() - 1, rec.side, rv_black));
+
+            state = Othello::apply(state, &action);
+        }
+
+        let winner = Othello::winner(&state);
+        finish_game(&mut arm_a, a_first, winner);
+        let z_black = match winner {
+            None => 0.0,
+            Some(Player::Black) => 1.0,
+            Some(Player::White) => -1.0,
+        };
+
+        // Forward-view TD(lambda) return, computed backward along the played
+        // line: G_t = (1-lambda) V(s_{t+1}) + lambda G_{t+1}, with the value
+        // past the last recorded ply pinned to the terminal outcome.
+        let mut g_next = z_black;
+        for t in (0..traj.len()).rev() {
+            let (a_idx, side, _) = traj[t];
+            let v_next = if t + 1 == traj.len() {
+                z_black
+            } else {
+                traj[t + 1].2
+            };
+            let g = (1.0 - params.td_lambda) * v_next + params.td_lambda * g_next;
+            let mut rec = arm_a[a_idx];
+            rec.target = (if side == 0 { g } else { -g }) as f32;
+            arm_d.push(rec);
+            g_next = g;
+        }
+
+        if (g + 1) % 100 == 0 || g + 1 == params.games {
+            eprintln!(
+                "  harvest {}/{} games  arm_a={} arm_c={} (pre-dedup)",
+                g + 1,
+                params.games,
+                arm_a.len(),
+                arm_c.len()
+            );
+        }
+    }
+
+    // arm C dedup: collapse (black, white, side) across the whole file,
+    // keeping the highest-visit target.
+    let arm_c_raw_count = arm_c.len();
+    let harvest_ratio_raw = arm_c_raw_count as f64 / arm_a.len().max(1) as f64;
+    if params.dedup {
+        use std::collections::HashMap;
+        let mut best: HashMap<(u64, u64, u8), (u32, f32)> = HashMap::new();
+        for (v, r) in arm_c.drain(..) {
+            let key = (r.black, r.white, r.side);
+            let e = best.entry(key).or_insert((0, 0.0));
+            if v >= e.0 {
+                *e = (v, r.target);
+            }
+        }
+        arm_c = best
+            .into_iter()
+            .map(|((black, white, side), (v, target))| {
+                let ply = ((black | white).count_ones() as u8).saturating_sub(4);
+                (
+                    v,
+                    Record {
+                        black,
+                        white,
+                        side,
+                        ply,
+                        target,
+                    },
+                )
+            })
+            .collect();
+    }
+    let arm_c_records: Vec<Record> = arm_c.iter().map(|(_, r)| *r).collect();
+
+    write_arm(dir, "arm_a", &arm_a);
+    write_arm(dir, "arm_b", &arm_b);
+    write_arm(dir, "arm_c", &arm_c_records);
+    write_arm(dir, "arm_d", &arm_d);
+
+    let summary = format!(
+        "{{\n  \"games\": {},\n  \"label_iters\": {},\n  \"epsilon\": {},\n  \"td_lambda\": {},\n  \
+         \"min_visits\": {},\n  \"max_per_search\": {},\n  \"dedup\": {},\n  \
+         \"arm_a\": {},\n  \"arm_b\": {},\n  \"arm_c\": {},\n  \"arm_c_raw\": {},\n  \"arm_d\": {},\n  \
+         \"harvest_ratio\": {:.2},\n  \"harvest_ratio_raw\": {:.2}\n}}\n",
+        params.games,
+        params.label_iters,
+        params.epsilon,
+        params.td_lambda,
+        params.min_visits,
+        params.max_per_search,
+        params.dedup,
+        arm_a.len(),
+        arm_b.len(),
+        arm_c_records.len(),
+        arm_c_raw_count,
+        arm_d.len(),
+        arm_c_records.len() as f64 / arm_a.len().max(1) as f64,
+        harvest_ratio_raw,
+    );
+    std::fs::write(dir.join("harvest.json"), &summary).expect("cannot write harvest.json");
+
+    eprintln!(
+        "wrote arm_a={} arm_b={} arm_c={} arm_d={} to {}  (harvest ratio {:.1}x)",
+        arm_a.len(),
+        arm_b.len(),
+        arm_c_records.len(),
+        arm_d.len(),
+        dir.display(),
+        arm_c_records.len() as f64 / arm_a.len().max(1) as f64,
     );
 }
 

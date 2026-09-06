@@ -16,6 +16,11 @@
 //! - `edax` -- secondary, not gated: play the first `(K, D)` contender
 //!   against the Edax ladder from `games/othello/edax/match.toml` and print
 //!   the highest Edax level it clearly beats.
+//! - `h2h` -- one ordered pair of the signal bake-off round-robin:
+//!   the model in `$OTHELLO_NTUPLE_WEIGHTS` vs the one in
+//!   `$OTHELLO_NTUPLE_WEIGHTS_B`, at `ks[0]` and every `depths` value.
+//!   `games/othello/ntuple/bakeoff.sh` drives the full round-robin by
+//!   setting both env vars per invocation.
 //!
 //! Both engines use the `strong` recipe (UCB1, `q_init = Loss`); the
 //! contender additionally swaps its playout for `EvaluatedCutoff` capped at
@@ -26,7 +31,7 @@
 //! Background job: per-game progress to stderr. The weights come from the
 //! Python trainer (`othello-eval-train`); this example does no training.
 
-use game_othello::ntuple::NTupleEval;
+use game_othello::ntuple::{NTupleEval, NTupleEvalB};
 use game_othello::Othello;
 use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 
@@ -46,6 +51,8 @@ struct Config {
 type BaselineProfile = profile::Mcts<select::Ucb1, simulate::Uniform>;
 type ContenderProfile =
     profile::Mcts<select::Ucb1, simulate::EvaluatedCutoff<Othello, NTupleEval, simulate::Uniform>>;
+type ContenderProfileB =
+    profile::Mcts<select::Ucb1, simulate::EvaluatedCutoff<Othello, NTupleEvalB, simulate::Uniform>>;
 
 /// The `strong` recipe: UCB1, play to terminal, `q_init = Loss`.
 fn baseline(k: usize, seed: u64) -> Boxed {
@@ -76,6 +83,56 @@ fn contender(k: usize, d: usize, seed: u64) -> Boxed {
                 .seed(seed),
         ),
     ))
+}
+
+/// Same as [`contender`] but backed by the second weight slot
+/// (`$OTHELLO_NTUPLE_WEIGHTS_B`).
+fn contender_b(k: usize, d: usize, seed: u64) -> Boxed {
+    Boxed(Box::new(
+        TreeSearch::<Othello, ContenderProfileB>::new().config(
+            SearchConfig::new()
+                .name("ntuple/contender-b")
+                .expand_threshold(1)
+                .q_init(QInit::Loss)
+                .max_iterations(k)
+                .max_playout_depth(d)
+                .simulate(simulate::EvaluatedCutoff::new())
+                .seed(seed),
+        ),
+    ))
+}
+
+/// One ordered pair of the bake-off round-robin: model A
+/// (`$OTHELLO_NTUPLE_WEIGHTS`) vs model B (`$OTHELLO_NTUPLE_WEIGHTS_B`), at
+/// `ks[0]` and every `depths` value, `games_per_pairing` games with colours
+/// alternated. The W-D-L is from A's perspective. The bake-off driver sets
+/// both env vars per invocation, so one process only ever holds one pair.
+fn run_h2h(cfg: &Config) {
+    let k = *cfg.ks.first().expect("config `ks` is empty");
+    let a = std::env::var("OTHELLO_NTUPLE_WEIGHTS").unwrap();
+    let b = std::env::var("OTHELLO_NTUPLE_WEIGHTS_B")
+        .expect("h2h needs OTHELLO_NTUPLE_WEIGHTS_B set to the opponent's weight dir");
+    println!("== h2h: A={a}  vs  B={b}  (K={k}) ==");
+    let n = cfg.games_per_pairing.max(40);
+    for &d in &cfg.depths {
+        let mut ha = contender(k, d, cfg.seed);
+        let mut hb = contender_b(k, d, cfg.seed ^ 0x5555);
+        let label = format!("A vs B  D={d}");
+        let seed = cfg.seed ^ ((k as u64) << 20) ^ ((d as u64) << 8) ^ 0xB;
+        let t = play_series(&mut ha, &mut hb, n, seed, &label);
+        report_row(&label, &t);
+        let (p, (lo, hi)) = t.win_rate_ci(1.96);
+        println!(
+            "  D={d}: A win_rate={p:.3} ci=[{lo:.3}, {hi:.3}]  {}",
+            if lo > 0.5 {
+                "A ahead (CI excludes 0.5)"
+            } else if hi < 0.5 {
+                "B ahead (CI excludes 0.5)"
+            } else {
+                "no separation"
+            }
+        );
+    }
 }
 
 fn run_gate(cfg: &Config) {
@@ -162,7 +219,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let cfg_path = args
         .next()
-        .filter(|a| !a.starts_with("--") && a != "gate" && a != "edax")
+        .filter(|a| !a.starts_with("--") && a != "gate" && a != "edax" && a != "h2h")
         .unwrap_or_else(|| "games/othello/ntuple/match.toml".to_string());
     let mode = args.next().unwrap_or_else(|| "gate".to_string());
 
@@ -183,7 +240,8 @@ fn main() {
     match mode.as_str() {
         "gate" => run_gate(&cfg),
         "edax" => run_edax(&cfg),
-        other => panic!("unknown mode {other:?} (want gate | edax)"),
+        "h2h" => run_h2h(&cfg),
+        other => panic!("unknown mode {other:?} (want gate | edax | h2h)"),
     }
 }
 

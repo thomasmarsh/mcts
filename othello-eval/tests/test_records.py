@@ -82,6 +82,66 @@ def test_targets_and_sides_are_in_range(tmp_path: Path) -> None:
     assert targets <= {-1.0, 0.0, 1.0}
 
 
+def _dump_harvest(tmp_path: Path) -> Path:
+    out_dir = tmp_path / "harvest"
+    cfg = tmp_path / "harvest.toml"
+    cfg.write_text(
+        "engine = \"strong\"\n"
+        "label_iters = 60\n"
+        "epsilon = 0.1\n"
+        "opening_plies = 4\n"
+        "games = 2\n"
+        "seed = 0\n"
+        "min_visits = 1\n"
+        "max_per_search = 512\n"
+        "dedup = true\n"
+        "td_lambda = 0.7\n"
+    )
+    cmd = [
+        "cargo", "run", "-q", "-p", "game-othello", "--",
+        "dump", "--label", "harvest",
+        "--out", str(out_dir), "--harvest-config", str(cfg),
+    ]
+    proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    if proc.returncode != 0:
+        pytest.skip(f"harvest dump failed (cargo exit {proc.returncode})\n{proc.stderr[-2000:]}")
+    return out_dir
+
+
+def test_harvest_arms_share_one_search_pass(tmp_path: Path) -> None:
+    d = _dump_harvest(tmp_path)
+
+    for arm in ("arm_a", "arm_b", "arm_c", "arm_d"):
+        rows = load_positions(str(d / f"{arm}.bin"))
+        manifest = json.loads((d / f"{arm}.json").read_text())
+        assert len(rows) == len(manifest) > 0, arm
+        assert rows.tobytes() == (d / f"{arm}.bin").read_bytes(), arm
+        for row, ref in zip(rows, manifest, strict=True):
+            assert int(row["black"]) == int(ref["black"], 16), arm
+            assert int(row["white"]) == int(ref["white"], 16), arm
+
+    a = load_positions(str(d / "arm_a.bin"))
+    b = load_positions(str(d / "arm_b.bin"))
+    c = load_positions(str(d / "arm_c.bin"))
+
+    # arm A and arm B are the same positions, different targets.
+    def keyset(rows: object) -> set[tuple[int, int, int, int]]:
+        return set(
+            zip(
+                rows["black"].tolist(),  # type: ignore[index]
+                rows["white"].tolist(),  # type: ignore[index]
+                rows["side"].tolist(),  # type: ignore[index]
+                rows["ply"].tolist(),  # type: ignore[index]
+                strict=True,
+            )
+        )
+
+    assert keyset(a) == keyset(b)
+    # arm C is a superset of arm B's positions (it keeps the played root plus
+    # its whole subtree).
+    assert keyset(b) <= keyset(c)
+
+
 def test_engine_dump_round_trips_too(tmp_path: Path) -> None:
     # `--engine <preset>` swaps the position source (a real MCTS engine,
     # epsilon-randomised) but not the record format or the labelling.

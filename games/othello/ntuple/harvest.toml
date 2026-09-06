@@ -1,0 +1,30 @@
+# Configuration for `game-othello dump --label harvest --out <dir>`.
+#
+# One search-per-move self-play pass produces four label streams from the
+# *same* searches (the four arms of the signal bake-off):
+#
+#   arm_a.bin  played root position <- final game outcome        (TD / AZ-style)
+#   arm_b.bin  played root position <- that root's searched value
+#   arm_c.bin  every internal node of that search <- its searched value  (TreeStrap)
+#   arm_d.bin  played root position <- the TD(lambda) return along the game
+#
+# arms A/B/D keep one target per search; arm C keeps ~10^2-10^3. Every arm
+# pays the identical search cost -- they differ only in what they retain.
+
+engine       = "strong"   # recipe for the label search (UCB1, q_init=Loss, uniform playout)
+label_iters  = 800         # max_iterations for the label search (fixed + modest on purpose:
+                           # the CPU budget should buy many games, not the strong preset's 10000)
+epsilon      = 0.1         # epsilon-greedy: fraction of moves played uniformly at random (no
+                           # search, no record) for trajectory diversity
+opening_plies = 4          # uniform-random real plies before the label search takes over
+games        = 3000
+seed         = 0
+
+# arm C harvest filter
+min_visits    = 20         # skip nodes the search barely touched
+max_per_search = 512       # cap tree nodes kept per move (lowest-visit dropped first)
+dedup         = true       # collapse (black, white, side) duplicates across the file,
+                           # keeping the highest-visit target
+
+# arm D
+td_lambda     = 0.7        # TD(lambda) trace-decay for the forward-view lambda-return

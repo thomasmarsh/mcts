@@ -256,9 +256,20 @@ impl NTupleModel {
         }
         acc
     }
+
+    /// Resolve the process-wide *opponent* model from
+    /// `$OTHELLO_NTUPLE_WEIGHTS_B` -- the second slot the bake-off's
+    /// head-to-head mode needs so two different trained models can play each
+    /// other in one process (see [`NTupleEvalB`]).
+    pub fn from_env_b() -> NTupleModel {
+        let dir = std::env::var("OTHELLO_NTUPLE_WEIGHTS_B")
+            .expect("OTHELLO_NTUPLE_WEIGHTS_B is unset (needed for the bake-off h2h opponent)");
+        NTupleModel::from_dir(Path::new(&dir))
+    }
 }
 
 static MODEL: OnceLock<NTupleModel> = OnceLock::new();
+static MODEL_B: OnceLock<NTupleModel> = OnceLock::new();
 
 /// Zero-sized [`Evaluator`] for Othello. `Default` resolves the
 /// process-wide model, loading it from `$OTHELLO_NTUPLE_WEIGHTS` on first
@@ -271,6 +282,20 @@ impl Evaluator<Othello> for NTupleEval {
     fn evaluate(&self, state: &State) -> Score {
         let model = MODEL.get_or_init(NTupleModel::from_env);
         let v = model.logit(state).tanh(); // (-1, 1)
+        (v * EVAL_MAGNITUDE_LIMIT as f32) as Score
+    }
+}
+
+/// Second [`Evaluator`], reading `$OTHELLO_NTUPLE_WEIGHTS_B`. Exists only so
+/// the bake-off's head-to-head mode can put two independently trained models
+/// on the board in one process.
+#[derive(Clone, Copy, Default)]
+pub struct NTupleEvalB;
+
+impl Evaluator<Othello> for NTupleEvalB {
+    fn evaluate(&self, state: &State) -> Score {
+        let model = MODEL_B.get_or_init(NTupleModel::from_env_b);
+        let v = model.logit(state).tanh();
         (v * EVAL_MAGNITUDE_LIMIT as f32) as Score
     }
 }

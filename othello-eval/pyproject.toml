@@ -7,6 +7,7 @@ dependencies = ["numpy>=2,<3"]
 
 [project.scripts]
 othello-eval-train = "othello_eval.ntuple:train_cli"
+othello-eval-mse = "othello_eval.mse:mse_cli"
 
 [dependency-groups]
 dev = [
