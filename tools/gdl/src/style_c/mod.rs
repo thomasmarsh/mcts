@@ -4,18 +4,17 @@
 //! at Style C's planned human-friendly surface notation (`def`, `guard`, primed fields,
 //! `fixpoint`, ... -- see `style-c/games/tak.md`) -- the grammar below is a near-literal
 //! parenthesized rendering of [`crate::core::Program`]/[`Region`]/[`BoolExpr`]'s own Rust shape,
-//! "Core IR as data." Per `HISTORY.md`'s session note: several rounds of live syntax review left
-//! Style C's own grammar unstable, so this frontend exists to stop that from blocking real
-//! progress -- nothing about writing a game's declarative subset and running it through Core IR
-//! needs a human-friendly lexer to exist first. A pretty-printer from Style C's eventual surface
-//! syntax down to this s-expression form remains a plausible future addition; it's not required to
-//! make this frontend useful on its own, and no longer planned per `ROADMAP.md`'s phase 2 (which
-//! may instead promote this sexpr form to the canonical surface syntax outright).
+//! "Core IR as data." Several rounds of live syntax review left Style C's own grammar unstable, so
+//! this frontend exists to stop that from blocking real progress -- nothing about writing a game's
+//! declarative subset and running it through Core IR needs a human-friendly lexer to exist first.
+//! A pretty-printer from Style C's eventual surface syntax down to this s-expression form remains a
+//! plausible future addition; it's not required to make this frontend useful on its own, and may
+//! never happen if this sexpr form becomes the canonical surface syntax outright.
 //!
 //! This module used to also advertise independence from a `.lud`-parsing `ast`/`elaborate`
 //! pipeline that lowered Ludii's own ludeme AST into a `Program`; that pipeline has since been
-//! deleted outright (`ROADMAP.md`'s decision to stop loading `.lud` source in code at all), so
-//! there's nothing left to be independent *from* -- this is simply the frontend now.
+//! deleted outright (`.lud` source is no longer loaded in code at all), so there's nothing left to
+//! be independent *from* -- this is simply the frontend now.
 //!
 //! # Grammar
 //!

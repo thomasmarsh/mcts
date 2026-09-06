@@ -87,7 +87,7 @@ Ludii's ludeme names, and lowers straight to `Program` with no intermediate type
 the arrows after it: those now have a real, tested, growing implementation (`style-c/sexpr/*.gdls`,
 checked against hand-built `Program` values and independent oracles). A pretty-printer from Style
 C's eventual concrete syntax down to this s-expression form remains a plausible way to fill in the
-still-missing first arrow later, or `ROADMAP.md`'s phase 2 may instead promote this sexpr form to
+still-missing first arrow later, or this sexpr form may instead be promoted to
 the canonical surface syntax outright; neither is required to keep growing Core IR/backend coverage
 in the meantime.
 

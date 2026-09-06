@@ -15,7 +15,7 @@
 //! (`Occupied`/`Union`/`Complement`/`Sites`, `Contains`/`Any`) and returns [`Error`] on anything
 //! else (`Intersect`/`Shift`/`Adjacent`/`Flood`, `Connects`) rather than guessing at a lowering no
 //! corpus game has forced yet. [`hex::generate`] is the second backend, forced in by Hex's
-//! `Connects` edge-to-edge end rule (`ROADMAP.md` phase 6) -- it lowers the same `Region` shapes
+//! `Connects` edge-to-edge end rule -- it lowers the same `Region` shapes
 //! as `rect`, plus `BoolExpr::Connects` itself (specialized to `Connectivity::Six`, the only one
 //! any corpus Hex-topology game uses, via a generated `hex_connects` helper that calls
 //! `bitboard::Board::flood6` directly rather than reproducing
