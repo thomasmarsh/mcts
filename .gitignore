@@ -9,6 +9,7 @@ node_modules
 # Python virtual environment (uv project)
 tools/tuner/.venv/
 research/othello-eval/.venv/
+research/az-train/.venv/
 # setuptools build metadata
 *.egg-info/
 # pnpm workspace (ui/)

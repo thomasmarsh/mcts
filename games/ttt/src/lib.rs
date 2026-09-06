@@ -1,3 +1,5 @@
+pub mod dump;
+
 use game_core::display::{RectangularBoard, RectangularBoardDisplay};
 use mcts::game::{Canonical, Game, PlayerIndex, Real, Transform};
 use mcts::zobrist::LazyZobristTable;

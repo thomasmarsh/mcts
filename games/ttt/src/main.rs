@@ -287,6 +287,14 @@ impl GameAdapter for TttAdapter {
 // ---------------------------------------------------------------------------
 
 fn main() {
+    // `game-ttt dump ...` writes fixed-width self-play records for offline
+    // training. Intercept it here so `game-host`'s generic CLI never has to
+    // know about it, matching `games/othello/src/main.rs`.
+    let mut args = env::args().skip(1);
+    if args.next().as_deref() == Some("dump") {
+        game_ttt::dump::run(args);
+        return;
+    }
     run_cli(TttAdapter);
 }
 

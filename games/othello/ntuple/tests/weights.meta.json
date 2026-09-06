@@ -1,5 +1,5 @@
 {
-  "model_toml_sha256": "efbfdf307d9e02ca40bad90e5893e5a25325efc147cdb8fcdd8a42c466f65c40",
+  "model_toml_sha256": "1725064f39e61a8dcd792913d4f65264e77e110b9d43f29c1d5ce83a6148c531",
   "n_weights": 12,
   "train": {
     "note": "hand-built fixture, not a real training run"
