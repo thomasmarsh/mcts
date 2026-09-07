@@ -12,16 +12,27 @@ import numpy as np
 
 from az_train.ntuple_c4 import (
     CELLS,
+    LINES_3,
+    LINES_4,
+    LINES_5,
+    LINES_6,
     N_WEIGHTS,
     N_WINDOWS,
     OFFSETS,
+    SQUARES,
+    STRUCTURED_ACTIVE_COUNT,
+    STRUCTURED_TUPLES,
+    STRUCTURED_WEIGHTS,
     WINDOWS,
     active_indices,
     features,
     fit_value_head,
     fit_value_head_with_diagnostics,
     predict,
+    predict_structured,
     read_weights,
+    structured_active_indices,
+    structured_features,
     write_weights,
 )
 
@@ -113,3 +124,43 @@ def test_matches_rust_fixture_board() -> None:
     me[0, [0, 2]] = 1.0
     opp[0, [1, 7]] = 1.0
     assert abs(float(predict(w, me, opp)[0]) - (-0.8014309)) < 1e-6
+
+
+def test_structured_geometry_counts_bounds_uniqueness_and_order() -> None:
+    assert [len(SQUARES), len(LINES_3), len(LINES_4), len(LINES_5), len(LINES_6)] == [
+        30,
+        98,
+        69,
+        44,
+        23,
+    ]
+    assert LINES_4 == WINDOWS
+    assert len(STRUCTURED_TUPLES) == 264
+    assert len(set(STRUCTURED_TUPLES)) == len(STRUCTURED_TUPLES)
+    assert all(0 <= cell < CELLS for cells in STRUCTURED_TUPLES for cell in cells)
+    assert STRUCTURED_WEIGHTS == 38_216
+
+
+def test_structured_indexing_includes_column_height_and_base_parity() -> None:
+    me = np.zeros((1, CELLS), dtype=np.float32)
+    opp = np.zeros_like(me)
+    me[0, [0, 14]] = 1.0
+    opp[0, 7] = 1.0
+    active = structured_active_indices(me, opp)
+    assert active.shape == (1, STRUCTURED_ACTIVE_COUNT)
+    # First column table: height 3 and mover at the bottom -> local feature 5.
+    assert active[0, -7] == STRUCTURED_WEIGHTS - 7 * 13 + 5
+    x = structured_features(me, opp)
+    assert x.shape == (1, STRUCTURED_WEIGHTS)
+    assert x.sum() == STRUCTURED_ACTIVE_COUNT
+
+
+def test_structured_prediction_matches_rust_reference_vector() -> None:
+    weights = (
+        (np.arange(STRUCTURED_WEIGHTS, dtype=np.float64) - STRUCTURED_WEIGHTS / 2) * 0.0000002
+    ).astype(np.float32)
+    me = np.zeros((1, CELLS), dtype=np.float32)
+    opp = np.zeros_like(me)
+    me[0, [0, 2]] = 1.0
+    opp[0, [1, 7]] = 1.0
+    assert abs(float(predict_structured(weights, me, opp)[0]) - (-0.47970423)) < 1e-6

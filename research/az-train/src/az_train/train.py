@@ -34,6 +34,11 @@ from az_train.model import write_weights as write_linear
 from az_train.ntuple import fit_value_head as fit_ntuple
 from az_train.ntuple import predict as predict_ntuple
 from az_train.ntuple import write_weights as write_ntuple
+from az_train.ntuple_c4 import (
+    fit_structured_value_head_with_diagnostics,
+    predict_structured,
+    write_structured_weights,
+)
 from az_train.ntuple_c4 import fit_value_head_with_diagnostics as fit_ntuple_c4_with_diagnostics
 from az_train.ntuple_c4 import predict as predict_ntuple_c4
 from az_train.ntuple_c4 import write_weights as write_ntuple_c4
@@ -125,6 +130,7 @@ def _fit_c4(
     validation_fraction: float,
     split_seed: int,
     value_target: str,
+    value_head: str,
 ) -> tuple[np.ndarray, dict[str, Any], PositionsC4, PositionsC4]:
     if head != "ntuple":
         raise SystemExit(f"--game connect4 only supports --head ntuple (got {head})")
@@ -135,13 +141,26 @@ def _fit_c4(
     )
     train_me, train_opp = me_opp_planes_c4(train)
     validation_me, validation_opp = me_opp_planes_c4(validation)
-    w, fit_diagnostics = fit_ntuple_c4_with_diagnostics(
-        train_me, train_opp, train.value, 1e-3 if l2 is None else l2, value_target
-    )
+    if value_head == "structured":
+        # Augment training only. Validation stays the frozen literal game split.
+        w, fit_diagnostics = fit_structured_value_head_with_diagnostics(
+            train_me,
+            train_opp,
+            train.value,
+            1e-3 if l2 is None else l2,
+            value_target,
+            mirror_augment=True,
+        )
+        predict_value = predict_structured
+    else:
+        w, fit_diagnostics = fit_ntuple_c4_with_diagnostics(
+            train_me, train_opp, train.value, 1e-3 if l2 is None else l2, value_target
+        )
+        predict_value = predict_ntuple_c4
     metrics: dict[str, Any] = {
-        "train": value_metrics(predict_ntuple_c4(w, train_me, train_opp), train.value),
+        "train": value_metrics(predict_value(w, train_me, train_opp), train.value),
         "validation": value_metrics(
-            predict_ntuple_c4(w, validation_me, validation_opp), validation.value
+            predict_value(w, validation_me, validation_opp), validation.value
         ),
         "train_games": train_games,
         "validation_games": validation_games,
@@ -176,6 +195,10 @@ def train_cli(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("--policy-out", help="Connect Four policy.bin output (defaults beside --out)")
     ap.add_argument(
+        "--connect4-value-head", choices=("basic", "structured"), default="basic",
+        help="Connect Four value layout (default: basic; structured adds multi-scale tuples)",
+    )
+    ap.add_argument(
         "--value-target",
         choices=("direct", "atanh"),
         help="Connect Four pre-tanh target (default: direct)",
@@ -191,11 +214,16 @@ def train_cli(argv: list[str] | None = None) -> None:
         c4_value_target = args.value_target or "direct"
         value_target = c4_value_target
         w, c4_metrics, train, validation = _fit_c4(
-            paths, args.head, args.l2, args.validation_fraction, args.split_seed, c4_value_target
+            paths, args.head, args.l2, args.validation_fraction, args.split_seed,
+            c4_value_target, args.connect4_value_head,
         )
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
         mse = float(c4_metrics["train"]["mse"])
-        write_weights = write_ntuple_c4
+        write_weights = (
+            write_structured_weights
+            if args.connect4_value_head == "structured"
+            else write_ntuple_c4
+        )
     else:
         if args.validation_records_out:
             raise SystemExit("--validation-records-out is only supported for --game connect4")
@@ -246,6 +274,7 @@ def train_cli(argv: list[str] | None = None) -> None:
         meta.update(
             {
                 "value_target": value_target,
+                "connect4_value_head": args.connect4_value_head,
                 "validation_fraction": args.validation_fraction,
                 "split_seed": args.split_seed,
                 "metrics": c4_metrics,
