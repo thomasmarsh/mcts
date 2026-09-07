@@ -46,6 +46,7 @@ POLICY_ENTRY_BYTES = 5
 ROWS = 6
 COLS = 7
 BOARD_CELLS = ROWS * COLS
+REFERENCE_DIAGNOSTIC_MAGIC = b"C4REFD01"
 
 _HEAD = struct.Struct("<QQBBfB")
 _POLICY_ENTRY = struct.Struct("<Bf")
@@ -130,6 +131,8 @@ def split_by_game(
 
 
 def decode_records(raw: bytes) -> Positions:
+    if raw.startswith(REFERENCE_DIAGNOSTIC_MAGIC):
+        raise ValueError("reference diagnostic data is not a v2-connect4 replay")
     blacks: list[int] = []
     whites: list[int] = []
     sides: list[int] = []
@@ -143,6 +146,8 @@ def decode_records(raw: bytes) -> Positions:
         if off + RECORD_HEAD_BYTES > n:
             raise ValueError(f"truncated record head at byte {off}")
         black, white, side, ply, value, n_policy = _HEAD.unpack_from(raw, off)
+        if side > 1 or ply >= BOARD_CELLS or not np.isfinite(value):
+            raise ValueError(f"invalid v2-connect4 replay fields at byte {off}")
         off += RECORD_HEAD_BYTES
         tail = n_policy * POLICY_ENTRY_BYTES
         if off + tail > n:

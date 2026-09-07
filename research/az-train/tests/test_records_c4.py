@@ -28,6 +28,11 @@ from az_train.records_c4 import (
 )
 from az_train.train import train_cli, value_metrics
 
+
+def test_reference_diagnostic_magic_is_not_replay() -> None:
+    with pytest.raises(ValueError, match="not a v2-connect4 replay"):
+        decode_records(b"C4REFD01" + b"\0" * 32)
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
