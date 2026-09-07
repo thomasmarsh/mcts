@@ -6,6 +6,7 @@
 //! Geometry and flat layout match `az_train.ntuple_c4` exactly.
 
 use std::path::Path;
+use std::sync::OnceLock;
 
 use mcts::evaluator::{Evaluator, Score, EVAL_MAGNITUDE_LIMIT};
 
@@ -20,11 +21,36 @@ pub const N_WINDOWS: usize = 69;
 pub const NT_WEIGHTS: usize = 1 + N_WINDOWS * 81;
 /// Bias + 30 squares + 98/69/44/23 line tables + seven 13-state columns.
 pub const STRUCTURED_WEIGHTS: usize = 38_216;
+/// Bias plus one 3^8 table for each fixed connected tuple.
+pub const CONNECTED8_WEIGHTS: usize = 419_905;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Head {
     Basic,
     Structured,
+    Connected8,
+}
+
+fn connected8_geometry() -> &'static [[usize; 8]] {
+    static GEOMETRY: OnceLock<Vec<[usize; 8]>> = OnceLock::new();
+    GEOMETRY
+        .get_or_init(|| {
+            include_str!("connected8_tuples.txt")
+                .lines()
+                .filter_map(|line| {
+                    let line = line.trim();
+                    (!line.is_empty() && !line.starts_with('#')).then_some(line)
+                })
+                .map(|line| {
+                    line.split_whitespace()
+                        .map(|cell| cell.parse::<usize>().expect("connected tuple cell"))
+                        .collect::<Vec<_>>()
+                        .try_into()
+                        .expect("connected tuple must contain eight cells")
+                })
+                .collect()
+        })
+        .as_slice()
 }
 
 const fn pow3(n: usize) -> usize {
@@ -170,19 +196,27 @@ impl NTupleValueNet {
         let head = match weights.len() {
             NT_WEIGHTS => Head::Basic,
             STRUCTURED_WEIGHTS => Head::Structured,
-            n => panic!("n-tuple head needs {NT_WEIGHTS} or {STRUCTURED_WEIGHTS} weights, got {n}"),
+            CONNECTED8_WEIGHTS => Head::Connected8,
+            n => panic!("n-tuple head needs {NT_WEIGHTS}, {STRUCTURED_WEIGHTS}, or {CONNECTED8_WEIGHTS} weights, got {n}"),
         };
         Self { weights, head }
     }
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
-        if ![NT_WEIGHTS * 4, STRUCTURED_WEIGHTS * 4].contains(&bytes.len()) {
+        if ![
+            NT_WEIGHTS * 4,
+            STRUCTURED_WEIGHTS * 4,
+            CONNECTED8_WEIGHTS * 4,
+        ]
+        .contains(&bytes.len())
+        {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "expected {} or {} bytes, got {}",
+                    "expected {}, {}, or {} bytes, got {}",
                     NT_WEIGHTS * 4,
                     STRUCTURED_WEIGHTS * 4,
+                    CONNECTED8_WEIGHTS * 4,
                     bytes.len()
                 ),
             ));
@@ -246,6 +280,22 @@ impl NTupleValueNet {
                 .into_iter()
                 .map(|i| self.weights[i])
                 .sum();
+        }
+        if self.head == Head::Connected8 {
+            let mut score = self.weights[0];
+            let mut offset = 1;
+            for cells in connected8_geometry() {
+                let mut feature = 0;
+                let mut place = 1;
+                for &cell in cells {
+                    feature += Self::trit(state, cell) * place;
+                    place *= 3;
+                }
+                score += self.weights[offset + feature];
+                offset += pow3(8);
+            }
+            debug_assert_eq!(offset, CONNECTED8_WEIGHTS);
+            return score;
         }
         let mut score = self.weights[0];
         let mut offset = 1;
@@ -360,5 +410,38 @@ mod tests {
         white.set_index(7);
         let state = State::from_parts(black, white, Player::Black, false);
         assert!((net.value(&state) - (-0.479_704_23)).abs() < 1e-6);
+    }
+    #[test]
+    fn connected8_geometry_is_bounded_unique_and_connected() {
+        let geometry = connected8_geometry();
+        assert_eq!(geometry.len(), 64);
+        let mut seen = std::collections::HashSet::new();
+        for tuple in geometry {
+            assert!(tuple.iter().all(|&cell| cell < ROWS * COLS));
+            assert!(seen.insert(tuple));
+            for (index, &cell) in tuple.iter().enumerate().skip(1) {
+                assert!(tuple[..index].iter().any(|&earlier| {
+                    let dr = (earlier / COLS).abs_diff(cell / COLS);
+                    let dc = (earlier % COLS).abs_diff(cell % COLS);
+                    dr + dc == 1
+                }));
+            }
+        }
+        assert_eq!(CONNECTED8_WEIGHTS, 1 + geometry.len() * pow3(8));
+    }
+    #[test]
+    fn connected8_value_matches_python_reference_prediction() {
+        let weights = (0..CONNECTED8_WEIGHTS)
+            .map(|i| (i as f64 - CONNECTED8_WEIGHTS as f64 / 2.0) as f32 * 0.00000002)
+            .collect();
+        let net = NTupleValueNet::from_weights(weights);
+        let mut black = crate::BitBoard::<ROWS, COLS>::EMPTY;
+        black.set_index(0);
+        black.set_index(2);
+        let mut white = crate::BitBoard::<ROWS, COLS>::EMPTY;
+        white.set_index(1);
+        white.set_index(7);
+        let state = State::from_parts(black, white, Player::Black, false);
+        assert!((net.value(&state) - (-0.008_390_832)).abs() < 1e-6);
     }
 }

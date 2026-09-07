@@ -35,8 +35,11 @@ from az_train.ntuple import fit_value_head as fit_ntuple
 from az_train.ntuple import predict as predict_ntuple
 from az_train.ntuple import write_weights as write_ntuple
 from az_train.ntuple_c4 import (
+    fit_connected8_value_head_with_diagnostics,
     fit_structured_value_head_with_diagnostics,
+    predict_connected8,
     predict_structured,
+    write_connected8_weights,
     write_structured_weights,
 )
 from az_train.ntuple_c4 import fit_value_head_with_diagnostics as fit_ntuple_c4_with_diagnostics
@@ -152,6 +155,16 @@ def _fit_c4(
             mirror_augment=True,
         )
         predict_value = predict_structured
+    elif value_head == "connected8":
+        w, fit_diagnostics = fit_connected8_value_head_with_diagnostics(
+            train_me,
+            train_opp,
+            train.value,
+            1e-3 if l2 is None else l2,
+            value_target,
+            seed=split_seed,
+        )
+        predict_value = predict_connected8
     else:
         w, fit_diagnostics = fit_ntuple_c4_with_diagnostics(
             train_me, train_opp, train.value, 1e-3 if l2 is None else l2, value_target
@@ -195,8 +208,8 @@ def train_cli(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("--policy-out", help="Connect Four policy.bin output (defaults beside --out)")
     ap.add_argument(
-        "--connect4-value-head", choices=("basic", "structured"), default="basic",
-        help="Connect Four value layout (default: basic; structured adds multi-scale tuples)",
+        "--connect4-value-head", choices=("basic", "structured", "connected8"), default="basic",
+        help="Connect Four value layout; alternatives retain compatible file layouts",
     )
     ap.add_argument(
         "--value-target",
@@ -222,6 +235,8 @@ def train_cli(argv: list[str] | None = None) -> None:
         write_weights = (
             write_structured_weights
             if args.connect4_value_head == "structured"
+            else write_connected8_weights
+            if args.connect4_value_head == "connected8"
             else write_ntuple_c4
         )
     else:

@@ -36,6 +36,7 @@ geometry and weight layout stand on their own without them.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -119,6 +120,24 @@ STRUCTURED_WEIGHTS = _structured_off + COLS * COLUMN_TABLE_SIZE
 STRUCTURED_ACTIVE_COUNT = 1 + len(STRUCTURED_TUPLES) + COLS
 
 
+def _connected8_tuples() -> tuple[tuple[int, ...], ...]:
+    """Read the reviewable tuple list shared with Rust inference."""
+    path = Path(__file__).resolve().parents[4] / "games/connect4/src/connected8_tuples.txt"
+    tuples: list[tuple[int, ...]] = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            tuples.append(tuple(map(int, line.split())))
+    return tuple(tuples)
+
+
+CONNECTED8_TUPLES = _connected8_tuples()
+CONNECTED8_TABLE_SIZE = 3**8
+CONNECTED8_OFFSETS = tuple(1 + i * CONNECTED8_TABLE_SIZE for i in range(len(CONNECTED8_TUPLES)))
+CONNECTED8_WEIGHTS = 1 + len(CONNECTED8_TUPLES) * CONNECTED8_TABLE_SIZE
+CONNECTED8_ACTIVE_COUNT = 1 + len(CONNECTED8_TUPLES)
+
+
 def _trits(me: np.ndarray, opp: np.ndarray) -> np.ndarray:
     """``(N, 42)`` int array of per-cell digits: 0 empty, 1 mover, 2 opponent."""
     return (np.asarray(me) + 2.0 * np.asarray(opp)).astype(np.int64)
@@ -185,6 +204,19 @@ def structured_features(me: np.ndarray, opp: np.ndarray) -> np.ndarray:
     x = np.zeros((len(active), STRUCTURED_WEIGHTS), dtype=np.float32)
     x[np.arange(len(active))[:, None], active] = 1.0
     return x
+
+
+def connected8_active_indices(me: np.ndarray, opp: np.ndarray) -> np.ndarray:
+    """Sparse indices for the fixed connected eight-cell table layout."""
+    trit = _trits(me, opp)
+    n = trit.shape[0]
+    active = np.empty((n, CONNECTED8_ACTIVE_COUNT), dtype=np.int32)
+    active[:, 0] = 0
+    place = 3 ** np.arange(8, dtype=np.int64)
+    pairs = zip(CONNECTED8_TUPLES, CONNECTED8_OFFSETS, strict=True)
+    for j, (cells, off) in enumerate(pairs, start=1):
+        active[:, j] = off + (trit[:, list(cells)] * place[None, :]).sum(axis=1)
+    return active
 
 
 def _target(value: np.ndarray, value_target: str) -> np.ndarray:
@@ -353,6 +385,83 @@ def predict_structured(w: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.nda
 def write_structured_weights(path: str, w: np.ndarray) -> None:
     if w.shape != (STRUCTURED_WEIGHTS,):
         raise ValueError(f"expected {STRUCTURED_WEIGHTS} weights, got {w.shape}")
+    w.astype("<f4").tofile(path)
+
+
+def connected8_loss_and_gradient(
+    w: np.ndarray, active: np.ndarray, value: np.ndarray, l2: float
+) -> tuple[float, np.ndarray]:
+    """Mean tanh-squared loss and sparse gradient for one deterministic batch."""
+    score = w[active].sum(axis=1)
+    prediction = np.tanh(score)
+    error = prediction - value
+    loss = float(np.mean(error * error) + l2 * np.dot(w[1:], w[1:]))
+    delta = 2.0 * error * (1.0 - prediction * prediction) / len(active)
+    gradient = np.zeros(CONNECTED8_WEIGHTS, dtype=np.float64)
+    for column in range(active.shape[1]):
+        np.add.at(gradient, active[:, column], delta)
+    gradient[1:] += 2.0 * l2 * w[1:]
+    return loss, gradient
+
+
+def fit_connected8_value_head_with_diagnostics(
+    me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float = 10.0,
+    value_target: str = "direct", seed: int = 0, batch_size: int = 1024,
+    epochs: int = 80, learning_rate: float = 0.03,
+) -> tuple[np.ndarray, dict[str, float | int | str]]:
+    """Bounded-memory sparse AdaGrad fit for the connected eight-cell layout."""
+    active = connected8_active_indices(me, opp)
+    y = _target(value, value_target)
+    n = len(active)
+    if n == 0:
+        raise ValueError("cannot fit an empty position set")
+    w = np.zeros(CONNECTED8_WEIGHTS, dtype=np.float64)
+    accumulated_square = np.zeros_like(w)
+    rng = np.random.default_rng(seed)
+    step = 0
+    started = time.perf_counter()
+    for _ in range(epochs):
+        order = rng.permutation(n)
+        for start in range(0, n, batch_size):
+            batch = order[start : start + batch_size]
+            batch_active = active[batch]
+            prediction = np.tanh(w[batch_active].sum(axis=1))
+            delta = 2.0 * (prediction - y[batch]) * (1.0 - prediction * prediction) / len(batch)
+            step += 1
+            for column in range(batch_active.shape[1]):
+                indices, inverse = np.unique(batch_active[:, column], return_inverse=True)
+                gradient = np.bincount(inverse, weights=delta, minlength=len(indices))
+                if column != 0:
+                    gradient += 2.0 * (float(l2) / n) * w[indices]
+                accumulated_square[indices] += gradient * gradient
+                denominator = np.sqrt(accumulated_square[indices]) + 1e-8
+                w[indices] -= learning_rate * gradient / denominator
+    loss, gradient = connected8_loss_and_gradient(w, active, y, float(l2) / n)
+    return w.astype(np.float32), {
+        "optimizer": "sparse_adagrad_tanh_mse",
+        "optimizer_seed": seed,
+        "optimizer_batch_size": batch_size,
+        "optimizer_epochs": epochs,
+        "optimizer_learning_rate": learning_rate,
+        "optimizer_steps": step,
+        "final_loss": loss,
+        "final_gradient_l2": float(np.linalg.norm(gradient)),
+        "fit_wall_seconds": time.perf_counter() - started,
+        "peak_working_set_estimate_bytes": int(
+            active.nbytes + y.nbytes + CONNECTED8_WEIGHTS * 8 * 3 + batch_size * active.shape[1] * 8
+        ),
+    }
+
+
+def predict_connected8(w: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
+    if w.shape != (CONNECTED8_WEIGHTS,):
+        raise ValueError(f"expected {CONNECTED8_WEIGHTS} weights, got {w.shape}")
+    return np.tanh(w[connected8_active_indices(me, opp)].sum(axis=1)).astype(np.float32)
+
+
+def write_connected8_weights(path: str, w: np.ndarray) -> None:
+    if w.shape != (CONNECTED8_WEIGHTS,):
+        raise ValueError(f"expected {CONNECTED8_WEIGHTS} weights, got {w.shape}")
     w.astype("<f4").tofile(path)
 
 

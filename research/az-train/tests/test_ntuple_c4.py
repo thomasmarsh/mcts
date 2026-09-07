@@ -12,6 +12,10 @@ import numpy as np
 
 from az_train.ntuple_c4 import (
     CELLS,
+    CONNECTED8_ACTIVE_COUNT,
+    CONNECTED8_OFFSETS,
+    CONNECTED8_TUPLES,
+    CONNECTED8_WEIGHTS,
     LINES_3,
     LINES_4,
     LINES_5,
@@ -25,10 +29,13 @@ from az_train.ntuple_c4 import (
     STRUCTURED_WEIGHTS,
     WINDOWS,
     active_indices,
+    connected8_active_indices,
+    connected8_loss_and_gradient,
     features,
     fit_value_head,
     fit_value_head_with_diagnostics,
     predict,
+    predict_connected8,
     predict_structured,
     read_weights,
     structured_active_indices,
@@ -164,3 +171,47 @@ def test_structured_prediction_matches_rust_reference_vector() -> None:
     me[0, [0, 2]] = 1.0
     opp[0, [1, 7]] = 1.0
     assert abs(float(predict_structured(weights, me, opp)[0]) - (-0.47970423)) < 1e-6
+
+
+def test_connected8_geometry_is_fixed_bounded_unique_and_connected() -> None:
+    assert len(CONNECTED8_TUPLES) == 64
+    assert len(set(CONNECTED8_TUPLES)) == len(CONNECTED8_TUPLES)
+    assert CONNECTED8_WEIGHTS == 1 + len(CONNECTED8_TUPLES) * 3**8
+    for cells in CONNECTED8_TUPLES:
+        assert len(cells) == 8
+        assert all(0 <= cell < CELLS for cell in cells)
+        for index, cell in enumerate(cells[1:], start=1):
+            assert any(
+                abs(cell // 7 - earlier // 7) + abs(cell % 7 - earlier % 7) == 1
+                for earlier in cells[:index]
+            )
+
+
+def test_connected8_active_indices_and_gradient_are_correct() -> None:
+    me = np.zeros((2, CELLS), dtype=np.float32)
+    opp = np.zeros_like(me)
+    me[0, [0, 2]] = 1.0
+    opp[0, [1, 7]] = 1.0
+    active = connected8_active_indices(me, opp)
+    assert active.shape == (2, CONNECTED8_ACTIVE_COUNT)
+    assert active[0, 0] == 0
+    assert np.all(active[:, 1:] >= np.asarray(CONNECTED8_OFFSETS))
+    weights = np.zeros(CONNECTED8_WEIGHTS, dtype=np.float64)
+    weights[active[0, 1]] = 0.2
+    target = np.array([1.0, -1.0])
+    _, gradient = connected8_loss_and_gradient(weights, active, target, 0.03)
+    epsilon = 1e-6
+    probe = int(active[0, 1])
+    plus = weights.copy()
+    minus = weights.copy()
+    plus[probe] += epsilon
+    minus[probe] -= epsilon
+    numeric = (
+        connected8_loss_and_gradient(plus, active, target, 0.03)[0]
+        - connected8_loss_and_gradient(minus, active, target, 0.03)[0]
+    ) / (2 * epsilon)
+    assert abs(gradient[probe] - numeric) < 1e-6
+    reference = (
+        (np.arange(CONNECTED8_WEIGHTS, dtype=np.float64) - CONNECTED8_WEIGHTS / 2) * 0.00000002
+    ).astype(np.float32)
+    assert abs(float(predict_connected8(reference, me[:1], opp[:1])[0]) - (-0.008390832)) < 1e-6
