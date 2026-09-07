@@ -176,24 +176,34 @@ def _literal_loss_gradient(
     gp[value_at + 3][:] = d_hidden.sum(axis=0)
     d_value_features = d_hidden @ p[value_at + 2].T
     d_z_value = d_value_features.reshape(z_value.shape) * (z_value > 0.0)
-    dx_value, gp[value_at], gp[value_at + 1] = _conv_backward(x, p[value_at], d_z_value, 0)
+    dx_value, d_value_weight, d_value_bias = _conv_backward(x, p[value_at], d_z_value, 0)
+    gp[value_at][:] = d_value_weight
+    gp[value_at + 1][:] = d_value_bias
     dp = (probability - policy) / n
     gp[at + 2][:] = policy_features.T @ dp
     gp[at + 3][:] = dp.sum(axis=0)
     d_policy_features = dp @ p[at + 2].T
     d_z_policy = d_policy_features.reshape(z_policy.shape) * (z_policy > 0.0)
-    dx_policy, gp[at], gp[at + 1] = _conv_backward(x, p[at], d_z_policy, 0)
+    dx_policy, d_policy_weight, d_policy_bias = _conv_backward(x, p[at], d_z_policy, 0)
+    gp[at][:] = d_policy_weight
+    gp[at + 1][:] = d_policy_bias
     dx = dx_value + dx_policy
     for block in range(BLOCKS - 1, -1, -1):
         residual, z1, h1, z2 = blocks[block]
         d_z2 = dx * (z2 + residual > 0.0)
         block_at = 2 + block * 4
-        d_h1, gp[block_at + 2], gp[block_at + 3] = _conv_backward(h1, p[block_at + 2], d_z2, 1)
+        d_h1, d_second_weight, d_second_bias = _conv_backward(h1, p[block_at + 2], d_z2, 1)
+        gp[block_at + 2][:] = d_second_weight
+        gp[block_at + 3][:] = d_second_bias
         d_z1 = d_h1 * (z1 > 0.0)
-        dx_branch, gp[block_at], gp[block_at + 1] = _conv_backward(residual, p[block_at], d_z1, 1)
+        dx_branch, d_first_weight, d_first_bias = _conv_backward(residual, p[block_at], d_z1, 1)
+        gp[block_at][:] = d_first_weight
+        gp[block_at + 1][:] = d_first_bias
         dx = dx + dx_branch
     d_z0 = dx * (z0 > 0.0)
-    _, gp[0], gp[1] = _conv_backward(x0, p[0], d_z0, 1)
+    _, d_stem_weight, d_stem_bias = _conv_backward(x0, p[0], d_z0, 1)
+    gp[0][:] = d_stem_weight
+    gp[1][:] = d_stem_bias
     regularized = [0, 2, 4, 6, 8, value_at, value_at + 2, value_at + 4, at, at + 2]
     reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
     for i in regularized:
@@ -211,6 +221,9 @@ def fit_value_policy_with_diagnostics(
         raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
     rng = np.random.default_rng(seed)
     weights = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    for tensor in _unpack(weights):
+        if tensor.ndim == 1:
+            tensor.fill(0.05)
     moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
     beta1, beta2, step = 0.9, 0.999, 0
     started = time.perf_counter()
