@@ -216,7 +216,9 @@ def train_cli(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("--policy-out", help="Connect Four policy.bin output (defaults beside --out)")
     ap.add_argument(
-        "--connect4-value-head", choices=("basic", "structured", "connected8"), default="basic",
+        "--connect4-value-head",
+        choices=("basic", "structured", "connected8"),
+        default="basic",
         help="Connect Four value layout; alternatives retain compatible file layouts",
     )
     ap.add_argument(
@@ -235,13 +237,20 @@ def train_cli(argv: list[str] | None = None) -> None:
         c4_value_target = args.value_target or "direct"
         value_target = c4_value_target
         w, c4_metrics, train, validation = _fit_c4(
-            paths, args.head, args.l2, args.validation_fraction, args.split_seed,
-            c4_value_target, args.connect4_value_head,
+            paths,
+            args.head,
+            args.l2,
+            args.validation_fraction,
+            args.split_seed,
+            c4_value_target,
+            args.connect4_value_head,
         )
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
         mse = float(c4_metrics["train"]["mse"])
-        write_weights = (write_mlp_c4 if args.head == "mlp" else
-            write_structured_weights
+        write_weights = (
+            write_mlp_c4
+            if args.head == "mlp"
+            else write_structured_weights
             if args.connect4_value_head == "structured"
             else write_connected8_weights
             if args.connect4_value_head == "connected8"

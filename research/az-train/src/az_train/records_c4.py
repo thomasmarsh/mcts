@@ -84,7 +84,7 @@ def game_slices(pos: Positions) -> list[slice]:
     for i, start in enumerate(starts):
         end = int(starts[i + 1]) if i + 1 < len(starts) else len(pos)
         expected = np.arange(end - int(start), dtype=np.uint8)
-        actual = pos.ply[int(start):end]
+        actual = pos.ply[int(start) : end]
         if not np.array_equal(actual, expected):
             bad = int(np.flatnonzero(actual != expected)[0])
             raise ValueError(
@@ -98,8 +98,11 @@ def game_slices(pos: Positions) -> list[slice]:
 def select_rows(pos: Positions, rows: np.ndarray) -> Positions:
     """Return records at ``rows``, preserving their byte-stream fields."""
     return Positions(
-        black=pos.black[rows], white=pos.white[rows], side=pos.side[rows],
-        ply=pos.ply[rows], value=pos.value[rows],
+        black=pos.black[rows],
+        white=pos.white[rows],
+        side=pos.side[rows],
+        ply=pos.ply[rows],
+        value=pos.value[rows],
         policy=[pos.policy[int(i)] for i in rows],
     )
 
@@ -116,12 +119,12 @@ def split_by_game(
     n_validation = min(len(games) - 1, max(1, round(len(games) * validation_fraction)))
     order = np.random.default_rng(seed).permutation(len(games))
     validation_games = set(int(i) for i in order[:n_validation])
-    train_rows = np.concatenate([
-        np.arange(s.start, s.stop) for i, s in enumerate(games) if i not in validation_games
-    ])
-    validation_rows = np.concatenate([
-        np.arange(s.start, s.stop) for i, s in enumerate(games) if i in validation_games
-    ])
+    train_rows = np.concatenate(
+        [np.arange(s.start, s.stop) for i, s in enumerate(games) if i not in validation_games]
+    )
+    validation_rows = np.concatenate(
+        [np.arange(s.start, s.stop) for i, s in enumerate(games) if i in validation_games]
+    )
     return (
         select_rows(pos, train_rows),
         select_rows(pos, validation_rows),

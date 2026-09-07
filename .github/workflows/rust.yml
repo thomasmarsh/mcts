@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 
 on:
   push:
@@ -26,3 +26,17 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+
+  tuner:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install uv
+      uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      with:
+        version: "0.12.10"
+        enable-cache: true
+    - name: Run tuner tests
+      working-directory: tools/tuner
+      run: uv run --locked pytest

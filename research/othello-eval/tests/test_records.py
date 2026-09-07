@@ -86,7 +86,7 @@ def _dump_harvest(tmp_path: Path) -> Path:
     out_dir = tmp_path / "harvest"
     cfg = tmp_path / "harvest.toml"
     cfg.write_text(
-        "engine = \"strong\"\n"
+        'engine = "strong"\n'
         "label_iters = 60\n"
         "epsilon = 0.1\n"
         "opening_plies = 4\n"
@@ -98,9 +98,19 @@ def _dump_harvest(tmp_path: Path) -> Path:
         "td_lambda = 0.7\n"
     )
     cmd = [
-        "cargo", "run", "-q", "-p", "game-othello", "--",
-        "dump", "--label", "harvest",
-        "--out", str(out_dir), "--harvest-config", str(cfg),
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "game-othello",
+        "--",
+        "dump",
+        "--label",
+        "harvest",
+        "--out",
+        str(out_dir),
+        "--harvest-config",
+        str(cfg),
     ]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
     if proc.returncode != 0:

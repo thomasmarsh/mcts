@@ -24,8 +24,21 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _dump(tmp_path: Path, extra: list[str] | None = None) -> Path:
     bin_path = tmp_path / "positions.bin"
     cmd = [
-        "cargo", "run", "-q", "-p", "game-ttt", "--bin", "game-ttt", "--",
-        "dump", "--games", "20", "--seed", "0", "--out", str(bin_path),
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "game-ttt",
+        "--bin",
+        "game-ttt",
+        "--",
+        "dump",
+        "--games",
+        "20",
+        "--seed",
+        "0",
+        "--out",
+        str(bin_path),
         *(extra or []),
     ]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)

@@ -33,14 +33,28 @@ def test_reference_diagnostic_magic_is_not_replay() -> None:
     with pytest.raises(ValueError, match="not a v2-connect4 replay"):
         decode_records(b"C4REFD01" + b"\0" * 32)
 
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _dump(tmp_path: Path, extra: list[str] | None = None) -> Path:
     bin_path = tmp_path / "positions.bin"
     cmd = [
-        "cargo", "run", "-q", "-p", "game-connect4", "--bin", "game-connect4", "--",
-        "dump", "--games", "20", "--seed", "0", "--out", str(bin_path),
+        "cargo",
+        "run",
+        "-q",
+        "-p",
+        "game-connect4",
+        "--bin",
+        "game-connect4",
+        "--",
+        "dump",
+        "--games",
+        "20",
+        "--seed",
+        "0",
+        "--out",
+        str(bin_path),
         *(extra or []),
     ]
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
@@ -109,8 +123,11 @@ def _synthetic_games() -> Positions:
     # Three games with distinct board words make leakage easy to detect.
     ply = np.asarray([0, 1, 2, 0, 1, 0, 1, 2, 3], dtype=np.uint8)
     return Positions(
-        black=np.arange(len(ply), dtype=np.uint64), white=np.zeros(len(ply), dtype=np.uint64),
-        side=ply % 2, ply=ply, value=np.ones(len(ply), dtype=np.float32),
+        black=np.arange(len(ply), dtype=np.uint64),
+        white=np.zeros(len(ply), dtype=np.uint64),
+        side=ply % 2,
+        ply=ply,
+        value=np.ones(len(ply), dtype=np.float32),
         policy=[[] for _ in ply],
     )
 
@@ -135,6 +152,7 @@ def test_constant_metric_cases_are_json_safe() -> None:
     assert metrics["pearson"] == 0.0
     assert metrics["sign_agreement"] == 0.0
     import json
+
     assert "NaN" not in json.dumps(metrics, allow_nan=False)
 
 
@@ -143,11 +161,22 @@ def test_connect4_cli_defaults_to_direct_and_writes_held_out_games(tmp_path: Pat
     source.write_bytes(encode_records(_synthetic_games()))
     out = tmp_path / "weights.bin"
     held_out = tmp_path / "validation.bin"
-    train_cli([
-        "--game", "connect4", "--positions", str(source), "--out", str(out),
-        "--l2", "1", "--validation-records-out", str(held_out),
-    ])
+    train_cli(
+        [
+            "--game",
+            "connect4",
+            "--positions",
+            str(source),
+            "--out",
+            str(out),
+            "--l2",
+            "1",
+            "--validation-records-out",
+            str(held_out),
+        ]
+    )
     import json
+
     meta = json.loads(out.with_suffix(".bin.meta.json").read_text())
     assert meta["value_target"] == "direct"
     assert meta["metrics"]["train_games"] + meta["metrics"]["validation_games"] == 3

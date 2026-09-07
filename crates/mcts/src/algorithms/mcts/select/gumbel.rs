@@ -178,26 +178,17 @@ mod tests {
         let logits = [0.0, 0.0, 0.0];
         let visits = [4, 0, 2];
         let q_values = [0.5, 99.0, -0.5];
-        let from_evaluator = GumbelCompletedQ::completed_q_for_node(
-            Some(0.75),
-            &logits,
-            &visits,
-            &q_values,
-        );
-        let unavailable =
-            GumbelCompletedQ::completed_q_for_node(None, &logits, &visits, &q_values);
+        let from_evaluator =
+            GumbelCompletedQ::completed_q_for_node(Some(0.75), &logits, &visits, &q_values);
+        let unavailable = GumbelCompletedQ::completed_q_for_node(None, &logits, &visits, &q_values);
         assert_eq!(from_evaluator, vec![0.5, 0.75 / 7.0, -0.5]);
         assert_eq!(unavailable, vec![0.5, 0.0, -0.5]);
     }
 
     #[test]
     fn node_value_and_child_qs_keep_the_node_mover_sign() {
-        let completed = GumbelCompletedQ::completed_q_for_node(
-            Some(-0.6),
-            &[0.0, 0.0],
-            &[3, 0],
-            &[-0.2, 99.0],
-        );
+        let completed =
+            GumbelCompletedQ::completed_q_for_node(Some(-0.6), &[0.0, 0.0], &[3, 0], &[-0.2, 99.0]);
         // The visited Q and the completion value are both negative for this
         // node's mover, so their mix stays negative rather than negating the
         // child Q a second time.

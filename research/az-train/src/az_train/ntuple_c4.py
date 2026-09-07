@@ -74,7 +74,7 @@ _OFFSETS: list[int] = []
 _off = 1
 for _ in WINDOWS:
     _OFFSETS.append(_off)
-    _off += 3 ** TUPLE_LEN
+    _off += 3**TUPLE_LEN
 OFFSETS: tuple[int, ...] = tuple(_OFFSETS)
 N_WEIGHTS = _off  # 1 + 69 * 81 == 5590
 
@@ -257,7 +257,7 @@ def fit_value_head_with_diagnostics(
     residual = b.copy()
     direction = residual.copy()
     residual_sq = float(residual @ residual)
-    initial_residual = residual_sq ** 0.5
+    initial_residual = residual_sq**0.5
     iterations = 0
     converged = initial_residual <= tolerance
     for step in range(1, max_iterations + 1) if initial_residual > tolerance else ():
@@ -270,7 +270,7 @@ def fit_value_head_with_diagnostics(
         w += alpha * direction
         residual -= alpha * ap
         next_sq = float(residual @ residual)
-        if next_sq ** 0.5 <= tolerance * max(1.0, initial_residual):
+        if next_sq**0.5 <= tolerance * max(1.0, initial_residual):
             residual_sq = next_sq
             converged = True
             break
@@ -281,7 +281,7 @@ def fit_value_head_with_diagnostics(
         "cg_max_iterations": max_iterations,
         "cg_iterations": iterations,
         "cg_converged": converged,
-        "cg_final_residual": residual_sq ** 0.5,
+        "cg_final_residual": residual_sq**0.5,
         "fit_wall_seconds": time.perf_counter() - started,
         # active indices, target, and a handful of working vectors dominate.
         "peak_working_set_estimate_bytes": int(active.nbytes + y.nbytes + N_WEIGHTS * 8 * 7),
@@ -290,7 +290,10 @@ def fit_value_head_with_diagnostics(
 
 
 def fit_value_head(
-    me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float = 1e-3,
+    me: np.ndarray,
+    opp: np.ndarray,
+    value: np.ndarray,
+    l2: float = 1e-3,
     value_target: str = "atanh",
 ) -> np.ndarray:
     """Fit ridge regression to a direct or ``atanh`` outcome target."""
@@ -298,8 +301,13 @@ def fit_value_head(
 
 
 def fit_structured_value_head_with_diagnostics(
-    me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float = 1e-3,
-    value_target: str = "direct", tolerance: float = 1e-8, max_iterations: int = 1000,
+    me: np.ndarray,
+    opp: np.ndarray,
+    value: np.ndarray,
+    l2: float = 1e-3,
+    value_target: str = "direct",
+    tolerance: float = 1e-8,
+    max_iterations: int = 1000,
     mirror_augment: bool = False,
 ) -> tuple[np.ndarray, dict[str, float | int]]:
     """Matrix-free ridge fit for the structured value layout."""
@@ -343,7 +351,7 @@ def fit_structured_value_head_with_diagnostics(
     residual = b.copy()
     direction = residual.copy()
     residual_sq = float(residual @ residual)
-    initial_residual = residual_sq ** 0.5
+    initial_residual = residual_sq**0.5
     iterations = 0
     converged = initial_residual <= tolerance
     for step in range(1, max_iterations + 1) if initial_residual > tolerance else ():
@@ -356,16 +364,18 @@ def fit_structured_value_head_with_diagnostics(
         w += alpha * direction
         residual -= alpha * ap
         next_sq = float(residual @ residual)
-        if next_sq ** 0.5 <= tolerance * max(1.0, initial_residual):
+        if next_sq**0.5 <= tolerance * max(1.0, initial_residual):
             residual_sq = next_sq
             converged = True
             break
         direction = residual + (next_sq / residual_sq) * direction
         residual_sq = next_sq
     return w.astype(np.float32), {
-        "cg_tolerance": tolerance, "cg_max_iterations": max_iterations,
-        "cg_iterations": iterations, "cg_converged": converged,
-        "cg_final_residual": residual_sq ** 0.5,
+        "cg_tolerance": tolerance,
+        "cg_max_iterations": max_iterations,
+        "cg_iterations": iterations,
+        "cg_converged": converged,
+        "cg_final_residual": residual_sq**0.5,
         "fit_wall_seconds": time.perf_counter() - started,
         "peak_working_set_estimate_bytes": int(
             active.nbytes
@@ -405,9 +415,15 @@ def connected8_loss_and_gradient(
 
 
 def fit_connected8_value_head_with_diagnostics(
-    me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float = 10.0,
-    value_target: str = "direct", seed: int = 0, batch_size: int = 1024,
-    epochs: int = 80, learning_rate: float = 0.03,
+    me: np.ndarray,
+    opp: np.ndarray,
+    value: np.ndarray,
+    l2: float = 10.0,
+    value_target: str = "direct",
+    seed: int = 0,
+    batch_size: int = 1024,
+    epochs: int = 80,
+    learning_rate: float = 0.03,
 ) -> tuple[np.ndarray, dict[str, float | int | str]]:
     """Bounded-memory sparse AdaGrad fit for the connected eight-cell layout."""
     active = connected8_active_indices(me, opp)
