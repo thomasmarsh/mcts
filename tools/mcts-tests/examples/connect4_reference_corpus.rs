@@ -6,12 +6,11 @@
 use std::{collections::HashSet, env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use game_connect4::reference_diagnostic::{
-    canonical_key, encode, split_for_group, DiagnosticRecord, ReferenceLabel,
+    canonical_key, classify_score, encode, split_for_group, DiagnosticRecord, ReferenceLabel,
 };
 use game_connect4::{Player, Standard, State};
 use mcts::{
     algorithms::negamax::{MaterialBlind, Negamax, NegamaxOptions},
-    evaluator::DRAW_SCORE,
     game::Game,
 };
 use rand::{rngs::SmallRng, Rng, SeedableRng};
@@ -28,11 +27,7 @@ fn label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
         );
         let (_, score) = solver.bounded_negamax(state, remaining.max(1));
         return (
-            match score.cmp(&DRAW_SCORE) {
-                std::cmp::Ordering::Greater => ReferenceLabel::ExactWin,
-                std::cmp::Ordering::Less => ReferenceLabel::ExactLoss,
-                std::cmp::Ordering::Equal => ReferenceLabel::ExactDraw,
-            },
+            classify_score(score, true),
             remaining as u8,
             remaining as u8,
         );
@@ -47,14 +42,30 @@ fn label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
         );
         let (_, score) = solver.bounded_negamax(state, depth);
         max = depth as u8;
-        if score > DRAW_SCORE {
-            return (ReferenceLabel::BoundedWin, depth as u8, max);
-        }
-        if score < DRAW_SCORE {
-            return (ReferenceLabel::BoundedLoss, depth as u8, max);
+        let label = classify_score(score, false);
+        if label != ReferenceLabel::Unresolved {
+            return (label, depth as u8, max);
         }
     }
     (ReferenceLabel::Unresolved, 0, max)
+}
+
+fn peak_rss_bytes() -> u64 {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+    // SAFETY: getrusage initializes the supplied rusage structure on success.
+    let status = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
+    if status != 0 {
+        return 0;
+    }
+    let rss = unsafe { usage.assume_init().ru_maxrss } as u64;
+    #[cfg(target_os = "macos")]
+    {
+        rss
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        rss * 1024
+    }
 }
 
 fn main() -> ExitCode {
@@ -162,10 +173,19 @@ fn main() -> ExitCode {
     let mut proven_validation = [0usize; 2];
     let mut proof_hist = [0usize; 43];
     let mut max_hist = [0usize; 43];
+    let mut ply_hist = [0usize; 42];
+    let mut side_hist = [0usize; 2];
+    let mut split_groups = [HashSet::new(), HashSet::new()];
+    let mut split_keys = [HashSet::new(), HashSet::new()];
     for r in &records {
         labels[r.label as usize] += 1;
         proof_hist[r.proof_depth as usize] += 1;
         max_hist[r.max_depth as usize] += 1;
+        ply_hist[r.ply as usize] += 1;
+        side_hist[r.side as usize] += 1;
+        let split_index = r.split as usize;
+        split_groups[split_index].insert(r.group);
+        split_keys[split_index].insert(canonical_key(r.black, r.white, r.side));
         if r.split as u8 == 0 {
             train += 1;
         } else {
@@ -177,14 +197,21 @@ fn main() -> ExitCode {
             }
         }
     }
-    let meta=format!("{{\n  \"format\": \"C4REFD01\",\n  \"version\": 1,\n  \"seed\": {seed},\n  \"games\": {games},\n  \"positions\": {},\n  \"train_positions\": {train},\n  \"validation_positions\": {validation},\n  \"validation_losses\": {},\n  \"validation_wins\": {},\n  \"duplicates_omitted\": {duplicates},\n  \"canonical_cross_split_overlap\": 0,\n  \"depth_schedule\": [6, 8, 10],\n  \"exact_remaining_plies\": 10,\n  \"label_counts\": {:?},\n  \"proof_depth_histogram\": {:?},\n  \"max_depth_histogram\": {:?},\n  \"sha256\": \"{hash}\",\n  \"wall_seconds\": {:.3}\n}}\n",records.len(),proven_validation[0],proven_validation[1],labels,proof_hist,max_hist,started.elapsed().as_secs_f64());
+    let overlap = split_keys[0].intersection(&split_keys[1]).count();
+    let meta=format!("{{\n  \"format\": \"C4REFD01\",\n  \"version\": 1,\n  \"seed\": {seed},\n  \"games_requested\": {games},\n  \"positions\": {},\n  \"group_counts\": {{\"train\": {}, \"validation\": {}}},\n  \"split_position_counts\": {{\"train\": {train}, \"validation\": {validation}}},\n  \"validation_proven\": {{\"losses\": {}, \"wins\": {}}},\n  \"duplicates_omitted\": {duplicates},\n  \"canonical_cross_split_overlap\": {overlap},\n  \"depth_schedule\": [6, 8, 10],\n  \"exact_remaining_plies\": 10,\n  \"label_counts\": {:?},\n  \"proof_depth_histogram\": {:?},\n  \"max_depth_histogram\": {:?},\n  \"ply_histogram\": {:?},\n  \"side_histogram\": {:?},\n  \"sha256\": \"{hash}\"\n}}\n",records.len(),split_groups[0].len(),split_groups[1].len(),proven_validation[0],proven_validation[1],labels,proof_hist,max_hist,ply_hist,side_hist);
     fs::write(out.with_extension("meta.json"), meta).expect("write metadata");
+    let wall_seconds = started.elapsed().as_secs_f64();
+    let peak_rss_bytes = peak_rss_bytes();
+    fs::write(
+        out.with_extension("run.json"),
+        format!("{{\n  \"corpus_sha256\": \"{hash}\",\n  \"wall_seconds\": {wall_seconds:.3},\n  \"peak_rss_bytes\": {peak_rss_bytes}\n}}\n"),
+    )
+    .expect("write run metadata");
     println!(
-        "corpus={} positions={} hash={} wall_seconds={:.3}",
+        "corpus={} positions={} hash={} wall_seconds={wall_seconds:.3} peak_rss_bytes={peak_rss_bytes}",
         out.display(),
         records.len(),
-        hash,
-        started.elapsed().as_secs_f64()
+        hash
     );
     ExitCode::SUCCESS
 }

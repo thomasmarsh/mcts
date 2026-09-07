@@ -67,6 +67,18 @@ impl TryFrom<u8> for ReferenceLabel {
     }
 }
 
+/// Classify a negamax score without treating a depth-cutoff neutral score as a draw.
+pub fn classify_score(score: i32, fully_searched: bool) -> ReferenceLabel {
+    match score.cmp(&0) {
+        std::cmp::Ordering::Greater if fully_searched => ReferenceLabel::ExactWin,
+        std::cmp::Ordering::Less if fully_searched => ReferenceLabel::ExactLoss,
+        std::cmp::Ordering::Equal if fully_searched => ReferenceLabel::ExactDraw,
+        std::cmp::Ordering::Greater => ReferenceLabel::BoundedWin,
+        std::cmp::Ordering::Less => ReferenceLabel::BoundedLoss,
+        std::cmp::Ordering::Equal => ReferenceLabel::Unresolved,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DiagnosticRecord {
     pub black: u64,
@@ -112,6 +124,29 @@ pub fn canonical_key(black: u64, white: u64, side: u8) -> (u64, u64, u8) {
     (black, white, side).min(mirrored)
 }
 
+fn has_four(bits: u64) -> bool {
+    const DIRECTIONS: [(isize, isize); 4] = [(1, 0), (0, 1), (1, 1), (1, -1)];
+    for row in 0..6 {
+        for col in 0..7 {
+            for &(dr, dc) in &DIRECTIONS {
+                let end_row = row as isize + dr * 3;
+                let end_col = col as isize + dc * 3;
+                if !(0..6).contains(&end_row) || !(0..7).contains(&end_col) {
+                    continue;
+                }
+                if (0..4).all(|step| {
+                    let row = row as isize + dr * step;
+                    let col = col as isize + dc * step;
+                    bits & (1 << (row * 7 + col)) != 0
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Validate by replaying every occupied cell in gravity order.  This catches
 /// bit-range, overlap, parity, gravity, terminal, and turn mismatches.
 pub fn state_from_record(record: &DiagnosticRecord) -> Result<State<6, 7>, String> {
@@ -150,6 +185,9 @@ pub fn state_from_record(record: &DiagnosticRecord) -> Result<State<6, 7>, Strin
                 return Err("gravity-invalid board".into());
             }
         }
+    }
+    if count == 42 || has_four(record.black) || has_four(record.white) {
+        return Err("diagnostic records must contain non-terminal positions".into());
     }
     Ok(State::from_parts(
         BitBoard::from_bits(record.black),
@@ -300,6 +338,8 @@ pub fn metrics(prediction: &[f64], target: &[f64]) -> Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Move, Standard};
+    use mcts::game::Game;
     fn rec() -> DiagnosticRecord {
         DiagnosticRecord {
             black: 1,
@@ -321,6 +361,9 @@ mod tests {
         let mut b = b;
         b[0] = 0;
         assert!(decode(&b).is_err());
+        let mut b = encode(&[rec()]);
+        b[8] = 2;
+        assert!(decode(&b).is_err());
     }
     #[test]
     fn split_and_mirror() {
@@ -329,6 +372,15 @@ mod tests {
             canonical_key(1, 2, 0),
             canonical_key(mirror_bits(1), mirror_bits(2), 0)
         );
+        let mut train = std::collections::HashSet::new();
+        let mut validation = std::collections::HashSet::new();
+        for group in 0..100 {
+            match split_for_group(group, 9) {
+                Split::Train => assert!(train.insert(group)),
+                Split::Validation => assert!(validation.insert(group)),
+            }
+        }
+        assert!(train.is_disjoint(&validation));
     }
     #[test]
     fn invalid_boards_rejected() {
@@ -337,6 +389,12 @@ mod tests {
         assert!(state_from_record(&r).is_err());
         r = rec();
         r.black = 1 << 7;
+        assert!(state_from_record(&r).is_err());
+        r = rec();
+        r.black = 0b1111;
+        r.white = (1 << 7) | (1 << 8) | (1 << 9);
+        r.ply = 7;
+        r.side = 1;
         assert!(state_from_record(&r).is_err());
     }
     #[test]
@@ -352,5 +410,52 @@ mod tests {
                 m.mse.is_finite() && m.pearson.is_finite() && m.balanced_sign_accuracy.is_finite()
             );
         }
+    }
+    #[test]
+    fn labels_keep_sign_and_exactness_separate() {
+        assert_eq!(ReferenceLabel::ExactDraw.sign(), Some(0.));
+        assert!(ReferenceLabel::ExactDraw.exact());
+        assert_eq!(ReferenceLabel::BoundedLoss.sign(), Some(-1.));
+        assert!(!ReferenceLabel::BoundedLoss.exact());
+        assert_eq!(ReferenceLabel::Unresolved.sign(), None);
+    }
+    #[test]
+    fn score_classification_distinguishes_draws_from_cutoffs() {
+        assert_eq!(classify_score(0, true), ReferenceLabel::ExactDraw);
+        assert_eq!(classify_score(0, false), ReferenceLabel::Unresolved);
+        assert_eq!(classify_score(7, true), ReferenceLabel::ExactWin);
+        assert_eq!(classify_score(-7, true), ReferenceLabel::ExactLoss);
+        assert_eq!(classify_score(7, false), ReferenceLabel::BoundedWin);
+        assert_eq!(classify_score(-7, false), ReferenceLabel::BoundedLoss);
+    }
+    #[test]
+    fn source_outcome_is_from_the_recorded_mover() {
+        let black_to_move = rec();
+        assert_eq!(black_to_move.source_outcome, 1.);
+        let mut white_to_move = black_to_move.clone();
+        white_to_move.side = 1;
+        white_to_move.black = (1 << 0) | (1 << 1);
+        white_to_move.white = 1 << 7;
+        white_to_move.ply = 3;
+        white_to_move.source_outcome = -1.;
+        assert!(state_from_record(&white_to_move).is_ok());
+        assert_eq!(-black_to_move.source_outcome, white_to_move.source_outcome);
+    }
+    #[test]
+    fn forced_child_win_has_the_opposite_parent_perspective() {
+        let mut state = State::default();
+        for col in [1, 0, 1, 0, 2, 0, 3] {
+            state = Standard::apply(state, &Move(col));
+        }
+        assert_eq!(state.turn(), Player::White);
+        let child = Standard::apply(state, &Move(0));
+        assert!(Standard::is_terminal(&child));
+        assert_eq!(Standard::winner(&child), Some(Player::White));
+        let child_value = classify_score(1, false).sign().unwrap();
+        assert!(child_value > 0., "White has the immediate column-0 win");
+        assert!(
+            -child_value < 0.,
+            "the same child is bad for its Black parent"
+        );
     }
 }
