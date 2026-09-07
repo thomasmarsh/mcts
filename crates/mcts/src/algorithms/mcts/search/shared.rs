@@ -654,7 +654,9 @@ pub fn select_step<G: Game>(
     select_strategy: &mut impl SelectPolicy<G>,
     rng: &mut SmallRng,
     mut prior: Option<&mut (dyn crate::algorithms::mcts::prior::PriorPolicyDyn<G> + 'static)>,
-    mut policy_logits: Option<&mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static)>,
+    mut policy_logits: Option<
+        &mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static),
+    >,
     forced_root_action: Option<&G::A>,
 ) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());

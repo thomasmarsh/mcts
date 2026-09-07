@@ -105,18 +105,30 @@ where
         .unwrap_or(0)
 }
 
-/// Complete unvisited action values with the visit-weighted mix of the root
-/// evaluation and the observed child values.  All values are from the root
-/// player's perspective.
-pub fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
+/// Complete unvisited action values with the prior-weighted mixed value from
+/// Mctx. All values are from the root player's perspective.
+pub fn completed_q(root_value: f64, logits: &[f64], visits: &[u32], q_values: &[f64]) -> Vec<f64> {
+    assert_eq!(logits.len(), visits.len());
     assert_eq!(visits.len(), q_values.len());
-    let (weighted_q, total_visits) = visits
+    let max_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let priors: Vec<f64> = logits
         .iter()
+        .map(|logit| (logit - max_logit).exp())
+        .collect();
+    let visited_prior: f64 = priors
+        .iter()
+        .zip(visits)
+        .filter_map(|(&prior, &visits)| (visits > 0).then_some(prior))
+        .sum();
+    let weighted_q = priors
+        .iter()
+        .zip(visits)
         .zip(q_values)
-        .fold((0.0, 0u32), |(sum, count), (&visits, &q)| {
-            (sum + visits as f64 * q, count + visits)
-        });
-    let mixed_value = (root_value + weighted_q) / (1 + total_visits) as f64;
+        .filter_map(|((&prior, &visits), &q)| (visits > 0).then_some(prior * q))
+        .sum::<f64>()
+        / visited_prior.max(f64::MIN_POSITIVE);
+    let total_visits: u32 = visits.iter().sum();
+    let mixed_value = (root_value + total_visits as f64 * weighted_q) / (1 + total_visits) as f64;
     visits
         .iter()
         .zip(q_values)
@@ -171,6 +183,7 @@ fn root_completed_q<G, S>(
     root_id: Id,
     player: usize,
     root_value: f64,
+    logits: &[f64],
     cfg: &GumbelConfig,
 ) -> Vec<f64>
 where
@@ -186,7 +199,7 @@ where
         .map(|i| children.expected_score(i, player))
         .collect();
     if cfg.use_completed_q {
-        completed_q(root_value, &visits, &q_values)
+        completed_q(root_value, logits, &visits, &q_values)
     } else {
         q_values
             .into_iter()
@@ -306,19 +319,12 @@ where
     };
     debug_assert!(k > 0);
 
-    let logits: Vec<f64> = {
-        let raw = search
-            .config
-            .policy_logits
-            .as_deref_mut()
-            .map(|p| p.logits(state, &actions))
-            .unwrap_or_default();
-        if raw.len() == k {
-            raw
-        } else {
-            vec![0.0; k]
-        }
-    };
+    let logits = search
+        .index
+        .get(root_id)
+        .children()
+        .policy_logits()
+        .to_vec();
     let gumbel: Vec<f64> = (0..k)
         .map(|_| sample_gumbel(&mut search.config.rng))
         .collect();
@@ -355,7 +361,7 @@ where
             break;
         }
         let max_visits = root_child_max_visits(search, root_id);
-        let completed_q = root_completed_q(search, root_id, player, root_value, cfg);
+        let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
         considered.sort_by(|&a, &b| {
             let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
             let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
@@ -365,7 +371,7 @@ where
     }
 
     let max_visits = root_child_max_visits(search, root_id);
-    let completed_q = root_completed_q(search, root_id, player, root_value, cfg);
+    let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
     let best = *considered
         .iter()
         .max_by(|&&a, &&b| {
@@ -420,9 +426,9 @@ mod tests {
 
     #[test]
     fn completed_q_uses_the_explicit_root_value_for_unvisited_actions() {
-        let completed = completed_q(0.4, &[10, 0, 2], &[0.8, 99.0, -0.2]);
+        let completed = completed_q(0.4, &[0.0, 0.0, 0.0], &[10, 0, 2], &[0.8, 99.0, -0.2]);
         assert_eq!(completed[0], 0.8);
-        assert!((completed[1] - 8.0 / 13.0).abs() < 1e-12);
+        assert!((completed[1] - 4.0 / 13.0).abs() < 1e-12);
         assert_eq!(completed[2], -0.2);
     }
 
@@ -446,9 +452,15 @@ mod tests {
 
     #[test]
     fn min_max_rescaling_is_optional_and_equal_q_is_neutral() {
-        assert_eq!(transform_completed_q(&[-2.0, 0.0, 2.0], true), vec![0.0, 0.5, 1.0]);
+        assert_eq!(
+            transform_completed_q(&[-2.0, 0.0, 2.0], true),
+            vec![0.0, 0.5, 1.0]
+        );
         assert_eq!(transform_completed_q(&[0.25; 3], true), vec![0.25; 3]);
-        assert_eq!(transform_completed_q(&[-2.0, 0.0, 2.0], false), vec![-2.0, 0.0, 2.0]);
+        assert_eq!(
+            transform_completed_q(&[-2.0, 0.0, 2.0], false),
+            vec![-2.0, 0.0, 2.0]
+        );
     }
 
     #[test]
@@ -456,11 +468,12 @@ mod tests {
         let cfg = GumbelConfig::default();
         let visits = [5, 2, 0];
         let q = [0.6, -0.2, 99.0];
-        let completed = completed_q(0.25, &visits, &q);
-        assert_eq!(completed, vec![0.6, -0.2, 0.35625]);
-        assert_eq!(transform_completed_q(&completed, true), vec![1.0, 0.0, 0.6953125]);
-        let policy = improved_policy(&[0.2, -0.1, 0.3], &visits, &completed, &cfg);
-        let expected = [0.8265327, 0.00250237, 0.1709649];
+        let logits = [0.2, -0.1, 0.3];
+        let completed = completed_q(0.25, &logits, &visits, &q);
+        assert_eq!(completed, vec![0.6, -0.2, 0.2583597617681613]);
+        assert!((transform_completed_q(&completed, true)[2] - 0.5729497022102017).abs() < 1e-12);
+        let policy = improved_policy(&logits, &visits, &completed, &cfg);
+        let expected = [0.9020746, 0.0027310802, 0.09519435];
         for (actual, expected) in policy.iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-6);
         }

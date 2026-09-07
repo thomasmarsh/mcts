@@ -32,7 +32,7 @@ impl GumbelCompletedQ {
     ) -> usize {
         assert_eq!(logits.len(), visits.len());
         assert_eq!(visits.len(), q_values.len());
-        let completed = completed_q(root_value, visits, q_values);
+        let completed = completed_q(root_value, logits, visits, q_values);
         let target = improved_policy(logits, visits, &completed, cfg);
         let total = visits.iter().sum::<u32>() as f64 + 1.0;
         (0..visits.len())
@@ -68,7 +68,9 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, _: &mut SmallRng) -> usize {
         let children = ctx.index.get(ctx.stack.current_id()).children();
-        let visits = (0..children.len()).map(|i| children.num_visits(i)).collect::<Vec<_>>();
+        let visits = (0..children.len())
+            .map(|i| children.num_visits(i))
+            .collect::<Vec<_>>();
         let q_values = (0..children.len())
             .map(|i| children.expected_score(i, ctx.player))
             .collect::<Vec<_>>();
@@ -77,7 +79,13 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
         // from the neutral game value rather than `QInit`, whose exploration
         // sentinel is not a value-model prediction.
         let root_value = 0.0;
-        Self::visit_matching_index(children.policy_logits(), &visits, &q_values, root_value, &self.cfg)
+        Self::visit_matching_index(
+            children.policy_logits(),
+            &visits,
+            &q_values,
+            root_value,
+            &self.cfg,
+        )
     }
 
     fn score_child(
@@ -91,13 +99,21 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
         usize::MAX - idx
     }
 
-    fn unvisited_value(&self, _: &SelectContext<'_, G>, _: Self::Aux) -> Self::Score { 0 }
+    fn unvisited_value(&self, _: &SelectContext<'_, G>, _: Self::Aux) -> Self::Score {
+        0
+    }
 
-    fn backprop_flags(&self) -> BackpropFlags { BackpropFlags(0) }
+    fn backprop_flags(&self) -> BackpropFlags {
+        BackpropFlags(0)
+    }
 
-    fn requirements(&self) -> config::Requirements { config::Requirements::default() }
+    fn requirements(&self) -> config::Requirements {
+        config::Requirements::default()
+    }
 
-    fn label(&self) -> String { "gumbel_completed_q".into() }
+    fn label(&self) -> String {
+        "gumbel_completed_q".into()
+    }
 }
 
 #[cfg(test)]
@@ -106,16 +122,34 @@ mod tests {
 
     #[test]
     fn visit_matching_is_deterministic_and_tracks_the_target() {
-        let cfg = GumbelConfig { c_visit: 0.0, c_scale: 1.0, rescale_q: false, ..GumbelConfig::default() };
-        assert_eq!(GumbelCompletedQ::visit_matching_index(&[0.0; 3], &[4, 1, 0], &[0.0; 3], 0.0, &cfg), 2);
-        assert_eq!(GumbelCompletedQ::visit_matching_index(&[0.0; 3], &[0, 0, 0], &[0.0; 3], 0.0, &cfg), 0);
+        let cfg = GumbelConfig {
+            c_visit: 0.0,
+            c_scale: 1.0,
+            rescale_q: false,
+            ..GumbelConfig::default()
+        };
+        assert_eq!(
+            GumbelCompletedQ::visit_matching_index(&[0.0; 3], &[4, 1, 0], &[0.0; 3], 0.0, &cfg),
+            2
+        );
+        assert_eq!(
+            GumbelCompletedQ::visit_matching_index(&[0.0; 3], &[0, 0, 0], &[0.0; 3], 0.0, &cfg),
+            0
+        );
     }
 
     #[test]
     fn completion_and_action_order_follow_the_cached_logits() {
-        let cfg = GumbelConfig { c_visit: 0.0, c_scale: 1.0, rescale_q: false, ..GumbelConfig::default() };
-        let first = GumbelCompletedQ::visit_matching_index(&[3.0, -3.0], &[0, 0], &[9.0, 9.0], 0.25, &cfg);
-        let mirrored = GumbelCompletedQ::visit_matching_index(&[-3.0, 3.0], &[0, 0], &[9.0, 9.0], 0.25, &cfg);
+        let cfg = GumbelConfig {
+            c_visit: 0.0,
+            c_scale: 1.0,
+            rescale_q: false,
+            ..GumbelConfig::default()
+        };
+        let first =
+            GumbelCompletedQ::visit_matching_index(&[3.0, -3.0], &[0, 0], &[9.0, 9.0], 0.25, &cfg);
+        let mirrored =
+            GumbelCompletedQ::visit_matching_index(&[-3.0, 3.0], &[0, 0], &[9.0, 9.0], 0.25, &cfg);
         assert_eq!(first, 0);
         assert_eq!(mirrored, 1);
     }
