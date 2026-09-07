@@ -11,7 +11,7 @@ import numpy as np
 from othello_eval.mse import bootstrap_diff_ci, predict, squared_errors
 from othello_eval.records import RECORD_DTYPE
 
-FIX = Path(__file__).resolve().parents[2] / "games/othello/ntuple/tests"
+FIX = Path(__file__).resolve().parents[3] / "games/othello/ntuple/tests"
 
 
 def _tiny_weights_dir(tmp_path: Path) -> Path:

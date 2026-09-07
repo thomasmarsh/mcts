@@ -9,10 +9,10 @@
     "@mcts/core": "workspace:*",
     "@mcts/game": "workspace:*",
     "@mcts/pyramid": "workspace:*",
-    "solid-js": "^1.9.0",
-    "three": "^0.185.0"
+    "solid-js": "^1.9.15",
+    "three": "^0.185.1"
   },
   "devDependencies": {
-    "@types/three": "^0.185.0"
+    "@types/three": "^0.185.4"
   }
 }

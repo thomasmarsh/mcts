@@ -8,6 +8,6 @@
   "dependencies": {
     "@mcts/chess-variant": "workspace:*",
     "@mcts/game": "workspace:*",
-    "solid-js": "^1.9.0"
+    "solid-js": "^1.9.15"
   }
 }

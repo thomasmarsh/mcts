@@ -18,15 +18,15 @@
     "@mcts/margo": "workspace:*",
     "@mcts/othello": "workspace:*",
     "@mcts/search-inspector": "workspace:*",
+    "@mcts/strategy-config": "workspace:*",
     "@mcts/tak": "workspace:*",
     "@mcts/tanbo": "workspace:*",
     "@mcts/traffic-lights": "workspace:*",
-    "@mcts/strategy-config": "workspace:*",
     "@mcts/ttt": "workspace:*",
-    "solid-js": "^1.9.0",
-    "three": "^0.185.0"
+    "solid-js": "^1.9.15",
+    "three": "^0.185.1"
   },
   "devDependencies": {
-    "@types/three": "^0.185.0"
+    "@types/three": "^0.185.4"
   }
 }
