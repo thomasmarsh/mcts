@@ -136,6 +136,68 @@ def predict(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> tuple[np.nd
     ).astype(np.float32)
 
 
+def _pearson(prediction: np.ndarray, target: np.ndarray) -> float:
+    """Pearson correlation, using 0.0 when either input lacks variation."""
+    prediction = np.asarray(prediction, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    if len(prediction) < 2 or np.std(prediction) == 0.0 or np.std(target) == 0.0:
+        return 0.0
+    return float(np.corrcoef(prediction, target)[0, 1])
+
+
+def _masked_policy_cross_entropy(logits: np.ndarray, target: np.ndarray, legal: np.ndarray) -> float:
+    """Finite legal-action cross entropy for rows with at least one legal action."""
+    masked = np.where(legal, logits, -np.inf)
+    shifted = masked - np.max(masked, axis=1, keepdims=True)
+    probability = np.exp(shifted) * legal
+    probability /= probability.sum(axis=1, keepdims=True)
+    return float(-np.mean(np.sum(target * np.log(np.maximum(probability, 1e-30)), axis=1)))
+
+
+def orientation_diagnostics(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray, legal: np.ndarray,
+) -> dict[str, dict[str, float]]:
+    """Compare literal training predictions with mandatory mirror-averaged inference.
+
+    Correlations are 0.0 for singleton or constant vectors, and sign agreement is
+    0.0 when every value target is zero.  These are reporting metrics only.
+    """
+    literal_value, literal_logits = _predict_literal(weights, me, opp)
+    mirror_me = me.reshape((-1, ROWS, COLS))[:, :, ::-1].reshape((-1, ROWS * COLS))
+    mirror_opp = opp.reshape((-1, ROWS, COLS))[:, :, ::-1].reshape((-1, ROWS * COLS))
+    reflected_value, reflected_logits = _predict_literal(weights, mirror_me, mirror_opp)
+    reflected_logits = reflected_logits[:, ::-1]
+    averaged_value = 0.5 * (literal_value + reflected_value)
+    averaged_logits = 0.5 * (literal_logits + reflected_logits)
+    nonzero = value != 0.0
+
+    def value_metrics(prediction: np.ndarray) -> dict[str, float]:
+        return {
+            "mse": float(np.mean((prediction - value) ** 2)),
+            "pearson": _pearson(prediction, value),
+            "sign_agreement": float(np.mean(np.sign(prediction[nonzero]) == np.sign(value[nonzero])))
+            if np.any(nonzero)
+            else 0.0,
+        }
+
+    return {
+        "literal": {
+            **value_metrics(literal_value),
+            "masked_policy_cross_entropy": _masked_policy_cross_entropy(literal_logits, policy, legal),
+        },
+        "mirror_averaged": {
+            **value_metrics(averaged_value),
+            "masked_policy_cross_entropy": _masked_policy_cross_entropy(averaged_logits, policy, legal),
+        },
+        "literal_vs_reflected_remapped": {
+            "value_mae": float(np.mean(np.abs(literal_value - reflected_value))),
+            "value_pearson": _pearson(literal_value, reflected_value),
+            "policy_logit_mae": float(np.mean(np.abs(literal_logits - reflected_logits))),
+        },
+    }
+
+
 def _conv_backward(
     x: np.ndarray, w: np.ndarray, grad: np.ndarray, padding: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -259,9 +321,7 @@ def fit_value_policy_with_diagnostics(
     vm, vo, vv, vp, vl = validation
     def metrics(a: np.ndarray, b: np.ndarray, y: np.ndarray, target: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
         pv, logits = predict(weights, a, b)
-        masked = np.where(mask, logits, -np.inf); shifted = masked - np.max(masked, axis=1, keepdims=True)
-        probs = np.exp(shifted) * mask; probs /= probs.sum(axis=1, keepdims=True)
-        return float(np.mean((pv - y) ** 2)), float(-np.mean(np.sum(target * np.log(np.maximum(probs, 1e-30)), axis=1)))
+        return float(np.mean((pv - y) ** 2)), _masked_policy_cross_entropy(logits, target, mask)
     train_value_mse, train_policy_ce = metrics(me, opp, value, policy, legal)
     validation_value_mse, validation_policy_ce = metrics(vm, vo, vv, vp, vl)
     assert first_batch_gradient_l2 is not None
@@ -272,7 +332,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - initial_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

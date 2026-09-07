@@ -10,6 +10,7 @@ from az_train.convnet_c4 import (
     _literal_loss_gradient,
     _unpack,
     fit_value_policy_with_diagnostics,
+    orientation_diagnostics,
     predict,
     read_weights,
     write_weights,
@@ -170,3 +171,28 @@ def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
             assert np.isfinite(measurement) and measurement >= 0.0
     assert telemetry["stem"]["first_batch_gradient_l2"] > 0.0
     assert telemetry["stem"]["initial_to_final_delta_l2"] > 0.0
+
+
+def test_orientation_diagnostics_are_finite_repeatable_and_distinguish_averaging() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    weights = (np.random.default_rng(41).standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    for tensor in _unpack(weights):
+        if tensor.ndim == 1:
+            tensor += 0.07
+    first = orientation_diagnostics(weights, me, opp, value, policy, legal)
+    second = orientation_diagnostics(weights, me, opp, value, policy, legal)
+    assert first == second
+    assert all(np.isfinite(metric) for group in first.values() for metric in group.values())
+    assert first["literal_vs_reflected_remapped"]["value_mae"] > 0.0
+    assert first["literal_vs_reflected_remapped"]["policy_logit_mae"] > 0.0
+    assert first["literal"]["mse"] != first["mirror_averaged"]["mse"]
+
+
+def test_orientation_diagnostics_zero_control_is_symmetric_and_finite() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    result = orientation_diagnostics(np.zeros(N_WEIGHTS, dtype=np.float32), me, opp, value, policy, legal)
+    assert result["literal_vs_reflected_remapped"] == {
+        "value_mae": 0.0, "value_pearson": 0.0, "policy_logit_mae": 0.0,
+    }
+    assert result["literal"] == result["mirror_averaged"]
+    assert all(np.isfinite(metric) for group in result.values() for metric in group.values())
