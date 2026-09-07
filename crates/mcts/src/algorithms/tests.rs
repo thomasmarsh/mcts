@@ -101,6 +101,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     let n = 4usize;
     let explored = 2usize;
     let expected = n * std::mem::size_of::<u32>()
+        + n * std::mem::size_of::<f64>()
         + n * std::mem::size_of::<std::sync::OnceLock<Id>>()
         + explored * (std::mem::size_of::<Id>() + std::mem::size_of::<usize>())
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
@@ -138,6 +139,7 @@ fn test_child_array_amaf_side_table_empty_when_has_amaf_false() {
     assert_eq!((snapshot_amaf.num_visits, snapshot_amaf.score), (0, 0.0));
 
     let expected_without_amaf = n * std::mem::size_of::<u32>()
+        + n * std::mem::size_of::<f64>()
         + n * std::mem::size_of::<std::sync::OnceLock<crate::algorithms::mcts::index::Id>>()
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
         + n * std::mem::size_of::<u32>()

@@ -262,6 +262,7 @@ pub fn expand<'a, G: Game>(
     canonicalize: bool,
     use_ismcts: bool,
     prior: Option<&mut (dyn crate::algorithms::mcts::prior::PriorPolicyDyn<G> + 'static)>,
+    policy_logits: Option<&mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static)>,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
@@ -300,7 +301,17 @@ pub fn expand<'a, G: Game>(
                 (pseudo_visits > 0)
                     .then(|| (pseudo_visits, p.evaluate_children(&gen_state, &actions)))
             });
-            let children = ChildArray::new(actions, G::num_players(), has_amaf, use_ismcts);
+            let logits = policy_logits
+                .map(|policy| policy.logits(&gen_state, &actions))
+                .filter(|logits| logits.len() == actions.len())
+                .unwrap_or_else(|| vec![0.0; actions.len()]);
+            let children = ChildArray::with_policy_logits(
+                actions,
+                logits,
+                G::num_players(),
+                has_amaf,
+                use_ismcts,
+            );
             if let Some((pseudo_visits, values)) = seed {
                 debug_assert_eq!(values.len(), children.len());
                 if values.len() == children.len() {
@@ -643,6 +654,7 @@ pub fn select_step<G: Game>(
     select_strategy: &mut impl SelectPolicy<G>,
     rng: &mut SmallRng,
     mut prior: Option<&mut (dyn crate::algorithms::mcts::prior::PriorPolicyDyn<G> + 'static)>,
+    mut policy_logits: Option<&mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static)>,
     forced_root_action: Option<&G::A>,
 ) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());
@@ -709,6 +721,7 @@ pub fn select_step<G: Game>(
                     shared.canonicalizes,
                     shared.use_ismcts,
                     reborrow_prior(&mut prior),
+                    policy_logits.as_deref_mut(),
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return None;

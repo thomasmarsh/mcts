@@ -75,6 +75,7 @@ impl GumbelPlayer {
                 .expand_threshold(1)
                 .max_playout_depth(max_playout_depth)
                 .q_init(QInit::Loss)
+                .select(GumbelCompletedQ::with_config(cfg))
                 .simulate(EvaluatedCutoff::new().evaluator(net.clone()))
                 .with_policy_logits(policy)
                 .seed(seed),
@@ -198,6 +199,7 @@ mod tests {
             Default::default(),
             false,
             false,
+            None,
             None,
         );
         let children = search.index.get(root).children();

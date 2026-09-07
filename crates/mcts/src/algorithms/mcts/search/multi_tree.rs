@@ -161,6 +161,7 @@ fn select_multi_tree<G: Game>(
                             false,
                             true,
                             None,
+                            None,
                         );
                     }
                     matches!(
@@ -370,6 +371,7 @@ where
                 has_amaf,
                 false,
                 true,
+                None,
                 None,
             );
         }

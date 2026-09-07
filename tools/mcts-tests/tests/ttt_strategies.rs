@@ -1474,6 +1474,7 @@ fn test_negamax_prior_biases_the_very_first_selection_toward_the_winning_move() 
         false,
         false,
         Some(&mut prior),
+        None,
     );
 
     let root = ts.index.get(root_id);
@@ -2382,6 +2383,7 @@ fn test_progressive_history_biases_toward_global_high_scoring_action() {
         false,
         false,
         None,
+        None,
     );
 
     let root = ts.index.get(root_id);
@@ -2498,6 +2500,7 @@ fn test_max_robust_child_prefers_dominant_child_over_most_visited() {
         false,
         false,
         false,
+        None,
         None,
     );
 

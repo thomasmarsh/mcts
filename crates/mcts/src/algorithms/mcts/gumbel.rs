@@ -44,6 +44,12 @@ pub struct GumbelConfig {
     pub c_visit: f64,
     /// `sigma`'s value scale.
     pub c_scale: f64,
+    /// Normalize completed Q values to their observed min-max range before
+    /// applying the visit scale. Equal values remain unchanged.
+    pub rescale_q: bool,
+    /// Fill unvisited actions with the mixed root value before ranking and
+    /// policy improvement. `false` retains the pre-completion diagnostic.
+    pub use_completed_q: bool,
 }
 
 impl Default for GumbelConfig {
@@ -53,6 +59,8 @@ impl Default for GumbelConfig {
             max_considered: 8,
             c_visit: 50.0,
             c_scale: 0.1,
+            rescale_q: true,
+            use_completed_q: true,
         }
     }
 }
@@ -100,7 +108,7 @@ where
 /// Complete unvisited action values with the visit-weighted mix of the root
 /// evaluation and the observed child values.  All values are from the root
 /// player's perspective.
-fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
+pub fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
     assert_eq!(visits.len(), q_values.len());
     let (weighted_q, total_visits) = visits
         .iter()
@@ -114,6 +122,21 @@ fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
         .zip(q_values)
         .map(|(&visits, &q)| if visits == 0 { mixed_value } else { q })
         .collect()
+}
+
+/// Optionally normalize completed Q values to `[0, 1]`. An equal-Q vector
+/// is left alone so it cannot perturb the prior distribution.
+pub fn transform_completed_q(values: &[f64], rescale_q: bool) -> Vec<f64> {
+    if !rescale_q || values.is_empty() {
+        return values.to_vec();
+    }
+    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = hi - lo;
+    if range <= f64::EPSILON {
+        return values.to_vec();
+    }
+    values.iter().map(|&value| (value - lo) / range).collect()
 }
 
 /// The completed-Q policy target. `logits` and `visits` follow `actions`'
@@ -131,10 +154,11 @@ pub fn improved_policy(
     }
     let max_visit = visits.iter().copied().max().unwrap_or(0) as f64;
     let scale = (cfg.c_visit + max_visit) * cfg.c_scale;
+    let transformed = transform_completed_q(completed_q, cfg.rescale_q);
     let scores: Vec<f64> = logits
         .iter()
-        .zip(completed_q)
-        .map(|(&logit, &q)| logit + scale * q)
+        .zip(transformed)
+        .map(|(&logit, q)| logit + scale * q)
         .collect();
     let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let weights: Vec<f64> = scores.iter().map(|s| (s - max_score).exp()).collect();
@@ -147,6 +171,7 @@ fn root_completed_q<G, S>(
     root_id: Id,
     player: usize,
     root_value: f64,
+    cfg: &GumbelConfig,
 ) -> Vec<f64>
 where
     G: Game,
@@ -160,7 +185,15 @@ where
     let q_values: Vec<_> = (0..children.len())
         .map(|i| children.expected_score(i, player))
         .collect();
-    completed_q(root_value, &visits, &q_values)
+    if cfg.use_completed_q {
+        completed_q(root_value, &visits, &q_values)
+    } else {
+        q_values
+            .into_iter()
+            .zip(visits)
+            .map(|(q, visits)| if visits == 0 { 0.0 } else { q })
+            .collect()
+    }
 }
 
 /// `g_a + logit_a + sigma(q_a)` -- the Sequential Halving ranking key and the
@@ -173,7 +206,8 @@ fn candidate_score(
     cfg: &GumbelConfig,
     max_visits: u32,
 ) -> f64 {
-    let sigma = (cfg.c_visit + max_visits as f64) * cfg.c_scale * completed_q[idx];
+    let transformed = transform_completed_q(completed_q, cfg.rescale_q);
+    let sigma = (cfg.c_visit + max_visits as f64) * cfg.c_scale * transformed[idx];
     gumbel[idx] + logits[idx] + sigma
 }
 
@@ -246,6 +280,7 @@ where
         canon,
         false,
         search.config.prior.as_deref_mut(),
+        search.config.policy_logits.as_deref_mut(),
     );
 
     // With a non-zero `expand_threshold`, `select_step` bails out at any
@@ -320,7 +355,7 @@ where
             break;
         }
         let max_visits = root_child_max_visits(search, root_id);
-        let completed_q = root_completed_q(search, root_id, player, root_value);
+        let completed_q = root_completed_q(search, root_id, player, root_value, cfg);
         considered.sort_by(|&a, &b| {
             let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
             let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
@@ -330,7 +365,7 @@ where
     }
 
     let max_visits = root_child_max_visits(search, root_id);
-    let completed_q = root_completed_q(search, root_id, player, root_value);
+    let completed_q = root_completed_q(search, root_id, player, root_value, cfg);
     let best = *considered
         .iter()
         .max_by(|&&a, &&b| {
@@ -369,7 +404,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{completed_q, improved_policy, num_phases, GumbelConfig};
+    use super::{completed_q, improved_policy, num_phases, transform_completed_q, GumbelConfig};
 
     #[test]
     fn phase_count_is_ceil_log2() {
@@ -407,5 +442,27 @@ mod tests {
         let a = improved_policy(&[0.0, 1.0], &[4, 1], &[0.5, -0.5], &cfg);
         let b = improved_policy(&[17.0, 18.0], &[4, 1], &[0.5, -0.5], &cfg);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn min_max_rescaling_is_optional_and_equal_q_is_neutral() {
+        assert_eq!(transform_completed_q(&[-2.0, 0.0, 2.0], true), vec![0.0, 0.5, 1.0]);
+        assert_eq!(transform_completed_q(&[0.25; 3], true), vec![0.25; 3]);
+        assert_eq!(transform_completed_q(&[-2.0, 0.0, 2.0], false), vec![-2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn completed_q_reference_vector_freezes_root_inputs_and_output_policy() {
+        let cfg = GumbelConfig::default();
+        let visits = [5, 2, 0];
+        let q = [0.6, -0.2, 99.0];
+        let completed = completed_q(0.25, &visits, &q);
+        assert_eq!(completed, vec![0.6, -0.2, 0.35625]);
+        assert_eq!(transform_completed_q(&completed, true), vec![1.0, 0.0, 0.6953125]);
+        let policy = improved_policy(&[0.2, -0.1, 0.3], &visits, &completed, &cfg);
+        let expected = [0.8265327, 0.00250237, 0.1709649];
+        for (actual, expected) in policy.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 }

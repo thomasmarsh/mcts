@@ -416,6 +416,9 @@ struct ChildArrayData {
 #[derive(Debug)]
 pub struct ChildArray<A: Action> {
     actions: Vec<A>,
+    // Categorical logits are computed when this action list is expanded.
+    // Keeping them parallel to `actions` makes the cached order explicit.
+    policy_logits: Vec<f64>,
     child_ids: Vec<OnceLock<index::Id>>,
     // Reverse of `child_ids`, populated as each child is first resolved so
     // `child_index` (id -> idx, needed by every path that only has an `Id`
@@ -460,6 +463,7 @@ impl<A: Action> Clone for ChildArray<A> {
         let extra = self.extra.read().unwrap();
         Self {
             actions: self.actions.clone(),
+            policy_logits: self.policy_logits.clone(),
             child_ids: self.child_ids.clone(),
             id_index: RwLock::new(id_index.clone()),
             num_visits_virtual: self
@@ -522,8 +526,21 @@ impl<A: Action> ExtraChild<A> {
 
 impl<A: Action> ChildArray<A> {
     pub fn new(actions: Vec<A>, num_players: usize, has_amaf: bool, growable: bool) -> Self {
+        let policy_logits = vec![0.0; actions.len()];
+        Self::with_policy_logits(actions, policy_logits, num_players, has_amaf, growable)
+    }
+
+    pub fn with_policy_logits(
+        actions: Vec<A>,
+        policy_logits: Vec<f64>,
+        num_players: usize,
+        has_amaf: bool,
+        growable: bool,
+    ) -> Self {
         let n = actions.len();
+        debug_assert_eq!(policy_logits.len(), n);
         Self {
+            policy_logits,
             child_ids: (0..n).map(|_| OnceLock::new()).collect(),
             id_index: RwLock::new(FxHashMap::default()),
             num_visits_virtual: (0..n).map(|_| AtomicU32::new(0)).collect(),
@@ -543,6 +560,12 @@ impl<A: Action> ChildArray<A> {
             growable,
             extra: RwLock::new(Vec::new()),
         }
+    }
+
+    /// Logits cached at expansion in the same order as the fixed action list.
+    /// Growable arrays are not used with completed-Q selection.
+    pub fn policy_logits(&self) -> &[f64] {
+        &self.policy_logits
     }
 
     #[inline]
@@ -983,6 +1006,7 @@ impl<A: Action> ChildArray<A> {
         let n = self.len();
         let explored = self.explored_len();
         n * std::mem::size_of::<A>()
+            + n * std::mem::size_of::<f64>()
             + n * std::mem::size_of::<OnceLock<index::Id>>()
             + explored * (std::mem::size_of::<index::Id>() + std::mem::size_of::<usize>())
             + n * std::mem::size_of::<AtomicU32>()
