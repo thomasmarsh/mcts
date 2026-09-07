@@ -9,6 +9,7 @@ import pytest
 from az_train.convnet_c4 import (
     N_WEIGHTS,
     _aggregate_gradient_conflict,
+    _epoch_batches,
     _gradient_conflict_metrics,
     _head_gradient_components,
     _literal_loss_gradient,
@@ -96,6 +97,23 @@ def test_joint_value_policy_gradient_is_finite_and_deterministic() -> None:
         and all(np.isfinite(measurement) for measurement in epoch.values())
         for epoch in trace
     )
+
+
+def test_epoch_batches_visit_each_row_once_and_are_repeatable() -> None:
+    first = _epoch_batches(np.random.default_rng(41), 11, 4)
+    second = _epoch_batches(np.random.default_rng(41), 11, 4)
+    assert len(first) == 3
+    assert all(np.array_equal(a, b) for a, b in zip(first, second, strict=True))
+    assert np.array_equal(np.sort(np.concatenate(first)), np.arange(11))
+    assert len(np.unique(np.concatenate(first))) == 11
+
+
+def test_epoch_batches_preserve_single_batch_permutation() -> None:
+    expected_rng = np.random.default_rng(59)
+    expected = expected_rng.permutation(3)
+    actual = _epoch_batches(np.random.default_rng(59), 3, 3)
+    assert len(actual) == 1
+    assert np.array_equal(actual[0], expected)
 
 
 def test_validation_checkpoint_selection_uses_earliest_highest_pearson() -> None:
@@ -391,8 +409,9 @@ def test_timeline_telemetry_preserves_default_adam_weights() -> None:
     moment, velocity = np.zeros_like(expected), np.zeros_like(expected)
     step = 0
     for _ in range(2):
+        order = rng.permutation(len(me))
         for start in range(0, len(me), 2):
-            batch = rng.permutation(len(me))[start : start + 2]
+            batch = order[start : start + 2]
             _, gradient = _literal_loss_gradient(
                 expected, me[batch], opp[batch], value[batch], policy[batch], legal[batch], 1e-5
             )

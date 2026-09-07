@@ -122,6 +122,12 @@ def _aggregate_gradient_conflict(
     }
 
 
+def _epoch_batches(rng: np.random.Generator, row_count: int, batch_size: int) -> tuple[np.ndarray, ...]:
+    """Return one deterministic shuffled partition of the training rows."""
+    order = rng.permutation(row_count)
+    return tuple(order[start : start + batch_size] for start in range(0, row_count, batch_size))
+
+
 def _conv(x: np.ndarray, w: np.ndarray, b: np.ndarray, padding: int) -> np.ndarray:
     n, _, rows, cols = x.shape
     out = np.broadcast_to(b, (n, w.shape[0])).copy()[:, :, None, None]
@@ -413,8 +419,7 @@ def fit_value_policy_with_diagnostics(
     selected_weights: np.ndarray | None = None
     vm, vo, vv, vp, vl = validation
     for _ in range(epochs):
-        for start in range(0, len(me), batch_size):
-            batch = rng.permutation(len(me))[start : start + batch_size]
+        for batch in _epoch_batches(rng, len(me), batch_size):
             _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
             value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
                 weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
