@@ -1,6 +1,7 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
 # pyright: reportUnknownParameterType=false, reportUnknownArgumentType=false
 # pyright: reportMissingTypeArgument=false
+# pyright: reportRedeclaration=false, reportAssignmentType=false
 """``az-train`` -- fit one generation's value head from self-play dumps.
 
     az-train --positions gen_0/a.bin,gen_0/b.bin --out weights/gen_1.bin
@@ -13,8 +14,8 @@ and fits either the n-tuple head (``--head ntuple``, 541 weights,
 ``az_train.model``).
 
 ``--game connect4`` reads v2-connect4 dumps (``az_train.records_c4``) and
-fits the 6x7 n-tuple head (``az_train.ntuple_c4``, 5590 weights). Only
-``--head ntuple`` is defined for connect4.
+fits a concrete value head. ``--head cnn`` writes the joint versioned
+``C4CNN001`` value-and-policy container from outcome and completed-Q targets.
 
 Writes ``<out>`` (flat ``f32``) and ``<out>.meta.json``.
 """
@@ -28,6 +29,9 @@ from typing import Any
 
 import numpy as np
 
+from az_train.convnet_c4 import fit_value_policy_with_diagnostics as fit_cnn_c4_with_diagnostics
+from az_train.convnet_c4 import predict as predict_cnn_c4
+from az_train.convnet_c4 import write_weights as write_cnn_c4
 from az_train.mlp_c4 import fit_value_head_with_diagnostics as fit_mlp_c4_with_diagnostics
 from az_train.mlp_c4 import predict as predict_mlp_c4
 from az_train.mlp_c4 import write_weights as write_mlp_c4
@@ -138,8 +142,8 @@ def _fit_c4(
     value_target: str,
     value_head: str,
 ) -> tuple[np.ndarray, dict[str, Any], PositionsC4, PositionsC4]:
-    if head not in ("ntuple", "mlp"):
-        raise SystemExit(f"--game connect4 supports --head ntuple|mlp (got {head})")
+    if head not in ("ntuple", "mlp", "cnn"):
+        raise SystemExit(f"--game connect4 supports --head ntuple|mlp|cnn (got {head})")
     pos = _concat_c4([load_positions_c4(p) for p in paths])
     print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
     train, validation, train_games, validation_games = split_c4_by_game(
@@ -147,7 +151,28 @@ def _fit_c4(
     )
     train_me, train_opp = me_opp_planes_c4(train)
     validation_me, validation_opp = me_opp_planes_c4(validation)
-    if head == "mlp":
+    predict_value: Any
+    if head == "cnn":
+        def dense_policy(entries: list[list[tuple[int, float]]]) -> tuple[np.ndarray, np.ndarray]:
+            target = np.zeros((len(entries), 7), dtype=np.float32)
+            legal = np.zeros((len(entries), 7), dtype=bool)
+            for row, sparse in enumerate(entries):
+                for column, probability in sparse:
+                    target[row, column] = probability
+                    legal[row, column] = True
+            if not np.all(legal.any(axis=1)):
+                raise SystemExit("--head cnn requires completed-Q policy targets in every record")
+            return target, legal
+        train_policy, train_legal = dense_policy(train.policy)
+        validation_policy, validation_legal = dense_policy(validation.policy)
+        w, fit_diagnostics = fit_cnn_c4_with_diagnostics(
+            train_me, train_opp, train.value, train_policy, train_legal,
+            (validation_me, validation_opp, validation.value, validation_policy, validation_legal),
+            1e-4 if l2 is None else l2, seed=split_seed,
+        )
+        def predict_value(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
+            return predict_cnn_c4(weights, me, opp)[0]
+    elif head == "mlp":
         w, fit_diagnostics = fit_mlp_c4_with_diagnostics(
             train_me, train_opp, train.value, 1e-4 if l2 is None else l2, seed=split_seed
         )
@@ -195,7 +220,7 @@ def train_cli(argv: list[str] | None = None) -> None:
     ap.add_argument("--positions", required=True, help="comma-separated dump .bin files")
     ap.add_argument("--out", required=True, help="output weights.bin path")
     ap.add_argument("--game", choices=("ttt", "connect4"), default="ttt")
-    ap.add_argument("--head", choices=("linear", "ntuple", "mlp"), default="ntuple")
+    ap.add_argument("--head", choices=("linear", "ntuple", "mlp", "cnn"), default="ntuple")
     ap.add_argument(
         "--l2", type=float, default=None, help="ridge penalty (default: the head's own default)"
     )
@@ -248,7 +273,9 @@ def train_cli(argv: list[str] | None = None) -> None:
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
         mse = float(c4_metrics["train"]["mse"])
         write_weights = (
-            write_mlp_c4
+            write_cnn_c4
+            if args.head == "cnn"
+            else write_mlp_c4
             if args.head == "mlp"
             else write_structured_weights
             if args.connect4_value_head == "structured"
@@ -275,7 +302,7 @@ def train_cli(argv: list[str] | None = None) -> None:
     policy_path: Path | None = None
     policy_metrics: dict[str, Any] | None = None
     policy_w: np.ndarray | None = None
-    if args.game == "connect4":
+    if args.game == "connect4" and args.head != "cnn":
         assert train is not None and validation is not None
         policy_path = Path(args.policy_out) if args.policy_out else out.with_suffix(".policy.bin")
         policy_path.parent.mkdir(parents=True, exist_ok=True)

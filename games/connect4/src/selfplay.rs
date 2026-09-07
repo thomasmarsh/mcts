@@ -12,6 +12,7 @@ use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
+use crate::convnet::CnnValuePolicyNet;
 use crate::policynet::NTuplePolicyNet;
 use crate::valuenet::NTupleValueNet;
 use crate::{Move, Standard, State};
@@ -110,6 +111,60 @@ impl Search for GumbelPlayer {
         self.name = name.to_string();
     }
 
+    fn choose_action(&mut self, state: &State<6, 7>) -> Move {
+        self.choose(state).action
+    }
+}
+
+/// Gumbel player backed by the compact joint value-and-policy convolutional
+/// container. The shared container supplies both contracts without seeding
+/// policy logits as child values.
+pub struct CnnGumbelPlayer {
+    search:
+        TreeSearch<Standard, Mcts<GumbelCompletedQ, EvaluatedCutoff<Standard, CnnValuePolicyNet>>>,
+    net: CnnValuePolicyNet,
+    cfg: GumbelConfig,
+    name: String,
+}
+
+impl CnnGumbelPlayer {
+    pub fn new(net: CnnValuePolicyNet, cfg: GumbelConfig, seed: u64) -> Self {
+        let search = TreeSearch::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_playout_depth(0)
+                .q_init(QInit::Loss)
+                .select(GumbelCompletedQ::with_config(cfg))
+                .simulate(EvaluatedCutoff::new().evaluator(net.clone()))
+                .with_policy_logits(net.clone())
+                .seed(seed),
+        );
+        Self {
+            search,
+            net,
+            cfg,
+            name: "gumbel-cnn".to_string(),
+        }
+    }
+
+    pub fn choose(&mut self, state: &State<6, 7>) -> GumbelOutcome<Move> {
+        gumbel_search_with_root_value(
+            &mut self.search,
+            state,
+            &self.cfg,
+            self.net.value(state) as f64,
+        )
+    }
+}
+
+impl Search for CnnGumbelPlayer {
+    type G = Standard;
+    fn friendly_name(&self) -> String {
+        self.name.clone()
+    }
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
     fn choose_action(&mut self, state: &State<6, 7>) -> Move {
         self.choose(state).action
     }

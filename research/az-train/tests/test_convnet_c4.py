@@ -1,9 +1,18 @@
+# pyright: reportPrivateUsage=false, reportUnknownMemberType=false
+# ruff: noqa: E501
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-from az_train.convnet_c4 import N_WEIGHTS, predict, read_weights, write_weights
+from az_train.convnet_c4 import (
+    N_WEIGHTS,
+    _literal_loss_gradient,
+    fit_value_policy_with_diagnostics,
+    predict,
+    read_weights,
+    write_weights,
+)
 
 
 def test_layout_round_trip_and_reference_prediction(tmp_path: Path) -> None:
@@ -48,3 +57,24 @@ def test_invalid_layout_is_rejected(tmp_path: Path) -> None:
     path.write_bytes(b"C4CNN001" + b"\0" * 8)
     with pytest.raises(ValueError, match="C4CNN001"):
         read_weights(str(path))
+
+
+def test_joint_value_policy_gradient_is_finite_and_deterministic() -> None:
+    rng = np.random.default_rng(9)
+    me = np.zeros((2, 42), dtype=np.float32)
+    opp = np.zeros_like(me)
+    me[0, 0], opp[1, 1] = 1.0, 1.0
+    value = np.array([1.0, -1.0], dtype=np.float32)
+    target = np.full((2, 7), 1.0 / 7.0, dtype=np.float32)
+    legal = np.ones((2, 7), dtype=bool)
+    weights = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    loss, gradient = _literal_loss_gradient(weights, me, opp, value, target, legal, 1e-4)
+    assert np.isfinite(loss) and np.all(np.isfinite(gradient))
+    first, first_meta = fit_value_policy_with_diagnostics(
+        me, opp, value, target, legal, (me, opp, value, target, legal), epochs=2, batch_size=2, seed=3
+    )
+    second, second_meta = fit_value_policy_with_diagnostics(
+        me, opp, value, target, legal, (me, opp, value, target, legal), epochs=2, batch_size=2, seed=3
+    )
+    assert np.array_equal(first, second)
+    assert first_meta["optimizer_steps"] == second_meta["optimizer_steps"] == 2

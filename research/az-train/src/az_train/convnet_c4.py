@@ -1,3 +1,6 @@
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
+# pyright: reportUnknownArgumentType=false, reportUnusedVariable=false
+# ruff: noqa: E501, E702
 """Versioned compact Connect Four convolutional value-and-policy inference.
 
 ``C4CNN001`` stores a concrete two-plane 6x7 model: a 3x3 stem with 16
@@ -8,7 +11,10 @@ restricted to self-play outcomes and completed-Q policy targets.
 
 from __future__ import annotations
 
+import resource
 import struct
+import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -109,6 +115,120 @@ def predict(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> tuple[np.nd
     return (0.5 * (value + reflected_value)).astype(np.float32), (
         0.5 * (logits + reflected_logits[:, ::-1])
     ).astype(np.float32)
+
+
+def _conv_backward(
+    x: np.ndarray, w: np.ndarray, grad: np.ndarray, padding: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Gradient of `_conv`, retaining the deliberately small direct kernel loops."""
+    n, channels, rows, cols = x.shape
+    dx = np.zeros_like(x)
+    dw = np.zeros_like(w)
+    for kr in range(w.shape[2]):
+        for kc in range(w.shape[3]):
+            src_r = slice(max(0, kr - padding), min(rows, rows + kr - padding))
+            src_c = slice(max(0, kc - padding), min(cols, cols + kc - padding))
+            dst_r = slice(max(0, padding - kr), min(rows, rows + padding - kr))
+            dst_c = slice(max(0, padding - kc), min(cols, cols + padding - kc))
+            source, output = x[:, :, src_r, src_c], grad[:, :, dst_r, dst_c]
+            dw[:, :, kr, kc] = np.einsum("norc,nirc->oi", output, source)
+            dx[:, :, src_r, src_c] += np.einsum("norc,oi->nirc", output, w[:, :, kr, kc])
+    return dx, dw, grad.sum(axis=(0, 2, 3))
+
+
+def _literal_loss_gradient(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray, legal: np.ndarray, l2: float,
+) -> tuple[float, np.ndarray]:
+    """Value MSE plus legal-column policy cross entropy and its dense gradient."""
+    p = _unpack(weights)
+    x0 = np.stack((me, opp), axis=1).reshape((-1, 2, ROWS, COLS))
+    z0 = _conv(x0, p[0], p[1], 1); x = np.maximum(z0, 0.0)
+    blocks: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    at = 2
+    for _ in range(BLOCKS):
+        residual = x
+        z1 = _conv(x, p[at], p[at + 1], 1); h1 = np.maximum(z1, 0.0)
+        z2 = _conv(h1, p[at + 2], p[at + 3], 1); x = np.maximum(z2 + residual, 0.0)
+        blocks.append((residual, z1, h1, z2)); at += 4
+    z_value = _conv(x, p[at], p[at + 1], 0); value_features = np.maximum(z_value, 0.0).reshape((-1, 42))
+    value_hidden_z = value_features @ p[at + 2] + p[at + 3]
+    value_hidden = np.maximum(value_hidden_z, 0.0)
+    value_score = value_hidden @ p[at + 4] + p[at + 5][0]
+    value_prediction = np.tanh(value_score)
+    value_at = at; at += 6
+    z_policy = _conv(x, p[at], p[at + 1], 0); policy_features = np.maximum(z_policy, 0.0).reshape((-1, 42))
+    logits = policy_features @ p[at + 2] + p[at + 3]
+    masked = np.where(legal, logits, -np.inf)
+    shifted = masked - np.max(masked, axis=1, keepdims=True)
+    probability = np.exp(shifted) * legal
+    probability /= probability.sum(axis=1, keepdims=True)
+    n = len(me)
+    value_loss = np.mean((value_prediction - value) ** 2)
+    policy_loss = -np.mean(np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1))
+    gradient = np.zeros_like(weights)
+    gp = _unpack(gradient)
+    dv = (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
+    gp[value_at + 4][:] = value_hidden.T @ dv
+    gp[value_at + 5][0] = dv.sum()
+    d_hidden = (dv[:, None] * p[value_at + 4]) * (value_hidden_z > 0.0)
+    gp[value_at + 2][:] = value_features.T @ d_hidden
+    gp[value_at + 3][:] = d_hidden.sum(axis=0)
+    d_value_features = d_hidden @ p[value_at + 2].T
+    d_z_value = d_value_features.reshape(z_value.shape) * (z_value > 0.0)
+    dx_value, gp[value_at], gp[value_at + 1] = _conv_backward(x, p[value_at], d_z_value, 0)
+    dp = (probability - policy) / n
+    gp[at + 2][:] = policy_features.T @ dp
+    gp[at + 3][:] = dp.sum(axis=0)
+    d_policy_features = dp @ p[at + 2].T
+    d_z_policy = d_policy_features.reshape(z_policy.shape) * (z_policy > 0.0)
+    dx_policy, gp[at], gp[at + 1] = _conv_backward(x, p[at], d_z_policy, 0)
+    dx = dx_value + dx_policy
+    for block in range(BLOCKS - 1, -1, -1):
+        residual, z1, h1, z2 = blocks[block]
+        d_z2 = dx * (z2 + residual > 0.0)
+        block_at = 2 + block * 4
+        d_h1, gp[block_at + 2], gp[block_at + 3] = _conv_backward(h1, p[block_at + 2], d_z2, 1)
+        d_z1 = d_h1 * (z1 > 0.0)
+        dx_branch, gp[block_at], gp[block_at + 1] = _conv_backward(residual, p[block_at], d_z1, 1)
+        dx = dx + dx_branch
+    d_z0 = dx * (z0 > 0.0)
+    _, gp[0], gp[1] = _conv_backward(x0, p[0], d_z0, 1)
+    regularized = [0, 2, 4, 6, 8, value_at, value_at + 2, value_at + 4, at, at + 2]
+    reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
+    for i in regularized:
+        gp[i][:] += 2.0 * l2 * p[i]
+    return float(value_loss + policy_loss + l2 * reg), gradient
+
+
+def fit_value_policy_with_diagnostics(
+    me: np.ndarray, opp: np.ndarray, value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
+    validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
+    *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
+) -> tuple[np.ndarray, dict[str, float | int | str]]:
+    """Deterministic Adam fit using only production self-play targets."""
+    if not len(me) or not np.all(legal.any(axis=1)):
+        raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
+    rng = np.random.default_rng(seed)
+    weights = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
+    beta1, beta2, step = 0.9, 0.999, 0
+    started = time.perf_counter()
+    for _ in range(epochs):
+        for start in range(0, len(me), batch_size):
+            batch = rng.permutation(len(me))[start : start + batch_size]
+            _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
+            step += 1; moment = beta1 * moment + (1.0 - beta1) * gradient; velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
+            weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
+    vm, vo, vv, vp, vl = validation
+    def metrics(a: np.ndarray, b: np.ndarray, y: np.ndarray, target: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
+        pv, logits = predict(weights, a, b)
+        masked = np.where(mask, logits, -np.inf); shifted = masked - np.max(masked, axis=1, keepdims=True)
+        probs = np.exp(shifted) * mask; probs /= probs.sum(axis=1, keepdims=True)
+        return float(np.mean((pv - y) ** 2)), float(-np.mean(np.sum(target * np.log(np.maximum(probs, 1e-30)), axis=1)))
+    train_value_mse, train_policy_ce = metrics(me, opp, value, policy, legal)
+    validation_value_mse, validation_policy_ce = metrics(vm, vo, vv, vp, vl)
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

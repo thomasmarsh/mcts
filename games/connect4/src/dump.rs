@@ -47,7 +47,8 @@ use mcts::game::Game;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::selfplay::GumbelPlayer;
+use crate::convnet::CnnValuePolicyNet;
+use crate::selfplay::{CnnGumbelPlayer, GumbelPlayer};
 use crate::valuenet::NTupleValueNet;
 use crate::{BitBoard, Move, Player, Standard, State};
 
@@ -219,6 +220,7 @@ struct Config {
     games: u64,
     seed: u64,
     label: String,
+    head: String,
     /// `--label gumbel` only: value-head weights (`az-train` output). Absent
     /// == the all-zero generation-0 net.
     value_weights: Option<PathBuf>,
@@ -239,6 +241,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut games = 1000u64;
     let mut seed = 0u64;
     let mut label = "outcome".to_string();
+    let mut head = "ntuple".to_string();
     let mut value_weights = None;
     let mut policy_weights = None;
     let mut sims = 32u32;
@@ -251,6 +254,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--games" => games = val().parse().expect("--games must be an integer"),
             "--seed" => seed = val().parse().expect("--seed must be an integer"),
             "--label" => label = val(),
+            "--head" => head = val(),
             "--weights" | "--value-weights" => {
                 let path = PathBuf::from(val());
                 assert!(
@@ -267,7 +271,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
-                     [--label outcome|gumbel] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
+                     [--label outcome|gumbel] [--head ntuple|cnn] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
                      [--max-considered N] [--temp-moves N]"
                 );
                 std::process::exit(0);
@@ -279,6 +283,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         "outcome" | "gumbel" => {}
         other => panic!("unknown --label mode: {other}"),
     }
+    assert!(
+        matches!(head.as_str(), "ntuple" | "cnn"),
+        "unknown --head mode: {head}"
+    );
     assert!(sims >= 1, "--sims must be positive");
     assert!(max_considered >= 1, "--max-considered must be positive");
     Config {
@@ -286,6 +294,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         games,
         seed,
         label,
+        head,
         value_weights,
         policy_weights,
         sims,
@@ -298,6 +307,54 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
 /// completed-Q improved policy as its policy tail for every
 /// non-terminal position.
 fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
+    if cfg.head == "cnn" {
+        let net = match &cfg.value_weights {
+            Some(p) => CnnValuePolicyNet::load(p)
+                .unwrap_or_else(|e| panic!("cannot load CNN weights {}: {e}", p.display())),
+            None => CnnValuePolicyNet::default(),
+        };
+        let gcfg = GumbelConfig {
+            sims: cfg.sims,
+            max_considered: cfg.max_considered,
+            ..GumbelConfig::default()
+        };
+        for g in 0..cfg.games {
+            let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+            let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, game_seed);
+            let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
+            let mut state = State::<6, 7>::default();
+            let first = records.len();
+            let mut ply = 0u8;
+            while !Standard::is_terminal(&state) {
+                let outcome = player.choose(&state);
+                records.push(record_for(
+                    &state,
+                    outcome
+                        .improved_policy
+                        .iter()
+                        .map(|(m, p)| (m.0, *p))
+                        .collect(),
+                ));
+                let action = if ply < cfg.temp_moves {
+                    sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
+                } else {
+                    outcome.action
+                };
+                state = Standard::apply(state, &action);
+                ply += 1;
+            }
+            finish_game(records, first, winner_of(&state));
+            if (g + 1) % 25 == 0 || g + 1 == cfg.games {
+                eprintln!(
+                    "  played {}/{} CNN Gumbel games ({} records)",
+                    g + 1,
+                    cfg.games,
+                    records.len()
+                );
+            }
+        }
+        return;
+    }
     let net = match &cfg.value_weights {
         Some(p) => NTupleValueNet::load(p)
             .unwrap_or_else(|e| panic!("cannot load weights {}: {e}", p.display())),
@@ -419,6 +476,7 @@ mod tests {
             games: 2,
             seed: 3,
             label: "gumbel".to_string(),
+            head: "ntuple".to_string(),
             value_weights: None,
             policy_weights: None,
             sims: 8,
@@ -444,6 +502,27 @@ mod tests {
                 assert!((*col as usize) < 7);
             }
         }
+    }
+
+    #[test]
+    fn a_cnn_gumbel_selfplay_game_records_a_policy_tail_per_position() {
+        let mut records = Vec::new();
+        let mut cfg = gumbel_config();
+        cfg.games = 1;
+        cfg.head = "cnn".to_string();
+        dump_gumbel_games(&cfg, &mut records);
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|record| {
+            !record.policy.is_empty()
+                && (record
+                    .policy
+                    .iter()
+                    .map(|(_, probability)| probability)
+                    .sum::<f32>()
+                    - 1.0)
+                    .abs()
+                    < 1e-4
+        }));
     }
 
     fn sample_states() -> Vec<State<6, 7>> {
