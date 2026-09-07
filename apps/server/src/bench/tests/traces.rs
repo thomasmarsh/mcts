@@ -49,8 +49,8 @@ async fn test_get_run_games_filters_by_cell_without_leaking_other_cells() {
     let app = seeded_app(|conn, _| {
         conn.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('grid-games', 'experiment', NULL, 'test', false, 'test', '2026-01-01T00:00:00Z', 'running', '/tmp/grid.log')", []).unwrap();
         for (seq, cell) in [(1, "cell-000001"), (2, "cell-000002")] {
-            conn.execute("INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner, cell_id) VALUES ('grid-games', ?1, '2026-01-01T00:00:01Z', 'candidate', 'baseline', 'win_a', 'candidate', ?2)", duckdb::params![seq, cell]).unwrap();
-            conn.execute("INSERT INTO game_moves (run_id, game_seq, ply, ts, state) VALUES ('grid-games', ?1, 0, '2026-01-01T00:00:01Z', '{}')", duckdb::params![seq]).unwrap();
+            conn.execute("INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner, cell_id) VALUES ('grid-games', ?1, '2026-01-01T00:00:01Z', 'candidate', 'baseline', 'win_a', 'candidate', ?2)", rusqlite::params![seq, cell]).unwrap();
+            conn.execute("INSERT INTO game_moves (run_id, game_seq, ply, ts, state) VALUES ('grid-games', ?1, 0, '2026-01-01T00:00:01Z', '{}')", rusqlite::params![seq]).unwrap();
         }
     }).0;
     let (status, body) =
@@ -98,7 +98,7 @@ async fn test_get_run_game_moves_preserves_the_typed_search_report() {
         });
         conn.execute(
             "UPDATE game_moves SET trace_schema_version = 1, search_report = ?1 WHERE run_id = ?2 AND game_seq = 1 AND ply = 1",
-            duckdb::params![report.to_string(), DEFAULT_RUN_ID],
+            rusqlite::params![report.to_string(), DEFAULT_RUN_ID],
         ).unwrap();
     }).0;
 
@@ -156,7 +156,7 @@ async fn test_delete_run_removes_all_rows_and_files() {
         .unwrap()
         .execute(
             "UPDATE game_moves SET search_report = '{}' WHERE run_id = ?1",
-            duckdb::params![DEFAULT_RUN_ID],
+            rusqlite::params![DEFAULT_RUN_ID],
         )
         .unwrap();
     state.db.lock().unwrap().execute_batch(&format!(
@@ -197,7 +197,7 @@ async fn test_delete_run_removes_all_rows_and_files() {
         .unwrap()
         .query_row(
             "SELECT COUNT(*) FROM game_moves WHERE run_id = ?1 AND search_report IS NOT NULL",
-            duckdb::params![DEFAULT_RUN_ID],
+            rusqlite::params![DEFAULT_RUN_ID],
             |row| row.get(0),
         )
         .unwrap();

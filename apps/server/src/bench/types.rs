@@ -153,11 +153,11 @@ pub struct ObjectiveValidation {
 }
 
 #[cfg(test)]
-pub(crate) struct TestDatabase(Option<Arc<Mutex<duckdb::Connection>>>);
+pub(crate) struct TestDatabase(Option<Arc<Mutex<rusqlite::Connection>>>);
 
 #[cfg(test)]
 impl TestDatabase {
-    pub(crate) fn shared(connection: Arc<Mutex<duckdb::Connection>>) -> Self {
+    pub(crate) fn shared(connection: Arc<Mutex<rusqlite::Connection>>) -> Self {
         Self(Some(connection))
     }
 
@@ -165,7 +165,7 @@ impl TestDatabase {
         Self(None)
     }
 
-    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, duckdb::Connection>, ()> {
+    pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, ()> {
         self.0.as_ref().ok_or(())?.lock().map_err(|_| ())
     }
 }

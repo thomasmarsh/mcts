@@ -19,8 +19,7 @@ yardstick.
 ## Getting started: play some games
 
 You need a Rust toolchain and [pnpm](https://pnpm.io/). On macOS with Homebrew,
-building the server and bench crates also needs `LIBRARY_PATH=/opt/homebrew/lib`
-so the DuckDB dependency links.
+building the server and bench crates needs no additional database library setup.
 
 ```sh
 (cd apps/ui && pnpm install && pnpm build)

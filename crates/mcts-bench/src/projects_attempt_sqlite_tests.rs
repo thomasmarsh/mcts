@@ -1,9 +1,9 @@
 use crate::orchestration::{AttemptPhase, ExitObservation};
 use crate::projects_attempt::{LaunchResult, ProjectsError, ProjectsRepository, StartRequest};
-use crate::projects_attempt_duckdb::Repository;
+use crate::projects_attempt_sqlite::Repository;
 use crate::schema::ensure_schema;
 use crate::supervised_launch::{LaunchDescriptor, WrapperIdentity};
-use duckdb::Connection;
+use rusqlite::Connection;
 
 fn repository() -> Repository<'static> {
     let connection = Box::leak(Box::new(Connection::open_in_memory().unwrap()));

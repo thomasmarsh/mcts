@@ -19,7 +19,6 @@ base64 = "0.22"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
-duckdb = "1.10505.0"
 tower = { version = "0.5", features = ["util"] }
 
 [lints]

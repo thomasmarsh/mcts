@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mcts_bench::duckdb_composition::BenchAdapters;
+use mcts_bench::sqlite_composition::BenchAdapters;
 
 use axum::{
     extract::DefaultBodyLimit,
@@ -328,10 +328,10 @@ async fn main() {
     });
 
     // Open (or create) the benchmark database.  Only the server process ever
-    // opens `bench.duckdb` read-write; `bin/bench` and the Python tuner
+    // opens `bench.sqlite` read-write; `bin/bench` and the Python tuner
     // harness communicate via JSONL files and the registry log instead.
     let bench_runs_dir = PathBuf::from(mcts_bench::launch::BENCH_RUNS_DIR);
-    let bench_db_path = bench_runs_dir.join("bench.duckdb");
+    let bench_db_path = bench_runs_dir.join("bench.sqlite");
     // Read-only SQLite projection of version-4 tuner runs. Defaults under the
     // runs root; `MCTS_TUNER_PROJECTION_DB` overrides it.
     let tuner_projection_db = std::env::var_os("MCTS_TUNER_PROJECTION_DB")
@@ -390,7 +390,7 @@ async fn main() {
 
     // Start the background ingest loop.  Every 5 seconds it reads
     // registry.log and running runs' log.jsonl files, upserts into the
-    // DuckDB, and runs PID liveness reconciliation — so runs launched
+    // SQLite, and runs PID liveness reconciliation — so runs launched
     // via the API have their match results and terminal status appear
     // within one polling cycle of the child process exiting.
     {

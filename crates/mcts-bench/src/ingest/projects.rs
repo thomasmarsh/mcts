@@ -1,17 +1,17 @@
-use duckdb::Connection;
+use rusqlite::Connection;
 
 use crate::launch::iso_timestamp;
 
 use crate::projects_attempt::{self, ProjectsRepository};
 
-use crate::projects_attempt_duckdb;
+use crate::projects_attempt_sqlite;
 
 use crate::supervised_launch::{classify_observation, ObservationDecision};
 
 use super::IngestError;
 
 pub(super) fn observe(conn: &Connection) -> Result<(), IngestError> {
-    let repo = projects_attempt_duckdb::Repository::new(conn);
+    let repo = projects_attempt_sqlite::Repository::new(conn);
     let mut first_error = None;
     for target in repo.observation_targets()? {
         let decision = classify_observation(

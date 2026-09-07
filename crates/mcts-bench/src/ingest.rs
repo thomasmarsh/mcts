@@ -1,6 +1,6 @@
-//! Ingests benchmark registry and run logs into the DuckDB database.
+//! Ingests benchmark registry and run logs into the SQLite database.
 //!
-//! Only the `server` process should call this module because DuckDB permits a
+//! Only the `server` process should call this module because SQLite permits a
 //! single writer.
 
 mod artifacts;
@@ -15,7 +15,7 @@ pub use error::IngestError;
 
 use std::path::Path;
 
-use duckdb::Connection;
+use rusqlite::Connection;
 
 #[cfg(test)]
 use logs::process_runs as process_run_logs;

@@ -1,5 +1,5 @@
 //! Benchmark / tournament / tuner harness library. Only the `server` process
-//! opens `bench.duckdb` directly; `bin/bench` and Python tools communicate
+//! opens `bench.sqlite` directly; `bin/bench` and Python tools communicate
 //! via JSONL files and the registry log.
 
 pub mod experiment;
@@ -13,31 +13,22 @@ pub mod supervisor;
 pub mod tournament;
 pub mod tuner_launch;
 
-#[cfg(feature = "duckdb")]
 pub mod attempt_store;
-#[cfg(feature = "duckdb")]
-pub mod duckdb_composition;
-#[cfg(feature = "duckdb")]
 pub mod identity;
-#[cfg(feature = "duckdb")]
 pub mod ingest;
 pub mod project_repository;
-#[cfg(feature = "duckdb")]
-pub mod project_repository_duckdb;
+pub mod project_repository_sqlite;
 pub mod projects_attempt;
-#[cfg(feature = "duckdb")]
-pub mod projects_attempt_duckdb;
+pub mod projects_attempt_sqlite;
 pub mod run_command_repository;
-#[cfg(feature = "duckdb")]
-pub mod run_command_repository_duckdb;
+pub mod run_command_repository_sqlite;
 pub mod run_repository;
-#[cfg(feature = "duckdb")]
-pub mod run_repository_duckdb;
-#[cfg(feature = "duckdb")]
+pub mod run_repository_sqlite;
 pub mod schema;
+pub mod sqlite_composition;
 
-#[cfg(all(test, feature = "duckdb"))]
-mod projects_attempt_duckdb_tests;
+#[cfg(test)]
+mod projects_attempt_sqlite_tests;
 
 use std::collections::HashMap;
 

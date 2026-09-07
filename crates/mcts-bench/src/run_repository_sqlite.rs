@@ -1,8 +1,8 @@
-//! DuckDB implementation of [`crate::run_repository::RunRepository`].
+//! SQLite implementation of [`crate::run_repository::RunRepository`].
 
 use std::sync::{Arc, Mutex};
 
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 
 use crate::run_repository::{
     ExperimentCell, LeaderboardQuery, LeaderboardRow, RunDeletionInfo, RunDetail, RunGame,
@@ -10,18 +10,18 @@ use crate::run_repository::{
     RunSummary, RunTrial, RunTrialsQuery,
 };
 
-/// A run repository backed by a DuckDB connection.
-pub struct DuckDbRunRepository<'connection> {
+/// A run repository backed by a SQLite connection.
+pub struct SqliteRunRepository<'connection> {
     connection: &'connection Connection,
 }
 
-impl<'connection> DuckDbRunRepository<'connection> {
+impl<'connection> SqliteRunRepository<'connection> {
     pub fn new(connection: &'connection Connection) -> Self {
         Self { connection }
     }
 }
 
-impl RunRepository for DuckDbRunRepository<'_> {
+impl RunRepository for SqliteRunRepository<'_> {
     fn load_log_path(&self, run_id: &str) -> Result<String, RunRepositoryError> {
         load_log_path(self.connection, run_id)
     }
@@ -94,19 +94,19 @@ impl RunRepository for DuckDbRunRepository<'_> {
     }
 }
 
-/// A run repository backed by a shared DuckDB connection.
+/// A run repository backed by a shared SQLite connection.
 #[derive(Clone)]
-pub struct SharedDuckDbRunRepository {
+pub struct SharedSqliteRunRepository {
     connection: Arc<Mutex<Connection>>,
 }
 
-impl SharedDuckDbRunRepository {
+impl SharedSqliteRunRepository {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
         Self { connection }
     }
 }
 
-impl RunRepository for SharedDuckDbRunRepository {
+impl RunRepository for SharedSqliteRunRepository {
     fn load_log_path(&self, run_id: &str) -> Result<String, RunRepositoryError> {
         let connection = self
             .connection
@@ -194,7 +194,7 @@ impl RunRepository for SharedDuckDbRunRepository {
     }
 }
 
-impl SharedDuckDbRunRepository {
+impl SharedSqliteRunRepository {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, RunRepositoryError> {
         self.connection
             .lock()
@@ -210,7 +210,7 @@ fn load_log_path(connection: &Connection, run_id: &str) -> Result<String, RunRep
             |row| row.get(0),
         )
         .map_err(|error| match error {
-            duckdb::Error::QueryReturnedNoRows => RunRepositoryError::NotFound,
+            rusqlite::Error::QueryReturnedNoRows => RunRepositoryError::NotFound,
             other => RunRepositoryError::Storage(other.to_string()),
         })
 }
@@ -251,7 +251,7 @@ fn list_runs(
     sql.push_str(" ORDER BY CAST(r.started_at AS TEXT) DESC");
 
     let mut statement = connection.prepare(&sql).map_err(storage)?;
-    statement
+    let rows = statement
         .query_map([], |row| {
             Ok(RunSummary {
                 run_id: row.get(0)?,
@@ -271,9 +271,8 @@ fn list_runs(
                 trial_count: row.get(14)?,
             })
         })
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn load_run(connection: &Connection, run_id: &str) -> Result<RunDetail, RunRepositoryError> {
@@ -358,7 +357,7 @@ fn load_leaderboard(
         ORDER BY wins DESC, losses ASC"
     );
     let mut statement = connection.prepare(&sql).map_err(storage)?;
-    statement
+    let rows = statement
         .query_map([], |row| {
             Ok(LeaderboardRow {
                 strategy: row.get(0)?,
@@ -368,9 +367,8 @@ fn load_leaderboard(
                 draws: row.get(4)?,
             })
         })
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn load_experiment_cells(
@@ -505,7 +503,7 @@ fn load_trials(
         sql.push_str(&format!(" LIMIT {limit}"));
     }
     let mut statement = connection.prepare(&sql).map_err(storage)?;
-    statement
+    let rows = statement
         .query_map(params![run_id], |row| {
             let config: String = row.get(2)?;
             let extra: Option<String> = row.get(5)?;
@@ -518,9 +516,8 @@ fn load_trials(
                 extra: json_column(extra),
             })
         })
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn load_games(
@@ -541,7 +538,7 @@ fn load_games(
         sql.push_str(&format!(" LIMIT {limit}"));
     }
     let mut statement = connection.prepare(&sql).map_err(storage)?;
-    statement
+    let rows = statement
         .query_map(params![run_id, query.cell_id.as_deref()], |row| {
             Ok(RunGame {
                 game_seq: row.get(0)?,
@@ -558,9 +555,8 @@ fn load_games(
                 winner: row.get(11)?,
             })
         })
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn load_game_moves(
@@ -576,7 +572,7 @@ fn load_game_moves(
              FROM game_moves WHERE run_id = ?1 AND game_seq = ?2 AND ply > ?3 ORDER BY ply ASC",
         )
         .map_err(storage)?;
-    statement
+    let rows = statement
         .query_map(params![run_id, game_seq, after_ply], |row| {
             let state: String = row.get(2)?;
             Ok(RunGameMove {
@@ -589,9 +585,8 @@ fn load_game_moves(
                 search: json_column(row.get(5)?),
             })
         })
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn load_latest_game_seq(
@@ -678,13 +673,13 @@ fn json_value(value: String) -> serde_json::Value {
     serde_json::from_str(&value).unwrap_or(serde_json::Value::Null)
 }
 
-fn storage(error: duckdb::Error) -> RunRepositoryError {
+fn storage(error: rusqlite::Error) -> RunRepositoryError {
     RunRepositoryError::Storage(error.to_string())
 }
 
-fn not_found_or_storage(error: duckdb::Error) -> RunRepositoryError {
+fn not_found_or_storage(error: rusqlite::Error) -> RunRepositoryError {
     match error {
-        duckdb::Error::QueryReturnedNoRows => RunRepositoryError::NotFound,
+        rusqlite::Error::QueryReturnedNoRows => RunRepositoryError::NotFound,
         error => storage(error),
     }
 }
@@ -694,7 +689,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_log_path_and_hides_duckdb_errors() {
+    fn reads_log_path_and_hides_sqlite_errors() {
         let connection = Connection::open_in_memory().unwrap();
         connection
             .execute("CREATE TABLE runs (run_id TEXT, log_path TEXT)", [])
@@ -702,7 +697,7 @@ mod tests {
         connection
             .execute("INSERT INTO runs VALUES ('known', '/tmp/known.jsonl')", [])
             .unwrap();
-        let repository = DuckDbRunRepository::new(&connection);
+        let repository = SqliteRunRepository::new(&connection);
 
         assert_eq!(
             repository.load_log_path("known"),

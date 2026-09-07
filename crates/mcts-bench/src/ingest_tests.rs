@@ -33,10 +33,9 @@ fn registry_replay_does_not_clobber_server_identity() {
     let ev = start_event("child-run", "tuner", "nim", 99996, "/tmp/child/log.jsonl");
     let fix = TestFixture::new(&[ev]);
     fix.db
-            .execute(
+            .execute_batch(
                 "INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES ('logical-root', 'tuner', CURRENT_TIMESTAMP, 'child-run');
                  INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path, logical_run_id, parent_attempt_id, attempt_ordinal) VALUES ('child-run', 'tuner', 'nim', 'server', false, 'server', CURRENT_TIMESTAMP, 'running', '/tmp/server/log.jsonl', 'logical-root', 'parent-run', 2)",
-                [],
             )
             .unwrap();
 
@@ -245,7 +244,7 @@ fn test_ingest_match_results() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -317,7 +316,7 @@ fn test_ingest_idempotent() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -394,7 +393,7 @@ fn test_ingest_skips_unparseable_log_lines() {
         log_content.push_str("{\"type\": \"unknown_thing\", \"data\": 42}\n");
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -481,7 +480,7 @@ fn test_heartbeats_are_skipped() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -548,7 +547,7 @@ fn test_ingest_trials() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -637,7 +636,7 @@ fn test_ingest_incumbent_upserts_latest() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -729,7 +728,7 @@ fn test_ingest_tails_moves_jsonl_sibling_of_log_jsonl() {
         };
         fs::write(&moves_path, format!("{}\n", mv.to_json_line())).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -800,7 +799,7 @@ fn test_ingest_moves() {
         }
         fs::write(&log_path, &log_content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         (bench_runs, db)
@@ -869,7 +868,7 @@ fn test_registry_garbage_lines_are_skipped() {
     content.push_str("also not json\n");
     fs::write(bench_runs.join("registry.log"), &content).unwrap();
 
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
 
     ingest_once(&db, &bench_runs).unwrap();
@@ -948,7 +947,7 @@ fn test_experiment_cell_ingestion_is_idempotent_and_keeps_trace_mapping() {
             .collect::<String>(),
     )
     .unwrap();
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     db.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) VALUES ('experiment-run', 'experiment', 'nim', 'test', false, 'test', NULL, CURRENT_TIMESTAMP, 'running', ?1)", [&log_path.to_string_lossy()]).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('experiment-run', 'cell-1', 'nim', 'null', 'candidate', 'Candidate', '{}', 'base', 'Baseline', '{}', '{\"kind\":\"iterations\",\"value\":1}', 1, 2)", []).unwrap();
@@ -1020,7 +1019,7 @@ fn live_cell_failure_waits_for_coordinator_and_later_logs_are_ingested() {
     )
     .unwrap();
 
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     process_registry(&db, &bench_runs.join("registry.log")).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES ('live-failure-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 2, 4, 'pending'), ('live-failure-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 2, 4, 'pending')", []).unwrap();
@@ -1141,7 +1140,7 @@ fn late_cell_events_do_not_change_stopped_or_cancelled_state() {
         ),
     )
     .unwrap();
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     process_registry(&db, &bench_runs.join("registry.log")).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, completed_games, status) VALUES ('stopped-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 1, 2, 2, 'completed'), ('stopped-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 1, 2, 1, 'failed'), ('stopped-run', 'cell-000003', 'nim', '{}', 'v3', 'V3', '{}', 'b', 'B', '{}', '{}', 1, 2, 0, 'cancelled')", []).unwrap();
@@ -1229,7 +1228,7 @@ fn test_cell_failure_is_ingested_after_registry_stop() {
         ),
     )
     .unwrap();
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     process_registry(&db, &bench_runs.join("registry.log")).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('failed-run', 'cell-1', 'nim', 'null', 'variant', 'Variant', '{}', 'baseline', 'Baseline', '{}', '{\"kind\":\"iterations\",\"value\":1}', 1, 2)", []).unwrap();
@@ -1278,7 +1277,7 @@ fn experiment_stop_then_late_failure_upgrades_completed_status() {
         ),
     )
     .unwrap();
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     process_registry(&db, &bench_runs.join("registry.log")).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games) VALUES ('late-run', 'cell-000001', 'nim', '{}', 'v', 'V', '{}', 'b', 'B', '{}', '{}', 1, 2)", []).unwrap();
@@ -1341,7 +1340,7 @@ fn nonzero_experiment_exit_cleans_running_and_pending_cells() {
         ),
     )
     .unwrap();
-    let db = duckdb::Connection::open_in_memory().unwrap();
+    let db = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&db).unwrap();
     process_registry(&db, &bench_runs.join("registry.log")).unwrap();
     db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES ('crashed-run', 'cell-000001', 'nim', '{}', 'v1', 'V1', '{}', 'b', 'B', '{}', '{}', 1, 2, 'running'), ('crashed-run', 'cell-000002', 'nim', '{}', 'v2', 'V2', '{}', 'b', 'B', '{}', '{}', 1, 2, 'pending')", []).unwrap();
@@ -1414,7 +1413,7 @@ fn move_log_fixture(records: Vec<LogRecord>) -> (TestFixture, std::path::PathBuf
     fixture.db.execute(
         "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
          VALUES ('search-report-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', ?1)",
-        duckdb::params![log_path.to_string_lossy().to_string()],
+        rusqlite::params![log_path.to_string_lossy().to_string()],
     ).unwrap();
     (fixture, log_path)
 }
@@ -1476,7 +1475,7 @@ fn ingest_projects_available_partial_and_unavailable_search_reports() {
         .db
         .execute(
             "DELETE FROM _ingest_cursor WHERE log_path = ?1",
-            duckdb::params![log_path.to_string_lossy().to_string()],
+            rusqlite::params![log_path.to_string_lossy().to_string()],
         )
         .unwrap();
     ingest_once(&fixture.db, &fixture.bench_runs).unwrap();
@@ -1506,7 +1505,7 @@ fn malformed_search_report_does_not_advance_the_move_cursor() {
         .db
         .query_row(
             "SELECT byte_offset FROM _ingest_cursor WHERE log_path = ?1",
-            duckdb::params![log_path.to_string_lossy().to_string()],
+            rusqlite::params![log_path.to_string_lossy().to_string()],
             |row| row.get(0),
         )
         .unwrap_or(None);
@@ -1539,7 +1538,7 @@ fn artifact_fixture(run_id: &str) -> (TestFixture, std::path::PathBuf) {
     fixture.db.execute(
         "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
          VALUES (?1, 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', ?2)",
-        duckdb::params![run_id, log_path.to_string_lossy().to_string()],
+        rusqlite::params![run_id, log_path.to_string_lossy().to_string()],
     ).unwrap();
     let root = run_dir.join("tuning-artifacts");
     fs::create_dir_all(root.join("descriptors")).unwrap();
@@ -1666,13 +1665,13 @@ fn partitioned_artifacts_tail_complete_lines_and_terminalize_once() {
         "completed artifacts are immutable and are not re-polled"
     );
 
-    let rebuilt = duckdb::Connection::open_in_memory().unwrap();
+    let rebuilt = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&rebuilt).unwrap();
     rebuilt
         .execute(
             "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) \
              VALUES ('artifact-run', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'completed', ?1)",
-            duckdb::params![fixture.bench_runs.join("artifact-run/log.jsonl").to_string_lossy().to_string()],
+            rusqlite::params![fixture.bench_runs.join("artifact-run/log.jsonl").to_string_lossy().to_string()],
         )
         .unwrap();
     ingest_once(&rebuilt, &fixture.bench_runs).unwrap();

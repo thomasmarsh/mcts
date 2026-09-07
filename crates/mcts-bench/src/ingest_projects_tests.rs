@@ -1,6 +1,6 @@
 use std::fs;
 
-use duckdb::params;
+use rusqlite::params;
 
 use super::ingest_once;
 use super::test_support::{stop_event, typed_projects_fixture};

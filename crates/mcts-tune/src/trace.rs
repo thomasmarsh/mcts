@@ -3,7 +3,7 @@
 //! progress.
 //!
 //! Deliberately dependency-light, matching this crate's own charter (see
-//! `lib.rs`'s module doc: no `mcts-bench`, no `duckdb`, no `game-host`
+//! `lib.rs`'s module doc: no `mcts-bench`, no database driver, no `game-host`
 //! adapter machinery). A `Game::S` has no `Serialize` bound -- only
 //! `Display` -- so there's no wire-JSON shape to convert it to without
 //! pulling in a per-game `GameAdapter`, which this crate is not going to

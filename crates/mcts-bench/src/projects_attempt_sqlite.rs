@@ -1,6 +1,6 @@
-//! DuckDB repository for the typed Projects attempt protocol.
+//! SQLite repository for the typed Projects attempt protocol.
 
-use duckdb::{params, Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use std::sync::Mutex;
 
 use crate::attempt_store::{self, AttemptStoreError};
@@ -21,8 +21,8 @@ pub struct Repository<'a> {
     conn: &'a Connection,
 }
 
-impl From<duckdb::Error> for ProjectsError {
-    fn from(error: duckdb::Error) -> Self {
+impl From<rusqlite::Error> for ProjectsError {
+    fn from(error: rusqlite::Error) -> Self {
         ProjectsError::Storage(error.to_string())
     }
 }
@@ -50,11 +50,11 @@ fn store_error(error: AttemptStoreError) -> ProjectsError {
         AttemptStoreError::Corrupt { .. } | AttemptStoreError::MissingIdentity(_) => {
             ProjectsError::Corrupt(error.to_string())
         }
-        AttemptStoreError::DuckDb(_) => ProjectsError::Storage(error.to_string()),
+        AttemptStoreError::Sqlite(_) => ProjectsError::Storage(error.to_string()),
     }
 }
 
-fn db_error(error: duckdb::Error) -> ProjectsError {
+fn db_error(error: rusqlite::Error) -> ProjectsError {
     ProjectsError::Storage(error.to_string())
 }
 
@@ -170,7 +170,7 @@ impl ProjectsRepository for Repository<'_> {
                 },
             )
             .map_err(|error| match error {
-                duckdb::Error::QueryReturnedNoRows => ProjectsError::NotFound,
+                rusqlite::Error::QueryReturnedNoRows => ProjectsError::NotFound,
                 other => db_error(other),
             })?;
         tx.commit().map_err(db_error)?;
@@ -185,7 +185,7 @@ impl ProjectsRepository for Repository<'_> {
             |row| row.get(0),
         ) {
             Ok(phase) => phase,
-            Err(duckdb::Error::QueryReturnedNoRows) => {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
                 tx.commit().map_err(db_error)?;
                 return Ok(None);
             }

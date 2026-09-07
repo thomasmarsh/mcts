@@ -3,12 +3,12 @@
 //! These helpers deliberately know only the additive identity columns. The
 //! rest of a `runs` row remains owned by the server and registry ingestion.
 
-use duckdb::{params, Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 use serde_json::Value;
 
 #[derive(Debug)]
 pub enum IdentityError {
-    DuckDb(duckdb::Error),
+    Sqlite(rusqlite::Error),
     MissingRun(String),
     InvalidLinkage(String),
     Contradiction(String),
@@ -17,7 +17,7 @@ pub enum IdentityError {
 impl std::fmt::Display for IdentityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DuckDb(error) => write!(f, "DuckDB error: {error}"),
+            Self::Sqlite(error) => write!(f, "SQLite error: {error}"),
             Self::MissingRun(run_id) => write!(f, "run '{run_id}' not found"),
             Self::InvalidLinkage(message) => write!(f, "invalid run identity linkage: {message}"),
             Self::Contradiction(message) => write!(f, "contradictory run identity: {message}"),
@@ -27,9 +27,9 @@ impl std::fmt::Display for IdentityError {
 
 impl std::error::Error for IdentityError {}
 
-impl From<duckdb::Error> for IdentityError {
-    fn from(error: duckdb::Error) -> Self {
-        Self::DuckDb(error)
+impl From<rusqlite::Error> for IdentityError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
     }
 }
 
@@ -69,8 +69,8 @@ fn run_identity(tx: &Transaction<'_>, run_id: &str) -> Result<RunIdentityRow, Id
         },
     )
     .map_err(|error| match error {
-        duckdb::Error::QueryReturnedNoRows => IdentityError::MissingRun(run_id.to_owned()),
-        other => IdentityError::DuckDb(other),
+        rusqlite::Error::QueryReturnedNoRows => IdentityError::MissingRun(run_id.to_owned()),
+        other => IdentityError::Sqlite(other),
     })
 }
 

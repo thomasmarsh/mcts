@@ -8,11 +8,11 @@ use crate::orchestration::{
     transition_attempt, AttemptAction, AttemptEvent, AttemptPhase, AttemptState,
     AttemptTransitionError, ExitObservation, StopReason,
 };
-use duckdb::{params, Transaction};
+use rusqlite::{params, Transaction};
 
 #[derive(Debug)]
 pub enum AttemptStoreError {
-    DuckDb(duckdb::Error),
+    Sqlite(rusqlite::Error),
     MissingAttempt(String),
     MissingIdentity(String),
     Uninitialized(String),
@@ -34,7 +34,7 @@ pub enum AttemptStoreError {
 impl std::fmt::Display for AttemptStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DuckDb(error) => write!(f, "DuckDB error: {error}"),
+            Self::Sqlite(error) => write!(f, "SQLite error: {error}"),
             Self::MissingAttempt(id) => write!(f, "attempt '{id}' not found"),
             Self::MissingIdentity(id) => write!(f, "attempt '{id}' has no logical identity"),
             Self::Uninitialized(id) => write!(f, "attempt '{id}' has no typed lifecycle"),
@@ -61,9 +61,9 @@ impl std::fmt::Display for AttemptStoreError {
 
 impl std::error::Error for AttemptStoreError {}
 
-impl From<duckdb::Error> for AttemptStoreError {
-    fn from(error: duckdb::Error) -> Self {
-        Self::DuckDb(error)
+impl From<rusqlite::Error> for AttemptStoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sqlite(error)
     }
 }
 
@@ -262,10 +262,10 @@ fn identity_exists(tx: &Transaction<'_>, attempt_id: &str) -> Result<(), Attempt
             |row| row.get(0),
         )
         .map_err(|error| match error {
-            duckdb::Error::QueryReturnedNoRows => {
+            rusqlite::Error::QueryReturnedNoRows => {
                 AttemptStoreError::MissingAttempt(attempt_id.to_owned())
             }
-            other => AttemptStoreError::DuckDb(other),
+            other => AttemptStoreError::Sqlite(other),
         })?;
     let logical =
         linkage.ok_or_else(|| AttemptStoreError::MissingIdentity(attempt_id.to_owned()))?;
@@ -310,7 +310,7 @@ fn read_projection(
             })
         },
     )
-    .map_err(AttemptStoreError::DuckDb)
+    .map_err(AttemptStoreError::Sqlite)
 }
 
 fn projection_is_empty(projection: &Projection) -> bool {
@@ -620,8 +620,8 @@ pub fn record_attempt_event(
         )
         .map(Some)
         .or_else(|error| match error {
-            duckdb::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(AttemptStoreError::DuckDb(other)),
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(AttemptStoreError::Sqlite(other)),
         })?;
     if let Some((event_type, stop_reason, exit_kind, exit_code)) = existing {
         let stored = parse_event(attempt_id, event_type, stop_reason, exit_kind, exit_code)?;
@@ -688,7 +688,7 @@ pub fn record_attempt_event(
                 "DELETE FROM attempt_events WHERE attempt_id = ?1 AND event_key = ?2 AND attempt_version = ?3",
                 params![attempt_id, event_key, next_version],
             );
-            return Err(AttemptStoreError::DuckDb(error));
+            return Err(AttemptStoreError::Sqlite(error));
         }
     };
     if changed != 1 {
@@ -715,7 +715,7 @@ pub fn record_attempt_event(
 mod tests {
     use super::*;
     use crate::schema::ensure_schema;
-    use duckdb::Connection;
+    use rusqlite::Connection;
 
     type ProjectionRow = (
         Option<String>,
@@ -976,9 +976,8 @@ mod tests {
         ));
         tx.commit().unwrap();
 
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, started_at, status, log_path) VALUES ('no-identity', 'tuner', 'nim', 'sha', false, 'host', CURRENT_TIMESTAMP, 'running', '/tmp/log')",
-            [],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
@@ -988,9 +987,8 @@ mod tests {
         ));
         tx.commit().unwrap();
 
-        conn.execute(
+        conn.execute_batch(
             "UPDATE runs SET logical_run_id = 'dangling' WHERE run_id = 'no-identity'",
-            [],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
@@ -1014,9 +1012,8 @@ mod tests {
         assert_eq!(projection(&tx, "attempt"), before);
         tx.commit().unwrap();
 
-        conn.execute(
+        conn.execute_batch(
             "UPDATE runs SET attempt_phase = NULL WHERE run_id = 'attempt'; INSERT INTO attempt_events (attempt_id, attempt_version, event_key, event_type, observed_at) VALUES ('attempt', 1, 'orphan', 'start_requested', CURRENT_TIMESTAMP)",
-            [],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
@@ -1210,9 +1207,8 @@ mod tests {
         ));
         tx.commit().unwrap();
 
-        conn.execute(
+        conn.execute_batch(
             "UPDATE attempt_events SET event_type = 'start_requested' WHERE attempt_id = 'attempt' AND attempt_version = 1; UPDATE attempt_events SET attempt_version = 3 WHERE attempt_id = 'attempt' AND attempt_version = 1",
-            [],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();
@@ -1222,9 +1218,8 @@ mod tests {
         ));
         tx.commit().unwrap();
 
-        conn.execute(
+        conn.execute_batch(
             "UPDATE attempt_events SET attempt_version = 1 WHERE attempt_id = 'attempt' AND attempt_version = 3; UPDATE runs SET attempt_phase = 'running' WHERE run_id = 'attempt'",
-            [],
         )
         .unwrap();
         let tx = conn.transaction().unwrap();

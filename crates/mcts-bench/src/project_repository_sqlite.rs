@@ -1,21 +1,21 @@
-//! DuckDB implementation of [`crate::project_repository::ProjectRepository`].
+//! SQLite implementation of [`crate::project_repository::ProjectRepository`].
 
 use std::sync::{Arc, Mutex};
 
-use duckdb::{params, Connection, Transaction};
+use rusqlite::{params, Connection, Transaction};
 
 use crate::project_repository::{
     CreateExperiment, CreateProject, Experiment, Project, ProjectRepository,
     ProjectRepositoryError, UpdateExperiment, UpdateProject,
 };
 
-/// A project repository backed by a shared DuckDB connection.
+/// A project repository backed by a shared SQLite connection.
 #[derive(Clone)]
-pub struct SharedDuckDbProjectRepository {
+pub struct SharedSqliteProjectRepository {
     connection: Arc<Mutex<Connection>>,
 }
 
-impl SharedDuckDbProjectRepository {
+impl SharedSqliteProjectRepository {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
         Self { connection }
     }
@@ -27,7 +27,7 @@ impl SharedDuckDbProjectRepository {
     }
 }
 
-impl ProjectRepository for SharedDuckDbProjectRepository {
+impl ProjectRepository for SharedSqliteProjectRepository {
     fn list_active_projects(&self) -> Result<Vec<Project>, ProjectRepositoryError> {
         let connection = self.lock()?;
         list_active_projects(&connection)
@@ -85,11 +85,8 @@ fn list_active_projects(connection: &Connection) -> Result<Vec<Project>, Project
              FROM projects WHERE archived = false ORDER BY name",
         )
         .map_err(storage)?;
-    statement
-        .query_map([], project_from_row)
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+    let rows = statement.query_map([], project_from_row).map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn create_project(
@@ -191,11 +188,10 @@ fn list_experiments(
              FROM experiments WHERE project_id = ?1 ORDER BY name",
         )
         .map_err(storage)?;
-    statement
+    let rows = statement
         .query_map(params![project_id], experiment_from_row)
-        .map_err(storage)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
 }
 
 fn create_experiment(
@@ -298,7 +294,7 @@ fn update_experiment(
     Ok(experiment)
 }
 
-fn project_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Project> {
+fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     Ok(Project {
         project_id: row.get(0)?,
         name: row.get(1)?,
@@ -309,7 +305,7 @@ fn project_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Project> {
     })
 }
 
-fn experiment_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Experiment> {
+fn experiment_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Experiment> {
     Ok(Experiment {
         experiment_id: row.get(0)?,
         project_id: row.get(1)?,
@@ -321,13 +317,13 @@ fn experiment_from_row(row: &duckdb::Row<'_>) -> duckdb::Result<Experiment> {
     })
 }
 
-fn storage(error: duckdb::Error) -> ProjectRepositoryError {
+fn storage(error: rusqlite::Error) -> ProjectRepositoryError {
     ProjectRepositoryError::Storage(error.to_string())
 }
 
-fn not_found_or_storage(error: duckdb::Error) -> ProjectRepositoryError {
+fn not_found_or_storage(error: rusqlite::Error) -> ProjectRepositoryError {
     match error {
-        duckdb::Error::QueryReturnedNoRows => ProjectRepositoryError::NotFound,
+        rusqlite::Error::QueryReturnedNoRows => ProjectRepositoryError::NotFound,
         error => storage(error),
     }
 }
@@ -340,7 +336,7 @@ mod tests {
     fn updates_projects_and_reports_active_name_conflicts() {
         let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         crate::schema::ensure_schema(&connection.lock().unwrap()).unwrap();
-        let repository = SharedDuckDbProjectRepository::new(connection);
+        let repository = SharedSqliteProjectRepository::new(connection);
         repository
             .create_project(CreateProject {
                 project_id: "first".into(),

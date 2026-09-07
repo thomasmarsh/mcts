@@ -1,6 +1,6 @@
 //! Versioned experiment definitions and the foreground experiment coordinator.
 //!
-//! The coordinator deliberately knows nothing about DuckDB.  It validates a
+//! The coordinator deliberately knows nothing about SQLite.  It validates a
 //! saved definition, invokes the existing configured game comparison, and
 //! translates that process's stream into the run log consumed by ingestion.
 

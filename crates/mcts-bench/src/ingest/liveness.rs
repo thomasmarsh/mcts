@@ -1,8 +1,8 @@
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 
 use crate::launch::{is_alive, iso_timestamp};
 use crate::projects_attempt::ProjectsRepository;
-use crate::projects_attempt_duckdb;
+use crate::projects_attempt_sqlite;
 
 use super::IngestError;
 
@@ -44,7 +44,7 @@ pub(super) fn reconcile(conn: &Connection) -> Result<(), IngestError> {
 
     for (run_id, pid, kind) in maybe_dead {
         if kind == "experiment"
-            && projects_attempt_duckdb::Repository::new(conn)
+            && projects_attempt_sqlite::Repository::new(conn)
                 .load_if_initialized(&run_id)?
                 .is_some()
         {

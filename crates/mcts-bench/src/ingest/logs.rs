@@ -4,14 +4,14 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 use std::path::Path;
 
-use duckdb::{params, Connection};
 use game_host::{SearchReport, SearchReportReason, SearchReportStatus};
+use rusqlite::{params, Connection};
 
 use crate::launch::iso_timestamp;
 
 use crate::log::LogRecord;
 use crate::projects_attempt::ProjectsRepository;
-use crate::projects_attempt_duckdb;
+use crate::projects_attempt_sqlite;
 
 use super::cursor::{get_cursor, set_cursor};
 
@@ -52,7 +52,7 @@ pub(super) fn process_runs(conn: &Connection) -> Result<(), IngestError> {
 }
 
 fn validate_typed_projects_attempt(conn: &Connection, run_id: &str) -> Result<(), IngestError> {
-    projects_attempt_duckdb::Repository::new(conn).load_if_initialized(run_id)?;
+    projects_attempt_sqlite::Repository::new(conn).load_if_initialized(run_id)?;
     Ok(())
 }
 
@@ -61,7 +61,7 @@ fn validate_typed_projects_attempt(conn: &Connection, run_id: &str) -> Result<()
 /// completed-with-errors distinction; the typed phase itself never changes
 /// after this event.
 fn finalize_projects_attempt(conn: &Connection, run_id: &str) -> Result<(), IngestError> {
-    let repo = projects_attempt_duckdb::Repository::new(conn);
+    let repo = projects_attempt_sqlite::Repository::new(conn);
     let Some(receipt) = repo.load_if_initialized(run_id)? else {
         return Ok(());
     };

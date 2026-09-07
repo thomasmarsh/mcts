@@ -2,7 +2,7 @@
 //!
 //! This deliberately does *not* go through [`crate::supervised_launch`]. That
 //! seam is built around the bench attempt/journal lifecycle model (attempt
-//! ids, launch nonces, wrapper-process readiness evidence, a DuckDB
+//! ids, launch nonces, wrapper-process readiness evidence, a SQLite
 //! projection). A version-4 tuner run's `<run-dir>/{manifest,evidence,report}`
 //! triple is already its own scientific authority; imposing a second
 //! lifecycle store on it would contradict that. What the bench server needs

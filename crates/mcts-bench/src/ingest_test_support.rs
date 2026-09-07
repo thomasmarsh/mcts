@@ -1,6 +1,6 @@
 use std::fs;
 
-use duckdb::Connection;
+use rusqlite::Connection;
 
 use crate::attempt_store;
 use crate::log::RegistryEvent;
@@ -35,7 +35,7 @@ impl TestFixture {
         }
         fs::write(bench_runs.join("registry.log"), &content).unwrap();
 
-        let db = duckdb::Connection::open_in_memory().unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
         ensure_schema(&db).unwrap();
 
         TestFixture {
@@ -71,9 +71,9 @@ fn typed_projects_fixture_with_process(
     fs::create_dir_all(&run_dir).unwrap();
     let log_path = run_dir.join("log.jsonl");
     fs::write(&log_path, "").unwrap();
-    fixture.db.execute("INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES (?1, 'experiment', CURRENT_TIMESTAMP, ?1)", duckdb::params![run_id]).unwrap();
-    fixture.db.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES (?1, 'experiment', 'nim', 'sha', false, 'host', ?2, CURRENT_TIMESTAMP, 'running', ?3, ?1, 1)", duckdb::params![run_id, std::process::id() as i64, log_path.to_string_lossy().to_string()]).unwrap();
-    fixture.db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, 'cell-1', 'nim', '{}', 'v', 'V', '{}', 'b', 'B', '{}', '{}', 1, 2, 'pending')", duckdb::params![run_id]).unwrap();
+    fixture.db.execute("INSERT INTO logical_runs (logical_run_id, kind, created_at, current_attempt_id) VALUES (?1, 'experiment', CURRENT_TIMESTAMP, ?1)", rusqlite::params![run_id]).unwrap();
+    fixture.db.execute("INSERT INTO runs (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path, logical_run_id, attempt_ordinal) VALUES (?1, 'experiment', 'nim', 'sha', false, 'host', ?2, CURRENT_TIMESTAMP, 'running', ?3, ?1, 1)", rusqlite::params![run_id, std::process::id() as i64, log_path.to_string_lossy().to_string()]).unwrap();
+    fixture.db.execute("INSERT INTO experiment_cells (run_id, cell_id, game, game_config, variant_id, variant_label, candidate_config, baseline_id, baseline_label, baseline_config, budget, rounds, planned_games, status) VALUES (?1, 'cell-1', 'nim', '{}', 'v', 'V', '{}', 'b', 'B', '{}', '{}', 1, 2, 'pending')", rusqlite::params![run_id]).unwrap();
     let tx = fixture.db.unchecked_transaction().unwrap();
     attempt_store::initialize_attempt(&tx, run_id).unwrap();
     attempt_store::record_attempt_event(

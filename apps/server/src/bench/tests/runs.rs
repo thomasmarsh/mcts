@@ -133,7 +133,7 @@ async fn test_get_run_includes_incumbent_when_present() {
         conn.execute(
             "INSERT INTO incumbents (run_id, ts, config, cost) \
              VALUES (?1, '2026-01-01T00:00:40Z', '{\"select\":\"rave\",\"c\":0.7}', 0.2)",
-            duckdb::params![DEFAULT_RUN_ID],
+            rusqlite::params![DEFAULT_RUN_ID],
         )
         .unwrap();
     })
@@ -186,7 +186,7 @@ async fn test_get_run_log_returns_lines_since_offset() {
              (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
              VALUES ('loggy-run', 'round_robin', 'druid', 'abc', false, 'h', NULL, \
                      '2026-01-01T00:00:00Z', 'running', ?1)",
-            duckdb::params![log_path_str],
+            rusqlite::params![log_path_str],
         )
         .unwrap();
     })
@@ -236,7 +236,7 @@ async fn test_get_run_trials_returns_rows_in_trial_id_order() {
         conn.execute(
             "INSERT INTO trials (run_id, trial_id, ts, config, seed, cost, extra) \
              VALUES (?1, 2, '2026-01-01T00:00:40Z', '{\"c\":1.5}', 42, 0.2, '{\"wins\":8}')",
-            duckdb::params![DEFAULT_RUN_ID],
+            rusqlite::params![DEFAULT_RUN_ID],
         )
         .unwrap();
     })
@@ -266,7 +266,7 @@ async fn test_get_run_trials_respects_limit() {
         conn.execute(
             "INSERT INTO trials (run_id, trial_id, ts, config, cost) \
              VALUES (?1, 2, '2026-01-01T00:00:40Z', '{}', 0.2)",
-            duckdb::params![DEFAULT_RUN_ID],
+            rusqlite::params![DEFAULT_RUN_ID],
         )
         .unwrap();
     })

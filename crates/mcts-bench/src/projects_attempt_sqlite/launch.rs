@@ -1,4 +1,4 @@
-use duckdb::{params, OptionalExt, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::{db_error, identity_error, record, store_error, Repository};
 use crate::attempt_store;

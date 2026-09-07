@@ -1,4 +1,4 @@
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 
 use crate::launch::iso_timestamp;
 
@@ -11,8 +11,8 @@ pub(crate) fn get_cursor(conn: &Connection, log_path: &str) -> Result<u64, Inges
         |row| row.get::<_, i64>(0),
     ) {
         Ok(offset) => Ok(offset as u64),
-        Err(duckdb::Error::QueryReturnedNoRows) => Ok(0),
-        Err(e) => Err(IngestError::DuckDb(e)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+        Err(e) => Err(IngestError::Sqlite(e)),
     }
 }
 

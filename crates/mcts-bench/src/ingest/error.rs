@@ -2,7 +2,7 @@ use crate::projects_attempt;
 
 #[derive(Debug)]
 pub enum IngestError {
-    DuckDb(duckdb::Error),
+    Sqlite(rusqlite::Error),
     Io(std::io::Error),
     Json(serde_json::Error),
     InvalidMoveReport {
@@ -23,7 +23,7 @@ pub enum IngestError {
 impl std::fmt::Display for IngestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            IngestError::DuckDb(e) => write!(f, "DuckDB error: {e}"),
+            IngestError::Sqlite(e) => write!(f, "SQLite error: {e}"),
             IngestError::Io(e) => write!(f, "I/O error: {e}"),
             IngestError::Json(e) => write!(f, "JSON error: {e}"),
             IngestError::InvalidMoveReport { message } => {
@@ -47,9 +47,9 @@ impl std::fmt::Display for IngestError {
 
 impl std::error::Error for IngestError {}
 
-impl From<duckdb::Error> for IngestError {
-    fn from(e: duckdb::Error) -> Self {
-        IngestError::DuckDb(e)
+impl From<rusqlite::Error> for IngestError {
+    fn from(e: rusqlite::Error) -> Self {
+        IngestError::Sqlite(e)
     }
 }
 

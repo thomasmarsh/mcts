@@ -55,17 +55,17 @@ pub(super) static FIXTURE_COUNTER: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Build a fully seeded test app: creates a temp dir with bench-runs/
-/// subdirectory, opens an in-memory DuckDB, seeds it, then moves the
+/// subdirectory, opens an in-memory SQLite, seeds it, then moves the
 /// connection into the `BenchState`.  Returns the Router and the temp
 /// dir (kept alive for the test's duration).
-pub(super) fn seeded_app(seed_fn: impl FnOnce(&duckdb::Connection, &Path)) -> (Router, PathBuf) {
+pub(super) fn seeded_app(seed_fn: impl FnOnce(&rusqlite::Connection, &Path)) -> (Router, PathBuf) {
     seeded_app_with(seed_fn)
 }
 
 #[test]
 fn adapter_fixture_ingests_and_reads_a_registry_run() {
-    use mcts_bench::duckdb_composition::{BenchAdapters, BenchIngest};
     use mcts_bench::run_repository::{RunListQuery, RunRepository};
+    use mcts_bench::sqlite_composition::{BenchAdapters, BenchIngest};
 
     let directory = std::env::temp_dir().join(format!(
         "mcts_bench_adapter_fixture_{}_{}",
@@ -73,7 +73,7 @@ fn adapter_fixture_ingests_and_reads_a_registry_run() {
         FIXTURE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::create_dir_all(&directory).unwrap();
-    let connection = duckdb::Connection::open_in_memory().unwrap();
+    let connection = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&connection).unwrap();
     let adapters = BenchAdapters::from_initialized_connection(connection).unwrap();
     let event = RegistryEvent::Start {
@@ -108,14 +108,14 @@ fn adapter_fixture_ingests_and_reads_a_registry_run() {
 }
 
 pub(super) fn seeded_app_with(
-    seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    seed_fn: impl FnOnce(&rusqlite::Connection, &Path),
 ) -> (Router, PathBuf) {
     let (app, path, _) = seeded_app_with_state(seed_fn);
     (app, path)
 }
 
 pub(super) fn seeded_app_with_state(
-    seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    seed_fn: impl FnOnce(&rusqlite::Connection, &Path),
 ) -> (Router, PathBuf, Arc<BenchState>) {
     seeded_app_with_state_and_signaller(
         seed_fn,
@@ -129,7 +129,7 @@ pub(super) fn seeded_app_with_state(
 }
 
 pub(super) fn seeded_app_with_state_and_signaller(
-    seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    seed_fn: impl FnOnce(&rusqlite::Connection, &Path),
     process_group_signaller: ProcessGroupSignaller,
 ) -> (Router, PathBuf, Arc<BenchState>) {
     seeded_app_with_state_signaller_and_tuner_db(
@@ -143,7 +143,7 @@ pub(super) fn seeded_app_with_state_and_signaller(
 /// tuner projection SQLite file instead of the checked-in fixture -- for tests
 /// that need a larger or purpose-built projection (e.g. pagination-at-scale).
 pub(super) fn seeded_app_with_state_signaller_and_tuner_db(
-    seed_fn: impl FnOnce(&duckdb::Connection, &Path),
+    seed_fn: impl FnOnce(&rusqlite::Connection, &Path),
     process_group_signaller: ProcessGroupSignaller,
     tuner_projection_db: PathBuf,
 ) -> (Router, PathBuf, Arc<BenchState>) {
@@ -156,13 +156,13 @@ pub(super) fn seeded_app_with_state_signaller_and_tuner_db(
     std::fs::create_dir_all(&bench_runs_dir).unwrap();
 
     // Create, seed, and keep the same connection — no file intermediary.
-    let conn = duckdb::Connection::open_in_memory().unwrap();
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
     ensure_schema(&conn).unwrap();
     seed_fn(&conn, &bench_runs_dir);
 
     let db = Arc::new(Mutex::new(conn));
     let adapters =
-        mcts_bench::duckdb_composition::BenchAdapters::from_initialized_shared_connection(
+        mcts_bench::sqlite_composition::BenchAdapters::from_initialized_shared_connection(
             db.clone(),
         )
         .unwrap();
@@ -245,13 +245,13 @@ pub(super) fn seeded_app_with_state_signaller_and_tuner_db(
 }
 
 /// Default seed: one completed run with two match results and one trial.
-pub(super) fn default_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+pub(super) fn default_seed(conn: &rusqlite::Connection, _bench_runs_dir: &Path) {
     conn.execute(
         "INSERT INTO runs \
          (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
          VALUES (?1, 'round_robin', 'druid', 'abc1234', false, 'testhost', NULL, \
                  '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 'completed', '/tmp/nope/log.jsonl')",
-        duckdb::params![DEFAULT_RUN_ID],
+        rusqlite::params![DEFAULT_RUN_ID],
     ).unwrap();
 
     // Two matches: "strong" beats "master", "master" beats "strong" (1-1).
@@ -259,7 +259,7 @@ pub(super) fn default_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
         "INSERT INTO match_results (run_id, seq, ts, strategy_a, strategy_b, outcome, winner) \
          VALUES (?1, 1, '2026-01-01T00:00:10Z', 'strong', 'master', 'win_a', 'strong'),\
                 (?1, 2, '2026-01-01T00:00:20Z', 'master', 'strong', 'win_a', 'master')",
-        duckdb::params![DEFAULT_RUN_ID],
+        rusqlite::params![DEFAULT_RUN_ID],
     )
     .unwrap();
 
@@ -267,46 +267,46 @@ pub(super) fn default_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
     conn.execute(
         "INSERT INTO trials (run_id, trial_id, ts, config, cost) \
          VALUES (?1, 1, '2026-01-01T00:00:30Z', '{}', 0.375)",
-        duckdb::params![DEFAULT_RUN_ID],
+        rusqlite::params![DEFAULT_RUN_ID],
     )
     .unwrap();
 }
 
 /// Seed a run that is still `running` (no ended_at, no stop event).
-pub(super) fn running_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+pub(super) fn running_run_seed(conn: &rusqlite::Connection, _bench_runs_dir: &Path) {
     conn.execute(
         "INSERT INTO runs \
          (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, status, log_path) \
          VALUES ('running-run', 'round_robin', 'druid', 'def5678', false, 'testhost', 12345, \
                  '2026-02-01T00:00:00Z', 'running', '/tmp/running/log.jsonl')",
-        duckdb::params![],
+        rusqlite::params![],
     )
     .unwrap();
 }
 
 /// Seed with the default run plus a second run for multi-run queries.
-pub(super) fn multi_run_seed(conn: &duckdb::Connection, _bench_runs_dir: &Path) {
+pub(super) fn multi_run_seed(conn: &rusqlite::Connection, _bench_runs_dir: &Path) {
     default_seed(conn, _bench_runs_dir);
     conn.execute(
         "INSERT INTO runs \
          (run_id, kind, game, git_sha, git_dirty, host, pid, started_at, ended_at, status, log_path) \
          VALUES ('rr-ttt-20260201T000000-def5678', 'round_robin', 'ttt', 'def5678', false, 'testhost', \
                  NULL, '2026-02-01T00:00:00Z', '2026-02-01T02:00:00Z', 'completed', '/tmp/ttt/log.jsonl')",
-        duckdb::params![],
+        rusqlite::params![],
     ).unwrap();
 }
 
 /// Default seed plus a two-ply trace for `match_results.seq = 1` (game
 /// 1: "strong" beats "master") -- exercises the join between
 /// `game_moves` and `match_results` on `(run_id, seq == game_seq)`.
-pub(super) fn game_moves_seed(conn: &duckdb::Connection, bench_runs_dir: &Path) {
+pub(super) fn game_moves_seed(conn: &rusqlite::Connection, bench_runs_dir: &Path) {
     default_seed(conn, bench_runs_dir);
     conn.execute(
         "INSERT INTO game_moves (run_id, game_seq, ply, ts, state, mv, player) \
          VALUES \
          (?1, 1, 0, '2026-01-01T00:00:10Z', '{\"board\":[]}', NULL, NULL), \
          (?1, 1, 1, '2026-01-01T00:00:11Z', '{\"board\":[1]}', '4', 'strong')",
-        duckdb::params![DEFAULT_RUN_ID],
+        rusqlite::params![DEFAULT_RUN_ID],
     )
     .unwrap();
 }

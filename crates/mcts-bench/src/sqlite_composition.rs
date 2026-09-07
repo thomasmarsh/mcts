@@ -1,13 +1,13 @@
-//! Schema-owned DuckDB composition for the benchmark server.
+//! Schema-owned SQLite composition for the benchmark server.
 //!
-//! This is the only production seam that turns a DuckDB connection into the
+//! This is the only production seam that turns a SQLite connection into the
 //! benchmark's repositories and ingest adapter.  Consumers receive traits,
 //! never the connection itself.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use duckdb::Connection;
+use rusqlite::Connection;
 
 use crate::ingest::{self, IngestError};
 use crate::project_repository::ProjectRepository;
@@ -21,11 +21,11 @@ pub trait BenchIngest: Send + Sync {
 }
 
 #[derive(Clone)]
-struct SharedDuckDbIngest {
+struct SharedSqliteIngest {
     connection: Arc<Mutex<Connection>>,
 }
 
-impl BenchIngest for SharedDuckDbIngest {
+impl BenchIngest for SharedSqliteIngest {
     fn ingest_once(&self, bench_runs_dir: &Path) -> Result<(), IngestError> {
         let connection = self.connection.lock().map_err(|_| {
             IngestError::Io(std::io::Error::other("benchmark database mutex poisoned"))
@@ -45,13 +45,13 @@ pub struct BenchAdapters {
 
 impl BenchAdapters {
     /// Opens and fully upgrades a benchmark database before creating adapters.
-    pub fn open(path: impl AsRef<Path>) -> duckdb::Result<Self> {
+    pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         Self::from_initialized_connection(crate::schema::open(path)?)
     }
 
     /// Builds adapters around a connection whose schema has already been
     /// initialized. Intended for narrow in-memory adapter fixtures.
-    pub fn from_initialized_connection(connection: Connection) -> duckdb::Result<Self> {
+    pub fn from_initialized_connection(connection: Connection) -> rusqlite::Result<Self> {
         Self::from_initialized_shared_connection(Arc::new(Mutex::new(connection)))
     }
 
@@ -59,23 +59,23 @@ impl BenchAdapters {
     /// connection. Production callers should use [`Self::open`].
     pub fn from_initialized_shared_connection(
         connection: Arc<Mutex<Connection>>,
-    ) -> duckdb::Result<Self> {
+    ) -> rusqlite::Result<Self> {
         Ok(Self {
             project_repository: Arc::new(
-                crate::project_repository_duckdb::SharedDuckDbProjectRepository::new(
+                crate::project_repository_sqlite::SharedSqliteProjectRepository::new(
                     connection.clone(),
                 ),
             ),
             projects_repository: connection.clone(),
             run_repository: Arc::new(
-                crate::run_repository_duckdb::SharedDuckDbRunRepository::new(connection.clone()),
+                crate::run_repository_sqlite::SharedSqliteRunRepository::new(connection.clone()),
             ),
             run_command_repository: Arc::new(
-                crate::run_command_repository_duckdb::SharedDuckDbRunCommandRepository::new(
+                crate::run_command_repository_sqlite::SharedSqliteRunCommandRepository::new(
                     connection.clone(),
                 ),
             ),
-            ingest: Arc::new(SharedDuckDbIngest { connection }),
+            ingest: Arc::new(SharedSqliteIngest { connection }),
         })
     }
 }
@@ -120,7 +120,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("bench.duckdb");
+        let path = directory.join("bench.sqlite");
         let connection = Connection::open(&path).unwrap();
         connection
             .execute_batch("CREATE VIEW runs AS SELECT 1 AS run_id")

@@ -173,7 +173,7 @@ pub struct RunDeletionInfo {
 /// Logical storage operations over benchmark runs.
 ///
 /// All arguments and results are ordinary application data. Implementations
-/// may use DuckDB, a different durable store, or a test double.
+/// may use SQLite, a different durable store, or a test double.
 pub trait RunRepository {
     fn load_log_path(&self, run_id: &str) -> Result<String, RunRepositoryError>;
     fn list_runs(&self, query: &RunListQuery) -> Result<Vec<RunSummary>, RunRepositoryError>;

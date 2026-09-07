@@ -8,7 +8,7 @@
 //!
 //! `ingest --once` is a one-shot debug/validation subcommand for the ingest
 //! loop.  It must not be used while `server` is running
-//! (DuckDB single-writer constraint).
+//! (SQLite single-writer constraint).
 
 use std::io::stdout;
 use std::process::{Command as StdCommand, Stdio};
@@ -100,7 +100,7 @@ enum Command {
     /// ``uv run --project tools/tuner/ tuner ...`` in the foreground
     /// (streaming JSONL to stdout) or, with ``--background``, through the
     /// detached-process launcher so the run survives the launching
-    /// process and appears in DuckDB/the UI.
+    /// process and appears in SQLite/the UI.
     Tuner {
         /// Path to the tuner YAML config file (passed through to
         /// ``tuner --config``).
@@ -187,12 +187,12 @@ enum Command {
     Games,
 
     /// One-shot ingest for debugging / validation.  Reads registry.log
-    /// and all active runs' log.jsonl files, upserts into DuckDB at the
+    /// and all active runs' log.jsonl files, upserts into SQLite at the
     /// given path, then exits.  **Not for concurrent use with `server`**
-    /// (DuckDB single-writer constraint).
+    /// (SQLite single-writer constraint).
     Ingest {
-        /// Path to the DuckDB database file.
-        #[arg(long, default_value = "local/runs/bench/bench.duckdb")]
+        /// Path to the SQLite database file.
+        #[arg(long, default_value = "local/runs/bench/bench.sqlite")]
         db: String,
     },
 
@@ -713,7 +713,7 @@ fn cmd_ingest_once(db_path: &str) {
     let conn = match schema::open(db_path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: failed to open DuckDB at {}: {e}", db_path.display());
+            eprintln!("error: failed to open SQLite at {}: {e}", db_path.display());
             std::process::exit(1);
         }
     };

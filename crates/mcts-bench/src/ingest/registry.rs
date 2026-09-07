@@ -1,4 +1,4 @@
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
@@ -9,7 +9,7 @@ use super::IngestError;
 use crate::identity;
 use crate::log::RegistryEvent;
 use crate::projects_attempt::ProjectsRepository;
-use crate::projects_attempt_duckdb;
+use crate::projects_attempt_sqlite;
 
 /// Process registry entries written since the last recorded cursor.
 pub(super) fn process(conn: &Connection, registry_path: &Path) -> Result<(), IngestError> {
@@ -100,7 +100,7 @@ fn handle_start_event(
 
     if inserted > 0 {
         identity::create_registry_root_identity(&tx, &run_id, &kind, &started_at)
-            .map_err(|error| duckdb::Error::ToSqlConversionFailure(Box::new(error)))?;
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     }
 
     tx.commit()?;
@@ -114,7 +114,7 @@ fn handle_stop_event(
     exit_code: Option<i32>,
     ended_at: String,
 ) -> Result<(), IngestError> {
-    if projects_attempt_duckdb::Repository::new(conn)
+    if projects_attempt_sqlite::Repository::new(conn)
         .load_if_initialized(&run_id)?
         .is_some()
     {

@@ -1,17 +1,17 @@
-//! DuckDB implementation of [`crate::run_command_repository::RunCommandRepository`].
+//! SQLite implementation of [`crate::run_command_repository::RunCommandRepository`].
 
 use crate::identity;
 use crate::run_command_repository::{
     ContinuationParent, RecordRunLaunch, RunCommandRepository, RunCommandRepositoryError,
 };
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
-pub struct SharedDuckDbRunCommandRepository {
+pub struct SharedSqliteRunCommandRepository {
     connection: Arc<Mutex<Connection>>,
 }
-impl SharedDuckDbRunCommandRepository {
+impl SharedSqliteRunCommandRepository {
     pub fn new(connection: Arc<Mutex<Connection>>) -> Self {
         Self { connection }
     }
@@ -21,7 +21,7 @@ impl SharedDuckDbRunCommandRepository {
         })
     }
 }
-impl RunCommandRepository for SharedDuckDbRunCommandRepository {
+impl RunCommandRepository for SharedSqliteRunCommandRepository {
     fn prepare_continuation(
         &self,
         parent_attempt_id: &str,
@@ -116,7 +116,7 @@ impl RunCommandRepository for SharedDuckDbRunCommandRepository {
         tx.commit().map_err(storage)
     }
 }
-fn storage(error: duckdb::Error) -> RunCommandRepositoryError {
+fn storage(error: rusqlite::Error) -> RunCommandRepositoryError {
     RunCommandRepositoryError::Storage(error.to_string())
 }
 fn identity_error(error: identity::IdentityError) -> RunCommandRepositoryError {
@@ -125,7 +125,7 @@ fn identity_error(error: identity::IdentityError) -> RunCommandRepositoryError {
         identity::IdentityError::Contradiction(_) | identity::IdentityError::InvalidLinkage(_) => {
             RunCommandRepositoryError::ContradictoryIdentity
         }
-        identity::IdentityError::DuckDb(error) => storage(error),
+        identity::IdentityError::Sqlite(error) => storage(error),
     }
 }
 
@@ -134,14 +134,14 @@ mod tests {
     use super::*;
     use crate::schema::CREATE_TABLES;
 
-    fn repository() -> (Arc<Mutex<Connection>>, SharedDuckDbRunCommandRepository) {
+    fn repository() -> (Arc<Mutex<Connection>>, SharedSqliteRunCommandRepository) {
         let connection = Arc::new(Mutex::new(Connection::open_in_memory().unwrap()));
         for statement in CREATE_TABLES {
             connection.lock().unwrap().execute(statement, []).unwrap();
         }
         (
             connection.clone(),
-            SharedDuckDbRunCommandRepository::new(connection),
+            SharedSqliteRunCommandRepository::new(connection),
         )
     }
 

@@ -9,7 +9,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use duckdb::{params, Connection};
+use rusqlite::{params, Connection};
 use serde_json::Value;
 
 use crate::launch::iso_timestamp;
@@ -526,7 +526,7 @@ fn trace_cursor(conn: &Connection, run_id: &str, task_id: &str) -> Result<u64, I
         |row| row.get::<_, i64>(0),
     ) {
         Ok(offset) => Ok(offset as u64),
-        Err(duckdb::Error::QueryReturnedNoRows) => Ok(0),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
         Err(error) => Err(error.into()),
     }
 }
