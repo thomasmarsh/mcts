@@ -17,6 +17,7 @@ from az_train.convnet_c4 import (
     orientation_diagnostics,
     predict,
     read_weights,
+    select_validation_epoch,
     write_weights,
 )
 
@@ -94,6 +95,35 @@ def test_joint_value_policy_gradient_is_finite_and_deterministic() -> None:
         and all(np.isfinite(measurement) for measurement in epoch.values())
         for epoch in trace
     )
+
+
+def test_validation_checkpoint_selection_uses_earliest_highest_pearson() -> None:
+    assert select_validation_epoch([
+        {"value_pearson": -0.2}, {"value_pearson": 0.4}, {"value_pearson": 0.4},
+    ]) == 1
+
+
+def test_opt_in_validation_checkpoint_is_reproducible_and_preserves_final_weights(tmp_path: Path) -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    first_path, second_path = tmp_path / "first.c4cnn", tmp_path / "second.c4cnn"
+    default_weights, _ = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=3, learning_rate=5e-3,
+    )
+    first, first_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=3, learning_rate=5e-3,
+        selected_validation_checkpoint_out=str(first_path),
+    )
+    second, second_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=3, learning_rate=5e-3,
+        selected_validation_checkpoint_out=str(second_path),
+    )
+    assert np.array_equal(default_weights, first)
+    assert np.array_equal(first, second)
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert first_metadata["selected_validation_epoch"] == second_metadata["selected_validation_epoch"]
 
 
 def _non_symmetric_batch() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:

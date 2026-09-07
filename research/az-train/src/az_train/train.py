@@ -141,6 +141,7 @@ def _fit_c4(
     split_seed: int,
     value_target: str,
     value_head: str,
+    selected_validation_checkpoint_out: str | None,
 ) -> tuple[np.ndarray, dict[str, Any], PositionsC4, PositionsC4]:
     if head not in ("ntuple", "mlp", "cnn"):
         raise SystemExit(f"--game connect4 supports --head ntuple|mlp|cnn (got {head})")
@@ -169,6 +170,7 @@ def _fit_c4(
             train_me, train_opp, train.value, train_policy, train_legal,
             (validation_me, validation_opp, validation.value, validation_policy, validation_legal),
             1e-4 if l2 is None else l2, seed=split_seed,
+            selected_validation_checkpoint_out=selected_validation_checkpoint_out,
         )
         def predict_value(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
             return predict_cnn_c4(weights, me, opp)[0]
@@ -241,6 +243,10 @@ def train_cli(argv: list[str] | None = None) -> None:
     )
     ap.add_argument("--policy-out", help="Connect Four policy.bin output (defaults beside --out)")
     ap.add_argument(
+        "--selected-validation-checkpoint-out",
+        help="CNN-only output for the earliest epoch with maximum ordinary validation Pearson",
+    )
+    ap.add_argument(
         "--connect4-value-head",
         choices=("basic", "structured", "connected8"),
         default="basic",
@@ -259,6 +265,13 @@ def train_cli(argv: list[str] | None = None) -> None:
     value_target: str | None = None
     c4_metrics: dict[str, Any] | None = None
     if args.game == "connect4":
+        if args.selected_validation_checkpoint_out and args.head != "cnn":
+            raise SystemExit(
+                "--selected-validation-checkpoint-out requires "
+                "--game connect4 --head cnn"
+            )
+        if args.selected_validation_checkpoint_out:
+            Path(args.selected_validation_checkpoint_out).parent.mkdir(parents=True, exist_ok=True)
         c4_value_target = args.value_target or "direct"
         value_target = c4_value_target
         w, c4_metrics, train, validation = _fit_c4(
@@ -269,6 +282,7 @@ def train_cli(argv: list[str] | None = None) -> None:
             args.split_seed,
             c4_value_target,
             args.connect4_value_head,
+            args.selected_validation_checkpoint_out,
         )
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
         mse = float(c4_metrics["train"]["mse"])

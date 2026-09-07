@@ -206,6 +206,13 @@ def _ordinary_validation_metrics(
     }
 
 
+def select_validation_epoch(trace: list[dict[str, float]]) -> int:
+    """Select the highest-Pearson epoch, retaining the earliest exact tie."""
+    if not trace:
+        raise ValueError("cannot select a checkpoint from an empty validation trace")
+    return max(range(len(trace)), key=lambda epoch: (trace[epoch]["value_pearson"], -epoch))
+
+
 def orientation_diagnostics(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray,
@@ -381,6 +388,7 @@ def fit_value_policy_with_diagnostics(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
+    selected_validation_checkpoint_out: str | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Deterministic Adam fit using only production self-play targets."""
     if not len(me) or not np.all(legal.any(axis=1)):
@@ -402,6 +410,7 @@ def fit_value_policy_with_diagnostics(
     shared_head_gradient_cosines = {name: [] for name in shared_group_spans}
     started = time.perf_counter()
     validation_epoch_trace: list[dict[str, float]] = []
+    selected_weights: np.ndarray | None = None
     vm, vo, vv, vp, vl = validation
     for _ in range(epochs):
         for start in range(0, len(me), batch_size):
@@ -424,6 +433,10 @@ def fit_value_policy_with_diagnostics(
             step += 1; moment = beta1 * moment + (1.0 - beta1) * gradient; velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
             weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
         validation_epoch_trace.append(_ordinary_validation_metrics(weights, vm, vo, vv, vp, vl))
+        if selected_validation_checkpoint_out is not None:
+            selected_epoch = select_validation_epoch(validation_epoch_trace)
+            if selected_epoch == len(validation_epoch_trace) - 1:
+                selected_weights = weights.copy()
     def metrics(a: np.ndarray, b: np.ndarray, y: np.ndarray, target: np.ndarray, mask: np.ndarray) -> tuple[float, float]:
         pv, logits = predict(weights, a, b)
         return float(np.mean((pv - y) ** 2)), _masked_policy_cross_entropy(logits, target, mask)
@@ -431,6 +444,10 @@ def fit_value_policy_with_diagnostics(
     validation_value_mse, validation_policy_ce = metrics(vm, vo, vv, vp, vl)
     assert first_batch_gradient_l2 is not None
     assert first_batch_head_gradient_conflict is not None
+    selected_epoch = select_validation_epoch(validation_epoch_trace)
+    if selected_validation_checkpoint_out is not None:
+        assert selected_weights is not None
+        write_weights(selected_validation_checkpoint_out, selected_weights)
     parameter_groups = {
         name: {
             "first_batch_gradient_l2": first_batch_gradient_l2[name],
@@ -438,7 +455,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - initial_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:
