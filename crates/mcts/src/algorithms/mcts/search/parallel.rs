@@ -395,6 +395,7 @@ where
                             &mut rng,
                             prior_strategy.as_deref_mut(),
                             None,
+                            &*simulate_strategy,
                             None,
                         );
 

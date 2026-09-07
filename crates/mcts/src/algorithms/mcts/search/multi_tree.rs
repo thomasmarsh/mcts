@@ -162,6 +162,7 @@ fn select_multi_tree<G: Game>(
                             true,
                             None,
                             None,
+                            |_| None,
                         );
                     }
                     matches!(
@@ -373,6 +374,7 @@ where
                 true,
                 None,
                 None,
+                |_| None,
             );
         }
 

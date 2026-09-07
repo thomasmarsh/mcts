@@ -142,6 +142,7 @@ where
             &mut self.config.rng,
             self.config.prior.as_deref_mut(),
             self.config.policy_logits.as_deref_mut(),
+            &self.config.simulate,
             None,
         )
     }
@@ -187,6 +188,7 @@ where
             &mut self.config.rng,
             self.config.prior.as_deref_mut(),
             self.config.policy_logits.as_deref_mut(),
+            &self.config.simulate,
             Some(root_action),
         )
     }
@@ -208,6 +210,7 @@ where
                 self.config.ismcts_mode != IsmctsMode::Off,
                 self.config.prior.as_deref_mut(),
                 self.config.policy_logits.as_deref_mut(),
+                |expanded_state| self.config.simulate.raw_evaluator_value(expanded_state),
             );
         }
         let player = G::player_to_move(state).to_index();

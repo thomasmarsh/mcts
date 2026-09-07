@@ -49,6 +49,13 @@ pub trait SimulatePolicy<G>: Clone + Sync + Send + Default
 where
     G: Game,
 {
+    /// The static evaluation of `state`, in the perspective of the player
+    /// about to move. Search policies without an evaluator leave this absent
+    /// rather than manufacturing a value for completed-Q selection.
+    fn raw_evaluator_value(&self, _state: &G::S) -> Option<f64> {
+        None
+    }
+
     // The default implementation is a uniform selection
     #[allow(unused_variables)]
     #[allow(clippy::too_many_arguments)]
@@ -465,6 +472,10 @@ where
 {
     fn label(&self) -> String {
         format!("evaluated_cutoff({})", self.inner.label())
+    }
+
+    fn raw_evaluator_value(&self, state: &G::S) -> Option<f64> {
+        Some(self.evaluator.evaluate(state) as f64 / EVAL_MAGNITUDE_LIMIT as f64)
     }
 
     fn playout(

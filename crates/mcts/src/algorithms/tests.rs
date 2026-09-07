@@ -115,6 +115,22 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     );
 }
 
+#[test]
+fn test_child_array_keeps_raw_evaluator_value_with_its_logits() {
+    use crate::algorithms::mcts::node::ChildArray;
+
+    let children = ChildArray::with_policy_logits_and_raw_evaluator_value(
+        vec![10u32, 11, 12],
+        vec![3.0, -2.0, 1.0],
+        Some(-0.75),
+        2,
+        false,
+        false,
+    );
+    assert_eq!(children.raw_evaluator_value(), Some(-0.75));
+    assert_eq!(children.policy_logits(), &[3.0, -2.0, 1.0]);
+}
+
 // A `PolicyProfile` that never sets `Requirements.amaf` must not pay for the
 // per-(child, player) AMAF side table at all -- not just leave it logically
 // unused. `heap_bytes_estimate` excluding the `ActionStats` term is the

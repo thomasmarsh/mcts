@@ -27,6 +27,7 @@ use crate::algorithms::mcts::config::{PolicyProfile, SearchConfig};
 use crate::algorithms::mcts::index::Id;
 use crate::algorithms::mcts::search::shared::expand;
 use crate::algorithms::mcts::search::{SearchContext, TreeSearch};
+use crate::algorithms::mcts::simulate::SimulatePolicy;
 use crate::game::{Game, PlayerIndex};
 
 /// Knobs for one Gumbel move. All of these belong in `config.toml` for a
@@ -294,6 +295,7 @@ where
         false,
         search.config.prior.as_deref_mut(),
         search.config.policy_logits.as_deref_mut(),
+        |expanded_state| search.config.simulate.raw_evaluator_value(expanded_state),
     );
 
     // With a non-zero `expand_threshold`, `select_step` bails out at any

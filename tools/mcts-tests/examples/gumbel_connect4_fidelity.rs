@@ -119,8 +119,9 @@ fn compare(
     let (mut wins, mut draws, mut losses, mut nodes) = (0, 0, 0, 0usize);
     for game in 0..games {
         let candidate_first = game % 2 == 0;
-        let mut candidate = make_candidate((game as u64) * 2 + 1);
-        let mut base = make_base((game as u64) * 2 + 2);
+        let seed = (game as u64) + 1;
+        let mut candidate = make_candidate(seed);
+        let mut base = make_base(seed);
         let (winner, game_nodes) = if candidate_first {
             play(&mut candidate, &mut base)
         } else {

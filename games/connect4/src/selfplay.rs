@@ -118,8 +118,10 @@ impl Search for GumbelPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mcts::algorithms::mcts::node::Node;
+    use mcts::algorithms::mcts::policy::PolicyLogits;
     use mcts::algorithms::mcts::search::shared::expand;
-    use mcts::game::Game;
+    use mcts::game::{Game, PlayerIndex};
 
     use crate::valuenet::NT_WEIGHTS;
     use crate::Player;
@@ -201,12 +203,57 @@ mod tests {
             false,
             None,
             None,
+            |_| None,
         );
         let children = search.index.get(root).children();
         for i in 0..children.len() {
             assert_eq!(children.num_visits(i), 0);
             assert_eq!(children.expected_score(i, 0), 0.0);
         }
+    }
+
+    #[test]
+    fn canonical_expansion_aligns_cached_value_logits_and_actions() {
+        let state = Standard::apply(State::default(), &Move(6));
+        let (canonical, _) = Standard::canonical_representation(mcts::game::Real(state));
+        let canonical = canonical.into_inner();
+        assert_ne!(state, canonical, "fixture must require reflection");
+
+        let net = corner_poison_net(-1.0);
+        let mut policy = column_bias(0, 3.0);
+        let index = mcts::algorithms::mcts::search::TreeIndex::new();
+        let node = index.insert(Node::new(
+            Standard::player_to_move(&state).to_index(),
+            Standard::zobrist_hash(&state),
+        ));
+        expand::<Standard>(
+            &index,
+            node,
+            &state,
+            false,
+            Default::default(),
+            true,
+            false,
+            None,
+            Some(&mut policy),
+            |expanded_state| Some(net.value(expanded_state) as f64),
+        );
+
+        let mut expected_actions = Vec::new();
+        Standard::generate_actions(&canonical, &mut expected_actions);
+        let expected_logits = policy.logits(&canonical, &expected_actions);
+        let children = index.get(node).children();
+        assert_eq!(
+            (0..children.len())
+                .map(|i| children.action(i))
+                .collect::<Vec<_>>(),
+            expected_actions
+        );
+        assert_eq!(children.policy_logits(), expected_logits);
+        assert_eq!(
+            children.raw_evaluator_value(),
+            Some(net.value(&canonical) as f64)
+        );
     }
 
     /// Black holds the bottom row's cols 0..3 and it is Black to move -- a

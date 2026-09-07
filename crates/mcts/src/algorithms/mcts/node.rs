@@ -419,6 +419,10 @@ pub struct ChildArray<A: Action> {
     // Categorical logits are computed when this action list is expanded.
     // Keeping them parallel to `actions` makes the cached order explicit.
     policy_logits: Vec<f64>,
+    // Static evaluator result for the owning node's position, expressed for
+    // that node's mover. It is absent for simulation profiles without an
+    // evaluator, which lets completed-Q distinguish unavailable from draw.
+    raw_evaluator_value: Option<f64>,
     child_ids: Vec<OnceLock<index::Id>>,
     // Reverse of `child_ids`, populated as each child is first resolved so
     // `child_index` (id -> idx, needed by every path that only has an `Id`
@@ -464,6 +468,7 @@ impl<A: Action> Clone for ChildArray<A> {
         Self {
             actions: self.actions.clone(),
             policy_logits: self.policy_logits.clone(),
+            raw_evaluator_value: self.raw_evaluator_value,
             child_ids: self.child_ids.clone(),
             id_index: RwLock::new(id_index.clone()),
             num_visits_virtual: self
@@ -537,10 +542,29 @@ impl<A: Action> ChildArray<A> {
         has_amaf: bool,
         growable: bool,
     ) -> Self {
+        Self::with_policy_logits_and_raw_evaluator_value(
+            actions,
+            policy_logits,
+            None,
+            num_players,
+            has_amaf,
+            growable,
+        )
+    }
+
+    pub fn with_policy_logits_and_raw_evaluator_value(
+        actions: Vec<A>,
+        policy_logits: Vec<f64>,
+        raw_evaluator_value: Option<f64>,
+        num_players: usize,
+        has_amaf: bool,
+        growable: bool,
+    ) -> Self {
         let n = actions.len();
         debug_assert_eq!(policy_logits.len(), n);
         Self {
             policy_logits,
+            raw_evaluator_value,
             child_ids: (0..n).map(|_| OnceLock::new()).collect(),
             id_index: RwLock::new(FxHashMap::default()),
             num_visits_virtual: (0..n).map(|_| AtomicU32::new(0)).collect(),
@@ -566,6 +590,12 @@ impl<A: Action> ChildArray<A> {
     /// Growable arrays are not used with completed-Q selection.
     pub fn policy_logits(&self) -> &[f64] {
         &self.policy_logits
+    }
+
+    /// The evaluator value captured when this node was expanded, in this
+    /// array's mover perspective. `None` means the profile had no evaluator.
+    pub fn raw_evaluator_value(&self) -> Option<f64> {
+        self.raw_evaluator_value
     }
 
     #[inline]

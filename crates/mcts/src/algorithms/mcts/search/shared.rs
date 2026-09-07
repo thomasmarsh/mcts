@@ -263,6 +263,7 @@ pub fn expand<'a, G: Game>(
     use_ismcts: bool,
     prior: Option<&mut (dyn crate::algorithms::mcts::prior::PriorPolicyDyn<G> + 'static)>,
     policy_logits: Option<&mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static)>,
+    raw_evaluator_value: impl FnOnce(&G::S) -> Option<f64>,
 ) -> &'a NodeState<G::A> {
     let node = index.get(node_id);
     node.expand(|| {
@@ -305,9 +306,10 @@ pub fn expand<'a, G: Game>(
                 .map(|policy| policy.logits(&gen_state, &actions))
                 .filter(|logits| logits.len() == actions.len())
                 .unwrap_or_else(|| vec![0.0; actions.len()]);
-            let children = ChildArray::with_policy_logits(
+            let children = ChildArray::with_policy_logits_and_raw_evaluator_value(
                 actions,
                 logits,
+                raw_evaluator_value(&gen_state),
                 G::num_players(),
                 has_amaf,
                 use_ismcts,
@@ -657,6 +659,7 @@ pub fn select_step<G: Game>(
     mut policy_logits: Option<
         &mut (dyn crate::algorithms::mcts::policy::PolicyLogitsDyn<G> + 'static),
     >,
+    simulate: &impl SimulatePolicy<G>,
     forced_root_action: Option<&G::A>,
 ) -> Option<Vec<f64>> {
     debug_assert!(stack.is_empty());
@@ -724,6 +727,7 @@ pub fn select_step<G: Game>(
                     shared.use_ismcts,
                     reborrow_prior(&mut prior),
                     policy_logits.as_deref_mut(),
+                    |expanded_state| simulate.raw_evaluator_value(expanded_state),
                 );
                 if matches!(node_state, NodeState::Terminal) {
                     return None;

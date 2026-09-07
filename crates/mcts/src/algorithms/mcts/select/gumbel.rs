@@ -8,7 +8,7 @@ use crate::algorithms::mcts::gumbel::{completed_q, improved_policy, GumbelConfig
 use crate::algorithms::mcts::index::Id;
 use crate::algorithms::mcts::node::ChildArray;
 use crate::algorithms::mcts::BackpropFlags;
-use crate::game::Game;
+use crate::game::{Game, PlayerIndex};
 
 #[derive(Clone)]
 pub struct GumbelCompletedQ {
@@ -33,7 +33,16 @@ impl GumbelCompletedQ {
         assert_eq!(logits.len(), visits.len());
         assert_eq!(visits.len(), q_values.len());
         let completed = completed_q(root_value, logits, visits, q_values);
-        let target = improved_policy(logits, visits, &completed, cfg);
+        Self::visit_matching_completed(logits, visits, &completed, cfg)
+    }
+
+    fn visit_matching_completed(
+        logits: &[f64],
+        visits: &[u32],
+        completed: &[f64],
+        cfg: &GumbelConfig,
+    ) -> usize {
+        let target = improved_policy(logits, visits, completed, cfg);
         let total = visits.iter().sum::<u32>() as f64 + 1.0;
         (0..visits.len())
             .min_by(|&a, &b| {
@@ -52,6 +61,17 @@ impl GumbelCompletedQ {
             })
             .expect("completed-Q selection needs a legal action")
     }
+
+    fn completed_q_for_node(
+        raw_evaluator_value: Option<f64>,
+        logits: &[f64],
+        visits: &[u32],
+        q_values: &[f64],
+    ) -> Vec<f64> {
+        // A missing value is intentionally distinct from an evaluated draw:
+        // only profiles without an evaluator use neutral completion.
+        completed_q(raw_evaluator_value.unwrap_or(0.0), logits, visits, q_values)
+    }
 }
 
 impl Default for GumbelCompletedQ {
@@ -68,24 +88,23 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
 
     fn best_child(&mut self, ctx: &SelectContext<'_, G>, _: &mut SmallRng) -> usize {
         let children = ctx.index.get(ctx.stack.current_id()).children();
+        debug_assert_eq!(G::player_to_move(ctx.state).to_index(), ctx.player);
         let visits = (0..children.len())
             .map(|i| children.num_visits(i))
             .collect::<Vec<_>>();
         let q_values = (0..children.len())
             .map(|i| children.expected_score(i, ctx.player))
             .collect::<Vec<_>>();
-        // Interior nodes do not own an evaluator result. Their accumulated
-        // child Q values are evidence; an unvisited node therefore starts
-        // from the neutral game value rather than `QInit`, whose exploration
-        // sentinel is not a value-model prediction.
-        let root_value = 0.0;
-        Self::visit_matching_index(
+        // Both the cached evaluator value and edge Q values are in this
+        // node's mover perspective. A profile without an evaluator is the
+        // only case that deliberately falls back to a neutral completion.
+        let completed = Self::completed_q_for_node(
+            children.raw_evaluator_value(),
             children.policy_logits(),
             &visits,
             &q_values,
-            root_value,
-            &self.cfg,
-        )
+        );
+        Self::visit_matching_completed(children.policy_logits(), &visits, &completed, &self.cfg)
     }
 
     fn score_child(
@@ -152,5 +171,37 @@ mod tests {
             GumbelCompletedQ::visit_matching_index(&[-3.0, 3.0], &[0, 0], &[9.0, 9.0], 0.25, &cfg);
         assert_eq!(first, 0);
         assert_eq!(mirrored, 1);
+    }
+
+    #[test]
+    fn raw_node_value_overrides_neutral_completion_for_unvisited_children() {
+        let logits = [0.0, 0.0, 0.0];
+        let visits = [4, 0, 2];
+        let q_values = [0.5, 99.0, -0.5];
+        let from_evaluator = GumbelCompletedQ::completed_q_for_node(
+            Some(0.75),
+            &logits,
+            &visits,
+            &q_values,
+        );
+        let unavailable =
+            GumbelCompletedQ::completed_q_for_node(None, &logits, &visits, &q_values);
+        assert_eq!(from_evaluator, vec![0.5, 0.75 / 7.0, -0.5]);
+        assert_eq!(unavailable, vec![0.5, 0.0, -0.5]);
+    }
+
+    #[test]
+    fn node_value_and_child_qs_keep_the_node_mover_sign() {
+        let completed = GumbelCompletedQ::completed_q_for_node(
+            Some(-0.6),
+            &[0.0, 0.0],
+            &[3, 0],
+            &[-0.2, 99.0],
+        );
+        // The visited Q and the completion value are both negative for this
+        // node's mover, so their mix stays negative rather than negating the
+        // child Q a second time.
+        assert_eq!(completed[0], -0.2);
+        assert!((completed[1] + 0.3).abs() < 1e-12);
     }
 }
