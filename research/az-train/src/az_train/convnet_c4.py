@@ -72,6 +72,25 @@ def _unpack(w: np.ndarray) -> list[np.ndarray]:
     return out
 
 
+def _parameter_groups() -> dict[str, tuple[int, int]]:
+    """Flat parameter spans for stable training diagnostics."""
+    offsets = np.cumsum([0, *[tensor.size for tensor in _unpack(np.zeros(N_WEIGHTS, dtype=np.float32))]])
+    return {
+        "stem": (int(offsets[0]), int(offsets[2])),
+        "residual_block_1": (int(offsets[2]), int(offsets[6])),
+        "residual_block_2": (int(offsets[6]), int(offsets[10])),
+        "value_head": (int(offsets[10]), int(offsets[16])),
+        "policy_head": (int(offsets[16]), int(offsets[20])),
+    }
+
+
+def _group_l2(values: np.ndarray) -> dict[str, float]:
+    return {
+        name: float(np.linalg.norm(values[start:end], ord=2))
+        for name, (start, end) in _parameter_groups().items()
+    }
+
+
 def _conv(x: np.ndarray, w: np.ndarray, b: np.ndarray, padding: int) -> np.ndarray:
     n, _, rows, cols = x.shape
     out = np.broadcast_to(b, (n, w.shape[0])).copy()[:, :, None, None]
@@ -215,7 +234,7 @@ def fit_value_policy_with_diagnostics(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
-) -> tuple[np.ndarray, dict[str, float | int | str]]:
+) -> tuple[np.ndarray, dict[str, object]]:
     """Deterministic Adam fit using only production self-play targets."""
     if not len(me) or not np.all(legal.any(axis=1)):
         raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
@@ -224,13 +243,17 @@ def fit_value_policy_with_diagnostics(
     for tensor in _unpack(weights):
         if tensor.ndim == 1:
             tensor.fill(0.05)
+    initial_weights = weights.copy()
     moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
     beta1, beta2, step = 0.9, 0.999, 0
+    first_batch_gradient_l2: dict[str, float] | None = None
     started = time.perf_counter()
     for _ in range(epochs):
         for start in range(0, len(me), batch_size):
             batch = rng.permutation(len(me))[start : start + batch_size]
             _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
+            if first_batch_gradient_l2 is None:
+                first_batch_gradient_l2 = _group_l2(gradient)
             step += 1; moment = beta1 * moment + (1.0 - beta1) * gradient; velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
             weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
     vm, vo, vv, vp, vl = validation
@@ -241,7 +264,15 @@ def fit_value_policy_with_diagnostics(
         return float(np.mean((pv - y) ** 2)), float(-np.mean(np.sum(target * np.log(np.maximum(probs, 1e-30)), axis=1)))
     train_value_mse, train_policy_ce = metrics(me, opp, value, policy, legal)
     validation_value_mse, validation_policy_ce = metrics(vm, vo, vv, vp, vl)
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce}
+    assert first_batch_gradient_l2 is not None
+    parameter_groups = {
+        name: {
+            "first_batch_gradient_l2": first_batch_gradient_l2[name],
+            "initial_to_final_delta_l2": delta,
+        }
+        for name, delta in _group_l2(weights - initial_weights).items()
+    }
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

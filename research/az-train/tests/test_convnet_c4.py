@@ -144,3 +144,29 @@ def test_public_fit_substantially_reduces_literal_joint_objective() -> None:
     final_loss, _ = _literal_loss_gradient(fitted, me, opp, value, policy, legal, 1e-5)
     assert metadata["optimizer_steps"] == 80
     assert final_loss < initial_loss * 0.6
+
+
+def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    first, first_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    second, second_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    assert np.array_equal(first, second)
+    telemetry = first_metadata["parameter_groups"]
+    assert telemetry == second_metadata["parameter_groups"]
+    assert isinstance(telemetry, dict)
+    assert set(telemetry) == {
+        "stem", "residual_block_1", "residual_block_2", "value_head", "policy_head",
+    }
+    for group in telemetry.values():
+        assert isinstance(group, dict)
+        for measurement in group.values():
+            assert isinstance(measurement, float)
+            assert np.isfinite(measurement) and measurement >= 0.0
+    assert telemetry["stem"]["first_batch_gradient_l2"] > 0.0
+    assert telemetry["stem"]["initial_to_final_delta_l2"] > 0.0
