@@ -84,6 +84,16 @@ def test_joint_value_policy_gradient_is_finite_and_deterministic() -> None:
     )
     assert np.array_equal(first, second)
     assert first_meta["optimizer_steps"] == second_meta["optimizer_steps"] == 2
+    trace = cast(list[dict[str, float]], first_meta["validation_epoch_trace"])
+    assert trace == cast(list[dict[str, float]], second_meta["validation_epoch_trace"])
+    assert len(trace) == 2
+    assert all(
+        set(epoch) == {
+            "value_mse", "value_pearson", "value_sign_agreement", "masked_policy_cross_entropy",
+        }
+        and all(np.isfinite(measurement) for measurement in epoch.values())
+        for epoch in trace
+    )
 
 
 def _non_symmetric_batch() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -162,9 +172,8 @@ def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
         l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
     )
     assert np.array_equal(first, second)
-    telemetry = first_metadata["parameter_groups"]
-    assert telemetry == second_metadata["parameter_groups"]
-    assert isinstance(telemetry, dict)
+    telemetry = cast(dict[str, dict[str, float]], first_metadata["parameter_groups"])
+    assert telemetry == cast(dict[str, dict[str, float]], second_metadata["parameter_groups"])
     assert set(telemetry) == {
         "stem", "residual_block_1", "residual_block_2", "value_head", "policy_head",
     }
