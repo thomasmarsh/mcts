@@ -53,7 +53,7 @@ impl Default for GumbelConfig {
             sims: 32,
             max_considered: 8,
             c_visit: 50.0,
-            c_scale: 1.0,
+            c_scale: 0.1,
         }
     }
 }
@@ -96,31 +96,57 @@ where
         .unwrap_or(0)
 }
 
-/// `g_a + logit_a + sigma(q_a)` -- the Sequential Halving ranking key and the
-/// final-selection score. `q_a` is `0` for a candidate with no visits yet.
-#[allow(clippy::too_many_arguments)]
-fn candidate_score<G, S>(
+/// Complete unvisited action values with the visit-weighted mix of the root
+/// evaluation and the observed child values.  All values are from the root
+/// player's perspective.
+fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
+    assert_eq!(visits.len(), q_values.len());
+    let (weighted_q, total_visits) = visits
+        .iter()
+        .zip(q_values)
+        .fold((0.0, 0u32), |(sum, count), (&visits, &q)| {
+            (sum + visits as f64 * q, count + visits)
+        });
+    let mixed_value = (root_value + weighted_q) / (1 + total_visits) as f64;
+    visits
+        .iter()
+        .zip(q_values)
+        .map(|(&visits, &q)| if visits == 0 { mixed_value } else { q })
+        .collect()
+}
+
+fn root_completed_q<G, S>(
     search: &TreeSearch<G, S>,
     root_id: Id,
     player: usize,
-    idx: usize,
-    gumbel: &[f64],
-    logits: &[f64],
-    cfg: &GumbelConfig,
-    max_visits: u32,
-) -> f64
+    root_value: f64,
+) -> Vec<f64>
 where
     G: Game,
     S: PolicyProfile<G>,
     G::S: std::fmt::Display,
 {
     let children = search.index.get(root_id).children();
-    let q = if children.num_visits(idx) > 0 {
-        children.expected_score(idx, player)
-    } else {
-        0.0
-    };
-    let sigma = (cfg.c_visit + max_visits as f64) * cfg.c_scale * q;
+    let visits: Vec<_> = (0..children.len())
+        .map(|i| children.num_visits(i))
+        .collect();
+    let q_values: Vec<_> = (0..children.len())
+        .map(|i| children.expected_score(i, player))
+        .collect();
+    completed_q(root_value, &visits, &q_values)
+}
+
+/// `g_a + logit_a + sigma(q_a)` -- the Sequential Halving ranking key and the
+/// final-selection score, using a completed root Q value.
+fn candidate_score(
+    idx: usize,
+    gumbel: &[f64],
+    logits: &[f64],
+    completed_q: &[f64],
+    cfg: &GumbelConfig,
+    max_visits: u32,
+) -> f64 {
+    let sigma = (cfg.c_visit + max_visits as f64) * cfg.c_scale * completed_q[idx];
     gumbel[idx] + logits[idx] + sigma
 }
 
@@ -151,6 +177,24 @@ pub fn gumbel_search<G, S>(
     search: &mut TreeSearch<G, S>,
     state: &G::S,
     cfg: &GumbelConfig,
+) -> GumbelOutcome<G::A>
+where
+    G: Game,
+    S: PolicyProfile<G>,
+    SearchConfig<G, S>: Sync + Send,
+    G::S: std::fmt::Display,
+{
+    gumbel_search_with_root_value(search, state, cfg, 0.0)
+}
+
+/// As [`gumbel_search`], with the root evaluation supplied explicitly in the
+/// root mover's perspective.  The evaluator is intentionally outside the
+/// search tree so root completion never depends on a warm-up simulation.
+pub fn gumbel_search_with_root_value<G, S>(
+    search: &mut TreeSearch<G, S>,
+    state: &G::S,
+    cfg: &GumbelConfig,
+    root_value: f64,
 ) -> GumbelOutcome<G::A>
 where
     G: Game,
@@ -213,7 +257,9 @@ where
             vec![0.0; k]
         }
     };
-    let gumbel: Vec<f64> = (0..k).map(|_| sample_gumbel(&mut search.config.rng)).collect();
+    let gumbel: Vec<f64> = (0..k)
+        .map(|_| sample_gumbel(&mut search.config.rng))
+        .collect();
 
     let m = cfg.max_considered.clamp(1, k);
     let mut considered: Vec<usize> = (0..k).collect();
@@ -247,20 +293,22 @@ where
             break;
         }
         let max_visits = root_child_max_visits(search, root_id);
+        let completed_q = root_completed_q(search, root_id, player, root_value);
         considered.sort_by(|&a, &b| {
-            let sb = candidate_score(search, root_id, player, b, &gumbel, &logits, cfg, max_visits);
-            let sa = candidate_score(search, root_id, player, a, &gumbel, &logits, cfg, max_visits);
+            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
+            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
             sb.partial_cmp(&sa).unwrap()
         });
         considered.truncate(considered.len().div_ceil(2).max(1));
     }
 
     let max_visits = root_child_max_visits(search, root_id);
+    let completed_q = root_completed_q(search, root_id, player, root_value);
     let best = *considered
         .iter()
         .max_by(|&&a, &&b| {
-            let sa = candidate_score(search, root_id, player, a, &gumbel, &logits, cfg, max_visits);
-            let sb = candidate_score(search, root_id, player, b, &gumbel, &logits, cfg, max_visits);
+            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
+            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
             sa.partial_cmp(&sb).unwrap()
         })
         .expect("Gumbel keeps at least one candidate");
@@ -288,7 +336,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::num_phases;
+    use super::{completed_q, num_phases};
 
     #[test]
     fn phase_count_is_ceil_log2() {
@@ -300,5 +348,13 @@ mod tests {
         assert_eq!(num_phases(5), 3);
         assert_eq!(num_phases(8), 3);
         assert_eq!(num_phases(16), 4);
+    }
+
+    #[test]
+    fn completed_q_uses_the_explicit_root_value_for_unvisited_actions() {
+        let completed = completed_q(0.4, &[10, 0, 2], &[0.8, 99.0, -0.2]);
+        assert_eq!(completed[0], 0.8);
+        assert!((completed[1] - 8.0 / 13.0).abs() < 1e-12);
+        assert_eq!(completed[2], -0.2);
     }
 }

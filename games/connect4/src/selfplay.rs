@@ -2,7 +2,9 @@
 //! shared by `dump --label gumbel` and the generation gate. The tic-tac-toe
 //! counterpart is `games/ttt/src/selfplay.rs`.
 
-use mcts::algorithms::mcts::gumbel::{gumbel_search, GumbelConfig, GumbelOutcome};
+use mcts::algorithms::mcts::gumbel::{
+    gumbel_search, gumbel_search_with_root_value, GumbelConfig, GumbelOutcome,
+};
 use mcts::algorithms::mcts::node::QInit;
 use mcts::algorithms::mcts::profile::Mcts;
 use mcts::algorithms::mcts::select::GumbelCompletedQ;
@@ -21,6 +23,7 @@ pub type GumbelProfile = Mcts<GumbelCompletedQ, EvaluatedCutoff<Standard, NTuple
 /// the Gumbel schedule.
 pub struct GumbelPlayer {
     search: TreeSearch<Standard, GumbelProfile>,
+    value_net: NTupleValueNet,
     cfg: GumbelConfig,
     name: String,
 }
@@ -46,11 +49,12 @@ impl GumbelPlayer {
                 .expand_threshold(1)
                 .max_playout_depth(max_playout_depth)
                 .q_init(QInit::Loss)
-                .simulate(EvaluatedCutoff::new().evaluator(net))
+                .simulate(EvaluatedCutoff::new().evaluator(net.clone()))
                 .seed(seed),
         );
         Self {
             search,
+            value_net: net,
             cfg,
             name: "gumbel".to_string(),
         }
@@ -59,7 +63,12 @@ impl GumbelPlayer {
     /// The full Gumbel outcome -- action plus the visit-distribution policy
     /// target -- for the self-play dump path.
     pub fn choose(&mut self, state: &State<6, 7>) -> GumbelOutcome<Move> {
-        gumbel_search(&mut self.search, state, &self.cfg)
+        gumbel_search_with_root_value(
+            &mut self.search,
+            state,
+            &self.cfg,
+            self.value_net.value(state) as f64,
+        )
     }
 }
 
@@ -75,7 +84,7 @@ impl Search for GumbelPlayer {
     }
 
     fn choose_action(&mut self, state: &State<6, 7>) -> Move {
-        gumbel_search(&mut self.search, state, &self.cfg).action
+        self.choose(state).action
     }
 }
 
@@ -93,6 +102,7 @@ mod tests {
         GumbelConfig {
             sims: 48,
             max_considered: 7,
+            c_scale: 1.0,
             ..GumbelConfig::default()
         }
     }

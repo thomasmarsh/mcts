@@ -94,6 +94,7 @@ mod tests {
         GumbelConfig {
             sims: 48,
             max_considered: 16,
+            c_scale: 1.0,
             ..GumbelConfig::default()
         }
     }
@@ -173,15 +174,14 @@ mod tests {
     fn forced_descent_credits_the_root_player() {
         fn root_child_score(pos: Position, forced: Move) -> f64 {
             let net = NTupleValueNet::default();
-            let mut search: TreeSearch<TicTacToe, GumbelProfile> =
-                TreeSearch::default().config(
-                    SearchConfig::default()
-                        .expand_threshold(1)
-                        .max_playout_depth(0)
-                        .q_init(QInit::Loss)
-                        .simulate(EvaluatedCutoff::new().evaluator(net))
-                        .seed(1),
-                );
+            let mut search: TreeSearch<TicTacToe, GumbelProfile> = TreeSearch::default().config(
+                SearchConfig::default()
+                    .expand_threshold(1)
+                    .max_playout_depth(0)
+                    .q_init(QInit::Loss)
+                    .simulate(EvaluatedCutoff::new().evaluator(net))
+                    .seed(1),
+            );
             let state = HashedPosition::from_position(pos);
             let outcome = gumbel_search(&mut search, &state, &wide_cfg());
             outcome
@@ -205,6 +205,9 @@ mod tests {
         win.set(3, Piece::O);
         win.set(4, Piece::O);
         win.turn = Piece::X;
-        assert!(root_child_score(win, Move(2)) > 0.5, "winning edge should be ~+1 for X");
+        assert!(
+            root_child_score(win, Move(2)) > 0.5,
+            "winning edge should be ~+1 for X"
+        );
     }
 }
