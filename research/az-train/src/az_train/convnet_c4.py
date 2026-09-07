@@ -95,11 +95,30 @@ def _gradient_conflict_metrics(value_gradient: np.ndarray, policy_gradient: np.n
     """Return finite shared-gradient norms and cosine, using zero for a zero norm."""
     value_l2 = float(np.linalg.norm(value_gradient, ord=2))
     policy_l2 = float(np.linalg.norm(policy_gradient, ord=2))
+    value_l2 = value_l2 if np.isfinite(value_l2) else 0.0
+    policy_l2 = policy_l2 if np.isfinite(policy_l2) else 0.0
     denominator = value_l2 * policy_l2
+    cosine = float(np.dot(value_gradient, policy_gradient) / denominator) if denominator else 0.0
     return {
         "value_gradient_l2": value_l2,
         "policy_gradient_l2": policy_l2,
-        "cosine_similarity": float(np.dot(value_gradient, policy_gradient) / denominator) if denominator else 0.0,
+        "cosine_similarity": cosine if np.isfinite(cosine) else 0.0,
+    }
+
+
+def _aggregate_gradient_conflict(
+    cosines: dict[str, list[float]],
+) -> dict[str, dict[str, float | int]]:
+    """Summarize every finite-neutral shared-gradient cosine by parameter group."""
+    return {
+        name: {
+            "batch_count": len(values),
+            "mean_cosine_similarity": float(np.mean(values)) if values else 0.0,
+            "min_cosine_similarity": float(np.min(values)) if values else 0.0,
+            "max_cosine_similarity": float(np.max(values)) if values else 0.0,
+            "negative_cosine_batch_count": sum(value < 0.0 for value in values),
+        }
+        for name, values in cosines.items()
     }
 
 
@@ -355,23 +374,30 @@ def fit_value_policy_with_diagnostics(
     beta1, beta2, step = 0.9, 0.999, 0
     first_batch_gradient_l2: dict[str, float] | None = None
     first_batch_head_gradient_conflict: dict[str, dict[str, float]] | None = None
+    shared_group_spans = {
+        name: span for name, span in _parameter_groups().items()
+        if name in {"stem", "residual_block_1", "residual_block_2"}
+    }
+    shared_head_gradient_cosines = {name: [] for name in shared_group_spans}
     started = time.perf_counter()
     for _ in range(epochs):
         for start in range(0, len(me), batch_size):
             batch = rng.permutation(len(me))[start : start + batch_size]
             _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
+            value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
+                weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
+            )
+            batch_head_gradient_conflict = {
+                name: _gradient_conflict_metrics(value_gradient[start:end], policy_gradient[start:end])
+                for name, (start, end) in shared_group_spans.items()
+            }
+            for name, conflict_metrics in batch_head_gradient_conflict.items():
+                shared_head_gradient_cosines[name].append(conflict_metrics["cosine_similarity"])
             if first_batch_gradient_l2 is None:
-                first_batch_gradient_l2 = _group_l2(gradient)
-                value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
-                    weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
-                )
                 if not np.allclose(value_gradient + policy_gradient + regularization_gradient, gradient, rtol=0.0, atol=1e-8):
                     raise AssertionError("loss-gradient decomposition changed the joint gradient")
-                first_batch_head_gradient_conflict = {
-                    name: _gradient_conflict_metrics(value_gradient[start:end], policy_gradient[start:end])
-                    for name, (start, end) in _parameter_groups().items()
-                    if name in {"stem", "residual_block_1", "residual_block_2"}
-                }
+                first_batch_gradient_l2 = _group_l2(gradient)
+                first_batch_head_gradient_conflict = batch_head_gradient_conflict
             step += 1; moment = beta1 * moment + (1.0 - beta1) * gradient; velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
             weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
     vm, vo, vv, vp, vl = validation
@@ -389,7 +415,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - initial_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

@@ -8,6 +8,7 @@ import pytest
 
 from az_train.convnet_c4 import (
     N_WEIGHTS,
+    _aggregate_gradient_conflict,
     _gradient_conflict_metrics,
     _head_gradient_components,
     _literal_loss_gradient,
@@ -194,6 +195,14 @@ def test_head_gradient_conflict_metrics_are_finite_repeatable_and_neutral_at_zer
     assert all(np.isfinite(measurement) for measurement in first.values())
     assert first == {"value_gradient_l2": 5.0, "policy_gradient_l2": 5.0, "cosine_similarity": 0.0}
     assert _gradient_conflict_metrics(np.zeros(2, dtype=np.float32), policy_gradient)["cosine_similarity"] == 0.0
+    nonfinite = _gradient_conflict_metrics(
+        np.array([np.inf, 1.0], dtype=np.float32), policy_gradient
+    )
+    assert nonfinite == {
+        "value_gradient_l2": 0.0,
+        "policy_gradient_l2": 5.0,
+        "cosine_similarity": 0.0,
+    }
 
 
 def test_head_gradient_conflict_metrics_distinguish_aligned_and_opposing_vectors() -> None:
@@ -202,6 +211,39 @@ def test_head_gradient_conflict_metrics_distinguish_aligned_and_opposing_vectors
     opposing = _gradient_conflict_metrics(value_gradient, -3.0 * value_gradient)
     assert np.isclose(aligned["cosine_similarity"], 1.0)
     assert np.isclose(opposing["cosine_similarity"], -1.0)
+
+
+def test_gradient_conflict_timeline_aggregation_is_repeatable_and_exact() -> None:
+    cosines = {
+        "stem": [0.5, -0.75, 0.25, 0.0],
+        "residual_block_1": [],
+        "residual_block_2": [-1.0, -0.5],
+    }
+    first = _aggregate_gradient_conflict(cosines)
+    assert first == _aggregate_gradient_conflict(cosines)
+    assert first == {
+        "stem": {
+            "batch_count": 4,
+            "mean_cosine_similarity": 0.0,
+            "min_cosine_similarity": -0.75,
+            "max_cosine_similarity": 0.5,
+            "negative_cosine_batch_count": 1,
+        },
+        "residual_block_1": {
+            "batch_count": 0,
+            "mean_cosine_similarity": 0.0,
+            "min_cosine_similarity": 0.0,
+            "max_cosine_similarity": 0.0,
+            "negative_cosine_batch_count": 0,
+        },
+        "residual_block_2": {
+            "batch_count": 2,
+            "mean_cosine_similarity": -0.75,
+            "min_cosine_similarity": -1.0,
+            "max_cosine_similarity": -0.5,
+            "negative_cosine_batch_count": 2,
+        },
+    }
 
 
 def test_fit_reports_repeatable_shared_head_gradient_conflict() -> None:
@@ -218,6 +260,42 @@ def test_fit_reports_repeatable_shared_head_gradient_conflict() -> None:
     assert telemetry == cast(dict[str, dict[str, float]], second["first_batch_shared_head_gradient_conflict"])
     assert set(telemetry) == {"stem", "residual_block_1", "residual_block_2"}
     assert all(np.isfinite(measurement) for group in telemetry.values() for measurement in group.values())
+
+
+def test_timeline_telemetry_preserves_default_adam_weights() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    fitted, metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=2, epochs=2, learning_rate=5e-3,
+    )
+    rng = np.random.default_rng(23)
+    expected = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    for tensor in _unpack(expected):
+        if tensor.ndim == 1:
+            tensor.fill(0.05)
+    moment, velocity = np.zeros_like(expected), np.zeros_like(expected)
+    step = 0
+    for _ in range(2):
+        for start in range(0, len(me), 2):
+            batch = rng.permutation(len(me))[start : start + 2]
+            _, gradient = _literal_loss_gradient(
+                expected, me[batch], opp[batch], value[batch], policy[batch], legal[batch], 1e-5
+            )
+            step += 1
+            moment = 0.9 * moment + 0.1 * gradient
+            velocity = 0.999 * velocity + 0.001 * gradient * gradient
+            expected -= 5e-3 * (moment / (1.0 - 0.9**step)) / (
+                np.sqrt(velocity / (1.0 - 0.999**step)) + 1e-8
+            )
+    assert np.array_equal(fitted, expected)
+    timeline = cast(dict[str, dict[str, float | int]], metadata["shared_head_gradient_conflict_timeline"])
+    assert set(timeline) == {"stem", "residual_block_1", "residual_block_2"}
+    assert all(group["batch_count"] == 4 for group in timeline.values())
+    assert all(
+        np.isfinite(float(measurement))
+        for group in timeline.values()
+        for measurement in group.values()
+    )
 
 
 def test_orientation_diagnostics_are_finite_repeatable_and_distinguish_averaging() -> None:
