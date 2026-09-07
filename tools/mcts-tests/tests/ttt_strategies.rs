@@ -851,6 +851,7 @@ fn test_child_array_explored_len_and_heap_bytes_estimate() {
     let n = 4usize;
     let explored = 2usize;
     let expected = n * std::mem::size_of::<u32>()
+        + n * std::mem::size_of::<f64>()
         + n * std::mem::size_of::<std::sync::OnceLock<mcts::index::Id>>()
         + explored * (std::mem::size_of::<mcts::index::Id>() + std::mem::size_of::<usize>())
         + n * std::mem::size_of::<std::sync::atomic::AtomicU32>()
