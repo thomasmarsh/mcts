@@ -340,7 +340,7 @@ def _literal_loss_gradient_terms(
         dx_branch, d_first_weight, d_first_bias = _conv_backward(residual, p[block_at], d_z1, 1)
         gp[block_at][:] = d_first_weight
         gp[block_at + 1][:] = d_first_bias
-        dx = dx + dx_branch
+        dx = d_z2 + dx_branch
     d_z0 = dx * (z0 > 0.0)
     _, d_stem_weight, d_stem_bias = _conv_backward(x0, p[0], d_z0, 1)
     gp[0][:] = d_stem_weight

@@ -12,6 +12,7 @@ from az_train.convnet_c4 import (
     _gradient_conflict_metrics,
     _head_gradient_components,
     _literal_loss_gradient,
+    _parameter_groups,
     _unpack,
     fit_value_policy_with_diagnostics,
     orientation_diagnostics,
@@ -171,6 +172,81 @@ def test_literal_loss_gradient_matches_finite_differences_across_cnn() -> None:
             - _literal_loss_gradient(minus, me, opp, value, policy, legal, 2e-4)[0]
         ) / (2.0 * float(epsilon))
         assert np.isclose(gradient[index], numeric, rtol=0.04, atol=2e-4), name
+
+
+def _residual_gate_fixture(
+    first_output_bias: float, second_output_bias: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Make each residual output gate independently active or inactive."""
+    weights = (np.random.default_rng(123).standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    parameters = _unpack(weights)
+    for tensor in parameters:
+        if tensor.ndim == 1:
+            tensor.fill(0.1)
+    parameters[1].fill(0.2)
+    parameters[5].fill(first_output_bias)
+    parameters[9].fill(second_output_bias)
+    me = np.zeros((2, 42), dtype=np.float32)
+    opp = np.zeros_like(me)
+    me[0, [0, 8]], opp[1, [1, 9]] = 1.0, 1.0
+    value = np.array([0.7, -0.4], dtype=np.float32)
+    policy = np.full((2, 7), 1.0 / 7.0, dtype=np.float32)
+    return weights, me, opp, value, policy, np.ones((2, 7), dtype=bool)
+
+
+def _directional_difference(
+    weights: np.ndarray, direction: np.ndarray, me: np.ndarray, opp: np.ndarray,
+    value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
+) -> tuple[float, float]:
+    _, gradient = _literal_loss_gradient(weights, me, opp, value, policy, legal, 0.0)
+    epsilon = np.float32(3e-3)
+    numeric = (
+        _literal_loss_gradient(weights + epsilon * direction, me, opp, value, policy, legal, 0.0)[0]
+        - _literal_loss_gradient(weights - epsilon * direction, me, opp, value, policy, legal, 0.0)[0]
+    ) / (2.0 * float(epsilon))
+    return float(np.dot(gradient, direction)), numeric
+
+
+def test_inactive_residual_output_relus_block_skip_gradients() -> None:
+    """An inactive residual output cannot send a gradient through its skip."""
+    weights, me, opp, value, policy, legal = _residual_gate_fixture(-1.0, -1.0)
+    _, gradient = _literal_loss_gradient(weights, me, opp, value, policy, legal, 0.0)
+    spans = _parameter_groups()
+    assert np.array_equal(gradient[:spans["value_head"][0]], np.zeros(spans["value_head"][0], dtype=np.float32))
+    stem_bias = _unpack(weights)[0].size
+    epsilon = np.float32(3e-3)
+    plus, minus = weights.copy(), weights.copy()
+    plus[stem_bias] += epsilon
+    minus[stem_bias] -= epsilon
+    numeric = (
+        _literal_loss_gradient(plus, me, opp, value, policy, legal, 0.0)[0]
+        - _literal_loss_gradient(minus, me, opp, value, policy, legal, 0.0)[0]
+    ) / (2.0 * float(epsilon))
+    assert abs(numeric) < 3e-5
+    assert abs(float(gradient[stem_bias])) < 3e-5
+
+
+def test_residual_gradient_random_directions_cover_gate_bias_regimes() -> None:
+    """Finite differences cover active and inactive residual-output gates."""
+    rng = np.random.default_rng(987)
+    spans = _parameter_groups()
+    cases = (
+        ("active", 0.1, 0.1, ("stem", "residual_block_1", "residual_block_2")),
+        ("first_inactive", -1.0, 0.1, ("stem",)),
+        ("second_inactive", 0.1, -1.0, ("stem", "residual_block_1")),
+        ("both_inactive", -1.0, -1.0, ("stem",)),
+    )
+    for name, first_bias, second_bias, groups in cases:
+        weights, me, opp, value, policy, legal = _residual_gate_fixture(first_bias, second_bias)
+        for group in groups:
+            start, end = spans[group]
+            direction = np.zeros(N_WEIGHTS, dtype=np.float32)
+            direction[start:end] = rng.standard_normal(end - start).astype(np.float32)
+            direction /= np.linalg.norm(direction)
+            analytic, numeric = _directional_difference(
+                weights, direction, me, opp, value, policy, legal,
+            )
+            assert np.isclose(analytic, numeric, rtol=0.12, atol=3e-5), f"{name} {group}"
 
 
 def test_public_fit_substantially_reduces_literal_joint_objective() -> None:
