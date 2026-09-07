@@ -2,8 +2,8 @@ use game_host::{
     ConfiguredCandidateSide, ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics,
     HostError, SearchReport,
 };
-use mcts::game::{Game, PlayerIndex};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use serde_json::{json, Value};
 
 use crate::{build_search, presets, search::make_candidate, trace, SearchBudget};
@@ -97,7 +97,8 @@ pub fn strategy_tune_eval<G: Game + 'static>(
     let (mut wins, mut losses, mut draws) = (0u32, 0u32, 0u32);
     let mut seq = 0u64;
     for round in 1..=rounds {
-        let mut candidate = make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
+        let mut candidate =
+            make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
 
         seq += 1;
@@ -121,7 +122,8 @@ pub fn strategy_tune_eval<G: Game + 'static>(
         on_game(result)?;
 
         // Swap move order so the candidate plays second half the time.
-        let mut candidate = make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
+        let mut candidate =
+            make_candidate::<G>(params, seed, use_transpositions, &candidate_budget)?;
         let mut baseline = baseline_build();
         seq += 1;
         let result = play_one(

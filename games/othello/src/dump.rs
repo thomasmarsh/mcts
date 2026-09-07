@@ -325,7 +325,12 @@ pub fn run(args: impl Iterator<Item = String>) {
             _ => dump_one_game(&mut rng, &mut records),
         }
         if (g + 1) % 100 == 0 || g + 1 == cfg.games {
-            eprintln!("  dumped {}/{} games ({} records)", g + 1, cfg.games, records.len());
+            eprintln!(
+                "  dumped {}/{} games ({} records)",
+                g + 1,
+                cfg.games,
+                records.len()
+            );
         }
     }
 
@@ -440,7 +445,11 @@ impl EdaxLabel {
 impl crate::harvest::TargetOracle for EdaxLabel {
     fn target(&mut self, state: &State) -> f32 {
         let empties = 64 - state.occupied().count_ones();
-        let level = if empties <= self.exact_ply { 60 } else { self.level };
+        let level = if empties <= self.exact_ply {
+            60
+        } else {
+            self.level
+        };
         let s = self.edax.eval(state, level);
         if s.exact {
             self.exact_hits += 1;
@@ -537,8 +546,7 @@ fn run_harvest(cfg: &Config) {
 
     let text = std::fs::read_to_string(&cfg.harvest_config)
         .unwrap_or_else(|e| panic!("cannot read {}: {e}", cfg.harvest_config.display()));
-    let mut params: HarvestParams =
-        toml::from_str(&text).expect("harvest config must parse");
+    let mut params: HarvestParams = toml::from_str(&text).expect("harvest config must parse");
     if cfg.games_overridden {
         params.games = cfg.games;
     }
@@ -724,7 +732,10 @@ fn run_harvest(cfg: &Config) {
             o.edax.timeouts(),
         )
     } else {
-        format!(",\n  \"oracle\": \"mcts\",\n  \"selfplay_s\": {:.2}", t_selfplay.as_secs_f64())
+        format!(
+            ",\n  \"oracle\": \"mcts\",\n  \"selfplay_s\": {:.2}",
+            t_selfplay.as_secs_f64()
+        )
     };
     let summary = format!(
         "{{\n  \"games\": {},\n  \"label_iters\": {},\n  \"epsilon\": {},\n  \"td_lambda\": {},\n  \

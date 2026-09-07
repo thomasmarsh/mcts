@@ -1,6 +1,3 @@
-use crate::game::Canonical;
-use crate::game::Game;
-use crate::game::Real;
 use crate::algorithms::mcts::config::GraphStats;
 use crate::algorithms::mcts::config::TranspositionKeying;
 use crate::algorithms::mcts::index;
@@ -10,6 +7,9 @@ use crate::algorithms::mcts::node::NodeState;
 use crate::algorithms::mcts::search::shared::MAX_REROOT_DEPTH;
 use crate::algorithms::mcts::search::TreeSearch;
 use crate::algorithms::mcts::table::TranspositionKey;
+use crate::game::Canonical;
+use crate::game::Game;
+use crate::game::Real;
 use crate::symmetry::incoming_sym;
 
 use rustc_hash::FxHashMap;

@@ -1,10 +1,10 @@
 use super::codec::{field, to_snake_case};
+use mcts::algorithms::mcts::config::BackpropFlags;
+use mcts::algorithms::mcts::profile::Mcts;
 use mcts::game::Game;
 use mcts::search::TreeStats;
 use mcts::select;
 use mcts::simulate::{self, SimulatePolicy, Trial};
-use mcts::algorithms::mcts::config::BackpropFlags;
-use mcts::algorithms::mcts::profile::Mcts;
 use mcts::{Requirements, SearchConfig, TreeSearch};
 use rand::rngs::SmallRng;
 use serde::de::Error as _;

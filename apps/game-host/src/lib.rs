@@ -18,11 +18,10 @@ pub use protocol::{run_host, run_stdin_stdout};
 pub use types::{
     derive_seed, AiMoveResult, AiPresetInfo, Analysis, AnalysisAction, BookInfo,
     CompareValidationField, ConfiguredCandidateSide, ConfiguredComparisonSummary,
-    ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics, ErrorBody, GameConfigSchema,
-    Request,
-    Response, SearchActionReport, SearchGraphMode, SearchReport, SearchReportReason,
-    SearchReportStatus, SearchTermination, SearchWarning, TunerCondition, TunerInfo,
-    TunerParameter,
+    ConfiguredMatchResult, ConfiguredOutcome, ConfiguredStrategyMetrics, ErrorBody,
+    GameConfigSchema, Request, Response, SearchActionReport, SearchGraphMode, SearchReport,
+    SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning, TunerCondition,
+    TunerInfo, TunerParameter,
 };
 
 #[cfg(test)]

@@ -95,11 +95,21 @@ fn decisive_move_mode(cfg: &Value) -> Result<DecisiveMoveMode, HostError> {
 /// `select_epsilon_greedy` wrapping.
 fn base_select_spec(select: &str, cfg: &Value) -> Result<BaseSelectSpec, HostError> {
     Ok(match select {
-        "ucb1" => BaseSelectSpec::Ucb1 { c: req_f64(cfg, "c")? },
-        "ucb1_tuned" => BaseSelectSpec::Ucb1Tuned { c: req_f64(cfg, "c")? },
-        "ucb_v" => BaseSelectSpec::UcbV { c: req_f64(cfg, "c")? },
-        "kl_ucb" => BaseSelectSpec::KlUcb { c: req_f64(cfg, "c")? },
-        "grill_act" => BaseSelectSpec::GrillAct { c: req_f64(cfg, "c")? },
+        "ucb1" => BaseSelectSpec::Ucb1 {
+            c: req_f64(cfg, "c")?,
+        },
+        "ucb1_tuned" => BaseSelectSpec::Ucb1Tuned {
+            c: req_f64(cfg, "c")?,
+        },
+        "ucb_v" => BaseSelectSpec::UcbV {
+            c: req_f64(cfg, "c")?,
+        },
+        "kl_ucb" => BaseSelectSpec::KlUcb {
+            c: req_f64(cfg, "c")?,
+        },
+        "grill_act" => BaseSelectSpec::GrillAct {
+            c: req_f64(cfg, "c")?,
+        },
         "ments" => BaseSelectSpec::Ments {
             tau: req_f64(cfg, "tau")?,
             epsilon: req_f64(cfg, "epsilon")?,
@@ -116,9 +126,7 @@ fn base_select_spec(select: &str, cfg: &Value) -> Result<BaseSelectSpec, HostErr
                 "max" => GpnBias::Max,
                 "sum" => GpnBias::Sum,
                 "rank" => GpnBias::Rank,
-                other => {
-                    return Err(HostError::bad_request(format!("unknown gpn_bias: {other}")))
-                }
+                other => return Err(HostError::bad_request(format!("unknown gpn_bias: {other}"))),
             },
         },
         "amaf" => BaseSelectSpec::Amaf {
@@ -133,8 +141,12 @@ fn base_select_spec(select: &str, cfg: &Value) -> Result<BaseSelectSpec, HostErr
             c: req_f64(cfg, "c")?,
             ph_weight: req_f64(cfg, "ph_weight")?,
         },
-        "bayes_uct1" => BaseSelectSpec::BayesUct1 { c: req_f64(cfg, "c")? },
-        "bayes_uct2" => BaseSelectSpec::BayesUct2 { c: req_f64(cfg, "c")? },
+        "bayes_uct1" => BaseSelectSpec::BayesUct1 {
+            c: req_f64(cfg, "c")?,
+        },
+        "bayes_uct2" => BaseSelectSpec::BayesUct2 {
+            c: req_f64(cfg, "c")?,
+        },
         "rave" => BaseSelectSpec::Rave {
             threshold: req_u32(cfg, "threshold")?,
             schedule: match req_str(cfg, "schedule")? {
@@ -147,9 +159,7 @@ fn base_select_spec(select: &str, cfg: &Value) -> Result<BaseSelectSpec, HostErr
                 "threshold" => RaveSchedule::Threshold {
                     rave: req_u32(cfg, "rave")?,
                 },
-                other => {
-                    return Err(HostError::bad_request(format!("unknown schedule: {other}")))
-                }
+                other => return Err(HostError::bad_request(format!("unknown schedule: {other}"))),
             },
             ucb: match req_str(cfg, "rave_ucb")? {
                 "none" => RaveUcb::None,
@@ -159,9 +169,7 @@ fn base_select_spec(select: &str, cfg: &Value) -> Result<BaseSelectSpec, HostErr
                 "tuned" => RaveUcb::Ucb1Tuned {
                     exploration_constant: req_f64(cfg, "c")?,
                 },
-                other => {
-                    return Err(HostError::bad_request(format!("unknown rave_ucb: {other}")))
-                }
+                other => return Err(HostError::bad_request(format!("unknown rave_ucb: {other}"))),
             },
         },
         other => return Err(HostError::bad_request(format!("unknown select: {other}"))),
@@ -196,7 +204,11 @@ fn base_simulate_spec(simulate: &str, cfg: &Value) -> Result<BaseSimulateSpec, H
         "nst" => BaseSimulateSpec::Nst {
             backoff_threshold: req_u32(cfg, "nst_backoff_threshold")?,
         },
-        other => return Err(HostError::bad_request(format!("unknown simulate inner: {other}"))),
+        other => {
+            return Err(HostError::bad_request(format!(
+                "unknown simulate inner: {other}"
+            )))
+        }
     })
 }
 
@@ -231,8 +243,8 @@ pub(crate) fn to_simulate_spec(cfg: &Value) -> Result<SimulateSpec, HostError> {
                     inner,
                 }
             } else {
-                let tagged = serde_json::to_value(&inner)
-                    .map_err(|e| HostError::internal(e.to_string()))?;
+                let tagged =
+                    serde_json::to_value(&inner).map_err(|e| HostError::internal(e.to_string()))?;
                 serde_json::from_value(tagged).map_err(|e| HostError::internal(e.to_string()))?
             }
         }
@@ -270,7 +282,11 @@ pub(crate) fn to_backprop_spec(cfg: &Value) -> Result<BackpropSpec, HostError> {
                 value_hi: req_f64(cfg, "value_hi")?,
             })
         }
-        "ments" => return Ok(BackpropSpec::Softmax { tau: req_f64(cfg, "tau")? }),
+        "ments" => {
+            return Ok(BackpropSpec::Softmax {
+                tau: req_f64(cfg, "tau")?,
+            })
+        }
         _ => {}
     }
 
@@ -303,7 +319,9 @@ pub(crate) fn to_final_action_spec(cfg: &Value) -> Result<FinalActionSpec, HostE
         "secure_child" => Ok(FinalActionSpec::SecureChild {
             a: req_f64(cfg, "a")?,
         }),
-        other => Err(HostError::bad_request(format!("unknown final_action: {other}"))),
+        other => Err(HostError::bad_request(format!(
+            "unknown final_action: {other}"
+        ))),
     }
 }
 
@@ -322,17 +340,13 @@ pub(crate) fn to_search_spec(cfg: &Value) -> Result<SearchSpec, HostError> {
 /// 2023) populate and every other configuration leaves `None` -- read here
 /// off the axis config so `search.rs::mcts_settings` can thread them into
 /// `config_ir::SearchSettings`.
-pub(crate) fn mcts_engine_overrides(
-    cfg: &Value,
-) -> Result<(Option<u32>, Option<f64>), HostError> {
-    let solver_loss_threshold = field_opt::<u32>(cfg, "solver_loss_threshold")
-        .map_err(HostError::bad_request)?;
+pub(crate) fn mcts_engine_overrides(cfg: &Value) -> Result<(Option<u32>, Option<f64>), HostError> {
+    let solver_loss_threshold =
+        field_opt::<u32>(cfg, "solver_loss_threshold").map_err(HostError::bad_request)?;
     let contempt_factor = match cfg.get("contempt").and_then(Value::as_str) {
         None | Some("off") => None,
         Some("on") => Some(req_f64(cfg, "contempt_factor")?),
-        Some(other) => {
-            return Err(HostError::bad_request(format!("unknown contempt: {other}")))
-        }
+        Some(other) => return Err(HostError::bad_request(format!("unknown contempt: {other}"))),
     };
     Ok((solver_loss_threshold, contempt_factor))
 }
@@ -359,7 +373,9 @@ pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError>
                 "epsilon_greedy" => BanditPolicySpec::EpsilonGreedy {
                     epsilon: req_f64(cfg, "epsilon")?,
                 },
-                "ucb1" => BanditPolicySpec::Ucb1 { c: req_f64(cfg, "c")? },
+                "ucb1" => BanditPolicySpec::Ucb1 {
+                    c: req_f64(cfg, "c")?,
+                },
                 "thompson" => BanditPolicySpec::Thompson,
                 other => {
                     return Err(HostError::bad_request(format!(
@@ -397,7 +413,8 @@ pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError>
             countermove_heuristic: field(cfg, "countermove_heuristic")
                 .map_err(HostError::bad_request)?,
         }),
-        other => Err(HostError::bad_request(format!("unknown algorithm: {other}"))),
+        other => Err(HostError::bad_request(format!(
+            "unknown algorithm: {other}"
+        ))),
     }
 }
-

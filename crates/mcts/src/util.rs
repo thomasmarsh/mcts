@@ -2,8 +2,8 @@ use rand::Rng;
 
 use rand::rngs::SmallRng;
 
-use crate::game::{Game, PlayerIndex};
 use crate::algorithms;
+use crate::game::{Game, PlayerIndex};
 
 use crate::algorithms::random::Random;
 use crate::algorithms::Search;

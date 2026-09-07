@@ -165,11 +165,7 @@ impl GameAdapter for AtarigoAdapter {
         serde_json::json!({ "size": DEFAULT_SIZE })
     }
     fn config_schema(&self) -> GameConfigSchema {
-        mcts_tune::square_board_config_schema(
-            MIN_SIZE as i64,
-            MAX_SIZE as i64,
-            DEFAULT_SIZE as i64,
-        )
+        mcts_tune::square_board_config_schema(MIN_SIZE as i64, MAX_SIZE as i64, DEFAULT_SIZE as i64)
     }
     fn new_state(&self, config: Value) -> Result<Value, HostError> {
         let config: NewGameConfig = serde_json::from_value(config)

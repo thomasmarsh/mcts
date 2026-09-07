@@ -19,9 +19,7 @@ use serde_json::json;
 /// Bounded the same way `mcts-tune`'s own unit-test `baseline()` is:
 /// `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
 fn baseline() -> Box<dyn Search<G = Nim>> {
-    Box::new(
-        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)),
-    )
+    Box::new(TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)))
 }
 
 /// `meta_mcts`'s inner nested search (`MetaMcts::select_move` runs a full

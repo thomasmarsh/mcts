@@ -146,8 +146,7 @@ async fn preflight_reports_launch_problems_and_gates_the_launch() {
         "tuning_pair_budget": 4, "validation_pair_budget": 4, "production_validation_pairs": 4
     });
 
-    let (status, body) =
-        http_post_json(app.clone(), "/api/bench/tuner/runs/preflight", good).await;
+    let (status, body) = http_post_json(app.clone(), "/api/bench/tuner/runs/preflight", good).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body_json(&body)["ok"], true);
 
@@ -215,7 +214,10 @@ async fn launch_rejects_a_malformed_constraint() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body_json(&body)["error"].as_str().unwrap().contains("range narrowing"));
+    assert!(body_json(&body)["error"]
+        .as_str()
+        .unwrap()
+        .contains("range narrowing"));
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -297,16 +299,16 @@ async fn resume_relaunches_with_no_extension_flags() {
     )
     .unwrap();
 
-    let (status, _) =
-        http_post_json(app.clone(), "/api/bench/tuner/runs/missing/resume", json!({})).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    let (status, body) = http_post_json(
-        app,
-        "/api/bench/tuner/runs/tuner_resume/resume",
+    let (status, _) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/runs/missing/resume",
         json!({}),
     )
     .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, body) =
+        http_post_json(app, "/api/bench/tuner/runs/tuner_resume/resume", json!({})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let argv = body_json(&body)["argv"]
         .as_array()
@@ -349,8 +351,12 @@ async fn objective_crud_round_trips_and_validates() {
     std::fs::create_dir_all(&state.tuner_objectives_dir).unwrap();
 
     // PUT a valid objective, then GET it back.
-    let (status, _) =
-        http_put_json(app.clone(), "/api/bench/tuner/objectives/mine-v1", objective_body("ttt")).await;
+    let (status, _) = http_put_json(
+        app.clone(),
+        "/api/bench/tuner/objectives/mine-v1",
+        objective_body("ttt"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(state.tuner_objectives_dir.join("mine-v1.json").is_file());
 
@@ -448,7 +454,8 @@ async fn stop_is_idempotent_on_an_already_exited_run() {
     std::fs::write(runs_root.join("done/manifest.json"), "{}").unwrap();
     tuner_launch::append_terminal(&runs_root, "done", TerminalOutcome::Exited).unwrap();
 
-    let (status, body) = http_post_json(app.clone(), "/api/bench/tuner/runs/done/stop", json!({})).await;
+    let (status, body) =
+        http_post_json(app.clone(), "/api/bench/tuner/runs/done/stop", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body_json(&body)["status"], "exited");
 
@@ -511,8 +518,7 @@ async fn stop_route_dead_pid() {
     // return the (still non-terminal) record rather than 500.
     record(&runs_root, "stale", Some(999_999_999));
 
-    let (status, body) =
-        http_post_json(app, "/api/bench/tuner/runs/stale/stop", json!({})).await;
+    let (status, body) = http_post_json(app, "/api/bench/tuner/runs/stale/stop", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     // No terminal outcome was written by the route; the run reads back as it
     // did before (no manifest yet -> "unknown").

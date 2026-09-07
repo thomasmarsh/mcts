@@ -184,7 +184,11 @@ pub(super) fn seeded_app_with_state_signaller_and_tuner_db(
                 && !text.contains("\"game_kind\":\"reject\"");
             Ok(super::super::ObjectiveValidation {
                 ok,
-                errors: if ok { vec![] } else { vec!["injected rejection".into()] },
+                errors: if ok {
+                    vec![]
+                } else {
+                    vec!["injected rejection".into()]
+                },
                 objective_id: ok.then(|| "stub-objective".to_owned()),
                 panel_fingerprint: ok.then(|| "stub-fingerprint".to_owned()),
             })

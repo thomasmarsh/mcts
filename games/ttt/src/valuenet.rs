@@ -148,7 +148,11 @@ impl Default for NTupleValueNet {
 
 impl NTupleValueNet {
     pub fn from_weights(weights: Vec<f32>) -> Self {
-        assert_eq!(weights.len(), NT_WEIGHTS, "n-tuple head needs {NT_WEIGHTS} weights");
+        assert_eq!(
+            weights.len(),
+            NT_WEIGHTS,
+            "n-tuple head needs {NT_WEIGHTS} weights"
+        );
         Self { weights }
     }
 
@@ -203,7 +207,12 @@ impl NTupleValueNet {
     }
 
     #[inline]
-    fn table_score(pos: &Position, cells: &[usize], weights: &[f32], offset: usize) -> (f32, usize) {
+    fn table_score(
+        pos: &Position,
+        cells: &[usize],
+        weights: &[f32],
+        offset: usize,
+    ) -> (f32, usize) {
         let mut feat = 0usize;
         let mut place = 1usize;
         for &c in cells {
@@ -350,8 +359,8 @@ mod tests {
 
         let mut with_centre = Position::new();
         with_centre.apply(crate::Move(4)); // X takes centre, now O to move
-        // Centre now holds the opponent's (X's) piece from O's perspective,
-        // so the "me" plane is empty and the score is still 0.
+                                           // Centre now holds the opponent's (X's) piece from O's perspective,
+                                           // so the "me" plane is empty and the score is still 0.
         assert_eq!(net.value(&with_centre), 0.0);
 
         // From X's perspective right after, pretend it's X to move again:

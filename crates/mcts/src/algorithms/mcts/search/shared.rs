@@ -1,7 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::Real;
-use crate::game::TerminalStatus;
 use crate::algorithms::mcts::backprop::BackpropPolicy;
 use crate::algorithms::mcts::config::BackpropFlags;
 use crate::algorithms::mcts::config::GraphStats;
@@ -24,6 +20,10 @@ use crate::algorithms::mcts::simulate::Trial;
 use crate::algorithms::mcts::stack::NodeStack;
 use crate::algorithms::mcts::table::TranspositionKey;
 use crate::algorithms::mcts::table::TranspositionTable;
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::Real;
+use crate::game::TerminalStatus;
 use crate::symmetry::incoming_sym;
 
 use rand::rngs::SmallRng;

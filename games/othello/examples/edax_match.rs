@@ -51,13 +51,21 @@ fn run_ladder(cfg: &Config) {
         report_row(&label, &t);
         let (_, (lo, _)) = t.win_rate_ci(1.96);
         if lo <= 0.5 {
-            println!("  !! L{} did not clearly beat L{} (ci lower bound {lo:.3})", l + 2, l);
+            println!(
+                "  !! L{} did not clearly beat L{} (ci lower bound {lo:.3})",
+                l + 2,
+                l
+            );
             ok = false;
         }
     }
     println!(
         "ladder monotonicity: {}",
-        if ok { "PASS" } else { "FAIL -- fix the driver before trusting Run B" }
+        if ok {
+            "PASS"
+        } else {
+            "FAIL -- fix the driver before trusting Run B"
+        }
     );
 }
 
@@ -68,7 +76,8 @@ fn run_place(cfg: &Config) {
     let presets = Path::new("games/othello/presets.json");
     let mut rows: Vec<(u32, Tally)> = Vec::new();
     for &l in &cfg.levels {
-        let mut ours = build_preset_engine(presets, &cfg.our_preset, cfg.seed.wrapping_add(l as u64));
+        let mut ours =
+            build_preset_engine(presets, &cfg.our_preset, cfg.seed.wrapping_add(l as u64));
         let mut edax = EdaxPlayer::spawn(&cfg.edax_binary, &cfg.edax_data_dir, l);
         let label = format!("{} v L{l}", cfg.our_preset);
         let seed = cfg.seed.wrapping_add((l as u64) << 8);
@@ -91,8 +100,14 @@ fn run_place(cfg: &Config) {
     }
     println!();
     match n_clear {
-        Some(l) => println!("N = {l}  (our '{}' preset clearly beats Edax up to level {l})", cfg.our_preset),
-        None => println!("N = 0  (our '{}' preset does not clearly beat even the lowest level tested)", cfg.our_preset),
+        Some(l) => println!(
+            "N = {l}  (our '{}' preset clearly beats Edax up to level {l})",
+            cfg.our_preset
+        ),
+        None => println!(
+            "N = 0  (our '{}' preset does not clearly beat even the lowest level tested)",
+            cfg.our_preset
+        ),
     }
     match cross {
         Some(l) => println!("point estimate crosses 0.5 at level {l}"),
@@ -111,7 +126,8 @@ fn main() {
     let mode = args.next().unwrap_or_else(|| "place".to_string());
 
     let cfg: Config = toml::from_str(
-        &std::fs::read_to_string(&cfg_path).unwrap_or_else(|e| panic!("cannot read {cfg_path}: {e}")),
+        &std::fs::read_to_string(&cfg_path)
+            .unwrap_or_else(|e| panic!("cannot read {cfg_path}: {e}")),
     )
     .expect("config must parse");
 

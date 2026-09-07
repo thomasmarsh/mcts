@@ -147,7 +147,8 @@ pub fn harvest_tree_scored(
     filter: &HarvestFilter,
 ) -> Vec<(u32, Record)> {
     debug_assert!(
-        !matches!(search.config.graph_search, GraphSearch::Dag(_)) && !search.config.use_transpositions,
+        !matches!(search.config.graph_search, GraphSearch::Dag(_))
+            && !search.config.use_transpositions,
         "harvest_tree assumes a genuine tree; a transposition search needs Id-keyed dedup"
     );
     let canon = canonicalizes(&search.config);
@@ -187,7 +188,11 @@ pub fn harvest_tree_scored(
 }
 
 /// [`harvest_tree_scored`] without the visit counts.
-pub fn harvest_tree(search: &LabelSearch, root_state: &State, filter: &HarvestFilter) -> Vec<Record> {
+pub fn harvest_tree(
+    search: &LabelSearch,
+    root_state: &State,
+    filter: &HarvestFilter,
+) -> Vec<Record> {
     harvest_tree_scored(search, root_state, filter)
         .into_iter()
         .map(|(_, r)| r)
@@ -211,9 +216,22 @@ pub fn harvest_tree_scored_oracle<O: TargetOracle>(
     if root_visits >= filter.min_visits {
         let mut rec = record_for(root_state, None);
         rec.target = oracle.target(root_state);
-        out.push(HarvestHit { visits: root_visits, rec });
+        out.push(HarvestHit {
+            visits: root_visits,
+            rec,
+        });
     }
-    walk_oracle(&search.index, search.root_id, *root_state, true, 0, canon, filter, oracle, &mut out);
+    walk_oracle(
+        &search.index,
+        search.root_id,
+        *root_state,
+        true,
+        0,
+        canon,
+        filter,
+        oracle,
+        &mut out,
+    );
 
     if out.len() > filter.max_per_search {
         out.sort_by_key(|h| std::cmp::Reverse(h.visits));
@@ -257,7 +275,17 @@ fn walk_oracle<O: TargetOracle>(
         let mut rec = record_for(&child_state, None);
         rec.target = oracle.target(&child_state);
         out.push(HarvestHit { visits, rec });
-        walk_oracle(index, child_id, child_state, false, depth + 1, canon, filter, oracle, out);
+        walk_oracle(
+            index,
+            child_id,
+            child_state,
+            false,
+            depth + 1,
+            canon,
+            filter,
+            oracle,
+            out,
+        );
     }
 }
 
@@ -324,11 +352,17 @@ fn walk(
         let value = children.expected_score(i, pidx) as f32;
         let mut rec = record_for(&child_state, None);
         rec.target = value;
-        out.push(HarvestHit {
-            visits,
-            rec,
-        });
-        walk(index, child_id, child_state, false, depth + 1, canon, filter, out);
+        out.push(HarvestHit { visits, rec });
+        walk(
+            index,
+            child_id,
+            child_state,
+            false,
+            depth + 1,
+            canon,
+            filter,
+            out,
+        );
     }
 }
 
@@ -367,7 +401,9 @@ mod tests {
         let incoming = incoming_sym::<Othello>(canon, is_root, Real(&state));
         let mut n = 0;
         for i in 0..children.len() {
-            let Some(child_id) = children.node_id(i) else { continue };
+            let Some(child_id) = children.node_id(i) else {
+                continue;
+            };
             if children.num_visits(i) < min_visits {
                 continue;
             }
@@ -407,7 +443,10 @@ mod tests {
         // root when it passes `min_visits`.
         let root_kept = usize::from(s.root_stats.num_visits() >= filter.min_visits);
         assert_eq!(hits.len(), independent + root_kept);
-        assert!(hits.len() > 1, "a 64-iteration search should expand a few nodes");
+        assert!(
+            hits.len() > 1,
+            "a 64-iteration search should expand a few nodes"
+        );
     }
 
     #[test]
@@ -430,7 +469,9 @@ mod tests {
         let incoming = incoming_sym::<Othello>(canon, true, Real(&root));
         let hits = harvest_tree_scored(&s, &root, &filter);
         for i in 0..children.len() {
-            let Some(child_id) = children.node_id(i) else { continue };
+            let Some(child_id) = children.node_id(i) else {
+                continue;
+            };
             if children.num_visits(i) == 0 {
                 continue;
             }
@@ -445,7 +486,9 @@ mod tests {
             let want = children.expected_score(i, child_pidx) as f32;
             let got = hits
                 .iter()
-                .find(|(_, r)| r.black == child_state.black.bits() && r.white == child_state.white.bits())
+                .find(|(_, r)| {
+                    r.black == child_state.black.bits() && r.white == child_state.white.bits()
+                })
                 .map(|(_, r)| r.target)
                 .expect("depth-1 node missing from harvest");
             assert!((want - got).abs() < 1e-6, "target skew: {want} vs {got}");
@@ -465,7 +508,10 @@ mod tests {
             },
         );
         let cap = 5.min(uncapped.len().saturating_sub(1)).max(1);
-        assert!(uncapped.len() > cap, "need more nodes than the cap to test it");
+        assert!(
+            uncapped.len() > cap,
+            "need more nodes than the cap to test it"
+        );
         let capped = harvest_tree_scored(
             &s,
             &root,
@@ -480,7 +526,10 @@ mod tests {
         visits.sort_unstable_by(|a, b| b.cmp(a));
         let threshold = visits[cap - 1];
         for (v, _) in &capped {
-            assert!(*v >= threshold, "capped harvest kept a low-visit node: {v} < {threshold}");
+            assert!(
+                *v >= threshold,
+                "capped harvest kept a low-visit node: {v} < {threshold}"
+            );
         }
     }
 
@@ -514,7 +563,11 @@ mod tests {
             let st = State {
                 black: crate::BB::from_bits(r.black),
                 white: crate::BB::from_bits(r.white),
-                turn: if r.side == 0 { crate::Player::Black } else { crate::Player::White },
+                turn: if r.side == 0 {
+                    crate::Player::Black
+                } else {
+                    crate::Player::White
+                },
                 ..State::default()
             };
             assert!(

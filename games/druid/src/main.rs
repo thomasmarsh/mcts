@@ -37,8 +37,8 @@ use game_druid::{
     apply_placed, Druid, HashedState, Move, Orientation, Pending, Piece, PieceKind, PlacedPiece,
     Player, Size, Square, State,
 };
-use mcts::game::Game;
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 
 // ---------------------------------------------------------------------------

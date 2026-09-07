@@ -1,7 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::Real;
-use crate::game::Transform;
 use crate::algorithms::mcts::config::{GraphSearch, GraphStats, IsmctsMode, TranspositionKeying};
 use crate::algorithms::mcts::index::Id;
 use crate::algorithms::mcts::node::{real_action, Node, NodeState, NodeStats};
@@ -16,6 +12,10 @@ use crate::algorithms::mcts::select::SelectContext;
 use crate::algorithms::mcts::select::SelectPolicy;
 use crate::algorithms::mcts::simulate::{SimulatePolicy, Trial};
 use crate::algorithms::mcts::stack::NodeStack;
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::Real;
+use crate::game::Transform;
 use crate::symmetry::incoming_sym;
 use crate::util::pv_string;
 

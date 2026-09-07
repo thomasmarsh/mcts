@@ -331,9 +331,8 @@ pub(crate) async fn evidence_stream(
     let path = record.run_dir.join("evidence.jsonl");
 
     let runs_root = state.bench_runs_dir.clone();
-    let is_live: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        run_is_live(&runs_root, &run_id)
-    });
+    let is_live: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || run_is_live(&runs_root, &run_id));
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(64);
     tokio::spawn(pump_evidence(

@@ -12,8 +12,8 @@ use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
-use crate::valuenet::NTupleValueNet;
 use crate::policynet::NTuplePolicyNet;
+use crate::valuenet::NTupleValueNet;
 use crate::{Move, Standard, State};
 
 /// Completed-Q interior selection (a PUCT stub today) over the n-tuple value
@@ -34,7 +34,12 @@ impl GumbelPlayer {
         Self::with_policy_and_playout_depth(net, NTuplePolicyNet::default(), cfg, seed, 0)
     }
 
-    pub fn with_policy(net: NTupleValueNet, policy: NTuplePolicyNet, cfg: GumbelConfig, seed: u64) -> Self {
+    pub fn with_policy(
+        net: NTupleValueNet,
+        policy: NTuplePolicyNet,
+        cfg: GumbelConfig,
+        seed: u64,
+    ) -> Self {
         Self::with_policy_and_playout_depth(net, policy, cfg, seed, 0)
     }
 
@@ -49,7 +54,13 @@ impl GumbelPlayer {
         seed: u64,
         max_playout_depth: usize,
     ) -> Self {
-        Self::with_policy_and_playout_depth(net, NTuplePolicyNet::default(), cfg, seed, max_playout_depth)
+        Self::with_policy_and_playout_depth(
+            net,
+            NTuplePolicyNet::default(),
+            cfg,
+            seed,
+            max_playout_depth,
+        )
     }
 
     pub fn with_policy_and_playout_depth(
@@ -106,6 +117,7 @@ impl Search for GumbelPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mcts::algorithms::mcts::search::shared::expand;
     use mcts::game::Game;
 
     use crate::valuenet::NT_WEIGHTS;
@@ -124,6 +136,75 @@ mod tests {
 
     fn player_with(net: NTupleValueNet, seed: u64) -> GumbelPlayer {
         GumbelPlayer::new(net, wide_cfg(), seed)
+    }
+
+    fn column_bias(col: usize, amount: f32) -> NTuplePolicyNet {
+        let mut weights = vec![0.0; crate::policynet::POLICY_WEIGHTS];
+        weights[col] = amount;
+        NTuplePolicyNet::from_weights(weights)
+    }
+
+    #[test]
+    fn policy_sidecar_shifts_fixed_state_gumbel_candidates() {
+        let cfg = GumbelConfig {
+            sims: 1,
+            max_considered: 1,
+            ..GumbelConfig::default()
+        };
+        let state = State::default();
+        let mut uniform_col3 = 0;
+        let mut biased_col3 = 0;
+        for seed in 0..200 {
+            if GumbelPlayer::with_policy(
+                NTupleValueNet::default(),
+                NTuplePolicyNet::default(),
+                cfg,
+                seed,
+            )
+            .choose(&state)
+            .action
+                == Move(3)
+            {
+                uniform_col3 += 1;
+            }
+            if GumbelPlayer::with_policy(NTupleValueNet::default(), column_bias(3, 20.0), cfg, seed)
+                .choose(&state)
+                .action
+                == Move(3)
+            {
+                biased_col3 += 1;
+            }
+        }
+        assert!(
+            biased_col3 > uniform_col3 + 100,
+            "uniform={uniform_col3}, biased={biased_col3}"
+        );
+    }
+
+    #[test]
+    fn policy_logits_do_not_seed_child_scores_or_visits() {
+        let mut search: TreeSearch<Standard, GumbelProfile> = TreeSearch::default().config(
+            SearchConfig::default()
+                .with_policy_logits(column_bias(3, 20.0))
+                .seed(3),
+        );
+        let state = State::default();
+        let root = search.reset(0, Standard::zobrist_hash(&state));
+        expand::<Standard>(
+            &search.index,
+            root,
+            &state,
+            false,
+            Default::default(),
+            false,
+            false,
+            None,
+        );
+        let children = search.index.get(root).children();
+        for i in 0..children.len() {
+            assert_eq!(children.num_visits(i), 0);
+            assert_eq!(children.expected_score(i, 0), 0.0);
+        }
     }
 
     /// Black holds the bottom row's cols 0..3 and it is Black to move -- a

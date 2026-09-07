@@ -146,7 +146,12 @@ pub(super) fn seed_stems(seed_dir: &std::path::Path) -> std::collections::HashSe
         .flatten()
         .flatten()
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-        .filter_map(|entry| entry.path().file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .filter_map(|entry| {
+            entry
+                .path()
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+        })
         .collect()
 }
 
@@ -157,7 +162,10 @@ pub(super) fn file_updated_at(path: &std::path::Path) -> Option<String> {
         .map(mcts_bench::launch::iso_timestamp_at)
 }
 
-fn read_objective_files(dir: &std::path::Path, seed_dir: &std::path::Path) -> Vec<ObjectiveFileInfo> {
+fn read_objective_files(
+    dir: &std::path::Path,
+    seed_dir: &std::path::Path,
+) -> Vec<ObjectiveFileInfo> {
     let seeds = seed_stems(seed_dir);
     let Ok(entries) = std::fs::read_dir(dir) else {
         return vec![];
@@ -168,8 +176,9 @@ fn read_objective_files(dir: &std::path::Path, seed_dir: &std::path::Path) -> Ve
         .filter_map(|entry| {
             let path = entry.path();
             let key = path.file_stem()?.to_string_lossy().into_owned();
-            let parsed: Option<serde_json::Value> =
-                std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok());
+            let parsed: Option<serde_json::Value> = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| serde_json::from_str(&text).ok());
             let field = |name: &str| {
                 parsed
                     .as_ref()
@@ -282,11 +291,20 @@ fn precheck_objective(body: &serde_json::Value) -> Result<String, BenchError> {
     let object = body
         .as_object()
         .ok_or_else(|| bad_request("objective body must be a JSON object".into()))?;
-    if object.get("schema_version").and_then(serde_json::Value::as_u64) != Some(1) {
+    if object
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
         return Err(bad_request("objective schema_version must be 1".into()));
     }
-    if object.get("game_config").is_some_and(|value| !value.is_object()) {
-        return Err(bad_request("objective game_config must be a JSON object".into()));
+    if object
+        .get("game_config")
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err(bad_request(
+            "objective game_config must be a JSON object".into(),
+        ));
     }
     object
         .get("game_kind")
@@ -349,7 +367,8 @@ pub(crate) async fn put_tuner_objective(
         return Err(bad_request(detail));
     }
     std::fs::create_dir_all(&state.tuner_objectives_dir)?;
-    let pretty = serde_json::to_string_pretty(&body).map_err(|error| bad_request(error.to_string()))?;
+    let pretty =
+        serde_json::to_string_pretty(&body).map_err(|error| bad_request(error.to_string()))?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, pretty.as_bytes())?;
     std::fs::rename(&tmp, &path)?;
@@ -481,9 +500,8 @@ pub fn shell_preflight_launch(
             String::from_utf8_lossy(&output.stderr)
         )));
     }
-    serde_json::from_slice(&output.stdout).map_err(|error| {
-        std::io::Error::other(format!("preflight produced invalid JSON: {error}"))
-    })
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| std::io::Error::other(format!("preflight produced invalid JSON: {error}")))
 }
 
 /// `POST /api/bench/tuner/runs/plan` — resolve a launch request to its
@@ -819,7 +837,10 @@ mod tail_tests {
         assert_eq!(lines, ["a", "b"]);
         assert_eq!(off, 4);
 
-        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
         f.write_all(b"c\n").unwrap();
         let (lines, off) = tail_from(&path, off).unwrap();
         assert_eq!(lines, ["c"]);
@@ -847,7 +868,10 @@ mod tail_tests {
             (returned as u64) <= LOG_TAIL_BYTE_CAP,
             "returned {returned} bytes, cap is {LOG_TAIL_BYTE_CAP}"
         );
-        assert!(lines.iter().all(|l| l == &line), "no partial line survives the seek");
+        assert!(
+            lines.iter().all(|l| l == &line),
+            "no partial line survives the seek"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

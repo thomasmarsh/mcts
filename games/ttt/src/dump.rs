@@ -489,7 +489,10 @@ mod tests {
         assert!(!records.is_empty());
         for r in &records {
             assert!([1.0f32, -1.0, 0.0].contains(&r.value));
-            assert!(!r.policy.is_empty(), "gumbel positions carry a policy target");
+            assert!(
+                !r.policy.is_empty(),
+                "gumbel positions carry a policy target"
+            );
             let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
             assert!((sum - 1.0).abs() < 1e-4);
         }
@@ -517,7 +520,10 @@ mod tests {
                     let rec = record_for(&pos, winner, policy.clone());
                     let mut buf = Vec::new();
                     rec.encode(&mut buf);
-                    assert_eq!(buf.len(), RECORD_HEAD_BYTES + policy.len() * POLICY_ENTRY_BYTES);
+                    assert_eq!(
+                        buf.len(),
+                        RECORD_HEAD_BYTES + policy.len() * POLICY_ENTRY_BYTES
+                    );
                     let (back, consumed) = Record::decode(&buf).unwrap();
                     assert_eq!(consumed, buf.len());
                     assert_eq!(back, rec);

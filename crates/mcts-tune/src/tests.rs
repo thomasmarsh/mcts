@@ -1,9 +1,9 @@
 use crate::*;
 use game_host::{ConfiguredCandidateSide, ConfiguredOutcome, HostError, TunerInfo};
 use game_nim::Nim;
-use mcts::game::{Game, PlayerIndex};
 use mcts::algorithms::mcts::{profile, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use serde_json::{json, Value};
 
 fn nim_action_value(state: &<Nim as Game>::S, action: &<Nim as Game>::A) -> Value {
@@ -255,9 +255,7 @@ fn renderer_trace_uses_canonical_values_and_final_reports_for_both_seats() {
 // tests below never reach real play, but the variant round-trip tests do,
 // and `TreeSearch::default()`'s `max_iterations` is `usize::MAX`.
 fn baseline() -> Box<dyn Search<G = Nim>> {
-    Box::new(
-        TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)),
-    )
+    Box::new(TreeSearch::<Nim, profile::Mcts>::new().config(SearchConfig::new().max_iterations(50)))
 }
 
 /// The axis-native categoricals for each named composition the round-trip
@@ -362,35 +360,44 @@ fn compose(name: &str, extra: Value) -> Value {
 }
 
 fn rave_params() -> Value {
-    compose("rave", json!({
-        "threshold": 700,
-        "c": 0.3,
-        "epsilon": 0.1,
-        "q_init": "Infinity",
-        "final_action": "robust_child",
-        "schedule": "threshold",
-        "rave": 700,
-        "rave_ucb": "tuned",
-    }))
+    compose(
+        "rave",
+        json!({
+            "threshold": 700,
+            "c": 0.3,
+            "epsilon": 0.1,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+            "schedule": "threshold",
+            "rave": 700,
+            "rave_ucb": "tuned",
+        }),
+    )
 }
 
 fn pn_params() -> Value {
-    compose("ucb1_pn", json!({
-        "q_init": "Infinity",
-        "c": 1.4,
-        "c_pn": 1.0,
-        "final_action": "robust_child",
-        "solver_loss_threshold": 5,
-        "contempt": "off",
-    }))
+    compose(
+        "ucb1_pn",
+        json!({
+            "q_init": "Infinity",
+            "c": 1.4,
+            "c_pn": 1.0,
+            "final_action": "robust_child",
+            "solver_loss_threshold": 5,
+            "contempt": "off",
+        }),
+    )
 }
 
 fn comparison_params() -> Value {
-    compose("ucb1", json!({
-        "c": 1.4,
-        "q_init": "Infinity",
-        "final_action": "robust_child",
-    }))
+    compose(
+        "ucb1",
+        json!({
+            "c": 1.4,
+            "q_init": "Infinity",
+            "final_action": "robust_child",
+        }),
+    )
 }
 
 #[test]
@@ -751,9 +758,12 @@ fn assert_variant_round_trips(mut params: Value) {
 
 #[test]
 fn test_variant_ucb1_round_trips() {
-    assert_variant_round_trips(compose("ucb1", json!({
-        "c": 1.4, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1",
+        json!({
+            "c": 1.4, "final_action": "robust_child",
+        }),
+    ));
 }
 
 /// Unlike every other variant exercised here, `random` is a non-MCTS
@@ -772,18 +782,24 @@ fn test_variant_random_round_trips() {
 /// extra param (`c`).
 #[test]
 fn test_variant_bandit_round_trips() {
-    assert_variant_round_trips(compose("bandit", json!({
-        "budget": 20, "max_rollout_depth": 50,
-        "bandit_policy": "random",
-    })));
+    assert_variant_round_trips(compose(
+        "bandit",
+        json!({
+            "budget": 20, "max_rollout_depth": 50,
+            "bandit_policy": "random",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_bandit_ucb1_round_trips() {
-    assert_variant_round_trips(compose("bandit", json!({
-        "budget": 20, "max_rollout_depth": 50,
-        "bandit_policy": "ucb1", "c": 1.4,
-    })));
+    assert_variant_round_trips(compose(
+        "bandit",
+        json!({
+            "budget": 20, "max_rollout_depth": 50,
+            "bandit_policy": "ucb1", "c": 1.4,
+        }),
+    ));
 }
 
 /// Like `random`/`bandit`, `negamax` is a non-MCTS `algorithm`.
@@ -795,148 +811,205 @@ fn test_variant_bandit_ucb1_round_trips() {
 /// `AGENTS.md`'s "keep `cargo test --lib` fast" rule.
 #[test]
 fn test_variant_negamax_round_trips() {
-    assert_variant_round_trips(compose("negamax", json!({
-        "max_depth": 3, "table_bits": 10,
-        "negamax_replacement": "depth_preferred",
-        "principal_variation_search": true, "history_heuristic": true,
-        "singular_extension": true, "countermove_heuristic": true,
-        "negamax_aspiration": "off",
-    })));
+    assert_variant_round_trips(compose(
+        "negamax",
+        json!({
+            "max_depth": 3, "table_bits": 10,
+            "negamax_replacement": "depth_preferred",
+            "principal_variation_search": true, "history_heuristic": true,
+            "singular_extension": true, "countermove_heuristic": true,
+            "negamax_aspiration": "off",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_negamax_aspiration_round_trips() {
-    assert_variant_round_trips(compose("negamax", json!({
-        "max_depth": 3, "table_bits": 10,
-        "negamax_replacement": "two_tier",
-        "principal_variation_search": true, "history_heuristic": true,
-        "singular_extension": true, "countermove_heuristic": true,
-        "negamax_aspiration": "on", "aspiration_window": 50,
-    })));
+    assert_variant_round_trips(compose(
+        "negamax",
+        json!({
+            "max_depth": 3, "table_bits": 10,
+            "negamax_replacement": "two_tier",
+            "principal_variation_search": true, "history_heuristic": true,
+            "singular_extension": true, "countermove_heuristic": true,
+            "negamax_aspiration": "on", "aspiration_window": 50,
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_dm_round_trips() {
-    assert_variant_round_trips(compose("ucb1_dm", json!({
-        "c": 1.4, "final_action": "max_avg",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_dm",
+        json!({
+            "c": 1.4, "final_action": "max_avg",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_adm_round_trips() {
-    assert_variant_round_trips(compose("ucb1_adm", json!({
-        "c": 1.4, "final_action": "max_avg",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_adm",
+        json!({
+            "c": 1.4, "final_action": "max_avg",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_mast_round_trips() {
-    assert_variant_round_trips(compose("ucb1_mast", json!({
-        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_mast",
+        json!({
+            "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_lgr_round_trips() {
-    assert_variant_round_trips(compose("ucb1_lgr", json!({
-        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_lgr",
+        json!({
+            "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_lgr2_round_trips() {
-    assert_variant_round_trips(compose("ucb1_lgr2", json!({
-        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_lgr2",
+        json!({
+            "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_lgr2_mast_round_trips() {
-    assert_variant_round_trips(compose("ucb1_lgr2_mast", json!({
-        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_lgr2_mast",
+        json!({
+            "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_nst_round_trips() {
-    assert_variant_round_trips(compose("ucb1_nst", json!({
-        "c": 1.4, "epsilon": 0.2,
-        "nst_backoff_threshold": 3, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_nst",
+        json!({
+            "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_progressive_history_round_trips() {
-    assert_variant_round_trips(compose("ucb1_progressive_history", json!({
-        "c": 1.4, "ph_weight": 0.5,
-        "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_progressive_history",
+        json!({
+            "c": 1.4, "ph_weight": 0.5,
+            "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_max_robust_round_trips() {
-    assert_variant_round_trips(compose("ucb1_max_robust", json!({
-        "c": 1.4,
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_max_robust",
+        json!({
+            "c": 1.4,
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_amaf_round_trips() {
-    assert_variant_round_trips(compose("amaf", json!({
-        "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
-    })));
+    assert_variant_round_trips(compose(
+        "amaf",
+        json!({
+            "c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0,
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_amaf_mast_round_trips() {
-    assert_variant_round_trips(compose("amaf_mast", json!({
-        "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
-        "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "amaf_mast",
+        json!({
+            "c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2,
+            "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_tuned_round_trips() {
-    assert_variant_round_trips(compose("ucb1_tuned", json!({
-        "c": 1.4, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_tuned",
+        json!({
+            "c": 1.4, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_tuned_mast_round_trips() {
-    assert_variant_round_trips(compose("ucb1_tuned_mast", json!({
-        "c": 1.4, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_tuned_mast",
+        json!({
+            "c": 1.4, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_tuned_dm_round_trips() {
-    assert_variant_round_trips(compose("ucb1_tuned_dm", json!({
-        "c": 1.4, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_tuned_dm",
+        json!({
+            "c": 1.4, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_tuned_dm_mast_round_trips() {
-    assert_variant_round_trips(compose("ucb1_tuned_dm_mast", json!({
-        "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_tuned_dm_mast",
+        json!({
+            "c": 1.4, "epsilon": 0.2, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_dm_nst_round_trips() {
-    assert_variant_round_trips(compose("ucb1_dm_nst", json!({
-        "c": 1.4, "epsilon": 0.2,
-        "nst_backoff_threshold": 3, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_dm_nst",
+        json!({
+            "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }),
+    ));
 }
 
 #[test]
 fn test_variant_ucb1_adm_nst_round_trips() {
-    assert_variant_round_trips(compose("ucb1_adm_nst", json!({
-        "c": 1.4, "epsilon": 0.2,
-        "nst_backoff_threshold": 3, "final_action": "robust_child",
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_adm_nst",
+        json!({
+            "c": 1.4, "epsilon": 0.2,
+            "nst_backoff_threshold": 3, "final_action": "robust_child",
+        }),
+    ));
 }
 
 // `meta_mcts`'s round trip is proven in `examples/tune-stress.rs` instead of here:
@@ -957,13 +1030,15 @@ fn test_variant_ucb1_pn_round_trips() {
 
 #[test]
 fn test_variant_ucb1_pn_mast_round_trips() {
-    assert_variant_round_trips(compose("ucb1_pn_mast", json!({
-        "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
-        "final_action": "robust_child", "solver_loss_threshold": 5,
-        "contempt": "on", "contempt_factor": -0.5,
-    })));
+    assert_variant_round_trips(compose(
+        "ucb1_pn_mast",
+        json!({
+            "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+            "final_action": "robust_child", "solver_loss_threshold": 5,
+            "contempt": "on", "contempt_factor": -0.5,
+        }),
+    ));
 }
-
 
 /// Proves `build_search` (the public entry point `GameAdapter::
 /// tune_eval`'s `baseline_config` path uses) works as a
@@ -972,9 +1047,12 @@ fn test_variant_ucb1_pn_mast_round_trips() {
 /// candidate for one round.
 #[test]
 fn test_strategy_tune_eval_with_config_built_baseline_round_trips() {
-    let baseline_params = compose("ucb1", json!({
-        "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
-    }));
+    let baseline_params = compose(
+        "ucb1",
+        json!({
+            "c": 1.4, "final_action": "robust_child", "q_init": "Infinity",
+        }),
+    );
     let outcome = strategy_tune_eval::<Nim>(
         &rave_params(),
         1,
@@ -1018,10 +1096,13 @@ fn test_build_search_builds_random_algorithm() {
 #[test]
 fn test_build_search_builds_bandit_algorithm() {
     build_search::<Nim>(
-        &compose("bandit", json!({
-            "budget": 20, "max_rollout_depth": 50,
-            "bandit_policy": "random",
-        })),
+        &compose(
+            "bandit",
+            json!({
+                "budget": 20, "max_rollout_depth": 50,
+                "bandit_policy": "random",
+            }),
+        ),
         0,
         false,
         &SearchBudget::default(),
@@ -1037,13 +1118,16 @@ fn test_build_search_builds_bandit_algorithm() {
 #[test]
 fn test_build_search_builds_negamax_algorithm() {
     build_search::<Nim>(
-        &compose("negamax", json!({
-            "max_depth": 8, "table_bits": 16,
-            "negamax_replacement": "depth_preferred",
-            "principal_variation_search": true, "history_heuristic": true,
-            "singular_extension": true, "countermove_heuristic": true,
-            "negamax_aspiration": "off",
-        })),
+        &compose(
+            "negamax",
+            json!({
+                "max_depth": 8, "table_bits": 16,
+                "negamax_replacement": "depth_preferred",
+                "principal_variation_search": true, "history_heuristic": true,
+                "singular_extension": true, "countermove_heuristic": true,
+                "negamax_aspiration": "off",
+            }),
+        ),
         0,
         false,
         &SearchBudget::default(),
@@ -1167,27 +1251,45 @@ fn variant_required_params() -> Vec<(&'static str, Value)> {
         ),
         (
             "ucb1_mast",
-            compose("ucb1_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "ucb1_mast",
+                json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_lgr",
-            compose("ucb1_lgr", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "ucb1_lgr",
+                json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_lgr2",
-            compose("ucb1_lgr2", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "ucb1_lgr2",
+                json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_lgr2_mast",
-            compose("ucb1_lgr2_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "ucb1_lgr2_mast",
+                json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_nst",
-            compose("ucb1_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
+            compose(
+                "ucb1_nst",
+                json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_progressive_history",
-            compose("ucb1_progressive_history", json!({"c": 1.4, "ph_weight": 0.5, "final_action": "robust_child"})),
+            compose(
+                "ucb1_progressive_history",
+                json!({"c": 1.4, "ph_weight": 0.5, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_max_robust",
@@ -1195,15 +1297,24 @@ fn variant_required_params() -> Vec<(&'static str, Value)> {
         ),
         (
             "amaf",
-            compose("amaf", json!({"c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0})),
+            compose(
+                "amaf",
+                json!({"c": 1.4, "amaf_alpha": 0.5, "final_action": "secure_child", "a": 4.0}),
+            ),
         ),
         (
             "amaf_mast",
-            compose("amaf_mast", json!({"c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "amaf_mast",
+                json!({"c": 1.4, "amaf_alpha": 0.5, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_tuned",
-            compose("ucb1_tuned", json!({"c": 1.4, "final_action": "robust_child"})),
+            compose(
+                "ucb1_tuned",
+                json!({"c": 1.4, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb_v",
@@ -1215,110 +1326,158 @@ fn variant_required_params() -> Vec<(&'static str, Value)> {
         ),
         (
             "ucb1_tuned_mast",
-            compose("ucb1_tuned_mast", json!({"c": 1.4, "final_action": "robust_child"})),
+            compose(
+                "ucb1_tuned_mast",
+                json!({"c": 1.4, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_tuned_dm",
-            compose("ucb1_tuned_dm", json!({"c": 1.4, "final_action": "robust_child"})),
+            compose(
+                "ucb1_tuned_dm",
+                json!({"c": 1.4, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_tuned_dm_mast",
-            compose("ucb1_tuned_dm_mast", json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"})),
+            compose(
+                "ucb1_tuned_dm_mast",
+                json!({"c": 1.4, "epsilon": 0.2, "final_action": "robust_child"}),
+            ),
         ),
         ("rave", rave_params()),
         (
             "ucb1_dm_nst",
-            compose("ucb1_dm_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
+            compose(
+                "ucb1_dm_nst",
+                json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            ),
         ),
         (
             "ucb1_adm_nst",
-            compose("ucb1_adm_nst", json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"})),
+            compose(
+                "ucb1_adm_nst",
+                json!({"c": 1.4, "epsilon": 0.2, "nst_backoff_threshold": 3, "final_action": "robust_child"}),
+            ),
         ),
         ("meta_mcts", compose("meta_mcts", json!({"c": 1.4}))),
         ("ucb1_pn", pn_params()),
         (
             "ucb1_pn_mast",
-            compose("ucb1_pn_mast", json!({
-                "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
-                "final_action": "robust_child", "solver_loss_threshold": 5,
-                "contempt": "on", "contempt_factor": -0.5,
-            })),
+            compose(
+                "ucb1_pn_mast",
+                json!({
+                    "c": 1.4, "c_pn": 1.0, "epsilon": 0.2,
+                    "final_action": "robust_child", "solver_loss_threshold": 5,
+                    "contempt": "on", "contempt_factor": -0.5,
+                }),
+            ),
         ),
         (
             "bayes_uct1_gaussian",
-            compose("bayes_uct1_gaussian", json!({
-                "c": 1.0, "prior_variance": 1.0,
-                "obs_variance": 1.0, "final_action": "robust_child",
-            })),
+            compose(
+                "bayes_uct1_gaussian",
+                json!({
+                    "c": 1.0, "prior_variance": 1.0,
+                    "obs_variance": 1.0, "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "bayes_uct2_numeric",
-            compose("bayes_uct2_numeric", json!({
-                "c": 1.0, "prior_variance": 1.0,
-                "obs_variance": 1.0, "value_lo": -1.0, "value_hi": 1.0,
-                "final_action": "robust_child",
-            })),
+            compose(
+                "bayes_uct2_numeric",
+                json!({
+                    "c": 1.0, "prior_variance": 1.0,
+                    "obs_variance": 1.0, "value_lo": -1.0, "value_hi": 1.0,
+                    "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "power_uct",
-            compose("power_uct", json!({
-                "c": 1.4, "p": 4.0, "alpha": 0.5,
-                "final_action": "robust_child",
-            })),
+            compose(
+                "power_uct",
+                json!({
+                    "c": 1.4, "p": 4.0, "alpha": 0.5,
+                    "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "td_uct",
-            compose("td_uct", json!({
-                "c": 1.4, "lambda": 0.8, "td_max_child": 0,
-                "final_action": "robust_child",
-            })),
+            compose(
+                "td_uct",
+                json!({
+                    "c": 1.4, "lambda": 0.8, "td_max_child": 0,
+                    "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "ments",
-            compose("ments", json!({
-                "tau": 1.0, "epsilon": 0.1,
-                "final_action": "robust_child",
-            })),
+            compose(
+                "ments",
+                json!({
+                    "tau": 1.0, "epsilon": 0.1,
+                    "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "grill_act",
-            compose("grill_act", json!({
-                "c": 1.4, "final_action": "robust_child",
-            })),
+            compose(
+                "grill_act",
+                json!({
+                    "c": 1.4, "final_action": "robust_child",
+                }),
+            ),
         ),
         (
             "score_bounded_uct",
-            compose("score_bounded_uct", json!({
-                "c": 1.4, "gamma": 0.1, "delta": 0.1,
-                "final_action": "robust_child", "solver_loss_threshold": 5,
-                "contempt": "off",
-            })),
+            compose(
+                "score_bounded_uct",
+                json!({
+                    "c": 1.4, "gamma": 0.1, "delta": 0.1,
+                    "final_action": "robust_child", "solver_loss_threshold": 5,
+                    "contempt": "off",
+                }),
+            ),
         ),
         (
             "gpn",
-            compose("gpn", json!({
-                "c": 1.4, "c_pn": 1.0, "gpn_bias": "max",
-                "final_action": "robust_child", "solver_loss_threshold": 5,
-                "contempt": "off",
-            })),
+            compose(
+                "gpn",
+                json!({
+                    "c": 1.4, "c_pn": 1.0, "gpn_bias": "max",
+                    "final_action": "robust_child", "solver_loss_threshold": 5,
+                    "contempt": "off",
+                }),
+            ),
         ),
         ("random", compose("random", json!({}))),
         (
             "bandit",
-            compose("bandit", json!({
-                "budget": 20, "max_rollout_depth": 50,
-                "bandit_policy": "random",
-            })),
+            compose(
+                "bandit",
+                json!({
+                    "budget": 20, "max_rollout_depth": 50,
+                    "bandit_policy": "random",
+                }),
+            ),
         ),
         (
             "negamax",
-            compose("negamax", json!({
-                "max_depth": 8, "table_bits": 16,
-                "negamax_replacement": "depth_preferred",
-                "principal_variation_search": true, "history_heuristic": true,
-                "singular_extension": true, "countermove_heuristic": true,
-                "negamax_aspiration": "on", "aspiration_window": 50,
-            })),
+            compose(
+                "negamax",
+                json!({
+                    "max_depth": 8, "table_bits": 16,
+                    "negamax_replacement": "depth_preferred",
+                    "principal_variation_search": true, "history_heuristic": true,
+                    "singular_extension": true, "countermove_heuristic": true,
+                    "negamax_aspiration": "on", "aspiration_window": 50,
+                }),
+            ),
         ),
     ]
 }
@@ -1435,7 +1594,10 @@ fn preset_axis_compositions_resolve() {
             .unwrap_or_else(|e| panic!("{}: {}", preset.id, e.message))
         {
             crate::dispatch::AlgorithmSpec::Mcts(_) => {}
-            _ => panic!("{}: every preset resolves to an mcts configuration", preset.id),
+            _ => panic!(
+                "{}: every preset resolves to an mcts configuration",
+                preset.id
+            ),
         }
     }
 }

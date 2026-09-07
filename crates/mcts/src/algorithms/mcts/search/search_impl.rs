@@ -1,6 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::Real;
 use crate::algorithms::mcts::config::GraphSearch;
 use crate::algorithms::mcts::config::GraphStats;
 use crate::algorithms::mcts::config::IsmctsMode;
@@ -14,6 +11,9 @@ use crate::algorithms::mcts::table::TranspositionKey;
 use crate::algorithms::{
     ActionReport, RootReport, Search, SearchReport, SearchReportReason, SearchTermination,
 };
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::Real;
 use crate::symmetry::incoming_sym;
 
 use std::sync::atomic::Ordering::Relaxed;

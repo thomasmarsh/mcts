@@ -46,7 +46,12 @@ async fn tail_returns_only_events_past_since_seq() {
     let evidence = live_run(&runs_root, "tuner_ev1");
     std::fs::write(
         &evidence,
-        format!("{}\n{}\n{}\n", line(1, "pair_started"), line(2, "pair_completed"), line(3, "cohort_completed")),
+        format!(
+            "{}\n{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed"),
+            line(3, "cohort_completed")
+        ),
     )
     .unwrap();
 
@@ -65,7 +70,10 @@ async fn tail_returns_only_events_past_since_seq() {
         .collect();
     assert_eq!(seqs, [2, 3]);
     assert_eq!(json["next_seq"].as_u64().unwrap(), 3);
-    assert_eq!(json["events"][0]["type"].as_str().unwrap(), "pair_completed");
+    assert_eq!(
+        json["events"][0]["type"].as_str().unwrap(),
+        "pair_completed"
+    );
 
     // Already caught up: no events, next_seq is the log's max.
     let (_, body) = http_get(
@@ -86,7 +94,11 @@ async fn tail_withholds_a_torn_last_line() {
     // Two complete lines then a partial third the writer has not finished.
     std::fs::write(
         &evidence,
-        format!("{}\n{}\n{{\"schema_version\":4,\"sequence\":3", line(1, "pair_started"), line(2, "pair_completed")),
+        format!(
+            "{}\n{}\n{{\"schema_version\":4,\"sequence\":3",
+            line(1, "pair_started"),
+            line(2, "pair_completed")
+        ),
     )
     .unwrap();
 
@@ -98,7 +110,12 @@ async fn tail_withholds_a_torn_last_line() {
     // The writer completes the line -> it appears.
     std::fs::write(
         &evidence,
-        format!("{}\n{}\n{}\n", line(1, "pair_started"), line(2, "pair_completed"), line(3, "cohort_completed")),
+        format!(
+            "{}\n{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed"),
+            line(3, "cohort_completed")
+        ),
     )
     .unwrap();
     let (_, body) = http_get(
@@ -145,7 +162,11 @@ async fn pump_streams_appended_lines_then_ends_when_the_run_stops() {
     tokio::time::sleep(Duration::from_millis(20)).await;
     std::fs::write(
         &path,
-        format!("{}\n{}\n", line(1, "pair_started"), line(2, "pair_completed")),
+        format!(
+            "{}\n{}\n",
+            line(1, "pair_started"),
+            line(2, "pair_completed")
+        ),
     )
     .unwrap();
     let _ = rx.recv().await.expect("streamed append");
@@ -156,7 +177,10 @@ async fn pump_streams_appended_lines_then_ends_when_the_run_stops() {
     let mut trailing = 0;
     while rx.recv().await.is_some() {
         trailing += 1;
-        assert!(trailing < 100, "pump should end shortly after the run stops");
+        assert!(
+            trailing < 100,
+            "pump should end shortly after the run stops"
+        );
     }
     tokio::time::timeout(Duration::from_secs(1), pump)
         .await
@@ -188,9 +212,7 @@ async fn pump_catchup_is_capped_for_a_long_established_run() {
     let pump = tokio::spawn(pump_evidence(path.clone(), 0, is_live, tx, timing));
 
     let mut seqs = Vec::new();
-    while let Ok(Some(_frame)) =
-        tokio::time::timeout(Duration::from_millis(200), rx.recv()).await
-    {
+    while let Ok(Some(_frame)) = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await {
         seqs.push(());
         if seqs.len() >= CATCHUP_MAX {
             break;
@@ -242,14 +264,19 @@ async fn pump_catchup_resumes_from_since_seq_without_resending_earlier_lines() {
     let pump = tokio::spawn(pump_evidence(path.clone(), since_seq, is_live, tx, timing));
 
     let mut count = 0u64;
-    while (tokio::time::timeout(Duration::from_millis(200), rx.recv()).await).is_ok_and(|frame| frame.is_some())
+    while (tokio::time::timeout(Duration::from_millis(200), rx.recv()).await)
+        .is_ok_and(|frame| frame.is_some())
     {
         count += 1;
         if count >= total - since_seq {
             break;
         }
     }
-    assert_eq!(count, total - since_seq, "should resume after since_seq, not replay from the start");
+    assert_eq!(
+        count,
+        total - since_seq,
+        "should resume after since_seq, not replay from the start"
+    );
 
     drop(rx);
     let _ = tokio::time::timeout(Duration::from_secs(1), pump).await;

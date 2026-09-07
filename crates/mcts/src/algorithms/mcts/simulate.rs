@@ -1,10 +1,10 @@
 use super::*;
+use crate::algorithms::negamax::{Negamax, NegamaxOptions};
+use crate::algorithms::Search;
 use crate::evaluator::{Evaluator, MaterialBlind, EVAL_MAGNITUDE_LIMIT};
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
-use crate::algorithms::negamax::{Negamax, NegamaxOptions};
-use crate::algorithms::Search;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;

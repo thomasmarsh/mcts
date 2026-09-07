@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use mcts::algorithms::mcts::gumbel::GumbelConfig;
 use mcts::util::battle_royale;
 
-use game_connect4::selfplay::GumbelPlayer;
 use game_connect4::policynet::NTuplePolicyNet;
+use game_connect4::selfplay::GumbelPlayer;
 use game_connect4::valuenet::NTupleValueNet;
 use game_connect4::Standard;
 
@@ -47,7 +47,9 @@ fn load(path: &str) -> NTupleValueNet {
     NTupleValueNet::load(path).unwrap_or_else(|e| panic!("cannot load {path}: {e}"))
 }
 fn load_policy(path: Option<&String>) -> NTuplePolicyNet {
-    path.map_or_else(NTuplePolicyNet::default, |p| NTuplePolicyNet::load(p).unwrap_or_else(|e| panic!("cannot load {p}: {e}")))
+    path.map_or_else(NTuplePolicyNet::default, |p| {
+        NTuplePolicyNet::load(p).unwrap_or_else(|e| panic!("cannot load {p}: {e}"))
+    })
 }
 
 /// Candidate's score share (win 1, draw 0.5) over `games` alternating-colour
@@ -108,13 +110,20 @@ fn main() -> ExitCode {
         sims,
         ..GumbelConfig::default()
     };
-    let baseline_policy = load_policy(args.windows(2).find(|x| x[0] == "--baseline-policy").map(|x| &x[1]));
-    let candidate_policy = load_policy(args.windows(2).find(|x| x[0] == "--candidate-policy").map(|x| &x[1]));
+    let baseline_policy = load_policy(
+        args.windows(2)
+            .find(|x| x[0] == "--baseline-policy")
+            .map(|x| &x[1]),
+    );
+    let candidate_policy = load_policy(
+        args.windows(2)
+            .find(|x| x[0] == "--candidate-policy")
+            .map(|x| &x[1]),
+    );
 
-    let (w, d, l, share, lb) =
-        score_share(&candidate, &candidate_policy, cfg, games, |seed| {
-            GumbelPlayer::with_policy(baseline.clone(), baseline_policy.clone(), cfg, seed)
-        });
+    let (w, d, l, share, lb) = score_share(&candidate, &candidate_policy, cfg, games, |seed| {
+        GumbelPlayer::with_policy(baseline.clone(), baseline_policy.clone(), cfg, seed)
+    });
     let h2h_pass = lb > 0.5;
     println!(
         "head to head vs baseline: candidate {w}-{d}-{l} (W-D-L) over {games}, \
@@ -122,10 +131,9 @@ fn main() -> ExitCode {
         if h2h_pass { "PASS" } else { "FAIL" }
     );
 
-    let (w, d, l, share, lb) =
-        score_share(&candidate, &candidate_policy, cfg, games, |seed| {
-            GumbelPlayer::with_playout_depth(NTupleValueNet::default(), cfg, seed, MAX_DEPTH)
-        });
+    let (w, d, l, share, lb) = score_share(&candidate, &candidate_policy, cfg, games, |seed| {
+        GumbelPlayer::with_playout_depth(NTupleValueNet::default(), cfg, seed, MAX_DEPTH)
+    });
     let anchor_pass = lb > 0.5;
     println!(
         "rollout anchor: candidate {w}-{d}-{l} (W-D-L) over {games}, \

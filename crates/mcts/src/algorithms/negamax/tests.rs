@@ -7,11 +7,11 @@
 // the other way around; see `algorithms::tests::converge_game_tests` for
 // the same reason another hand-built `Game` lives in-crate).
 
-use crate::game::{Game, PlayerIndex};
 use crate::algorithms::negamax::{
     self, Evaluator, MaterialBlind, Negamax, NegamaxOptions, Replacement, DRAW_SCORE, WIN_SCORE,
 };
 use crate::algorithms::Search;
+use crate::game::{Game, PlayerIndex};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
 struct Player(usize);

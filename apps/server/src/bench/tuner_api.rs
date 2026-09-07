@@ -52,17 +52,14 @@ fn join_error(error: tokio::task::JoinError) -> BenchError {
 /// the projection is server infrastructure, not user input; `POST
 /// /projection/refresh` (or the `tuner-project` CLI) is how it comes to exist.
 fn open(state: &BenchState) -> Result<Connection, BenchError> {
-    Connection::open_with_flags(
-        &state.tuner_projection_db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|error| BenchError {
-        status: StatusCode::INTERNAL_SERVER_ERROR,
-        message: format!(
-            "tuner projection db unavailable at {}: {error}",
-            state.tuner_projection_db.display()
-        ),
-    })
+    Connection::open_with_flags(&state.tuner_projection_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| BenchError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!(
+                "tuner projection db unavailable at {}: {error}",
+                state.tuner_projection_db.display()
+            ),
+        })
 }
 
 fn require_run(conn: &Connection, run_id: &str) -> Result<(), BenchError> {
@@ -1229,7 +1226,13 @@ pub(crate) fn parse_refresh_counts(stdout: &str) -> std::io::Result<[i64; 4]> {
 /// [`BenchState::tuner_projection_refresh`]; tests inject a stub.
 pub fn shell_refresh(runs_root: &Path, db: &Path) -> std::io::Result<[i64; 4]> {
     let output = std::process::Command::new("uv")
-        .args(["run", "--project", "tools/tuner", "tuner-project", "--runs-root"])
+        .args([
+            "run",
+            "--project",
+            "tools/tuner",
+            "tuner-project",
+            "--runs-root",
+        ])
         .arg(runs_root)
         .arg("--db")
         .arg(db)

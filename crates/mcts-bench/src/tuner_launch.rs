@@ -165,7 +165,11 @@ impl TunerLaunchRequest {
             ));
         }
         for (iterations, time, name) in [
-            (self.tuning_max_iterations, self.tuning_max_time_ms, "tuning"),
+            (
+                self.tuning_max_iterations,
+                self.tuning_max_time_ms,
+                "tuning",
+            ),
             (
                 self.validation_max_iterations,
                 self.validation_max_time_ms,
@@ -471,7 +475,10 @@ fn resume_impl(
     argv.push("--resume".into());
     if let Some(extension) = extension {
         for (flag, delta) in [
-            ("--extend-tuning-pairs", extension.tuning_pair_attempts_delta),
+            (
+                "--extend-tuning-pairs",
+                extension.tuning_pair_attempts_delta,
+            ),
             (
                 "--extend-validation-pairs",
                 extension.validation_pair_attempts_delta,
@@ -953,7 +960,15 @@ mod tests {
         let argv = base_request(&root, "run_12a").argv();
         assert_eq!(
             &argv[..7],
-            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli"]
+            [
+                "uv",
+                "run",
+                "--project",
+                "tuner",
+                "python",
+                "-m",
+                "tuner_cli"
+            ]
         );
         assert!(argv
             .windows(2)
@@ -965,7 +980,9 @@ mod tests {
         // default.
         assert!(!argv.iter().any(|arg| arg == "--seed"));
         assert!(!argv.iter().any(|arg| arg == "--proposer-policy"));
-        assert!(!argv.iter().any(|arg| arg == "--shadow-halving-spare-margin"));
+        assert!(!argv
+            .iter()
+            .any(|arg| arg == "--shadow-halving-spare-margin"));
     }
 
     #[test]
@@ -1005,9 +1022,11 @@ mod tests {
         let mut request = base_request(&PathBuf::from("runs"), "run_wp3");
         request.constraints = Some(serde_json::json!("nope"));
         assert!(request.validate().is_err());
-        request.constraints = Some(serde_json::json!([{ "set": { "c": { "range": [2.0, 1.0] } } }]));
+        request.constraints =
+            Some(serde_json::json!([{ "set": { "c": { "range": [2.0, 1.0] } } }]));
         assert!(request.validate().is_err());
-        request.constraints = Some(serde_json::json!([{ "when": { "select": [] }, "set": { "c": { "fix": 1 } } }]));
+        request.constraints =
+            Some(serde_json::json!([{ "when": { "select": [] }, "set": { "c": { "fix": 1 } } }]));
         assert!(request.validate().is_err());
         request.constraints = Some(serde_json::json!([{ "select": { "choices": [] } }]));
         assert!(request.validate().is_err());
@@ -1018,7 +1037,16 @@ mod tests {
         let argv = base_request(&PathBuf::from("runs"), "run_12a").preflight_argv();
         assert_eq!(
             &argv[..8],
-            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli", "preflight"]
+            [
+                "uv",
+                "run",
+                "--project",
+                "tuner",
+                "python",
+                "-m",
+                "tuner_cli",
+                "preflight"
+            ]
         );
         // every launch flag still rides along, so the check sees the real config
         assert!(argv
@@ -1027,7 +1055,16 @@ mod tests {
         let plan = base_request(&PathBuf::from("runs"), "run_12a").plan_argv();
         assert_eq!(
             &plan[..8],
-            ["uv", "run", "--project", "tuner", "python", "-m", "tuner_cli", "plan"]
+            [
+                "uv",
+                "run",
+                "--project",
+                "tuner",
+                "python",
+                "-m",
+                "tuner_cli",
+                "plan"
+            ]
         );
         assert!(argv
             .windows(2)
@@ -1101,7 +1138,10 @@ mod tests {
         assert!(!run_dir.exists());
         assert!(records(&root).unwrap().iter().all(|r| r.run_id != "gone"));
         // A second delete now sees no record.
-        assert_eq!(delete(&root, "gone").unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            delete(&root, "gone").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1178,7 +1218,10 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         // A sibling directory that *does* look like a finished run, reached
         // only by escaping `root` -- must never be reachable via `run_id`.
-        let escape_dir = root.parent().unwrap().join("delete-orphan-traversal-escape");
+        let escape_dir = root
+            .parent()
+            .unwrap()
+            .join("delete-orphan-traversal-escape");
         fs::create_dir_all(&escape_dir).unwrap();
         fs::write(escape_dir.join("manifest.json"), "{}").unwrap();
         fs::write(escape_dir.join("report.json"), "{}").unwrap();
@@ -1285,7 +1328,10 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("died during startup"), "{message}");
         assert!(message.contains("exit status 3"), "{message}");
-        assert!(message.contains("objective file does not exist"), "{message}");
+        assert!(
+            message.contains("objective file does not exist"),
+            "{message}"
+        );
         // The journal still carries a launch and a terminal outcome for it.
         let record = records(&root)
             .unwrap()
@@ -1365,10 +1411,7 @@ mod tests {
             .into_iter()
             .map(|r| (r.run_id.clone(), r))
             .collect();
-        assert_eq!(
-            by_id["dead"].terminal_outcome,
-            Some(TerminalOutcome::Lost)
-        );
+        assert_eq!(by_id["dead"].terminal_outcome, Some(TerminalOutcome::Lost));
         assert_eq!(
             by_id["already-terminal"].terminal_outcome,
             Some(TerminalOutcome::Exited)
@@ -1515,7 +1558,9 @@ mod tests {
             // disposition that the wrapper and grandchild inherit; escalate to
             // a group SIGKILL so the tree still gets reaped.
             if i == 20 && (is_alive(pid) || is_alive(grandchild)) {
-                eprintln!("stop_reaps_process_tree: SIGINT did not reap the group, escalating to SIGKILL");
+                eprintln!(
+                    "stop_reaps_process_tree: SIGINT did not reap the group, escalating to SIGKILL"
+                );
                 kill_group(pid);
             }
             std::thread::sleep(Duration::from_millis(25));

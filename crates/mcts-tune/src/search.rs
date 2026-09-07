@@ -2,19 +2,19 @@ use game_host::{
     Analysis, AnalysisAction, HostError, SearchActionReport, SearchGraphMode, SearchReport,
     SearchReportReason, SearchReportStatus, SearchTermination, SearchWarning,
 };
-use mcts::game::Game;
 use mcts::algorithms::mcts::{GraphSearch, GraphStats, TranspositionKeying};
 use mcts::algorithms::{
     Search, SearchGraphMode as EngineSearchGraphMode, SearchReport as EngineSearchReport,
     SearchReportReason as EngineSearchReportReason, SearchReportStatus as EngineSearchReportStatus,
     SearchTermination as EngineSearchTermination, SearchWarning as EngineSearchWarning,
 };
+use mcts::game::Game;
 use serde_json::Value;
 
 use crate::{
     config_ir,
-    dispatch::{self, AlgorithmSpec},
     direct_search::build_direct,
+    dispatch::{self, AlgorithmSpec},
 };
 
 pub(crate) const PLAYOUT_DEPTH: usize = 200;

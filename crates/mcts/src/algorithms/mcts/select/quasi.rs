@@ -1,16 +1,16 @@
 use super::super::book;
-use super::super::config::SearchConfig;
 use super::super::config::PolicyProfile;
+use super::super::config::SearchConfig;
 use super::super::index::Id;
 use super::super::node::real_action;
 use super::super::node::ChildArray;
 use super::super::search::TreeSearch;
 use super::super::select::SelectContext;
 use super::super::select::SelectPolicy;
+use crate::algorithms::Search;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::Real;
-use crate::algorithms::Search;
 use crate::symmetry::incoming_sym;
 use crate::util::random_best;
 

@@ -27,14 +27,14 @@
 //! (`config_ir.rs`) already found expensive at compile time.
 
 use super::config;
+use crate::algorithms::negamax::Negamax;
+use crate::algorithms::negamax::NegamaxOptions;
 use crate::evaluator::Evaluator;
 use crate::evaluator::EVAL_MAGNITUDE_LIMIT;
 use crate::evaluator::WIN_SCORE;
 use crate::game::Game;
 use crate::game::PlayerIndex;
 use crate::game::TerminalStatus;
-use crate::algorithms::negamax::Negamax;
-use crate::algorithms::negamax::NegamaxOptions;
 
 /// `child`'s exact value from its own player-to-move's perspective, `[-1,
 /// 1]`, if `child` is terminal -- `None` otherwise. Neither `Evaluator::

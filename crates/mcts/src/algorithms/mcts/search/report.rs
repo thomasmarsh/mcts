@@ -1,5 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
 use crate::algorithms::mcts::config::GraphSearch;
 use crate::algorithms::mcts::config::GraphStats;
 use crate::algorithms::mcts::node::NodeStats;
@@ -11,6 +9,8 @@ use crate::algorithms::{
     SearchActionReport, SearchGraphMode, SearchReport, SearchReportReason, SearchReportStatus,
     SearchWarning,
 };
+use crate::game::Game;
+use crate::game::PlayerIndex;
 
 use std::sync::atomic::Ordering::Relaxed;
 

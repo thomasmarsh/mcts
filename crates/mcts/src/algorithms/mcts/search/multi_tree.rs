@@ -1,6 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::Transform;
 use crate::algorithms::mcts::config::GraphStats;
 use crate::algorithms::mcts::config::McgsCorrection;
 use crate::algorithms::mcts::config::TranspositionKeying;
@@ -24,6 +21,9 @@ use crate::algorithms::mcts::simulate::SimulatePolicy;
 use crate::algorithms::mcts::stack::NodeStack;
 use crate::algorithms::mcts::table::TranspositionKey;
 use crate::algorithms::mcts::table::TranspositionTable;
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::Transform;
 
 use rand::rngs::SmallRng;
 

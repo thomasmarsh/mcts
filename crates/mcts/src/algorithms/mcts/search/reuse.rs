@@ -1,10 +1,10 @@
-use crate::game::Canonical;
-use crate::game::Game;
-use crate::game::Real;
 use crate::algorithms::mcts::index::Id;
 use crate::algorithms::mcts::node;
 use crate::algorithms::mcts::search::shared::MAX_REROOT_DEPTH;
 use crate::algorithms::mcts::search::TreeSearch;
+use crate::game::Canonical;
+use crate::game::Game;
+use crate::game::Real;
 use crate::symmetry::incoming_sym;
 
 use std::sync::atomic::Ordering::Relaxed;

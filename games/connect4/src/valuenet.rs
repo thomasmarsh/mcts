@@ -131,7 +131,11 @@ impl Default for NTupleValueNet {
 
 impl NTupleValueNet {
     pub fn from_weights(weights: Vec<f32>) -> Self {
-        assert_eq!(weights.len(), NT_WEIGHTS, "n-tuple head needs {NT_WEIGHTS} weights");
+        assert_eq!(
+            weights.len(),
+            NT_WEIGHTS,
+            "n-tuple head needs {NT_WEIGHTS} weights"
+        );
         Self { weights }
     }
 
@@ -184,14 +188,21 @@ impl NTupleValueNet {
 
     /// Bias plus one table index per window. With `mirrored`, cells are read
     /// through the board's left-right symmetry before tuple lookup.
-    pub(crate) fn active_indices(state: &State<ROWS, COLS>, mirrored: bool) -> [usize; 1 + N_WINDOWS] {
+    pub(crate) fn active_indices(
+        state: &State<ROWS, COLS>,
+        mirrored: bool,
+    ) -> [usize; 1 + N_WINDOWS] {
         let mut active = [0usize; 1 + N_WINDOWS];
         let mut offset = 1;
         for (i, win) in WINDOWS.iter().enumerate() {
             let mut feat = 0;
             let mut place = 1;
             for &cell in win {
-                let cell = if mirrored { (cell / COLS) * COLS + (COLS - 1 - cell % COLS) } else { cell };
+                let cell = if mirrored {
+                    (cell / COLS) * COLS + (COLS - 1 - cell % COLS)
+                } else {
+                    cell
+                };
                 feat += Self::trit(state, cell) * place;
                 place *= 3;
             }
@@ -204,7 +215,9 @@ impl NTupleValueNet {
     /// Pre-`tanh` linear score for `state`, side-to-move perspective.
     fn raw_score(&self, state: &State<ROWS, COLS>) -> f32 {
         let mut acc = self.weights[0];
-        for index in Self::active_indices(state, false).into_iter().skip(1) { acc += self.weights[index]; }
+        for index in Self::active_indices(state, false).into_iter().skip(1) {
+            acc += self.weights[index];
+        }
         acc
     }
 

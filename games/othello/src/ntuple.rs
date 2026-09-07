@@ -30,9 +30,7 @@ use crate::{Othello, Player, State};
 /// of square `i` under group element `k` (`k == 0` is the identity),
 /// matching `D4Symmetry::index_symmetries`' element order.
 pub static D4: LazyLock<[[u8; 64]; 8]> = LazyLock::new(|| {
-    std::array::from_fn(|k| {
-        std::array::from_fn(|i| D4Symmetry::<8>::index_symmetries(i)[k] as u8)
-    })
+    std::array::from_fn(|k| std::array::from_fn(|i| D4Symmetry::<8>::index_symmetries(i)[k] as u8))
 });
 
 /// One tuple's geometry: its 8 orientation-permuted square lists plus where
@@ -200,7 +198,8 @@ impl NTupleModel {
         let meta: WeightsMeta =
             serde_json::from_str(&meta_text).expect("weights.meta.json must parse");
         assert_eq!(
-            meta.model_toml_sha256, geom.sha256_hex,
+            meta.model_toml_sha256,
+            geom.sha256_hex,
             "weights.meta.json SHA-256 does not match {} -- the weights were trained \
              against a different geometry; retrain",
             toml_path.display()

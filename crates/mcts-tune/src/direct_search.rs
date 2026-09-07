@@ -5,11 +5,11 @@
 //! so this is the one place `G` is monomorphized against its concrete type
 //! instead of erased through `config_ir`'s `Dyn*` axes.
 
-use mcts::evaluator::MaterialBlind;
-use mcts::game::Game;
 use mcts::algorithms::bandit::{self, BanditStrategy};
 use mcts::algorithms::negamax::{Negamax, NegamaxOptions};
 use mcts::algorithms::{random::Random, Search};
+use mcts::evaluator::MaterialBlind;
+use mcts::game::Game;
 
 use crate::dispatch::{AlgorithmSpec, BanditPolicySpec};
 use crate::SearchBudget;

@@ -245,7 +245,11 @@ impl EdaxEval {
                         state_to_edax_board(state)
                     );
                     self.calls += 1;
-                    EdaxScore { score: 0.0, exact: false, nodes: 0 }
+                    EdaxScore {
+                        score: 0.0,
+                        exact: false,
+                        nodes: 0,
+                    }
                 }
             },
         }
@@ -386,7 +390,10 @@ fn terminal_disc_diff(state: &State) -> i32 {
 fn parse_score_line(line: &str) -> Option<(f32, u32, bool, u64)> {
     let mut it = line.split_whitespace();
     let depth_tok = it.next()?;
-    let digits: String = depth_tok.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = depth_tok
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     if digits.is_empty() {
         return None;
     }
@@ -411,8 +418,7 @@ mod tests {
     /// The known Edax string for the standard opening: white on d4/e5,
     /// black on e4/d5, black to move. d4 = index 27, e4 = 28, d5 = 35,
     /// e5 = 36.
-    const OPENING: &str =
-        "---------------------------OX------XO--------------------------- X";
+    const OPENING: &str = "---------------------------OX------XO--------------------------- X";
     // (27 dashes + "OX" + 6 dashes + "XO" + 27 dashes, then " X")
 
     #[test]
@@ -485,12 +491,16 @@ mod tests {
             parse_score_line(" depth|score|       time   |  nodes (N)  |   N/s    | pv"),
             None
         );
-        assert_eq!(parse_score_line("------+-----+--------------+----+----+---"), None);
+        assert_eq!(
+            parse_score_line("------+-----+--------------+----+----+---"),
+            None
+        );
         assert_eq!(parse_score_line(">"), None);
 
         // Full-depth heuristic line: balanced opening.
         let (s, d, sel, n) =
-            parse_score_line("   10   +00        0:00.021        145934    6949238 d3 C5 e6").unwrap();
+            parse_score_line("   10   +00        0:00.021        145934    6949238 d3 C5 e6")
+                .unwrap();
         assert_eq!((s, d, sel, n), (0.0, 10, false, 145934));
 
         // Selective search: the `@73%` marks it non-exact.
@@ -536,7 +546,11 @@ mod tests {
 
         // The opening is near-balanced.
         let opening = e.eval(&State::default(), 12);
-        assert!(opening.score.abs() <= 2.0, "opening score {}", opening.score);
+        assert!(
+            opening.score.abs() <= 2.0,
+            "opening score {}",
+            opening.score
+        );
 
         // Near-full board: black owns all but a1 (empty) and a2 (a lone
         // white disc). Black to move has the legal move a1 (a1-a2-a3 flips
@@ -548,8 +562,15 @@ mod tests {
             ..State::default()
         };
         let from_black = e.eval(&won_black, 12);
-        assert!(from_black.exact, "few-empties position should solve exactly");
-        assert!(from_black.score > 40.0, "won-for-black score {}", from_black.score);
+        assert!(
+            from_black.exact,
+            "few-empties position should solve exactly"
+        );
+        assert!(
+            from_black.score > 40.0,
+            "won-for-black score {}",
+            from_black.score
+        );
         // Same board, white to move: white has no legal move, so this is
         // terminal for the scoring purpose -- strongly negative for white.
         let from_white = e.eval(
@@ -559,7 +580,11 @@ mod tests {
             },
             12,
         );
-        assert!(from_white.score < -40.0, "same board, white to move: {}", from_white.score);
+        assert!(
+            from_white.score < -40.0,
+            "same board, white to move: {}",
+            from_white.score
+        );
     }
 
     /// A sub-millisecond ceiling forces every search to time out; `eval`

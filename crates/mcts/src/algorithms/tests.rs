@@ -496,12 +496,12 @@ fn test_child_array_remap_child_ids_rewrites_resolved_slots_only() {
 // `choose_action`) can be driven through a real, if minimal, search instead
 // of relying on random discovery in a full game like tic-tac-toe.
 mod converge_game_tests {
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::config::IsmctsMode;
     use crate::algorithms::mcts::node::NodeState;
-    use crate::algorithms::mcts::select;
     use crate::algorithms::mcts::profile::Mcts;
+    use crate::algorithms::mcts::select;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{
         GraphSearch, GraphStats, McgsCorrection, SearchConfig, TranspositionKeying, TreeSearch,
     };
@@ -1097,12 +1097,12 @@ mod converge_game_tests {
 // rejects the pairing). It is the harness-validation step a `MultiTree` +
 // DAG soundness comparison would build on.
 mod mo_converge_game_tests {
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::config::IsmctsMode;
     use crate::algorithms::mcts::node::NodeState;
-    use crate::algorithms::mcts::select;
     use crate::algorithms::mcts::profile::Mcts;
+    use crate::algorithms::mcts::select;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{SearchConfig, TreeSearch};
     use rand::rngs::SmallRng;
     use rand::Rng;
@@ -1532,9 +1532,9 @@ mod mo_converge_game_tests {
 }
 
 mod cycle_game_tests {
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]
@@ -1635,9 +1635,9 @@ mod cycle_game_tests {
 // actually merges cross-ply transpositions (`PerPly`'s only ever merges
 // same-ply ones, already covered by `converge_game_tests`).
 mod reversible_game_tests {
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
     // Bit 2 of `mask` is a one-way "started" flag: the only legal move from
@@ -1801,9 +1801,9 @@ mod reversible_game_tests {
 // `ply -= depth` rebase after re-rooting gets wrong once the surviving
 // subtree reaches `D` by a different route than the one that created it.
 mod diamond_game_tests {
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{GraphSearch, GraphStats, SearchConfig, TranspositionKeying, TreeSearch};
 
     #[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize)]

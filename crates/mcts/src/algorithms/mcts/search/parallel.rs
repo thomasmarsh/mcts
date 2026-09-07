@@ -1,6 +1,3 @@
-use crate::game::Game;
-use crate::game::PlayerIndex;
-use crate::game::TerminalStatus;
 use crate::algorithms::mcts::config::{GraphSearch, GraphStats, IsmctsMode};
 use crate::algorithms::mcts::node::Proven;
 use crate::algorithms::mcts::search::shared::SearchContext;
@@ -15,6 +12,9 @@ use crate::algorithms::mcts::simulate::SimulatePolicy;
 use crate::algorithms::mcts::stack::NodeStack;
 use crate::algorithms::mcts::table::TranspositionKey;
 use crate::algorithms::Search;
+use crate::game::Game;
+use crate::game::PlayerIndex;
+use crate::game::TerminalStatus;
 use crate::util::random_best;
 
 use rand::rngs::SmallRng;
@@ -450,9 +450,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{merge_root_parallel_workers, RootParallelWorker};
-    use crate::game::{Game, PlayerIndex};
     use crate::algorithms::mcts::profile::Mcts;
     use crate::algorithms::Search;
+    use crate::game::{Game, PlayerIndex};
     use crate::{SearchConfig, TreeSearch};
     use rand::rngs::SmallRng;
     use rand_core::SeedableRng;

@@ -2,7 +2,7 @@ use std::io;
 use std::io::Write;
 use std::marker::PhantomData;
 
-use crate::{game::Game, algorithms::Search};
+use crate::{algorithms::Search, game::Game};
 
 pub struct HumanAgent<G: Game> {
     name: String,

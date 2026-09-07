@@ -678,12 +678,8 @@ where
         let simulate: S::Simulate = Default::default();
         let backprop: S::Backprop = Default::default();
         let final_action: S::FinalAction = Default::default();
-        let name = compose_search_name::<G, _, _, _, _>(
-            &select,
-            &simulate,
-            &backprop,
-            &final_action,
-        );
+        let name =
+            compose_search_name::<G, _, _, _, _>(&select, &simulate, &backprop, &final_action);
         Self {
             select,
             simulate,
@@ -761,7 +757,9 @@ where
     /// because any current impl needs it).
     pub fn requirements(&self) -> Requirements {
         <S::Select as select::SelectPolicy<G>>::requirements(&self.select)
-            .union(<S::Simulate as simulate::SimulatePolicy<G>>::requirements(&self.simulate))
+            .union(<S::Simulate as simulate::SimulatePolicy<G>>::requirements(
+                &self.simulate,
+            ))
             .union(<S::FinalAction as select::SelectPolicy<G>>::requirements(
                 &self.final_action,
             ))
@@ -1090,10 +1088,7 @@ where
         self
     }
 
-    pub fn with_policy_logits(
-        mut self,
-        policy: impl policy::PolicyLogits<G> + 'static,
-    ) -> Self {
+    pub fn with_policy_logits(mut self, policy: impl policy::PolicyLogits<G> + 'static) -> Self {
         self.policy_logits = Some(Box::new(policy));
         self
     }
@@ -1592,23 +1587,16 @@ mod search_config_validate_tests {
         );
 
         // Non-default backprop switches to the positional form.
-        type MentsSoftmax = profile::Mcts<
-            select::Ments,
-            simulate::Uniform,
-            backprop::SoftmaxBackprop,
-        >;
+        type MentsSoftmax =
+            profile::Mcts<select::Ments, simulate::Uniform, backprop::SoftmaxBackprop>;
         assert_eq!(
             SearchConfig::<ThreePlayerGame, MentsSoftmax>::default().name,
             "mcts[ments/uniform/softmax]"
         );
 
         // Non-default final_action is appended.
-        type Ucb1MaxAvg = profile::Mcts<
-            select::Ucb1,
-            simulate::Uniform,
-            backprop::Classic,
-            select::MaxAvgScore,
-        >;
+        type Ucb1MaxAvg =
+            profile::Mcts<select::Ucb1, simulate::Uniform, backprop::Classic, select::MaxAvgScore>;
         assert_eq!(
             SearchConfig::<ThreePlayerGame, Ucb1MaxAvg>::default().name,
             "mcts[ucb1/uniform/classic/max_avg_score]"
@@ -1617,8 +1605,8 @@ mod search_config_validate_tests {
 
     #[test]
     fn axis_setters_refresh_the_auto_name_but_an_explicit_name_freezes_it() {
-        let refreshed = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()
-            .simulate(simulate::Uniform);
+        let refreshed =
+            SearchConfig::<ThreePlayerGame, profile::Mcts>::default().simulate(simulate::Uniform);
         assert_eq!(refreshed.name, "mcts[ucb1]");
 
         let frozen = SearchConfig::<ThreePlayerGame, profile::Mcts>::default()

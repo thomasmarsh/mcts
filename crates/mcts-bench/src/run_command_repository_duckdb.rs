@@ -221,8 +221,11 @@ mod tests {
             connection
                 .lock()
                 .unwrap()
-                .query_row("SELECT status FROM runs WHERE run_id = 'first'", [], |row| row
-                    .get::<_, String>(0))
+                .query_row(
+                    "SELECT status FROM runs WHERE run_id = 'first'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
                 .unwrap(),
             "crashed"
         );

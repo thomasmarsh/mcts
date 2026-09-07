@@ -3,9 +3,9 @@ use rand::Rng;
 use rand_core::SeedableRng;
 use rand_distr::{Beta, Distribution};
 
+use crate::algorithms::Search;
 use crate::game::Game;
 use crate::game::PlayerIndex;
-use crate::algorithms::Search;
 use crate::util::random_best;
 
 use std::marker::PhantomData;
@@ -297,10 +297,7 @@ impl<G: Game + Sync + Send> Search for BanditStrategy<G> {
 
         let mut actions = Vec::new();
         G::generate_actions(state, &mut actions);
-        let children: Vec<_> = actions
-            .iter()
-            .map(|m| G::apply(state.clone(), m))
-            .collect();
+        let children: Vec<_> = actions.iter().map(|m| G::apply(state.clone(), m)).collect();
         let mut stats = vec![ArmStats::default(); actions.len()];
 
         // The budget is a total across every arm, but every arm still needs
@@ -308,7 +305,12 @@ impl<G: Game + Sync + Send> Search for BanditStrategy<G> {
         let budget = self.budget.max(actions.len() as u32);
         for total_pulls in 0..budget {
             let idx = self.policy.choose_arm(&stats, total_pulls, &mut self.rng);
-            let r = rollout::<G>(self.max_rollout_depth, player, &children[idx], &mut self.rng);
+            let r = rollout::<G>(
+                self.max_rollout_depth,
+                player,
+                &children[idx],
+                &mut self.rng,
+            );
             stats[idx].pulls += 1;
             if r > 0. {
                 stats[idx].wins += 1.;
@@ -408,7 +410,11 @@ mod tests {
             // The player who just moved is `(plies - 1) % 2`; they win on an
             // exact landing and lose on an overshoot.
             let mover = (state.plies as usize + 1) % 2;
-            Some(Player(if state.total == TARGET { mover } else { 1 - mover }))
+            Some(Player(if state.total == TARGET {
+                mover
+            } else {
+                1 - mover
+            }))
         }
 
         fn player_to_move(state: &Self::S) -> Self::P {

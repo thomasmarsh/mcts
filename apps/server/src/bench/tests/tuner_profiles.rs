@@ -17,7 +17,11 @@ struct FakeGameBinary(PathBuf);
 
 impl FakeGameBinary {
     fn install(kind: &str) -> Self {
-        let dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        let dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let path = dir.join(kind);
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -74,8 +78,12 @@ async fn profile_crud_round_trips_and_preflights() {
     assert!(!state.tuner_profiles_dir.join("scratch.json").exists());
 
     // PUT a valid profile, then GET it back.
-    let (status, _) =
-        http_put_json(app.clone(), "/api/bench/tuner/profiles/mine-v1", profile_body(KIND)).await;
+    let (status, _) = http_put_json(
+        app.clone(),
+        "/api/bench/tuner/profiles/mine-v1",
+        profile_body(KIND),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(state.tuner_profiles_dir.join("mine-v1.json").is_file());
 
@@ -112,7 +120,10 @@ async fn profile_validate_rejects_bad_bodies() {
 
     // Missing objective_key -> pre-check 400 (no preflight).
     let mut no_objective = profile_body(KIND);
-    no_objective.as_object_mut().unwrap().remove("objective_key");
+    no_objective
+        .as_object_mut()
+        .unwrap()
+        .remove("objective_key");
     let (status, _) = http_post_json(
         app.clone(),
         "/api/bench/tuner/profiles/x/validate",
@@ -135,8 +146,12 @@ async fn profile_validate_rejects_bad_bodies() {
     // A bad effort kind -> lowering 400.
     let mut bad_effort = profile_body(KIND);
     bad_effort["efforts"]["tuning"]["kind"] = json!("forever");
-    let (status, _) =
-        http_post_json(app.clone(), "/api/bench/tuner/profiles/x/validate", bad_effort).await;
+    let (status, _) = http_post_json(
+        app.clone(),
+        "/api/bench/tuner/profiles/x/validate",
+        bad_effort,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Path traversal is refused on the keyed routes.

@@ -2,11 +2,11 @@ use super::backprop::{with_backprop, BackpropCont, BackpropSpec};
 use super::final_action::{resolve_final_action, FinalActionSpec};
 use super::select::{resolve_select, DynSelect, SelectSpec};
 use super::simulate::{resolve_simulate, DynSimulate, SimulateSpec};
+use mcts::algorithms::mcts::profile::Mcts;
+use mcts::algorithms::Search;
 use mcts::backprop::BackpropPolicy;
 use mcts::game::Game;
 use mcts::node::QInit;
-use mcts::algorithms::mcts::profile::Mcts;
-use mcts::algorithms::Search;
 use mcts::{GraphSearch, SearchConfig, TranspositionKeying, TreeSearch};
 use serde::{Deserialize, Serialize};
 

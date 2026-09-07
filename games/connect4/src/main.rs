@@ -10,9 +10,7 @@ fn main() {
     match args.next().as_deref() {
         Some("dump") => game_connect4::dump::run(args),
         other => {
-            eprintln!(
-                "game-connect4: only the `dump` subcommand is supported (got {other:?})"
-            );
+            eprintln!("game-connect4: only the `dump` subcommand is supported (got {other:?})");
             std::process::exit(2);
         }
     }

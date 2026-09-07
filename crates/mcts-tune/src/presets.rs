@@ -18,8 +18,8 @@ use std::path::Path;
 use std::time::Duration;
 
 use game_host::{AiPresetInfo, HostError};
-use mcts::game::Game;
 use mcts::algorithms::Search;
+use mcts::game::Game;
 use serde::de::Error as _;
 use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

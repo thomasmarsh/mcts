@@ -35,8 +35,7 @@ pub trait FollowerChild: Send {
 
 /// Spawns one detached watch child. Injected so tests drive the supervisor
 /// without a real `uv`.
-pub type WatchSpawner =
-    Arc<dyn Fn() -> std::io::Result<Box<dyn FollowerChild>> + Send + Sync>;
+pub type WatchSpawner = Arc<dyn Fn() -> std::io::Result<Box<dyn FollowerChild>> + Send + Sync>;
 
 /// Probe for "does any launch journal row report `live`". Injected for the
 /// same reason.

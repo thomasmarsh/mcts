@@ -404,7 +404,10 @@ fn check_value_against_spec(value: &Value, spec: &Value) -> Result<(), String> {
                 .ok_or_else(|| "expected an integer".to_string())?;
             if let Some(bounds) = spec.get("bounds").and_then(Value::as_array) {
                 if let (Some(lo), Some(hi)) = (bounds.first(), bounds.get(1)) {
-                    let (lo, hi) = (lo.as_i64().unwrap_or(i64::MIN), hi.as_i64().unwrap_or(i64::MAX));
+                    let (lo, hi) = (
+                        lo.as_i64().unwrap_or(i64::MIN),
+                        hi.as_i64().unwrap_or(i64::MAX),
+                    );
                     if n < lo || n > hi {
                         return Err(format!("{n} is out of bounds [{lo}, {hi}]"));
                     }
@@ -413,7 +416,9 @@ fn check_value_against_spec(value: &Value, spec: &Value) -> Result<(), String> {
             Ok(())
         }
         Some("float") => {
-            let x = value.as_f64().ok_or_else(|| "expected a number".to_string())?;
+            let x = value
+                .as_f64()
+                .ok_or_else(|| "expected a number".to_string())?;
             if let Some(bounds) = spec.get("bounds").and_then(Value::as_array) {
                 if let (Some(lo), Some(hi)) = (bounds.first(), bounds.get(1)) {
                     let (lo, hi) = (
@@ -622,7 +627,9 @@ mod game_config_schema_tests {
             ],
             conditions: vec![],
         };
-        assert!(schema.validate(&json!({ "variant": "b", "locked": 4 })).is_ok());
+        assert!(schema
+            .validate(&json!({ "variant": "b", "locked": 4 }))
+            .is_ok());
         assert!(schema.validate(&json!({ "variant": "c" })).is_err());
         assert!(schema.validate(&json!({ "locked": 5 })).is_err());
     }

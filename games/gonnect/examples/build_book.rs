@@ -43,9 +43,9 @@ use std::time::Instant;
 
 use game_gonnect::book::{self, BookBuildConfig};
 use game_gonnect::{Gonnect, State};
+use mcts::algorithms::mcts::book::OpeningBook;
 use mcts::game::Game;
 use mcts::game::PlayerIndex;
-use mcts::algorithms::mcts::book::OpeningBook;
 
 struct Args {
     size: usize,

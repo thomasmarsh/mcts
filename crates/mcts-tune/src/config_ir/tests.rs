@@ -1,12 +1,12 @@
 use super::*;
 use game_nim::Nim;
+use mcts::algorithms::mcts::profile::Mcts;
+use mcts::algorithms::Search;
 use mcts::backprop::{self as mcts_backprop, BackpropPolicy};
 use mcts::game::Game;
 use mcts::node::QInit;
 use mcts::select::{self as mcts_select, SelectPolicy};
 use mcts::simulate::{self as mcts_simulate, SimulatePolicy};
-use mcts::algorithms::mcts::profile::Mcts;
-use mcts::algorithms::Search;
 use mcts::{GraphSearch, Requirements, SearchConfig, TreeSearch};
 
 /// Builds and runs a `TreeSearch<Nim, Mcts<S, mcts_simulate::Uniform>>`

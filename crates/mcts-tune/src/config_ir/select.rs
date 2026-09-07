@@ -1,9 +1,9 @@
 use super::codec::{field, to_snake_case};
+use mcts::algorithms::mcts::config::BackpropFlags;
 use mcts::game::Game;
 use mcts::index::Id;
 use mcts::node::ChildArray;
 use mcts::select::{self, SelectContext, SelectPolicy};
-use mcts::algorithms::mcts::config::BackpropFlags;
 use mcts::Requirements;
 use rand::rngs::SmallRng;
 use serde::de::Error as _;

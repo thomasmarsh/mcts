@@ -126,11 +126,16 @@ pub fn improved_policy(
 ) -> Vec<f32> {
     assert_eq!(logits.len(), visits.len());
     assert_eq!(logits.len(), completed_q.len());
-    if logits.is_empty() { return Vec::new(); }
+    if logits.is_empty() {
+        return Vec::new();
+    }
     let max_visit = visits.iter().copied().max().unwrap_or(0) as f64;
     let scale = (cfg.c_visit + max_visit) * cfg.c_scale;
-    let scores: Vec<f64> = logits.iter().zip(completed_q)
-        .map(|(&logit, &q)| logit + scale * q).collect();
+    let scores: Vec<f64> = logits
+        .iter()
+        .zip(completed_q)
+        .map(|(&logit, &q)| logit + scale * q)
+        .collect();
     let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let weights: Vec<f64> = scores.iter().map(|s| (s - max_score).exp()).collect();
     let total: f64 = weights.iter().sum();

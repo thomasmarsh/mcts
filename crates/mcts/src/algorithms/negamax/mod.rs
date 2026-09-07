@@ -125,8 +125,8 @@ use std::marker::PhantomData;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus};
 use crate::algorithms::{ActionReport, RootReport, Search};
+use crate::game::{Canonical, Game, PlayerIndex, Real, TerminalStatus};
 pub use table::Replacement;
 use table::{Bound, TranspositionTable};
 

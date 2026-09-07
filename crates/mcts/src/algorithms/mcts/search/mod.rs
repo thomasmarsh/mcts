@@ -14,16 +14,16 @@ pub use shared::Shared;
 pub use shared::TreeIndex;
 pub use shared::TreeStats;
 
-use super::config::SearchConfig;
 use super::config::PolicyProfile;
+use super::config::SearchConfig;
 use super::index;
 use super::index::Id;
 use super::node::Node;
 use super::node::NodeStats;
 use super::simulate::Trial;
 use super::table::TranspositionTable;
-use crate::game::Game;
 use crate::algorithms::mcts::search::shared::ActionTotal;
+use crate::game::Game;
 use crate::timer;
 use std::time::Instant;
 

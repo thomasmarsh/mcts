@@ -33,7 +33,11 @@ use game_ttt::{HashedPosition, TicTacToe};
 
 fn exact_value(state: &HashedPosition) -> i32 {
     if TicTacToe::is_terminal(state) {
-        return if TicTacToe::winner(state).is_some() { -1 } else { 0 };
+        return if TicTacToe::winner(state).is_some() {
+            -1
+        } else {
+            0
+        };
     }
     let mut actions = Vec::new();
     TicTacToe::generate_actions(state, &mut actions);
@@ -137,9 +141,7 @@ fn main() {
         }
         n
     };
-    println!(
-        "perfect-play agreement over {decisive} decisive opening positions x 3 seeds\n"
-    );
+    println!("perfect-play agreement over {decisive} decisive opening positions x 3 seeds\n");
 
     for &c_visit in &[1.0f64, 5.0, 15.0, 50.0] {
         println!("c_visit = {c_visit}");

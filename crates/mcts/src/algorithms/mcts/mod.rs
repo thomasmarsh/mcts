@@ -7,12 +7,12 @@ pub mod index;
 pub mod node;
 pub mod policy;
 pub mod prior;
+pub mod profile;
 pub mod render;
 pub mod search;
 pub mod select;
 pub mod simulate;
 pub mod stack;
-pub mod profile;
 pub mod table;
 
 pub use config::*;

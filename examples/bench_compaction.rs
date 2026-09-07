@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use game_druid::{
     Druid, DruidHeuristic, DruidHeuristicWeights, HashedState, RaveDecisiveHeuristic,
 };
-use mcts::game::Game;
 use mcts::algorithms::mcts::{node::QInit, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::game::Game;
 
 fn ai_thread_count() -> usize {
     std::thread::available_parallelism()

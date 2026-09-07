@@ -113,9 +113,7 @@ pub struct LaunchPreflight {
 /// RunPlan`. Production shells `tuner_cli plan`; like the preflighter it sees
 /// a request whose `game_binary` / `objective_file` are already absolute.
 pub type LaunchPlanner = Arc<
-    dyn Fn(&mcts_bench::tuner_launch::TunerLaunchRequest) -> std::io::Result<RunPlan>
-        + Send
-        + Sync,
+    dyn Fn(&mcts_bench::tuner_launch::TunerLaunchRequest) -> std::io::Result<RunPlan> + Send + Sync,
 >;
 
 /// Result of [`LaunchPlanner`] — the JSON line from `tuner_cli plan`. `ok` /
@@ -133,8 +131,7 @@ pub struct RunPlan {
 
 /// Refreshes the tuner projection out of band: `(bench_runs_dir, projection_db)
 /// -> [projected, skipped, ingest_errors, pruned]`.
-pub type ProjectionRefresher =
-    Arc<dyn Fn(&Path, &Path) -> std::io::Result<[i64; 4]> + Send + Sync>;
+pub type ProjectionRefresher = Arc<dyn Fn(&Path, &Path) -> std::io::Result<[i64; 4]> + Send + Sync>;
 
 /// Validates an objective file for a game: `(game_kind, objective_file) ->
 /// ObjectiveValidation`. The production impl resolves the built-in game binary

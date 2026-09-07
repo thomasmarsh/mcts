@@ -253,7 +253,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--label" => label = val(),
             "--weights" | "--value-weights" => {
                 let path = PathBuf::from(val());
-                assert!(value_weights.replace(path).is_none(), "conflicting value-weight flags");
+                assert!(
+                    value_weights.replace(path).is_none(),
+                    "conflicting value-weight flags"
+                );
             }
             "--policy-weights" => policy_weights = Some(PathBuf::from(val())),
             "--sims" => sims = val().parse().expect("--sims must be an integer"),
@@ -397,7 +400,11 @@ pub fn run(args: impl Iterator<Item = String>) {
 /// the exact input `az_train.ntuple_c4` consumes. `me[c]` is 1.0 where the
 /// mover holds cell `c`, `opp[c]` where the opponent does.
 pub fn me_opp_planes(black: u64, white: u64, side: u8) -> ([f32; CELLS], [f32; CELLS]) {
-    let (mover, other) = if side == 0 { (black, white) } else { (white, black) };
+    let (mover, other) = if side == 0 {
+        (black, white)
+    } else {
+        (white, black)
+    };
     let plane = |bits: u64| std::array::from_fn(|c| ((bits >> c) & 1) as f32);
     (plane(mover), plane(other))
 }
@@ -427,7 +434,10 @@ mod tests {
         assert!(!records.is_empty());
         for r in &records {
             assert!([1.0f32, -1.0, 0.0].contains(&r.value));
-            assert!(!r.policy.is_empty(), "gumbel positions carry a policy target");
+            assert!(
+                !r.policy.is_empty(),
+                "gumbel positions carry a policy target"
+            );
             let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
             assert!((sum - 1.0).abs() < 1e-4, "policy tail sums to {sum}");
             for (col, _) in &r.policy {

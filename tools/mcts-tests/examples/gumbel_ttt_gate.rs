@@ -34,7 +34,11 @@ use game_ttt::{HashedPosition, TicTacToe};
 /// with no memoisation.
 fn exact_value(state: &HashedPosition) -> i32 {
     if TicTacToe::is_terminal(state) {
-        return if TicTacToe::winner(state).is_some() { -1 } else { 0 };
+        return if TicTacToe::winner(state).is_some() {
+            -1
+        } else {
+            0
+        };
     }
     let mut actions = Vec::new();
     TicTacToe::generate_actions(state, &mut actions);

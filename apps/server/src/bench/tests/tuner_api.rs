@@ -129,7 +129,11 @@ async fn cohorts_candidates_and_pairs_match_the_fixture() {
 async fn pair_games_match_the_fixture() {
     let (app, root) = seeded_app(default_seed);
 
-    let (_, body) = http_get(app.clone(), &format!("{V4}/pairs?candidate={CAND0}&limit=1")).await;
+    let (_, body) = http_get(
+        app.clone(),
+        &format!("{V4}/pairs?candidate={CAND0}&limit=1"),
+    )
+    .await;
     let pair_id = body_json(&body)[0]["pair_id"].as_str().unwrap().to_string();
 
     let (status, body) = http_get(app.clone(), &format!("{V4}/pairs/{pair_id}/games")).await;
@@ -185,7 +189,9 @@ async fn contenders_roll_up_pair_outcomes() {
     let total: i64 = arr
         .iter()
         .map(|r| {
-            r["wins"].as_i64().unwrap() + r["losses"].as_i64().unwrap() + r["draws"].as_i64().unwrap()
+            r["wins"].as_i64().unwrap()
+                + r["losses"].as_i64().unwrap()
+                + r["draws"].as_i64().unwrap()
         })
         .sum();
     assert_eq!(total, 88);
@@ -258,8 +264,11 @@ async fn telemetry_rolls_up_the_wall_clock_sidecar() {
 #[tokio::test]
 async fn telemetry_is_empty_without_a_sidecar() {
     let (app, root) = seeded_app(default_seed);
-    let (status, body) =
-        http_get(app, "/api/bench/tuner/projection/runs/version4-active-halving/telemetry").await;
+    let (status, body) = http_get(
+        app,
+        "/api/bench/tuner/projection/runs/version4-active-halving/telemetry",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let summary = body_json(&body);
     assert_eq!(summary["sessions"], 0);
@@ -272,8 +281,7 @@ async fn telemetry_is_empty_without_a_sidecar() {
 #[tokio::test]
 async fn telemetry_404s_for_an_unknown_run() {
     let (app, root) = seeded_app(default_seed);
-    let (status, _) =
-        http_get(app, "/api/bench/tuner/projection/runs/nope/telemetry").await;
+    let (status, _) = http_get(app, "/api/bench/tuner/projection/runs/nope/telemetry").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -323,7 +331,12 @@ async fn live_science_rows_serve_from_a_partial_run() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Unknown run -> 404 on every new route.
-    for suffix in ["proposals", "observations", "shadow-decisions", "active-eliminations"] {
+    for suffix in [
+        "proposals",
+        "observations",
+        "shadow-decisions",
+        "active-eliminations",
+    ] {
         let (status, _) = http_get(
             app.clone(),
             &format!("/api/bench/tuner/projection/runs/nope/{suffix}"),
@@ -535,21 +548,25 @@ async fn missing_and_errored_runs() {
 
     // The garbage-manifest run is projected with its ingest error and empty
     // child collections -- never a 500.
-    let (status, body) =
-        http_get(app.clone(), "/api/bench/tuner/projection/runs/broken").await;
+    let (status, body) = http_get(app.clone(), "/api/bench/tuner/projection/runs/broken").await;
     assert_eq!(status, StatusCode::OK);
     let detail = body_json(&body);
-    assert!(detail["ingest_error"].as_str().unwrap().contains("ValueError"));
+    assert!(detail["ingest_error"]
+        .as_str()
+        .unwrap()
+        .contains("ValueError"));
     assert!(detail["manifest"].is_null());
     assert!(detail["compute"].as_array().unwrap().is_empty());
 
-    let (status, body) =
-        http_get(app.clone(), "/api/bench/tuner/projection/runs/broken/candidates").await;
+    let (status, body) = http_get(
+        app.clone(),
+        "/api/bench/tuner/projection/runs/broken/candidates",
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert!(body_json(&body).as_array().unwrap().is_empty());
 
-    let (status, _) =
-        http_get(app, "/api/bench/tuner/projection/runs/broken/report").await;
+    let (status, _) = http_get(app, "/api/bench/tuner/projection/runs/broken/report").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -557,8 +574,12 @@ async fn missing_and_errored_runs() {
 #[tokio::test]
 async fn refresh_endpoint_reports_counts() {
     let (app, root) = seeded_app(default_seed);
-    let (status, body) =
-        http_post_json(app, "/api/bench/tuner/projection/refresh", serde_json::json!({})).await;
+    let (status, body) = http_post_json(
+        app,
+        "/api/bench/tuner/projection/refresh",
+        serde_json::json!({}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     let counts = body_json(&body);
     // The support harness injects a stub returning [2, 1, 0, 0].

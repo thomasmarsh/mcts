@@ -11,8 +11,8 @@ use std::io::Write;
 use std::ops::{Add, AddAssign};
 use std::sync::atomic::AtomicU32;
 
-use mcts::game::{Game, PlayerIndex};
 use mcts::algorithms::Search;
+use mcts::game::{Game, PlayerIndex};
 use mcts::util::{AnySearch, Verbosity};
 
 use crate::log::LogRecord;

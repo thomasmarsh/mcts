@@ -150,7 +150,10 @@ fn run_gate(cfg: &Config) {
             let (_, (lo, _)) = t.win_rate_ci(1.96);
             let pass = lo > 0.5;
             any_pass |= pass;
-            println!("  {label}: {}", if pass { "PASS (CI excludes 0.5)" } else { "no" });
+            println!(
+                "  {label}: {}",
+                if pass { "PASS (CI excludes 0.5)" } else { "no" }
+            );
         }
     }
     println!();
@@ -176,7 +179,8 @@ struct EdaxConfig {
 fn run_edax(cfg: &Config) {
     let edax_path = "games/othello/edax/match.toml";
     let ecfg: EdaxConfig = toml::from_str(
-        &std::fs::read_to_string(edax_path).unwrap_or_else(|e| panic!("cannot read {edax_path}: {e}")),
+        &std::fs::read_to_string(edax_path)
+            .unwrap_or_else(|e| panic!("cannot read {edax_path}: {e}")),
     )
     .expect("edax match.toml must parse");
     let k = *cfg.ks.first().expect("config `ks` is empty");
@@ -201,7 +205,9 @@ fn run_edax(cfg: &Config) {
     }
     match n_clear {
         Some(l) => println!("\nsecondary N = {l} (contender clearly beats Edax up to level {l})"),
-        None => println!("\nsecondary N = 0 (contender does not clearly beat the lowest level tested)"),
+        None => {
+            println!("\nsecondary N = 0 (contender does not clearly beat the lowest level tested)")
+        }
     }
 }
 
@@ -224,7 +230,8 @@ fn main() {
     let mode = args.next().unwrap_or_else(|| "gate".to_string());
 
     let cfg: Config = toml::from_str(
-        &std::fs::read_to_string(&cfg_path).unwrap_or_else(|e| panic!("cannot read {cfg_path}: {e}")),
+        &std::fs::read_to_string(&cfg_path)
+            .unwrap_or_else(|e| panic!("cannot read {cfg_path}: {e}")),
     )
     .expect("config must parse");
 
