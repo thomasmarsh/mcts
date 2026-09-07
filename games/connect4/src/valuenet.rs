@@ -23,12 +23,17 @@ pub const NT_WEIGHTS: usize = 1 + N_WINDOWS * 81;
 pub const STRUCTURED_WEIGHTS: usize = 38_216;
 /// Bias plus one 3^8 table for each fixed connected tuple.
 pub const CONNECTED8_WEIGHTS: usize = 419_905;
+/// Versioned 84 -> 128 -> 128 -> 1 ReLU value MLP parameter count.
+pub const MLP_WEIGHTS: usize = 27_521;
+const MLP_MAGIC: &[u8; 8] = b"C4MLP001";
+const MLP_HEADER_BYTES: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Head {
     Basic,
     Structured,
     Connected8,
+    Mlp,
 }
 
 fn connected8_geometry() -> &'static [[usize; 8]] {
@@ -192,6 +197,17 @@ impl Default for NTupleValueNet {
 }
 
 impl NTupleValueNet {
+    pub fn from_mlp_weights(weights: Vec<f32>) -> Self {
+        assert_eq!(
+            weights.len(),
+            MLP_WEIGHTS,
+            "Connect Four MLP needs {MLP_WEIGHTS} weights"
+        );
+        Self {
+            weights,
+            head: Head::Mlp,
+        }
+    }
     pub fn from_weights(weights: Vec<f32>) -> Self {
         let head = match weights.len() {
             NT_WEIGHTS => Head::Basic,
@@ -203,6 +219,29 @@ impl NTupleValueNet {
     }
     pub fn load(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let bytes = std::fs::read(path)?;
+        if bytes.starts_with(MLP_MAGIC) {
+            if bytes.len() != MLP_HEADER_BYTES + MLP_WEIGHTS * 4 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid Connect Four MLP byte length",
+                ));
+            }
+            let header: [u32; 6] = std::array::from_fn(|i| {
+                u32::from_le_bytes(bytes[8 + i * 4..12 + i * 4].try_into().unwrap())
+            });
+            if header != [1, 84, 128, 128, 1, MLP_WEIGHTS as u32] {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "unsupported Connect Four MLP layout",
+                ));
+            }
+            return Ok(Self::from_mlp_weights(
+                bytes[MLP_HEADER_BYTES..]
+                    .chunks_exact(4)
+                    .map(|x| f32::from_le_bytes(x.try_into().unwrap()))
+                    .collect(),
+            ));
+        }
         if ![
             NT_WEIGHTS * 4,
             STRUCTURED_WEIGHTS * 4,
@@ -230,6 +269,9 @@ impl NTupleValueNet {
     }
     pub fn weights(&self) -> &[f32] {
         &self.weights
+    }
+    pub fn weight_count(&self) -> usize {
+        self.weights.len()
     }
     #[inline]
     pub(crate) fn trit(state: &State<ROWS, COLS>, cell: usize) -> usize {
@@ -275,6 +317,42 @@ impl NTupleValueNet {
         out
     }
     fn raw_score(&self, state: &State<ROWS, COLS>) -> f32 {
+        if self.head == Head::Mlp {
+            let (mut h1, mut h2) = ([0.0f32; 128], [0.0f32; 128]);
+            let mut at = 0;
+            for input in 0..84 {
+                let cell = input % 42;
+                let input_value = match (input < 42, Self::trit(state, cell)) {
+                    (true, 1) | (false, 2) => 1.0,
+                    _ => 0.0,
+                };
+                if input_value != 0.0 {
+                    for (unit, value) in h1.iter_mut().enumerate() {
+                        *value += self.weights[at + unit];
+                    }
+                }
+                at += 128;
+            }
+            for (unit, value) in h1.iter_mut().enumerate() {
+                *value = (*value + self.weights[at + unit]).max(0.0);
+            }
+            at += 128;
+            for input_value in &h1 {
+                for (unit, value) in h2.iter_mut().enumerate() {
+                    *value += input_value * self.weights[at + unit];
+                }
+                at += 128;
+            }
+            for (unit, value) in h2.iter_mut().enumerate() {
+                *value = (*value + self.weights[at + unit]).max(0.0);
+            }
+            at += 128;
+            let mut score = self.weights[at + 128];
+            for (unit, value) in h2.iter().enumerate() {
+                score += value * self.weights[at + unit];
+            }
+            return score;
+        }
         if self.head == Head::Basic {
             return Self::active_indices(state, false)
                 .into_iter()
@@ -443,5 +521,40 @@ mod tests {
         white.set_index(7);
         let state = State::from_parts(black, white, Player::Black, false);
         assert!((net.value(&state) - (-0.008_390_832)).abs() < 1e-6);
+    }
+    #[test]
+    fn mlp_value_uses_side_to_move_planes() {
+        let mut weights = vec![0.0; MLP_WEIGHTS];
+        // input 0 -> hidden 0 -> hidden 0 -> output
+        weights[0] = 1.0;
+        let w2 = 84 * 128 + 128;
+        weights[w2] = 1.0;
+        let w3 = w2 + 128 * 128 + 128;
+        weights[w3] = 1.0;
+        let net = NTupleValueNet::from_mlp_weights(weights);
+        let mut black = crate::BitBoard::<ROWS, COLS>::EMPTY;
+        black.set_index(0);
+        let state = State::from_parts(black, crate::BitBoard::EMPTY, Player::Black, false);
+        assert!((net.value(&state) - 1.0f32.tanh()).abs() < 1e-6);
+        let reversed = State::from_parts(black, crate::BitBoard::EMPTY, Player::White, false);
+        assert_eq!(net.value(&reversed), 0.0);
+    }
+    #[test]
+    fn mlp_header_is_versioned_and_validated() {
+        let path = std::env::temp_dir().join(format!("mcts-c4-mlp-{}", std::process::id()));
+        let mut bytes = Vec::from(*MLP_MAGIC);
+        for value in [1u32, 84, 128, 128, 1, MLP_WEIGHTS as u32] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(std::iter::repeat_n(0u8, MLP_WEIGHTS * 4));
+        std::fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            NTupleValueNet::load(&path).unwrap().weight_count(),
+            MLP_WEIGHTS
+        );
+        bytes[8] = 2;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(NTupleValueNet::load(&path).is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -63,7 +63,7 @@ fn main() -> ExitCode {
     let evaluations = states.len() * passes;
     println!(
         "layout_weights={} evaluations={evaluations} seconds={elapsed:.6} evals_per_second={:.0} checksum={checksum:.6}",
-        net.weights().len(),
+        net.weight_count(),
         evaluations as f64 / elapsed,
     );
     ExitCode::SUCCESS

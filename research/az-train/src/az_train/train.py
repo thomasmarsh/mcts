@@ -28,6 +28,9 @@ from typing import Any
 
 import numpy as np
 
+from az_train.mlp_c4 import fit_value_head_with_diagnostics as fit_mlp_c4_with_diagnostics
+from az_train.mlp_c4 import predict as predict_mlp_c4
+from az_train.mlp_c4 import write_weights as write_mlp_c4
 from az_train.model import fit_value_head as fit_linear
 from az_train.model import predict as predict_linear
 from az_train.model import write_weights as write_linear
@@ -135,8 +138,8 @@ def _fit_c4(
     value_target: str,
     value_head: str,
 ) -> tuple[np.ndarray, dict[str, Any], PositionsC4, PositionsC4]:
-    if head != "ntuple":
-        raise SystemExit(f"--game connect4 only supports --head ntuple (got {head})")
+    if head not in ("ntuple", "mlp"):
+        raise SystemExit(f"--game connect4 supports --head ntuple|mlp (got {head})")
     pos = _concat_c4([load_positions_c4(p) for p in paths])
     print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
     train, validation, train_games, validation_games = split_c4_by_game(
@@ -144,7 +147,12 @@ def _fit_c4(
     )
     train_me, train_opp = me_opp_planes_c4(train)
     validation_me, validation_opp = me_opp_planes_c4(validation)
-    if value_head == "structured":
+    if head == "mlp":
+        w, fit_diagnostics = fit_mlp_c4_with_diagnostics(
+            train_me, train_opp, train.value, 1e-4 if l2 is None else l2, seed=split_seed
+        )
+        predict_value = predict_mlp_c4
+    elif value_head == "structured":
         # Augment training only. Validation stays the frozen literal game split.
         w, fit_diagnostics = fit_structured_value_head_with_diagnostics(
             train_me,
@@ -187,7 +195,7 @@ def train_cli(argv: list[str] | None = None) -> None:
     ap.add_argument("--positions", required=True, help="comma-separated dump .bin files")
     ap.add_argument("--out", required=True, help="output weights.bin path")
     ap.add_argument("--game", choices=("ttt", "connect4"), default="ttt")
-    ap.add_argument("--head", choices=("linear", "ntuple"), default="ntuple")
+    ap.add_argument("--head", choices=("linear", "ntuple", "mlp"), default="ntuple")
     ap.add_argument(
         "--l2", type=float, default=None, help="ridge penalty (default: the head's own default)"
     )
@@ -232,7 +240,7 @@ def train_cli(argv: list[str] | None = None) -> None:
         )
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
         mse = float(c4_metrics["train"]["mse"])
-        write_weights = (
+        write_weights = (write_mlp_c4 if args.head == "mlp" else
             write_structured_weights
             if args.connect4_value_head == "structured"
             else write_connected8_weights
