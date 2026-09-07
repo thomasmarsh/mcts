@@ -5,6 +5,7 @@ pub mod correction;
 pub mod gumbel;
 pub mod index;
 pub mod node;
+pub mod policy;
 pub mod prior;
 pub mod render;
 pub mod search;

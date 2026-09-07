@@ -14,8 +14,7 @@
 //!    surviving set, with `q_a` the completed-Q estimate and
 //!    `sigma(q) = (c_visit + max_b N_b) * c_scale * q`.
 //!
-//! The improved-policy training target this writes back is the Sequential
-//! Halving visit distribution over the root's children.
+//! The improved-policy training target is the completed-Q policy distribution.
 //!
 //! This module is orchestration only: it drives the existing
 //! `select`/`simulate`/`backprop` primitives plus `descend_from`, and owns
@@ -65,6 +64,8 @@ pub struct GumbelOutcome<A> {
     /// `(action, probability)` over the Sequential Halving visit
     /// distribution -- only children that received a visit appear.
     pub visit_distribution: Vec<(A, f32)>,
+    /// `(action, probability)` from the completed-Q policy improvement rule.
+    pub improved_policy: Vec<(A, f32)>,
 }
 
 /// Number of Sequential Halving phases for `m` candidates: `ceil(log2 m)`,
@@ -113,6 +114,27 @@ fn completed_q(root_value: f64, visits: &[u32], q_values: &[f64]) -> Vec<f64> {
         .zip(q_values)
         .map(|(&visits, &q)| if visits == 0 { mixed_value } else { q })
         .collect()
+}
+
+/// The completed-Q policy target. `logits` and `visits` follow `actions`'
+/// order; illegal actions are therefore not represented at all.
+pub fn improved_policy(
+    logits: &[f64],
+    visits: &[u32],
+    completed_q: &[f64],
+    cfg: &GumbelConfig,
+) -> Vec<f32> {
+    assert_eq!(logits.len(), visits.len());
+    assert_eq!(logits.len(), completed_q.len());
+    if logits.is_empty() { return Vec::new(); }
+    let max_visit = visits.iter().copied().max().unwrap_or(0) as f64;
+    let scale = (cfg.c_visit + max_visit) * cfg.c_scale;
+    let scores: Vec<f64> = logits.iter().zip(completed_q)
+        .map(|(&logit, &q)| logit + scale * q).collect();
+    let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let weights: Vec<f64> = scores.iter().map(|s| (s - max_score).exp()).collect();
+    let total: f64 = weights.iter().sum();
+    weights.into_iter().map(|w| (w / total) as f32).collect()
 }
 
 fn root_completed_q<G, S>(
@@ -247,9 +269,9 @@ where
     let logits: Vec<f64> = {
         let raw = search
             .config
-            .prior
+            .policy_logits
             .as_deref_mut()
-            .map(|p| p.evaluate_children(state, &actions))
+            .map(|p| p.logits(state, &actions))
             .unwrap_or_default();
         if raw.len() == k {
             raw
@@ -327,16 +349,22 @@ where
                 .collect()
         }
     };
+    let visits: Vec<u32> = {
+        let children = search.index.get(root_id).children();
+        (0..k).map(|i| children.num_visits(i)).collect()
+    };
+    let improved = improved_policy(&logits, &visits, &completed_q, cfg);
 
     GumbelOutcome {
         action: actions[best].clone(),
         visit_distribution,
+        improved_policy: actions.into_iter().zip(improved).collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{completed_q, num_phases};
+    use super::{completed_q, improved_policy, num_phases, GumbelConfig};
 
     #[test]
     fn phase_count_is_ceil_log2() {
@@ -356,5 +384,23 @@ mod tests {
         assert_eq!(completed[0], 0.8);
         assert!((completed[1] - 8.0 / 13.0).abs() < 1e-12);
         assert_eq!(completed[2], -0.2);
+    }
+
+    #[test]
+    fn improved_policy_is_finite_and_preserves_equal_q_priors() {
+        let cfg = GumbelConfig::default();
+        let p = improved_policy(&[2.0, -1.0, 0.5], &[0, 0, 0], &[0.25; 3], &cfg);
+        let prior = improved_policy(&[2.0, -1.0, 0.5], &[0, 0, 0], &[0.0; 3], &cfg);
+        assert_eq!(p, prior);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!(p.iter().all(|x| x.is_finite() && *x >= 0.0));
+    }
+
+    #[test]
+    fn improved_policy_has_additive_logit_invariance() {
+        let cfg = GumbelConfig::default();
+        let a = improved_policy(&[0.0, 1.0], &[4, 1], &[0.5, -0.5], &cfg);
+        let b = improved_policy(&[17.0, 18.0], &[4, 1], &[0.5, -0.5], &cfg);
+        assert_eq!(a, b);
     }
 }

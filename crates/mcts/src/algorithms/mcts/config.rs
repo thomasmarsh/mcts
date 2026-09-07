@@ -526,6 +526,10 @@ where
     /// `PolicyProfile<G>`/`TreeSearch<G, S>`.
     pub prior: Option<Box<dyn prior::PriorPolicyDyn<G>>>,
 
+    /// Optional categorical policy model. Unlike `prior`, this only supplies
+    /// action logits to policy-improvement schedules and never seeds scores.
+    pub policy_logits: Option<Box<dyn policy::PolicyLogitsDyn<G>>>,
+
     /// ISMCTS (Cowling, Powley & Whitehouse, IEEE ToCIAIG 2012): every
     /// iteration descends a fresh `G::determinize`d sample of the root
     /// state, instead of `determinize_root`'s independent per-worker trees
@@ -708,6 +712,7 @@ where
             reuse_tree: false,
             max_arena_len: None,
             prior: None,
+            policy_logits: None,
             ismcts_mode: IsmctsMode::Off,
             ismcts_redeterminize: false,
         }
@@ -1082,6 +1087,14 @@ where
 
     pub fn with_prior(mut self, prior: impl prior::PriorPolicy<G> + 'static) -> Self {
         self.prior = Some(Box::new(prior));
+        self
+    }
+
+    pub fn with_policy_logits(
+        mut self,
+        policy: impl policy::PolicyLogits<G> + 'static,
+    ) -> Self {
+        self.policy_logits = Some(Box::new(policy));
         self
     }
 

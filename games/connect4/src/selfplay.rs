@@ -13,6 +13,7 @@ use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
 use crate::valuenet::NTupleValueNet;
+use crate::policynet::NTuplePolicyNet;
 use crate::{Move, Standard, State};
 
 /// Completed-Q interior selection (a PUCT stub today) over the n-tuple value
@@ -30,7 +31,11 @@ pub struct GumbelPlayer {
 
 impl GumbelPlayer {
     pub fn new(net: NTupleValueNet, cfg: GumbelConfig, seed: u64) -> Self {
-        Self::with_playout_depth(net, cfg, seed, 0)
+        Self::with_policy_and_playout_depth(net, NTuplePolicyNet::default(), cfg, seed, 0)
+    }
+
+    pub fn with_policy(net: NTupleValueNet, policy: NTuplePolicyNet, cfg: GumbelConfig, seed: u64) -> Self {
+        Self::with_policy_and_playout_depth(net, policy, cfg, seed, 0)
     }
 
     /// As [`GumbelPlayer::new`], but with an explicit playout depth. `0` is
@@ -44,12 +49,23 @@ impl GumbelPlayer {
         seed: u64,
         max_playout_depth: usize,
     ) -> Self {
+        Self::with_policy_and_playout_depth(net, NTuplePolicyNet::default(), cfg, seed, max_playout_depth)
+    }
+
+    pub fn with_policy_and_playout_depth(
+        net: NTupleValueNet,
+        policy: NTuplePolicyNet,
+        cfg: GumbelConfig,
+        seed: u64,
+        max_playout_depth: usize,
+    ) -> Self {
         let search = TreeSearch::default().config(
             SearchConfig::default()
                 .expand_threshold(1)
                 .max_playout_depth(max_playout_depth)
                 .q_init(QInit::Loss)
                 .simulate(EvaluatedCutoff::new().evaluator(net.clone()))
+                .with_policy_logits(policy)
                 .seed(seed),
         );
         Self {
@@ -60,8 +76,7 @@ impl GumbelPlayer {
         }
     }
 
-    /// The full Gumbel outcome -- action plus the visit-distribution policy
-    /// target -- for the self-play dump path.
+    /// The full Gumbel outcome, including its completed-Q policy target.
     pub fn choose(&mut self, state: &State<6, 7>) -> GumbelOutcome<Move> {
         gumbel_search_with_root_value(
             &mut self.search,

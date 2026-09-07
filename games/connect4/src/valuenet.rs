@@ -40,7 +40,7 @@ pub const N_WINDOWS: usize = 69;
 /// `1` bias + `69 * 3^4` window-table weights.
 pub const NT_WEIGHTS: usize = 1 + N_WINDOWS * 81;
 
-const WINDOWS: [[usize; 4]; N_WINDOWS] = build_windows();
+pub(crate) const WINDOWS: [[usize; 4]; N_WINDOWS] = build_windows();
 
 const fn build_windows() -> [[usize; 4]; N_WINDOWS] {
     let mut w = [[0usize; 4]; N_WINDOWS];
@@ -163,7 +163,7 @@ impl NTupleValueNet {
     /// Per-cell base-3 digit from the side-to-move perspective: 0 empty,
     /// 1 own piece, 2 opponent piece.
     #[inline]
-    fn trit(state: &State<ROWS, COLS>, cell: usize) -> usize {
+    pub(crate) fn trit(state: &State<ROWS, COLS>, cell: usize) -> usize {
         let mover = state.turn();
         if state.black().get_index(cell) {
             if matches!(mover, Player::Black) {
@@ -182,20 +182,29 @@ impl NTupleValueNet {
         }
     }
 
+    /// Bias plus one table index per window. With `mirrored`, cells are read
+    /// through the board's left-right symmetry before tuple lookup.
+    pub(crate) fn active_indices(state: &State<ROWS, COLS>, mirrored: bool) -> [usize; 1 + N_WINDOWS] {
+        let mut active = [0usize; 1 + N_WINDOWS];
+        let mut offset = 1;
+        for (i, win) in WINDOWS.iter().enumerate() {
+            let mut feat = 0;
+            let mut place = 1;
+            for &cell in win {
+                let cell = if mirrored { (cell / COLS) * COLS + (COLS - 1 - cell % COLS) } else { cell };
+                feat += Self::trit(state, cell) * place;
+                place *= 3;
+            }
+            active[i + 1] = offset + feat;
+            offset += 81;
+        }
+        active
+    }
+
     /// Pre-`tanh` linear score for `state`, side-to-move perspective.
     fn raw_score(&self, state: &State<ROWS, COLS>) -> f32 {
         let mut acc = self.weights[0];
-        let mut offset = 1usize;
-        for win in &WINDOWS {
-            let mut feat = 0usize;
-            let mut place = 1usize;
-            for &c in win {
-                feat += Self::trit(state, c) * place;
-                place *= 3;
-            }
-            acc += self.weights[offset + feat];
-            offset += 81;
-        }
+        for index in Self::active_indices(state, false).into_iter().skip(1) { acc += self.weights[index]; }
         acc
     }
 

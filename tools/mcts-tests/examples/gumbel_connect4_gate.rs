@@ -23,6 +23,7 @@ use mcts::algorithms::mcts::gumbel::GumbelConfig;
 use mcts::util::battle_royale;
 
 use game_connect4::selfplay::GumbelPlayer;
+use game_connect4::policynet::NTuplePolicyNet;
 use game_connect4::valuenet::NTupleValueNet;
 use game_connect4::Standard;
 
@@ -45,6 +46,9 @@ fn wilson_lower_bound(successes: f64, n: usize, z: f64) -> f64 {
 fn load(path: &str) -> NTupleValueNet {
     NTupleValueNet::load(path).unwrap_or_else(|e| panic!("cannot load {path}: {e}"))
 }
+fn load_policy(path: Option<&String>) -> NTuplePolicyNet {
+    path.map_or_else(NTuplePolicyNet::default, |p| NTuplePolicyNet::load(p).unwrap_or_else(|e| panic!("cannot load {p}: {e}")))
+}
 
 /// Candidate's score share (win 1, draw 0.5) over `games` alternating-colour
 /// games against `opponent`, with the Wilson 95% lower bound. `opponent` is
@@ -52,11 +56,12 @@ fn load(path: &str) -> NTupleValueNet {
 /// never leaks between the two checks.
 fn score_share(
     candidate: &NTupleValueNet,
+    candidate_policy: &NTuplePolicyNet,
     cfg: GumbelConfig,
     games: usize,
     make_opponent: impl Fn(u64) -> GumbelPlayer,
 ) -> (usize, usize, usize, f64, f64) {
-    let mut cand = GumbelPlayer::new(candidate.clone(), cfg, 7);
+    let mut cand = GumbelPlayer::with_policy(candidate.clone(), candidate_policy.clone(), cfg, 7);
     let mut opp = make_opponent(11);
     let (mut wins, mut draws, mut losses) = (0usize, 0usize, 0usize);
     let mut score = 0.0f64;
@@ -91,7 +96,7 @@ fn main() -> ExitCode {
     if args.len() < 3 {
         eprintln!(
             "usage: gumbel_connect4_gate <baseline_weights.bin> <candidate_weights.bin> \
-             [games] [sims]"
+             [games] [sims] [--baseline-policy file] [--candidate-policy file]"
         );
         return ExitCode::FAILURE;
     }
@@ -103,10 +108,12 @@ fn main() -> ExitCode {
         sims,
         ..GumbelConfig::default()
     };
+    let baseline_policy = load_policy(args.windows(2).find(|x| x[0] == "--baseline-policy").map(|x| &x[1]));
+    let candidate_policy = load_policy(args.windows(2).find(|x| x[0] == "--candidate-policy").map(|x| &x[1]));
 
     let (w, d, l, share, lb) =
-        score_share(&candidate, cfg, games, |seed| {
-            GumbelPlayer::new(baseline.clone(), cfg, seed)
+        score_share(&candidate, &candidate_policy, cfg, games, |seed| {
+            GumbelPlayer::with_policy(baseline.clone(), baseline_policy.clone(), cfg, seed)
         });
     let h2h_pass = lb > 0.5;
     println!(
@@ -116,7 +123,7 @@ fn main() -> ExitCode {
     );
 
     let (w, d, l, share, lb) =
-        score_share(&candidate, cfg, games, |seed| {
+        score_share(&candidate, &candidate_policy, cfg, games, |seed| {
             GumbelPlayer::with_playout_depth(NTupleValueNet::default(), cfg, seed, MAX_DEPTH)
         });
     let anchor_pass = lb > 0.5;

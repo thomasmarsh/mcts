@@ -5,7 +5,7 @@
 
     az-train --positions gen_0/a.bin,gen_0/b.bin --out weights/gen_1.bin
 
-Fits a value head only (no policy head) by least-squares.
+Fits Connect Four value and policy sidecars from self-play dumps.
 
 ``--game ttt`` (the default) reads tic-tac-toe dumps (``az_train.records``)
 and fits either the n-tuple head (``--head ntuple``, 541 weights,
@@ -37,6 +37,9 @@ from az_train.ntuple import write_weights as write_ntuple
 from az_train.ntuple_c4 import fit_value_head_with_diagnostics as fit_ntuple_c4_with_diagnostics
 from az_train.ntuple_c4 import predict as predict_ntuple_c4
 from az_train.ntuple_c4 import write_weights as write_ntuple_c4
+from az_train.policy_c4 import POLICY_WEIGHTS
+from az_train.policy_c4 import fit as fit_policy_c4
+from az_train.policy_c4 import write_weights as write_policy_c4
 from az_train.records import Positions, load_positions
 from az_train.records_c4 import Positions as PositionsC4
 from az_train.records_c4 import encode_records as encode_records_c4
@@ -99,10 +102,11 @@ def value_metrics(
     nonzero = value != 0.0
     return {
         "mse": float(np.mean((prediction - value) ** 2)),
-        "zero_mse": float(np.mean(value ** 2)),
+        "zero_mse": float(np.mean(value**2)),
         "pearson": _pearson(prediction, value),
         "sign_agreement": float(np.mean(np.sign(prediction[nonzero]) == np.sign(value[nonzero])))
-        if np.any(nonzero) else 0.0,
+        if np.any(nonzero)
+        else 0.0,
         "mean_absolute_prediction": float(np.mean(np.abs(prediction))),
         "fraction_abs_prediction_gt_0_95": float(np.mean(np.abs(prediction) > 0.95)),
         "labels": {
@@ -115,9 +119,13 @@ def value_metrics(
 
 
 def _fit_c4(
-    paths: list[str], head: str, l2: float | None, validation_fraction: float,
-    split_seed: int, value_target: str,
-) -> tuple[np.ndarray, dict[str, Any], PositionsC4]:
+    paths: list[str],
+    head: str,
+    l2: float | None,
+    validation_fraction: float,
+    split_seed: int,
+    value_target: str,
+) -> tuple[np.ndarray, dict[str, Any], PositionsC4, PositionsC4]:
     if head != "ntuple":
         raise SystemExit(f"--game connect4 only supports --head ntuple (got {head})")
     pos = _concat_c4([load_positions_c4(p) for p in paths])
@@ -139,7 +147,7 @@ def _fit_c4(
         "validation_games": validation_games,
         **fit_diagnostics,
     }
-    return w, metrics, validation
+    return w, metrics, train, validation
 
 
 def train_cli(argv: list[str] | None = None) -> None:
@@ -148,26 +156,41 @@ def train_cli(argv: list[str] | None = None) -> None:
     ap.add_argument("--out", required=True, help="output weights.bin path")
     ap.add_argument("--game", choices=("ttt", "connect4"), default="ttt")
     ap.add_argument("--head", choices=("linear", "ntuple"), default="ntuple")
-    ap.add_argument("--l2", type=float, default=None,
-                    help="ridge penalty (default: the head's own default)")
-    ap.add_argument("--validation-fraction", type=float, default=0.2,
-                    help="whole-game validation fraction (default: 0.2)")
-    ap.add_argument("--split-seed", type=int, default=0,
-                    help="seed for deterministic whole-game split (default: 0)")
-    ap.add_argument("--validation-records-out",
-                    help="write the exact held-out Connect Four games here")
-    ap.add_argument("--value-target", choices=("direct", "atanh"),
-                    help="Connect Four pre-tanh target (default: direct)")
+    ap.add_argument(
+        "--l2", type=float, default=None, help="ridge penalty (default: the head's own default)"
+    )
+    ap.add_argument(
+        "--validation-fraction",
+        type=float,
+        default=0.2,
+        help="whole-game validation fraction (default: 0.2)",
+    )
+    ap.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="seed for deterministic whole-game split (default: 0)",
+    )
+    ap.add_argument(
+        "--validation-records-out", help="write the exact held-out Connect Four games here"
+    )
+    ap.add_argument("--policy-out", help="Connect Four policy.bin output (defaults beside --out)")
+    ap.add_argument(
+        "--value-target",
+        choices=("direct", "atanh"),
+        help="Connect Four pre-tanh target (default: direct)",
+    )
     args = ap.parse_args(argv)
 
     paths = [p.strip() for p in args.positions.split(",") if p.strip()]
     validation: PositionsC4 | None = None
+    train: PositionsC4 | None = None
     value_target: str | None = None
     c4_metrics: dict[str, Any] | None = None
     if args.game == "connect4":
         c4_value_target = args.value_target or "direct"
         value_target = c4_value_target
-        w, c4_metrics, validation = _fit_c4(
+        w, c4_metrics, train, validation = _fit_c4(
             paths, args.head, args.l2, args.validation_fraction, args.split_seed, c4_value_target
         )
         n_pos = int(c4_metrics["train"]["positions"]) + int(c4_metrics["validation"]["positions"])
@@ -185,10 +208,30 @@ def train_cli(argv: list[str] | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     write_weights(str(out), w)
     if args.game == "connect4" and args.validation_records_out:
-        assert validation is not None
+        assert train is not None and validation is not None
         validation_path = Path(args.validation_records_out)
         validation_path.parent.mkdir(parents=True, exist_ok=True)
         validation_path.write_bytes(encode_records_c4(validation))
+    policy_path: Path | None = None
+    policy_metrics: dict[str, Any] | None = None
+    policy_w: np.ndarray | None = None
+    if args.game == "connect4":
+        assert train is not None and validation is not None
+        policy_path = Path(args.policy_out) if args.policy_out else out.with_suffix(".policy.bin")
+        policy_path.parent.mkdir(parents=True, exist_ok=True)
+        has_train_targets = all(entries for entries in train.policy)
+        has_validation_targets = all(entries for entries in validation.policy)
+        if has_train_targets and has_validation_targets:
+            policy_w, policy_metrics = fit_policy_c4(
+                *me_opp_planes_c4(train),
+                train.policy,
+                (*me_opp_planes_c4(validation), validation.policy),
+                seed=args.split_seed,
+            )
+        else:
+            policy_w = np.zeros(POLICY_WEIGHTS, dtype=np.float32)
+            policy_metrics = {"status": "no_policy_targets"}
+        write_policy_c4(str(policy_path), policy_w)
     meta = {
         "game": args.game,
         "head": args.head,
@@ -200,12 +243,17 @@ def train_cli(argv: list[str] | None = None) -> None:
     }
     if args.game == "connect4":
         assert value_target is not None and c4_metrics is not None
-        meta.update({
-            "value_target": value_target,
-            "validation_fraction": args.validation_fraction,
-            "split_seed": args.split_seed,
-            "metrics": c4_metrics,
-        })
+        meta.update(
+            {
+                "value_target": value_target,
+                "validation_fraction": args.validation_fraction,
+                "split_seed": args.split_seed,
+                "metrics": c4_metrics,
+                "policy_out": str(policy_path),
+                "policy_n_weights": int(policy_w.shape[0]) if policy_w is not None else 0,
+                "policy_metrics": policy_metrics,
+            }
+        )
     out.with_suffix(out.suffix + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     print(f"wrote {out} ({w.shape[0]} f32)  train_mse={mse:.4f}", flush=True)
 

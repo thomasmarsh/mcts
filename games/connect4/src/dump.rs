@@ -29,11 +29,10 @@
 //! `ply` is the disc count. `value` is the final game result **from the
 //! side-to-move player's perspective**: `+1.0` win, `-1.0` loss, `0.0`
 //! draw. The policy tail is the improved-policy training target -- pairs of
-//! `(column_index, probability)` from a Gumbel Sequential-Halving visit
-//! distribution -- and is empty for `--label outcome` dumps, which record
+//! `(column_index, probability)` from completed-Q policy improvement -- and is empty for `--label outcome` dumps, which record
 //! positions from uniform-random self-play with no search-derived policy.
 //! `--label gumbel` runs Gumbel self-play with the n-tuple value head
-//! (`--weights`), recording the Sequential-Halving visit distribution as
+//! (`--value-weights` / `--policy-weights`), recording completed-Q improvement as
 //! the policy target.
 //!
 //! v2 records are variable-width, so a reader must walk them sequentially
@@ -52,7 +51,7 @@ use crate::selfplay::GumbelPlayer;
 use crate::valuenet::NTupleValueNet;
 use crate::{BitBoard, Move, Player, Standard, State};
 
-/// Draw one move from a Sequential-Halving visit distribution (probabilities
+/// Draw one move from a policy distribution (probabilities
 /// summing to 1), falling back to the first entry on a rounding shortfall.
 fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
     let r: f32 = rng.gen_range(0.0..1.0);
@@ -222,7 +221,8 @@ struct Config {
     label: String,
     /// `--label gumbel` only: value-head weights (`az-train` output). Absent
     /// == the all-zero generation-0 net.
-    weights: Option<PathBuf>,
+    value_weights: Option<PathBuf>,
+    policy_weights: Option<PathBuf>,
     /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
     sims: u32,
     max_considered: usize,
@@ -239,7 +239,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut games = 1000u64;
     let mut seed = 0u64;
     let mut label = "outcome".to_string();
-    let mut weights = None;
+    let mut value_weights = None;
+    let mut policy_weights = None;
     let mut sims = 32u32;
     let mut max_considered = 8usize;
     let mut temp_moves = 6u8;
@@ -250,7 +251,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--games" => games = val().parse().expect("--games must be an integer"),
             "--seed" => seed = val().parse().expect("--seed must be an integer"),
             "--label" => label = val(),
-            "--weights" => weights = Some(PathBuf::from(val())),
+            "--weights" | "--value-weights" => {
+                let path = PathBuf::from(val());
+                assert!(value_weights.replace(path).is_none(), "conflicting value-weight flags");
+            }
+            "--policy-weights" => policy_weights = Some(PathBuf::from(val())),
             "--sims" => sims = val().parse().expect("--sims must be an integer"),
             "--max-considered" => {
                 max_considered = val().parse().expect("--max-considered must be an integer")
@@ -259,7 +264,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
-                     [--label outcome|gumbel] [--weights <weights.bin>] [--sims N] \
+                     [--label outcome|gumbel] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
                      [--max-considered N] [--temp-moves N]"
                 );
                 std::process::exit(0);
@@ -278,7 +283,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         games,
         seed,
         label,
-        weights,
+        value_weights,
+        policy_weights,
         sims,
         max_considered,
         temp_moves,
@@ -286,13 +292,18 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
 }
 
 /// Play `cfg.games` Gumbel self-play games, pushing a [`Record`] with the
-/// Sequential-Halving visit distribution as its policy tail for every
+/// completed-Q improved policy as its policy tail for every
 /// non-terminal position.
 fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
-    let net = match &cfg.weights {
+    let net = match &cfg.value_weights {
         Some(p) => NTupleValueNet::load(p)
             .unwrap_or_else(|e| panic!("cannot load weights {}: {e}", p.display())),
         None => NTupleValueNet::default(),
+    };
+    let policy = match &cfg.policy_weights {
+        Some(p) => crate::policynet::NTuplePolicyNet::load(p)
+            .unwrap_or_else(|e| panic!("cannot load policy weights {}: {e}", p.display())),
+        None => crate::policynet::NTuplePolicyNet::default(),
     };
     let gcfg = GumbelConfig {
         sims: cfg.sims,
@@ -302,7 +313,7 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
 
     for g in 0..cfg.games {
         let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
-        let mut player = GumbelPlayer::new(net.clone(), gcfg, game_seed);
+        let mut player = GumbelPlayer::with_policy(net.clone(), policy.clone(), gcfg, game_seed);
         let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
 
         let mut state = State::<6, 7>::default();
@@ -311,13 +322,13 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
         while !Standard::is_terminal(&state) {
             let outcome = player.choose(&state);
             let policy: Vec<(u8, f32)> = outcome
-                .visit_distribution
+                .improved_policy
                 .iter()
                 .map(|(m, p)| (m.0, *p))
                 .collect();
             records.push(record_for(&state, policy));
             let action = if ply < cfg.temp_moves {
-                sample_visit_distribution(&outcome.visit_distribution, &mut move_rng)
+                sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
             } else {
                 outcome.action
             };
@@ -401,7 +412,8 @@ mod tests {
             games: 2,
             seed: 3,
             label: "gumbel".to_string(),
-            weights: None,
+            value_weights: None,
+            policy_weights: None,
             sims: 8,
             max_considered: 4,
             temp_moves: 6,
