@@ -91,6 +91,18 @@ def _group_l2(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _gradient_conflict_metrics(value_gradient: np.ndarray, policy_gradient: np.ndarray) -> dict[str, float]:
+    """Return finite shared-gradient norms and cosine, using zero for a zero norm."""
+    value_l2 = float(np.linalg.norm(value_gradient, ord=2))
+    policy_l2 = float(np.linalg.norm(policy_gradient, ord=2))
+    denominator = value_l2 * policy_l2
+    return {
+        "value_gradient_l2": value_l2,
+        "policy_gradient_l2": policy_l2,
+        "cosine_similarity": float(np.dot(value_gradient, policy_gradient) / denominator) if denominator else 0.0,
+    }
+
+
 def _conv(x: np.ndarray, w: np.ndarray, b: np.ndarray, padding: int) -> np.ndarray:
     n, _, rows, cols = x.shape
     out = np.broadcast_to(b, (n, w.shape[0])).copy()[:, :, None, None]
@@ -217,9 +229,10 @@ def _conv_backward(
     return dx, dw, grad.sum(axis=(0, 2, 3))
 
 
-def _literal_loss_gradient(
+def _literal_loss_gradient_terms(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray, l2: float,
+    *, value_weight: float, policy_weight: float, include_regularization: bool,
 ) -> tuple[float, np.ndarray]:
     """Value MSE plus legal-column policy cross entropy and its dense gradient."""
     p = _unpack(weights)
@@ -249,7 +262,7 @@ def _literal_loss_gradient(
     policy_loss = -np.mean(np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1))
     gradient = np.zeros_like(weights)
     gp = _unpack(gradient)
-    dv = (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
+    dv = value_weight * (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
     gp[value_at + 4][:] = value_hidden.T @ dv
     gp[value_at + 5][0] = dv.sum()
     d_hidden = (dv[:, None] * p[value_at + 4]) * (value_hidden_z > 0.0)
@@ -260,7 +273,7 @@ def _literal_loss_gradient(
     dx_value, d_value_weight, d_value_bias = _conv_backward(x, p[value_at], d_z_value, 0)
     gp[value_at][:] = d_value_weight
     gp[value_at + 1][:] = d_value_bias
-    dp = (probability - policy) / n
+    dp = policy_weight * (probability - policy) / n
     gp[at + 2][:] = policy_features.T @ dp
     gp[at + 3][:] = dp.sum(axis=0)
     d_policy_features = dp @ p[at + 2].T
@@ -287,9 +300,41 @@ def _literal_loss_gradient(
     gp[1][:] = d_stem_bias
     regularized = [0, 2, 4, 6, 8, value_at, value_at + 2, value_at + 4, at, at + 2]
     reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
-    for i in regularized:
-        gp[i][:] += 2.0 * l2 * p[i]
-    return float(value_loss + policy_loss + l2 * reg), gradient
+    if include_regularization:
+        for i in regularized:
+            gp[i][:] += 2.0 * l2 * p[i]
+    return float(value_weight * value_loss + policy_weight * policy_loss + (l2 * reg if include_regularization else 0.0)), gradient
+
+
+def _literal_loss_gradient(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray, legal: np.ndarray, l2: float,
+) -> tuple[float, np.ndarray]:
+    """Value MSE plus legal-column policy cross entropy and its dense gradient."""
+    return _literal_loss_gradient_terms(
+        weights, me, opp, value, policy, legal, l2,
+        value_weight=1.0, policy_weight=1.0, include_regularization=True,
+    )
+
+
+def _head_gradient_components(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray, legal: np.ndarray, l2: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Separate value, policy, and regularization gradients without changing fitting."""
+    _, value_gradient = _literal_loss_gradient_terms(
+        weights, me, opp, value, policy, legal, l2,
+        value_weight=1.0, policy_weight=0.0, include_regularization=False,
+    )
+    _, policy_gradient = _literal_loss_gradient_terms(
+        weights, me, opp, value, policy, legal, l2,
+        value_weight=0.0, policy_weight=1.0, include_regularization=False,
+    )
+    _, regularization_gradient = _literal_loss_gradient_terms(
+        weights, me, opp, value, policy, legal, l2,
+        value_weight=0.0, policy_weight=0.0, include_regularization=True,
+    )
+    return value_gradient, policy_gradient, regularization_gradient
 
 
 def fit_value_policy_with_diagnostics(
@@ -309,6 +354,7 @@ def fit_value_policy_with_diagnostics(
     moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
     beta1, beta2, step = 0.9, 0.999, 0
     first_batch_gradient_l2: dict[str, float] | None = None
+    first_batch_head_gradient_conflict: dict[str, dict[str, float]] | None = None
     started = time.perf_counter()
     for _ in range(epochs):
         for start in range(0, len(me), batch_size):
@@ -316,6 +362,16 @@ def fit_value_policy_with_diagnostics(
             _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
             if first_batch_gradient_l2 is None:
                 first_batch_gradient_l2 = _group_l2(gradient)
+                value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
+                    weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
+                )
+                if not np.allclose(value_gradient + policy_gradient + regularization_gradient, gradient, rtol=0.0, atol=1e-8):
+                    raise AssertionError("loss-gradient decomposition changed the joint gradient")
+                first_batch_head_gradient_conflict = {
+                    name: _gradient_conflict_metrics(value_gradient[start:end], policy_gradient[start:end])
+                    for name, (start, end) in _parameter_groups().items()
+                    if name in {"stem", "residual_block_1", "residual_block_2"}
+                }
             step += 1; moment = beta1 * moment + (1.0 - beta1) * gradient; velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
             weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
     vm, vo, vv, vp, vl = validation
@@ -325,6 +381,7 @@ def fit_value_policy_with_diagnostics(
     train_value_mse, train_policy_ce = metrics(me, opp, value, policy, legal)
     validation_value_mse, validation_policy_ce = metrics(vm, vo, vv, vp, vl)
     assert first_batch_gradient_l2 is not None
+    assert first_batch_head_gradient_conflict is not None
     parameter_groups = {
         name: {
             "first_batch_gradient_l2": first_batch_gradient_l2[name],
@@ -332,7 +389,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - initial_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

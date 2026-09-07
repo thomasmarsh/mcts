@@ -1,12 +1,15 @@
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false
 # ruff: noqa: E501
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
 
 from az_train.convnet_c4 import (
     N_WEIGHTS,
+    _gradient_conflict_metrics,
+    _head_gradient_components,
     _literal_loss_gradient,
     _unpack,
     fit_value_policy_with_diagnostics,
@@ -171,6 +174,50 @@ def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
             assert np.isfinite(measurement) and measurement >= 0.0
     assert telemetry["stem"]["first_batch_gradient_l2"] > 0.0
     assert telemetry["stem"]["initial_to_final_delta_l2"] > 0.0
+
+
+def test_head_gradient_components_sum_to_existing_joint_gradient() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    weights = (np.random.default_rng(71).standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    _, joint = _literal_loss_gradient(weights, me, opp, value, policy, legal, 1e-4)
+    value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
+        weights, me, opp, value, policy, legal, 1e-4,
+    )
+    assert np.allclose(value_gradient + policy_gradient + regularization_gradient, joint, rtol=0.0, atol=1e-8)
+
+
+def test_head_gradient_conflict_metrics_are_finite_repeatable_and_neutral_at_zero() -> None:
+    value_gradient = np.array([3.0, 4.0], dtype=np.float32)
+    policy_gradient = np.array([4.0, -3.0], dtype=np.float32)
+    first = _gradient_conflict_metrics(value_gradient, policy_gradient)
+    assert first == _gradient_conflict_metrics(value_gradient, policy_gradient)
+    assert all(np.isfinite(measurement) for measurement in first.values())
+    assert first == {"value_gradient_l2": 5.0, "policy_gradient_l2": 5.0, "cosine_similarity": 0.0}
+    assert _gradient_conflict_metrics(np.zeros(2, dtype=np.float32), policy_gradient)["cosine_similarity"] == 0.0
+
+
+def test_head_gradient_conflict_metrics_distinguish_aligned_and_opposing_vectors() -> None:
+    value_gradient = np.array([2.0, -1.0], dtype=np.float32)
+    aligned = _gradient_conflict_metrics(value_gradient, 3.0 * value_gradient)
+    opposing = _gradient_conflict_metrics(value_gradient, -3.0 * value_gradient)
+    assert np.isclose(aligned["cosine_similarity"], 1.0)
+    assert np.isclose(opposing["cosine_similarity"], -1.0)
+
+
+def test_fit_reports_repeatable_shared_head_gradient_conflict() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    _, first = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    _, second = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    telemetry = cast(dict[str, dict[str, float]], first["first_batch_shared_head_gradient_conflict"])
+    assert telemetry == cast(dict[str, dict[str, float]], second["first_batch_shared_head_gradient_conflict"])
+    assert set(telemetry) == {"stem", "residual_block_1", "residual_block_2"}
+    assert all(np.isfinite(measurement) for group in telemetry.values() for measurement in group.values())
 
 
 def test_orientation_diagnostics_are_finite_repeatable_and_distinguish_averaging() -> None:
