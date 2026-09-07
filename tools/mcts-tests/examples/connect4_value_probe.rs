@@ -5,7 +5,7 @@
 
 use std::{env, process::ExitCode};
 
-use game_connect4::valuenet::NTupleValueNet;
+use game_connect4::{convnet::CnnValuePolicyNet, valuenet::NTupleValueNet};
 use game_connect4::{
     dump::Record,
     reference_diagnostic::{decode as decode_reference, metrics, ReferenceLabel, Split},
@@ -18,6 +18,25 @@ struct Sample {
     state: State<6, 7>,
     ply: u8,
     value: f64,
+}
+
+enum DiagnosticNet {
+    NTuple(NTupleValueNet),
+    Cnn(CnnValuePolicyNet),
+}
+
+impl DiagnosticNet {
+    fn load(path: &str) -> std::io::Result<Self> {
+        CnnValuePolicyNet::load(path)
+            .map(Self::Cnn)
+            .or_else(|_| NTupleValueNet::load(path).map(Self::NTuple))
+    }
+    fn value(&self, state: &State<6, 7>) -> f32 {
+        match self {
+            Self::NTuple(net) => net.value(state),
+            Self::Cnn(net) => net.value(state),
+        }
+    }
 }
 
 fn correlation(x: &[f64], y: &[f64]) -> f64 {
@@ -68,7 +87,7 @@ fn report(label: &str, prediction: &[f64], value: &[f64]) {
 fn reference_report(
     name: &str,
     rows: &[game_connect4::reference_diagnostic::DiagnosticRecord],
-    net: Option<&NTupleValueNet>,
+    net: Option<&DiagnosticNet>,
 ) {
     for split in [Split::Train, Split::Validation] {
         for proof in ["all", "exact", "bounded"] {
@@ -181,7 +200,7 @@ fn reference_main(args: &[String]) -> ExitCode {
     for path in &args[2..] {
         match std::fs::read(path)
             .ok()
-            .zip(NTupleValueNet::load(path).ok())
+            .zip(DiagnosticNet::load(path).ok())
         {
             Some((bytes, net)) => {
                 let name = format!("{path} sha256={:x}", sha2::Sha256::digest(&bytes));

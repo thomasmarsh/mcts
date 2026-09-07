@@ -32,6 +32,7 @@
 pub mod dump;
 mod heuristic;
 pub mod policynet;
+pub mod convnet;
 pub mod reference_diagnostic;
 pub mod selfplay;
 pub mod valuenet;
