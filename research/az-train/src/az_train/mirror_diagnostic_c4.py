@@ -52,6 +52,8 @@ class ReferenceCorpus:
     split: np.ndarray  # (N,) uint8, 0 = train, 1 = validation
     label_sign: np.ndarray  # (N,) float32, proven value, NaN when unresolved
     exact: np.ndarray  # (N,) bool
+    group: np.ndarray  # (N,) uint32, frozen source-game group id
+    source_outcome: np.ndarray  # (N,) float32, source-game outcome, side-to-move perspective
 
 
 def read_reference_corpus(path: str | Path) -> ReferenceCorpus:
@@ -65,10 +67,10 @@ def read_reference_corpus(path: str | Path) -> ReferenceCorpus:
     if len(raw) != _REF_HEADER_BYTES + count * _REF_RECORD_BYTES:
         raise ValueError(f"{path}: length does not match {count} records")
     black, white, side, ply, split = [], [], [], [], []
-    label_sign, exact = [], []
+    label_sign, exact, group, source_outcome = [], [], [], []
     for i in range(count):
         off = _REF_HEADER_BYTES + i * _REF_RECORD_BYTES
-        b, w, s, p, _group, sp, label, _pd, _md, _outcome = _REF_RECORD.unpack_from(raw, off)
+        b, w, s, p, grp, sp, label, _pd, _md, outcome = _REF_RECORD.unpack_from(raw, off)
         if sp > 1 or label > 5:
             raise ValueError(f"{path}: record {i} has an invalid split or label")
         black.append(b)
@@ -78,6 +80,8 @@ def read_reference_corpus(path: str | Path) -> ReferenceCorpus:
         split.append(sp)
         label_sign.append(_LABEL_SIGN[label])
         exact.append(_LABEL_EXACT[label])
+        group.append(grp)
+        source_outcome.append(outcome)
     positions = Positions(
         black=np.asarray(black, dtype=np.uint64),
         white=np.asarray(white, dtype=np.uint64),
@@ -91,6 +95,8 @@ def read_reference_corpus(path: str | Path) -> ReferenceCorpus:
         split=np.asarray(split, dtype=np.uint8),
         label_sign=np.asarray(label_sign, dtype=np.float32),
         exact=np.asarray(exact, dtype=bool),
+        group=np.asarray(group, dtype=np.uint32),
+        source_outcome=np.asarray(source_outcome, dtype=np.float32),
     )
 
 
