@@ -41,6 +41,10 @@ def _count() -> int:
 
 
 N_WEIGHTS = _count()
+# `_unpack` stores the trainable tensors in architectural order.  The final
+# value projection is intentionally excluded: it is a one-dimensional weight
+# vector, not a bias.
+_BIAS_PARAMETER_INDICES = (1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
 
 
 def _unpack(w: np.ndarray) -> list[np.ndarray]:
@@ -70,6 +74,16 @@ def _unpack(w: np.ndarray) -> list[np.ndarray]:
     )
     assert at == N_WEIGHTS
     return out
+
+
+def initial_weights(seed: int) -> np.ndarray:
+    """Return the deterministic initializer with constants only on actual biases."""
+    rng = np.random.default_rng(seed)
+    weights = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    parameters = _unpack(weights)
+    for index in _BIAS_PARAMETER_INDICES:
+        parameters[index].fill(0.05)
+    return weights
 
 
 def _parameter_groups() -> dict[str, tuple[int, int]]:
@@ -431,11 +445,8 @@ def fit_value_policy_with_diagnostics(
     if not len(me) or not np.all(legal.any(axis=1)):
         raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
     rng = np.random.default_rng(seed)
-    weights = (rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
-    for tensor in _unpack(weights):
-        if tensor.ndim == 1:
-            tensor.fill(0.05)
-    initial_weights = weights.copy()
+    weights = initial_weights(seed)
+    starting_weights = weights.copy()
     moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
     beta1, beta2, step = 0.9, 0.999, 0
     first_batch_gradient_l2: dict[str, float] | None = None
@@ -492,7 +503,7 @@ def fit_value_policy_with_diagnostics(
             "first_batch_gradient_l2": first_batch_gradient_l2[name],
             "initial_to_final_delta_l2": delta,
         }
-        for name, delta in _group_l2(weights - initial_weights).items()
+        for name, delta in _group_l2(weights - starting_weights).items()
     }
     return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 

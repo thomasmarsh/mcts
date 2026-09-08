@@ -1,3 +1,4 @@
+# pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """Deterministic small-set fitability controls for Connect Four replay."""
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import numpy as np
 from az_train.convnet_c4 import (
     _literal_loss_gradient,
     fit_value_policy_with_diagnostics,
+    initial_weights,
     predict,
     write_weights,
 )
@@ -111,12 +113,7 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed, epochs=args.epochs,
     )
     prediction, logits = predict(weights, me, opp)
-    initial_rng = np.random.default_rng(args.seed)
-    initial = (initial_rng.standard_normal(len(weights)) * 0.03).astype(np.float32)
-    from az_train.convnet_c4 import _unpack
-    for tensor in _unpack(initial):
-        if tensor.ndim == 1:
-            tensor.fill(0.05)
+    initial = initial_weights(args.seed)
     initial_loss, _ = _literal_loss_gradient(initial, me, opp, value, policy, legal, 1e-4)
     final_loss, _ = _literal_loss_gradient(weights, me, opp, value, policy, legal, 1e-4)
     output = Path(args.out_dir)
