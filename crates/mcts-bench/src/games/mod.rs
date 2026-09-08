@@ -127,8 +127,13 @@ pub fn tuner_target_binary(kind: &str) -> Option<&'static str> {
 /// doesn't implement `tuner()` (`tune describe` exits 1 with "tuning not
 /// supported" on stderr, per `game_host::run_cli_with`) -- not an error.
 fn tune_describe_one(binary_path: &Path) -> Result<Option<TunerInfo>, String> {
-    let output = Command::new(binary_path)
-        .args(["tune", "describe"])
+    let mut command = Command::new(binary_path);
+    command.args(["tune", "describe"]);
+    tune_describe_command(&mut command)
+}
+
+fn tune_describe_command(command: &mut Command) -> Result<Option<TunerInfo>, String> {
+    let output = command
         .output()
         .map_err(|e| format!("failed to spawn: {e}"))?;
 
@@ -416,63 +421,38 @@ fn exe_name_for(pkg_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static FIXTURE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// Write a throwaway shell script standing in for a `game-*` binary's
-    /// `tune describe` response, so `tune_describe_one`'s exit-code/JSON
-    /// dispatch can be tested without a real, built game binary -- the
-    /// thing that makes `describe_tuners()` itself impractical to exercise
-    /// from a `cargo test` in this crate (`find_game_binary` looks next to
-    /// `current_exe()`, which is a `target/*/deps/` test binary, not the
-    /// `target/*/` dir the real `game-*` binaries land in). Returned path
-    /// lives directly under the OS temp dir with a unique name -- the
-    /// script itself is small enough not to warrant directory cleanup.
-    fn fake_binary(body: &str) -> PathBuf {
-        let n = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("mcts_bench_fake_game_{}_{n}", std::process::id()));
-        let mut f = std::fs::File::create(&path).unwrap();
-        writeln!(f, "#!/bin/sh\n{body}").unwrap();
-        drop(f);
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        path
+    fn fake_tune_command(body: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", body]);
+        command
     }
 
     #[test]
     fn tune_describe_one_parses_tuner_info_on_success() {
         let json = r#"{"id":"rave","baselines":["strong"],"eval_rounds":20,"parameters":[],"conditions":[],"game_config":{}}"#;
-        let path = fake_binary(&format!("echo '{json}'; exit 0"));
+        let mut command = fake_tune_command(&format!("echo '{json}'; exit 0"));
 
-        let info = tune_describe_one(&path).unwrap().unwrap();
+        let info = tune_describe_command(&mut command).unwrap().unwrap();
         assert_eq!(info.id, "rave");
         assert_eq!(info.baselines, vec!["strong".to_string()]);
         assert_eq!(info.eval_rounds, 20);
-
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn tune_describe_one_returns_none_when_tuning_unsupported() {
         // Mirrors `game_host::run_cli_with`'s `tune describe` arm for a
         // game whose `tuner()` returns `None`: stderr message, exit 1.
-        let path = fake_binary("echo 'tuning not supported' >&2; exit 1");
+        let mut command = fake_tune_command("echo 'tuning not supported' >&2; exit 1");
 
-        assert!(tune_describe_one(&path).unwrap().is_none());
-
-        let _ = std::fs::remove_file(&path);
+        assert!(tune_describe_command(&mut command).unwrap().is_none());
     }
 
     #[test]
     fn tune_describe_one_errors_on_unparseable_output() {
-        let path = fake_binary("echo 'not json'; exit 0");
+        let mut command = fake_tune_command("echo 'not json'; exit 0");
 
-        assert!(tune_describe_one(&path).is_err());
-
-        let _ = std::fs::remove_file(&path);
+        assert!(tune_describe_command(&mut command).is_err());
     }
 
     #[test]
