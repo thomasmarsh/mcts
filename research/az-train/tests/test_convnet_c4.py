@@ -8,6 +8,7 @@ import pytest
 
 from az_train.convnet_c4 import (
     N_WEIGHTS,
+    _activation_health,
     _aggregate_gradient_conflict,
     _epoch_batches,
     _gradient_conflict_metrics,
@@ -308,6 +309,46 @@ def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
             assert np.isfinite(measurement) and measurement >= 0.0
     assert telemetry["stem"]["first_batch_gradient_l2"] > 0.0
     assert telemetry["stem"]["initial_to_final_delta_l2"] > 0.0
+
+
+def test_first_batch_activation_health_is_finite_and_repeatable() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    _, first = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    _, second = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=2, learning_rate=5e-3,
+    )
+    health = cast(dict[str, float], first["first_batch_activation_health"])
+    assert health == cast(dict[str, float], second["first_batch_activation_health"])
+    assert set(health) == {
+        "stem_relu_active_fraction",
+        "residual_block_1_output_relu_active_fraction",
+        "residual_block_2_output_relu_active_fraction",
+        "value_1x1_relu_active_fraction",
+        "value_hidden_relu_active_fraction",
+        "policy_1x1_relu_active_fraction",
+        "value_score_standard_deviation",
+        "value_prediction_standard_deviation",
+    }
+    assert all(np.isfinite(measurement) for measurement in health.values())
+
+
+def test_activation_health_distinguishes_dead_and_active_relu_paths() -> None:
+    me, opp, _, _, _ = _non_symmetric_batch()
+    dead = _activation_health(np.zeros(N_WEIGHTS, dtype=np.float32), me, opp)
+    active_weights = np.zeros(N_WEIGHTS, dtype=np.float32)
+    parameters = _unpack(active_weights)
+    for index in (1, 3, 5, 7, 9, 11, 13, 17):
+        parameters[index].fill(1.0)
+    active = _activation_health(active_weights, me, opp)
+    active_fractions = [name for name in active if name.endswith("relu_active_fraction")]
+    assert all(dead[name] == 0.0 for name in active_fractions)
+    assert all(active[name] == 1.0 for name in active_fractions)
+    assert dead["value_score_standard_deviation"] == 0.0
+    assert active["value_prediction_standard_deviation"] == 0.0
 
 
 def test_head_gradient_components_sum_to_existing_joint_gradient() -> None:
