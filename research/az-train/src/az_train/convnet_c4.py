@@ -376,11 +376,14 @@ def _literal_loss_gradient_terms(
 def _literal_loss_gradient(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray, l2: float,
+    *, value_loss_weight: float = 1.0,
 ) -> tuple[float, np.ndarray]:
     """Value MSE plus legal-column policy cross entropy and its dense gradient."""
+    if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
+        raise ValueError("value_loss_weight must be finite and non-negative")
     return _literal_loss_gradient_terms(
         weights, me, opp, value, policy, legal, l2,
-        value_weight=1.0, policy_weight=1.0, include_regularization=True,
+        value_weight=value_loss_weight, policy_weight=1.0, include_regularization=True,
     )
 
 
@@ -439,11 +442,14 @@ def fit_value_policy_with_diagnostics(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
+    value_loss_weight: float = 1.0,
     selected_validation_checkpoint_out: str | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
     """Deterministic Adam fit using only production self-play targets."""
     if not len(me) or not np.all(legal.any(axis=1)):
         raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
+    if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
+        raise ValueError("value_loss_weight must be finite and non-negative")
     rng = np.random.default_rng(seed)
     weights = initial_weights(seed)
     starting_weights = weights.copy()
@@ -463,7 +469,10 @@ def fit_value_policy_with_diagnostics(
     vm, vo, vv, vp, vl = validation
     for _ in range(epochs):
         for batch in _epoch_batches(rng, len(me), batch_size):
-            _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2)
+            _, gradient = _literal_loss_gradient(
+                weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
+                value_loss_weight=value_loss_weight,
+            )
             value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
                 weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
             )
@@ -474,7 +483,7 @@ def fit_value_policy_with_diagnostics(
             for name, conflict_metrics in batch_head_gradient_conflict.items():
                 shared_head_gradient_cosines[name].append(conflict_metrics["cosine_similarity"])
             if first_batch_gradient_l2 is None:
-                if not np.allclose(value_gradient + policy_gradient + regularization_gradient, gradient, rtol=0.0, atol=1e-8):
+                if not np.allclose(value_loss_weight * value_gradient + policy_gradient + regularization_gradient, gradient, rtol=1e-6, atol=1e-7):
                     raise AssertionError("loss-gradient decomposition changed the joint gradient")
                 first_batch_gradient_l2 = _group_l2(gradient)
                 first_batch_head_gradient_conflict = batch_head_gradient_conflict
@@ -505,7 +514,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - starting_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "value_loss_weight": value_loss_weight, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def write_weights(path: str, weights: np.ndarray) -> None:

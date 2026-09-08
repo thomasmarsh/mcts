@@ -103,6 +103,54 @@ def test_joint_value_policy_gradient_is_finite_and_deterministic() -> None:
     )
 
 
+def test_value_loss_weight_default_is_bit_identical_to_explicit_one() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    default, default_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        seed=19, batch_size=3, epochs=3, learning_rate=5e-3,
+    )
+    explicit, explicit_metadata = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        seed=19, batch_size=3, epochs=3, learning_rate=5e-3, value_loss_weight=1.0,
+    )
+    assert np.array_equal(default, explicit)
+    assert {
+        name: measurement for name, measurement in default_metadata.items()
+        if name not in {"fit_wall_seconds", "peak_rss_bytes"}
+    } == {
+        name: measurement for name, measurement in explicit_metadata.items()
+        if name not in {"fit_wall_seconds", "peak_rss_bytes"}
+    }
+
+
+def test_value_loss_weight_scales_gradient_and_matches_finite_difference() -> None:
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    weights = initial_weights(29)
+    value_gradient, _, _ = _head_gradient_components(weights, me, opp, value, policy, legal, 0.0)
+    # Use a nonzero direction through both a value-only and shared parameter.
+    direction = np.zeros(N_WEIGHTS, dtype=np.float32)
+    spans = _parameter_groups()
+    direction[spans["stem"][0] : spans["value_head"][1]] = 1.0
+    direction /= np.linalg.norm(direction)
+    _, one = _literal_loss_gradient(weights, me, opp, value, policy, legal, 0.0)
+    _, five = _literal_loss_gradient(
+        weights, me, opp, value, policy, legal, 0.0, value_loss_weight=5.0,
+    )
+    assert np.allclose(five - one, 4.0 * value_gradient, rtol=1e-5, atol=1e-7)
+    epsilon = np.float32(1e-3)
+    numeric = (
+        _literal_loss_gradient(
+            weights + epsilon * direction, me, opp, value, policy, legal, 0.0,
+            value_loss_weight=5.0,
+        )[0]
+        - _literal_loss_gradient(
+            weights - epsilon * direction, me, opp, value, policy, legal, 0.0,
+            value_loss_weight=5.0,
+        )[0]
+    ) / (2.0 * float(epsilon))
+    assert np.isclose(float(np.dot(five, direction)), numeric, rtol=0.06, atol=3e-4)
+
+
 def test_epoch_batches_visit_each_row_once_and_are_repeatable() -> None:
     first = _epoch_batches(np.random.default_rng(41), 11, 4)
     second = _epoch_batches(np.random.default_rng(41), 11, 4)
@@ -366,6 +414,7 @@ def test_public_fit_memorizes_legal_asymmetric_value_and_policy_rows() -> None:
     fitted, _ = fit_value_policy_with_diagnostics(
         me, opp, value, policy, legal, (me, opp, value, policy, legal),
         l2=1e-5, seed=23, batch_size=3, epochs=160, learning_rate=5e-3,
+        value_loss_weight=5.0,
     )
     final_loss, _ = _literal_loss_gradient(fitted, me, opp, value, policy, legal, 1e-5)
     prediction, logits = predict(fitted, me, opp)

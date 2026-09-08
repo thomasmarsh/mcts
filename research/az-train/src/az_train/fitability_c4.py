@@ -98,6 +98,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--per-outcome", type=int, default=24)
     parser.add_argument("--seed", type=int, default=20260907)
     parser.add_argument("--epochs", type=int, default=400)
+    parser.add_argument("--value-loss-weight", type=float, default=1.0)
     args = parser.parse_args(argv)
     input_paths = [Path(path) for path in args.positions.split(",")]
     pos = _concat([load_positions(path) for path in input_paths])
@@ -111,11 +112,18 @@ def main(argv: list[str] | None = None) -> None:
     weights, metadata = fit_value_policy_with_diagnostics(
         me, opp, value, policy, legal, (me, opp, value, policy, legal),
         seed=args.seed, epochs=args.epochs,
+        value_loss_weight=args.value_loss_weight,
     )
     prediction, logits = predict(weights, me, opp)
     initial = initial_weights(args.seed)
-    initial_loss, _ = _literal_loss_gradient(initial, me, opp, value, policy, legal, 1e-4)
-    final_loss, _ = _literal_loss_gradient(weights, me, opp, value, policy, legal, 1e-4)
+    initial_loss, _ = _literal_loss_gradient(
+        initial, me, opp, value, policy, legal, 1e-4,
+        value_loss_weight=args.value_loss_weight,
+    )
+    final_loss, _ = _literal_loss_gradient(
+        weights, me, opp, value, policy, legal, 1e-4,
+        value_loss_weight=args.value_loss_weight,
+    )
     output = Path(args.out_dir)
     output.mkdir(parents=True, exist_ok=True)
     weight_path = output / "fitability.c4cnn"
@@ -139,6 +147,7 @@ def main(argv: list[str] | None = None) -> None:
         "selection": {
             "seed": args.seed,
             "per_outcome": args.per_outcome,
+            "value_loss_weight": args.value_loss_weight,
             "source_rows": rows.tolist(),
             "outcome_counts": {
                 "minus_one": int(np.count_nonzero(value == -1.0)),
