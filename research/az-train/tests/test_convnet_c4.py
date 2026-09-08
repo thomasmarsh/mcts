@@ -23,6 +23,8 @@ from az_train.convnet_c4 import (
     select_validation_epoch,
     write_weights,
 )
+from az_train.fitability_c4 import _canonical_board_key, select_balanced_unique_rows
+from az_train.records_c4 import Positions
 
 
 def test_layout_round_trip_and_reference_prediction(tmp_path: Path) -> None:
@@ -115,6 +117,25 @@ def test_epoch_batches_preserve_single_batch_permutation() -> None:
     actual = _epoch_batches(np.random.default_rng(59), 3, 3)
     assert len(actual) == 1
     assert np.array_equal(actual[0], expected)
+
+
+def test_fitability_selection_is_seeded_balanced_and_mirror_unique() -> None:
+    # Each adjacent pair is a reflected board and only one may be selected.
+    pos = Positions(
+        black=np.array([1, 1 << 6, 2, 1 << 5, 4, 1 << 4, 8, 8], dtype=np.uint64),
+        white=np.zeros(8, dtype=np.uint64),
+        side=np.zeros(8, dtype=np.uint8),
+        ply=np.zeros(8, dtype=np.uint8),
+        value=np.array([-1, -1, -1, -1, 1, 1, 1, 1], dtype=np.float32),
+        policy=[[(0, 1.0)]] * 8,
+    )
+    first = select_balanced_unique_rows(pos, 2, 71)
+    second = select_balanced_unique_rows(pos, 2, 71)
+    assert np.array_equal(first, second)
+    assert np.count_nonzero(pos.value[first] == -1.0) == 2
+    assert np.count_nonzero(pos.value[first] == 1.0) == 2
+    keys = {_canonical_board_key(int(pos.black[row]), int(pos.white[row]), int(pos.side[row])) for row in first}
+    assert len(keys) == len(first)
 
 
 def test_validation_checkpoint_selection_uses_earliest_highest_pearson() -> None:
@@ -268,6 +289,31 @@ def test_residual_gradient_random_directions_cover_gate_bias_regimes() -> None:
             assert np.isclose(analytic, numeric, rtol=0.12, atol=3e-5), f"{name} {group}"
 
 
+def test_gradient_multiple_seeded_directions_span_relu_masks_and_residual_blocks() -> None:
+    """Exercise every residual branch through several stable ReLU-mask regimes."""
+    spans = _parameter_groups()
+    cases = (
+        ("both_active", 0.1, 0.1, ("stem", "residual_block_1", "residual_block_2")),
+        ("first_closed", -1.0, 0.1, ("stem",)),
+        ("second_closed", 0.1, -1.0, ("stem", "residual_block_1")),
+    )
+    for name, first_bias, second_bias, groups in cases:
+        weights, me, opp, value, policy, legal = _residual_gate_fixture(first_bias, second_bias)
+        for seed in (101, 509, 911):
+            rng = np.random.default_rng(seed)
+            for group in groups:
+                start, end = spans[group]
+                direction = np.zeros(N_WEIGHTS, dtype=np.float32)
+                direction[start:end] = rng.standard_normal(end - start).astype(np.float32)
+                direction /= np.linalg.norm(direction)
+                analytic, numeric = _directional_difference(
+                    weights, direction, me, opp, value, policy, legal,
+                )
+                assert np.isclose(analytic, numeric, rtol=0.12, atol=3e-5), (
+                    f"{name} seed={seed} {group}"
+                )
+
+
 def test_public_fit_substantially_reduces_literal_joint_objective() -> None:
     me, opp, value, policy, legal = _non_symmetric_batch()
     initial_rng = np.random.default_rng(23)
@@ -284,6 +330,37 @@ def test_public_fit_substantially_reduces_literal_joint_objective() -> None:
     final_loss, _ = _literal_loss_gradient(fitted, me, opp, value, policy, legal, 1e-5)
     assert metadata["optimizer_steps"] == 80
     assert final_loss < initial_loss * 0.6
+
+
+def test_public_fit_memorizes_legal_asymmetric_value_and_policy_rows() -> None:
+    """The public fitter must jointly fit signed values and legal policy targets."""
+    # `_non_symmetric_batch` uses gravity-supported, non-symmetric boards.
+    # All seven columns remain legal here, as on ordinary early-game replay.
+    me, opp, value, _, _ = _non_symmetric_batch()
+    policy = np.array(
+        [[0.45, 0.05, 0.20, 0.05, 0.05, 0.10, 0.10],
+         [0.05, 0.15, 0.05, 0.50, 0.05, 0.10, 0.10],
+         [0.10, 0.05, 0.10, 0.05, 0.40, 0.10, 0.20]],
+        dtype=np.float32,
+    )
+    legal = np.ones((len(me), 7), dtype=bool)
+    initial_rng = np.random.default_rng(23)
+    initial = (initial_rng.standard_normal(N_WEIGHTS) * 0.03).astype(np.float32)
+    for tensor in _unpack(initial):
+        if tensor.ndim == 1:
+            tensor.fill(0.05)
+    initial_loss, _ = _literal_loss_gradient(initial, me, opp, value, policy, legal, 1e-5)
+    fitted, _ = fit_value_policy_with_diagnostics(
+        me, opp, value, policy, legal, (me, opp, value, policy, legal),
+        l2=1e-5, seed=23, batch_size=3, epochs=160, learning_rate=5e-3,
+    )
+    final_loss, _ = _literal_loss_gradient(fitted, me, opp, value, policy, legal, 1e-5)
+    prediction, logits = predict(fitted, me, opp)
+    assert final_loss < initial_loss * 0.75
+    assert np.std(prediction) > 0.25
+    assert np.any(prediction > 0.25) and np.any(prediction < -0.10)
+    assert np.mean(np.sign(prediction) == np.sign(value)) == 1.0
+    assert np.isfinite(logits).all()
 
 
 def test_fit_reports_repeatable_nonzero_shared_trunk_telemetry() -> None:
