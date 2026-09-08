@@ -632,3 +632,78 @@ def test_orientation_diagnostics_zero_control_is_symmetric_and_finite() -> None:
     }
     assert result["literal"] == result["mirror_averaged"]
     assert all(np.isfinite(metric) for group in result.values() for metric in group.values())
+
+
+def test_equivariant_value_head_is_exactly_mirror_invariant_for_arbitrary_weights() -> None:
+    from az_train.convnet_c4 import _predict_value_equivariant
+
+    rng = np.random.default_rng(2024)
+    weights = (rng.standard_normal(N_WEIGHTS) * 0.05).astype(np.float32)
+    for tensor in _unpack(weights):
+        if tensor.ndim == 1:
+            tensor += 0.09
+    me, opp, _, _, _ = _non_symmetric_batch()
+    mirror_me = me.reshape(-1, 6, 7)[:, :, ::-1].reshape(-1, 42)
+    mirror_opp = opp.reshape(-1, 6, 7)[:, :, ::-1].reshape(-1, 42)
+    literal = _predict_value_equivariant(weights, me, opp)
+    mirrored = _predict_value_equivariant(weights, mirror_me, mirror_opp)
+    assert np.allclose(literal, mirrored, atol=1e-6)
+
+
+def test_equivariant_loss_gradient_matches_finite_differences_across_cnn() -> None:
+    from az_train.convnet_c4 import _equivariant_loss_gradient
+
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    rng = np.random.default_rng(31)
+    weights = (rng.standard_normal(N_WEIGHTS) * 0.02).astype(np.float32)
+    for tensor in _unpack(weights):
+        if tensor.ndim == 1:
+            tensor[:] += 0.1
+    _, gradient = _equivariant_loss_gradient(weights, me, opp, value, policy, legal, 2e-4)
+    offsets = np.cumsum([0, *[tensor.size for tensor in _unpack(weights)]])
+    representatives = {
+        "stem": (0, 0),
+        "residual_block_1": (2, 19),
+        "residual_block_2": (6, 29),
+        "value_head": (12, 31),
+        "policy_head": (18, 43),
+    }
+    epsilon = np.float32(1e-3)
+    for name, (tensor_index, element_index) in representatives.items():
+        index = int(offsets[tensor_index] + element_index)
+        plus, minus = weights.copy(), weights.copy()
+        plus[index] += epsilon
+        minus[index] -= epsilon
+        numeric = (
+            _equivariant_loss_gradient(plus, me, opp, value, policy, legal, 2e-4)[0]
+            - _equivariant_loss_gradient(minus, me, opp, value, policy, legal, 2e-4)[0]
+        ) / (2.0 * float(epsilon))
+        assert np.isclose(gradient[index], numeric, rtol=0.05, atol=3e-4), name
+
+
+def test_equivariant_fit_is_deterministic_and_reduces_the_value_objective() -> None:
+    from az_train.convnet_c4 import (
+        _equivariant_loss_gradient,
+        _predict_value_equivariant,
+        fit_equivariant_value_policy,
+        initial_weights,
+    )
+
+    me, opp, value, policy, legal = _non_symmetric_batch()
+    validation = (me, opp, value, policy, legal)
+    first, metadata = fit_equivariant_value_policy(
+        me, opp, value, policy, legal, validation,
+        l2=1e-5, seed=23, batch_size=3, epochs=120, learning_rate=5e-3,
+    )
+    second, _ = fit_equivariant_value_policy(
+        me, opp, value, policy, legal, validation,
+        l2=1e-5, seed=23, batch_size=3, epochs=120, learning_rate=5e-3,
+    )
+    assert np.array_equal(first, second)
+    assert metadata["optimizer"] == "adam_equivariant_value_mse_policy_ce"
+    start_loss, _ = _equivariant_loss_gradient(initial_weights(23), me, opp, value, policy, legal, 1e-5)
+    end_loss, _ = _equivariant_loss_gradient(first, me, opp, value, policy, legal, 1e-5)
+    assert end_loss < start_loss
+    train_value = cast("dict[str, float]", metadata["train_equivariant_value"])
+    assert np.isfinite(train_value["value_mse"])
+    assert np.isfinite(_predict_value_equivariant(first, me, opp)).all()

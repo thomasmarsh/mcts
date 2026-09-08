@@ -134,6 +134,58 @@ impl CnnValuePolicyNet {
 
     pub fn value(&self, state: &State<ROWS, COLS>) -> f32 { self.value_and_logits(state).0 }
     pub fn all_logits(&self, state: &State<ROWS, COLS>) -> [f64; POLICY_OUTPUTS] { self.value_and_logits(state).1 }
+
+    /// Shared stem-and-residual trunk output, `CHANNELS * ROWS * COLS` long.
+    fn trunk(&self, input: &[f32; 84]) -> Vec<f32> {
+        let mut at = 0;
+        let mut x = vec![0.0; CHANNELS * ROWS * COLS];
+        Self::conv3(input, &mut x, &self.weights[at..at + CHANNELS * 2 * 9], &self.weights[at + CHANNELS * 2 * 9..at + CHANNELS * 2 * 9 + CHANNELS], 2);
+        x.iter_mut().for_each(|v| *v = v.max(0.0));
+        at += CHANNELS * 2 * 9 + CHANNELS;
+        for _ in 0..BLOCKS {
+            let residual = x.clone();
+            let mut y = vec![0.0; x.len()];
+            Self::conv3(&x, &mut y, &self.weights[at..at + CHANNELS * CHANNELS * 9], &self.weights[at + CHANNELS * CHANNELS * 9..at + CHANNELS * CHANNELS * 9 + CHANNELS], CHANNELS);
+            y.iter_mut().for_each(|v| *v = v.max(0.0));
+            at += CHANNELS * CHANNELS * 9 + CHANNELS;
+            Self::conv3(&y, &mut x, &self.weights[at..at + CHANNELS * CHANNELS * 9], &self.weights[at + CHANNELS * CHANNELS * 9..at + CHANNELS * CHANNELS * 9 + CHANNELS], CHANNELS);
+            for (v, skip) in x.iter_mut().zip(residual) { *v = (*v + skip).max(0.0); }
+            at += CHANNELS * CHANNELS * 9 + CHANNELS;
+        }
+        x
+    }
+
+    fn value_from_trunk(&self, x: &[f32]) -> f32 {
+        let mut at = CHANNELS * 2 * 9 + CHANNELS + BLOCKS * 2 * (CHANNELS * CHANNELS * 9 + CHANNELS);
+        let value_conv = &self.weights[at..at + CHANNELS];
+        let value_bias = self.weights[at + CHANNELS];
+        at += CHANNELS + 1;
+        let value_features: Vec<f32> = (0..ROWS * COLS).map(|cell| (value_bias + (0..CHANNELS).map(|ch| x[ch * ROWS * COLS + cell] * value_conv[ch]).sum::<f32>()).max(0.0)).collect();
+        let value_w1 = &self.weights[at..at + ROWS * COLS * VALUE_HIDDEN]; at += ROWS * COLS * VALUE_HIDDEN;
+        let value_b1 = &self.weights[at..at + VALUE_HIDDEN]; at += VALUE_HIDDEN;
+        let hidden: Vec<f32> = (0..VALUE_HIDDEN).map(|unit| (value_b1[unit] + (0..ROWS * COLS).map(|cell| value_features[cell] * value_w1[cell * VALUE_HIDDEN + unit]).sum::<f32>()).max(0.0)).collect();
+        let value_w2 = &self.weights[at..at + VALUE_HIDDEN]; at += VALUE_HIDDEN;
+        (self.weights[at] + hidden.iter().zip(value_w2).map(|(a, b)| a * b).sum::<f32>()).tanh()
+    }
+
+    /// Structurally mirror-invariant value: the literal and mirrored trunks are
+    /// each column-symmetrized, averaged, and read by a single value head, so the
+    /// scalar is identical for a board and its reflection for any weights.
+    pub fn value_equivariant(&self, state: &State<ROWS, COLS>) -> f32 {
+        let literal = self.trunk(&Self::input(state, false));
+        let mirror = self.trunk(&Self::input(state, true));
+        let mut pooled = vec![0.0_f32; literal.len()];
+        for ch in 0..CHANNELS {
+            for row in 0..ROWS {
+                for col in 0..COLS {
+                    let i = (ch * ROWS + row) * COLS + col;
+                    let j = (ch * ROWS + row) * COLS + (COLS - 1 - col);
+                    pooled[i] = 0.25 * (literal[i] + literal[j] + mirror[i] + mirror[j]);
+                }
+            }
+        }
+        self.value_from_trunk(&pooled)
+    }
 }
 
 impl Evaluator<Standard> for CnnValuePolicyNet {
@@ -194,6 +246,25 @@ mod tests {
         assert!((value - 0.006_387_100_6).abs() < 1e-7);
         let expected = [0.006_988_344_7, 0.006_988_343_8, 0.006_988_344_7, 0.006_988_344_2, 0.006_988_344_7, 0.006_988_343_8, 0.006_988_344_7];
         for (actual, expected) in logits.into_iter().zip(expected) { assert!((actual - expected).abs() < 1e-8); }
+    }
+    #[test]
+    fn equivariant_value_is_exactly_mirror_invariant_and_matches_python() {
+        let sine: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.001).sin()).collect();
+        let net = CnnValuePolicyNet::from_weights(sine);
+        let state = fixture();
+        let mut mirrored = State::default();
+        for col in [6, 5, 4, 5, 3] { mirrored = Standard::apply(mirrored, &Move(col)); }
+        assert!((net.value_equivariant(&state) - net.value_equivariant(&mirrored)).abs() < 1e-6);
+
+        let mut black = crate::BitBoard::<ROWS, COLS>::EMPTY;
+        black.set_index(0); black.set_index(2); black.set_index(8);
+        let mut white = crate::BitBoard::<ROWS, COLS>::EMPTY;
+        white.set_index(1); white.set_index(7);
+        let ramp = CnnValuePolicyNet::from_weights((0..CNN_WEIGHTS).map(|i| (i as f32 - CNN_WEIGHTS as f32 / 2.0) * 1e-6).collect());
+        let sine_net = CnnValuePolicyNet::from_weights((0..CNN_WEIGHTS).map(|i| (i as f32 * 0.001).sin()).collect());
+        let position = State::from_parts(black, white, Player::Black, false);
+        assert!((ramp.value_equivariant(&position) - 0.006_387_100_6).abs() < 1e-7);
+        assert!((sine_net.value_equivariant(&position) - (-0.761_556_27)).abs() < 1e-6);
     }
     #[test]
     fn policy_returns_only_legal_actions_without_masked_columns() {

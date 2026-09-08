@@ -517,6 +517,191 @@ def fit_value_policy_with_diagnostics(
     return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "value_loss_weight": value_loss_weight, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
+def _mirror_planes(me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return the left-right column reflection of both occupancy planes."""
+    mm = me.reshape((-1, ROWS, COLS))[:, :, ::-1].reshape((-1, ROWS * COLS))
+    om = opp.reshape((-1, ROWS, COLS))[:, :, ::-1].reshape((-1, ROWS * COLS))
+    return mm, om
+
+
+def _sym_cols(x: np.ndarray) -> np.ndarray:
+    """Column-symmetrize an ``(N, C, ROWS, COLS)`` map; its own adjoint."""
+    return 0.5 * (x + x[:, :, :, ::-1])
+
+
+_BlockCache = tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+_TrunkCache = tuple[np.ndarray, np.ndarray, list[_BlockCache]]
+
+
+def _trunk_forward(p: list[np.ndarray], me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, _TrunkCache]:
+    """Shared stem-and-residual trunk with the cache the backward pass needs."""
+    x0 = np.stack((me, opp), axis=1).reshape((-1, 2, ROWS, COLS))
+    z0 = _conv(x0, p[0], p[1], 1)
+    x = np.maximum(z0, 0.0)
+    blocks: list[tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    at = 2
+    for _ in range(BLOCKS):
+        residual = x
+        z1 = _conv(x, p[at], p[at + 1], 1)
+        h1 = np.maximum(z1, 0.0)
+        z2 = _conv(h1, p[at + 2], p[at + 3], 1)
+        x = np.maximum(z2 + residual, 0.0)
+        blocks.append((residual, z1, h1, z2))
+        at += 4
+    return x, (x0, z0, blocks)
+
+
+def _trunk_backward(p: list[np.ndarray], gp: list[np.ndarray], cache: _TrunkCache, dx: np.ndarray) -> None:
+    """Accumulate stem and residual-block gradients from an upstream ``dx``."""
+    x0, z0, blocks = cache
+    for block in range(BLOCKS - 1, -1, -1):
+        residual, z1, h1, z2 = blocks[block]
+        d_z2 = dx * (z2 + residual > 0.0)
+        block_at = 2 + block * 4
+        d_h1, d_second_weight, d_second_bias = _conv_backward(h1, p[block_at + 2], d_z2, 1)
+        gp[block_at + 2][...] += d_second_weight
+        gp[block_at + 3][...] += d_second_bias
+        d_z1 = d_h1 * (z1 > 0.0)
+        dx_branch, d_first_weight, d_first_bias = _conv_backward(residual, p[block_at], d_z1, 1)
+        gp[block_at][...] += d_first_weight
+        gp[block_at + 1][...] += d_first_bias
+        dx = d_z2 + dx_branch
+    d_z0 = dx * (z0 > 0.0)
+    _, d_stem_weight, d_stem_bias = _conv_backward(x0, p[0], d_z0, 1)
+    gp[0][...] += d_stem_weight
+    gp[1][...] += d_stem_bias
+
+
+def _predict_value_equivariant(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
+    """Structurally mirror-invariant value scalar.
+
+    The literal and mirrored boards are each pushed through the shared trunk,
+    every feature map is column-symmetrized, the two are averaged, and a single
+    value head reads the pooled map.  Feeding the mirrored board swaps the two
+    trunk evaluations and leaves the pooled map unchanged, so the scalar is
+    exactly mirror invariant for arbitrary weights.
+    """
+    p = _unpack(weights)
+    mm, om = _mirror_planes(me, opp)
+    x_literal, _ = _trunk_forward(p, me, opp)
+    x_mirror, _ = _trunk_forward(p, mm, om)
+    x_sym = 0.5 * (_sym_cols(x_literal) + _sym_cols(x_mirror))
+    at = 2 + BLOCKS * 4
+    value = np.maximum(_conv(x_sym, p[at], p[at + 1], 0), 0.0).reshape((-1, ROWS * COLS))
+    value = np.maximum(value @ p[at + 2] + p[at + 3], 0.0)
+    return np.tanh(value @ p[at + 4] + p[at + 5][0]).astype(np.float32)
+
+
+def _equivariant_loss_gradient(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray, legal: np.ndarray, l2: float, *, value_loss_weight: float = 1.0,
+) -> tuple[float, np.ndarray]:
+    """Mirror-equivariant value MSE plus the unchanged literal policy cross entropy."""
+    if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
+        raise ValueError("value_loss_weight must be finite and non-negative")
+    p = _unpack(weights)
+    mm, om = _mirror_planes(me, opp)
+    x_literal, cache_literal = _trunk_forward(p, me, opp)
+    x_mirror, cache_mirror = _trunk_forward(p, mm, om)
+    x_sym = 0.5 * (_sym_cols(x_literal) + _sym_cols(x_mirror))
+    at = 2 + BLOCKS * 4
+    z_value = _conv(x_sym, p[at], p[at + 1], 0)
+    value_features = np.maximum(z_value, 0.0).reshape((-1, ROWS * COLS))
+    value_hidden_z = value_features @ p[at + 2] + p[at + 3]
+    value_hidden = np.maximum(value_hidden_z, 0.0)
+    value_score = value_hidden @ p[at + 4] + p[at + 5][0]
+    value_prediction = np.tanh(value_score)
+    policy_at = at + 6
+    z_policy = _conv(x_literal, p[policy_at], p[policy_at + 1], 0)
+    policy_features = np.maximum(z_policy, 0.0).reshape((-1, ROWS * COLS))
+    logits = policy_features @ p[policy_at + 2] + p[policy_at + 3]
+    masked = np.where(legal, logits, -np.inf)
+    shifted = masked - np.max(masked, axis=1, keepdims=True)
+    probability = np.exp(shifted) * legal
+    probability /= probability.sum(axis=1, keepdims=True)
+    n = len(me)
+    value_loss = np.mean((value_prediction - value) ** 2)
+    policy_loss = -np.mean(np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1))
+
+    gradient = np.zeros_like(weights)
+    gp = _unpack(gradient)
+    dv = value_loss_weight * (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
+    gp[at + 4][...] = value_hidden.T @ dv
+    gp[at + 5][0] = dv.sum()
+    d_hidden = (dv[:, None] * p[at + 4]) * (value_hidden_z > 0.0)
+    gp[at + 2][...] = value_features.T @ d_hidden
+    gp[at + 3][...] = d_hidden.sum(axis=0)
+    d_value_features = d_hidden @ p[at + 2].T
+    d_z_value = d_value_features.reshape(z_value.shape) * (z_value > 0.0)
+    dx_sym, d_value_weight, d_value_bias = _conv_backward(x_sym, p[at], d_z_value, 0)
+    gp[at][...] = d_value_weight
+    gp[at + 1][...] = d_value_bias
+    d_sym = _sym_cols(0.5 * dx_sym)
+    dp = (probability - policy) / n
+    gp[policy_at + 2][...] = policy_features.T @ dp
+    gp[policy_at + 3][...] = dp.sum(axis=0)
+    d_policy_features = dp @ p[policy_at + 2].T
+    d_z_policy = d_policy_features.reshape(z_policy.shape) * (z_policy > 0.0)
+    dx_policy, d_policy_weight, d_policy_bias = _conv_backward(x_literal, p[policy_at], d_z_policy, 0)
+    gp[policy_at][...] = d_policy_weight
+    gp[policy_at + 1][...] = d_policy_bias
+    _trunk_backward(p, gp, cache_literal, d_sym + dx_policy)
+    _trunk_backward(p, gp, cache_mirror, d_sym)
+    regularized = [0, 2, 4, 6, 8, at, at + 2, at + 4, policy_at, policy_at + 2]
+    reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
+    for i in regularized:
+        gp[i][...] += 2.0 * l2 * p[i]
+    return float(value_loss_weight * value_loss + policy_loss + l2 * reg), gradient
+
+
+def fit_equivariant_value_policy(
+    me: np.ndarray, opp: np.ndarray, value: np.ndarray, policy: np.ndarray, legal: np.ndarray,
+    validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
+    *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
+    value_loss_weight: float = 1.0,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Deterministic Adam fit of the structurally mirror-equivariant value head."""
+    if not len(me) or not np.all(legal.any(axis=1)):
+        raise ValueError("equivariant fitting requires non-empty rows with legal policy targets")
+    rng = np.random.default_rng(seed)
+    weights = initial_weights(seed)
+    moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
+    beta1, beta2, step = 0.9, 0.999, 0
+    started = time.perf_counter()
+    for _ in range(epochs):
+        for batch in _epoch_batches(rng, len(me), batch_size):
+            _, gradient = _equivariant_loss_gradient(
+                weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
+                value_loss_weight=value_loss_weight,
+            )
+            step += 1
+            moment = beta1 * moment + (1.0 - beta1) * gradient
+            velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
+            weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
+    vm, vo, vv, vp, vl = validation
+
+    def value_block(a: np.ndarray, b: np.ndarray, y: np.ndarray) -> dict[str, float]:
+        prediction = _predict_value_equivariant(weights, a, b)
+        nonzero = y != 0.0
+        return {
+            "value_mse": float(np.mean((prediction - y) ** 2)),
+            "value_pearson": _pearson(prediction, y),
+            "value_sign_agreement": float(np.mean(np.sign(prediction[nonzero]) == np.sign(y[nonzero])))
+            if np.any(nonzero) else 0.0,
+        }
+
+    metadata: dict[str, object] = {
+        "optimizer": "adam_equivariant_value_mse_policy_ce",
+        "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
+        "optimizer_learning_rate": learning_rate, "value_loss_weight": value_loss_weight,
+        "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started,
+        "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)),
+        "train_equivariant_value": value_block(me, opp, value),
+        "validation_equivariant_value": value_block(vm, vo, vv),
+    }
+    return weights, metadata
+
+
 def write_weights(path: str, weights: np.ndarray) -> None:
     weights = np.asarray(weights, dtype="<f4")
     _unpack(weights)
