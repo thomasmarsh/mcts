@@ -224,7 +224,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if std::fs::read(&args[1])
-        .is_ok_and(|b| b.starts_with(game_connect4::reference_diagnostic::MAGIC))
+        .is_ok_and(|b| b.starts_with(game_connect4::reference_diagnostic::MAGIC_PREFIX))
     {
         return reference_main(&args);
     }

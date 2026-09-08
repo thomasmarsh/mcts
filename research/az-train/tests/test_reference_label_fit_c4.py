@@ -149,7 +149,12 @@ def test_run_arms_smoke_produces_three_scored_arms(tmp_path: Path) -> None:
 
     corpus = read_reference_corpus(corpus_path)
     replay = _replay_rows([replay_path])
-    result = run_arms(corpus, replay, tmp_path / "out", seed=1, epochs=1, l2=1e-4)
+    result = run_arms(
+        corpus, replay, tmp_path / "out", seed=1, epochs=1, l2=1e-4,
+        equivariant_epochs=2, equivariant_lr=5e-3, literal_lr=2e-3,
+    )
+    assert result["config"]["equivariant_epochs"] == 2
+    assert result["config"]["equivariant_lr"] == 5e-3
 
     assert set(result["arms"]) == {
         "equivariant_trained_on_proven",

@@ -193,8 +193,12 @@ def run_arms(
     seed: int,
     epochs: int,
     l2: float,
+    equivariant_epochs: int | None = None,
+    equivariant_lr: float = 2e-3,
+    literal_lr: float = 2e-3,
 ) -> dict[str, object]:
     """Fit the three arms and score every one on the proven reference validation split."""
+    equivariant_epochs = equivariant_epochs if equivariant_epochs is not None else epochs
     train = _proven_split(corpus, 0)
     val = _proven_split(corpus, 1)
     overlap = np.intersect1d(np.unique(train["group"]), np.unique(val["group"]))
@@ -210,7 +214,8 @@ def run_arms(
 
     started = time.perf_counter()
     eq_weights, eq_meta = fit_equivariant_value_policy(
-        *ref_train_pack, val_pack, l2=l2, seed=seed, epochs=epochs,
+        *ref_train_pack, val_pack, l2=l2, seed=seed, epochs=equivariant_epochs,
+        learning_rate=equivariant_lr,
     )
     eq_path = out_dir / "equivariant-proven.c4cnn"
     write_weights(str(eq_path), eq_weights)
@@ -237,6 +242,7 @@ def run_arms(
         early_path = out_dir / f"{stem}-earlystop.c4cnn"
         weights, meta = fit_value_policy_with_diagnostics(
             *train_pack, val_pack, l2=l2, seed=seed, epochs=epochs,
+            learning_rate=literal_lr,
             selected_validation_checkpoint_out=str(early_path),
         )
         final_path = out_dir / f"{stem}.c4cnn"
@@ -279,7 +285,11 @@ def run_arms(
     source_outcome_vs_proven = _metrics(val["source_outcome"], val["value"])
 
     return {
-        "config": {"seed": seed, "epochs": epochs, "l2": l2, "n_weights": int(N_WEIGHTS)},
+        "config": {
+            "seed": seed, "epochs": epochs, "l2": l2, "n_weights": int(N_WEIGHTS),
+            "equivariant_epochs": equivariant_epochs, "equivariant_lr": equivariant_lr,
+            "literal_lr": literal_lr,
+        },
         "reference_proven_counts": {
             "train": int(train["value"].size),
             "validation": int(val["value"].size),
@@ -304,6 +314,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seed", type=int, default=20260907)
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--l2", type=float, default=1e-4)
+    parser.add_argument("--equivariant-epochs", type=int, default=None,
+                        help="epoch budget for the equivariant arm (defaults to --epochs)")
+    parser.add_argument("--equivariant-lr", type=float, default=2e-3)
+    parser.add_argument("--literal-lr", type=float, default=2e-3)
     args = parser.parse_args(argv)
 
     corpus_path = Path(args.reference_corpus)
@@ -312,7 +326,11 @@ def main(argv: list[str] | None = None) -> None:
     replay = _replay_rows(positions_paths)
 
     out_dir = Path(args.out_dir)
-    result = run_arms(corpus, replay, out_dir, seed=args.seed, epochs=args.epochs, l2=args.l2)
+    result = run_arms(
+        corpus, replay, out_dir, seed=args.seed, epochs=args.epochs, l2=args.l2,
+        equivariant_epochs=args.equivariant_epochs, equivariant_lr=args.equivariant_lr,
+        literal_lr=args.literal_lr,
+    )
     result["inputs"] = {
         "reference_corpus": {"path": str(corpus_path), "sha256": _sha256(corpus_path)},
         "positions": [{"path": str(path), "sha256": _sha256(path)} for path in positions_paths],

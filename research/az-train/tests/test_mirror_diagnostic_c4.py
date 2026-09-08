@@ -18,8 +18,8 @@ _HEADER = struct.Struct("<8sIIB6x")
 _RECORD = struct.Struct("<QQBBIBBBBf")
 
 
-def _write_corpus(path: Path, records: list[tuple]) -> None:
-    payload = _HEADER.pack(b"C4REFD01", 1, len(records), 0xFF)
+def _write_corpus(path: Path, records: list[tuple], magic: bytes = b"C4REFD01", version: int = 1) -> None:
+    payload = _HEADER.pack(magic, version, len(records), 0xFF)
     for rec in records:
         payload += _RECORD.pack(*rec)
     path.write_bytes(payload)
@@ -43,6 +43,24 @@ def test_reference_reader_parses_split_and_proven_labels(tmp_path: Path) -> None
     assert corpus.label_sign[0] == 1.0 and corpus.label_sign[1] == -1.0
     assert np.isnan(corpus.label_sign[3])
     assert corpus.exact.tolist() == [True, False, False, False]
+
+
+def test_reference_reader_parses_v2_corpus(tmp_path: Path) -> None:
+    path = tmp_path / "corpus-v2.c4ref"
+    _write_corpus(path, _corpus_records(), magic=b"C4REFD02", version=2)
+    corpus = read_reference_corpus(path)
+    assert corpus.split.tolist() == [0, 0, 1, 1]
+    assert corpus.label_sign[0] == 1.0 and corpus.label_sign[1] == -1.0
+
+
+def test_reference_reader_rejects_mismatched_version(tmp_path: Path) -> None:
+    path = tmp_path / "bad-version.c4ref"
+    _write_corpus(path, _corpus_records(), magic=b"C4REFD02", version=1)
+    try:
+        read_reference_corpus(path)
+    except ValueError:
+        return
+    raise AssertionError("expected a ValueError for a C4REFD02 header with a v1 version field")
 
 
 def test_reference_reader_rejects_foreign_magic(tmp_path: Path) -> None:

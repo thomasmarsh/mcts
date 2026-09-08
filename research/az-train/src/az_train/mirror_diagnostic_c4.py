@@ -36,8 +36,9 @@ from az_train.convnet_c4 import (
 from az_train.fitability_c4 import _concat, _dense_policy, select_balanced_unique_rows
 from az_train.records_c4 import Positions, load_positions, me_opp_planes
 
-_REF_MAGIC = b"C4REFD01"
-_REF_VERSION = 1
+_REF_MAGIC_PREFIX = b"C4REFD"
+# {magic: version}; the record layout is identical across versions.
+_REF_MAGICS = {b"C4REFD01": 1, b"C4REFD02": 2}
 _REF_HEADER_BYTES = 23
 _REF_RECORD_BYTES = 30
 _REF_RECORD = struct.Struct("<QQBBIBBBBf")
@@ -59,18 +60,20 @@ class ReferenceCorpus:
 def read_reference_corpus(path: str | Path) -> ReferenceCorpus:
     """Decode a ``C4REFD01`` strong-reference diagnostic artifact."""
     raw = Path(path).read_bytes()
-    if len(raw) < _REF_HEADER_BYTES or raw[:8] != _REF_MAGIC:
-        raise ValueError(f"{path}: not a C4REFD01 reference corpus")
+    if len(raw) < _REF_HEADER_BYTES or not raw[:6].startswith(_REF_MAGIC_PREFIX):
+        raise ValueError(f"{path}: not a C4REFD reference corpus")
+    expected_version = _REF_MAGICS.get(bytes(raw[:8]))
     version, count = struct.unpack_from("<II", raw, 8)
-    if version != _REF_VERSION or raw[16] != 0xFF:
-        raise ValueError(f"{path}: unsupported C4REFD01 header")
+    if expected_version is None or version != expected_version or raw[16] != 0xFF:
+        raise ValueError(f"{path}: unsupported C4REFD header")
     if len(raw) != _REF_HEADER_BYTES + count * _REF_RECORD_BYTES:
         raise ValueError(f"{path}: length does not match {count} records")
     black, white, side, ply, split = [], [], [], [], []
     label_sign, exact, group, source_outcome = [], [], [], []
     for i in range(count):
         off = _REF_HEADER_BYTES + i * _REF_RECORD_BYTES
-        b, w, s, p, grp, sp, label, _pd, _md, outcome = _REF_RECORD.unpack_from(raw, off)
+        # proof-depth and max-attempted-depth fields (indices 7, 8) are unused here
+        b, w, s, p, grp, sp, label, _, _, outcome = _REF_RECORD.unpack_from(raw, off)
         if sp > 1 or label > 5:
             raise ValueError(f"{path}: record {i} has an invalid split or label")
         black.append(b)

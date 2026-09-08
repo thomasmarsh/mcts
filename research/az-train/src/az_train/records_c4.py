@@ -47,6 +47,8 @@ ROWS = 6
 COLS = 7
 BOARD_CELLS = ROWS * COLS
 REFERENCE_DIAGNOSTIC_MAGIC = b"C4REFD01"
+# Shared prefix of every versioned reference-diagnostic artifact.
+REFERENCE_DIAGNOSTIC_MAGIC_PREFIX = b"C4REFD"
 
 _HEAD = struct.Struct("<QQBBfB")
 _POLICY_ENTRY = struct.Struct("<Bf")
@@ -134,7 +136,7 @@ def split_by_game(
 
 
 def decode_records(raw: bytes) -> Positions:
-    if raw.startswith(REFERENCE_DIAGNOSTIC_MAGIC):
+    if raw.startswith(REFERENCE_DIAGNOSTIC_MAGIC_PREFIX):
         raise ValueError("reference diagnostic data is not a v2-connect4 replay")
     blacks: list[int] = []
     whites: list[int] = []

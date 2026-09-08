@@ -9,8 +9,39 @@ use mcts::game::Game;
 
 pub const MAGIC: &[u8; 8] = b"C4REFD01";
 pub const VERSION: u32 = 1;
+/// Expanded-corpus artifact: identical record layout, distinct magic and
+/// version so a fresh freeze is never confused with the original.
+pub const MAGIC_V2: &[u8; 8] = b"C4REFD02";
+pub const VERSION_V2: u32 = 2;
+/// Shared prefix of every reference-diagnostic magic. Consumers use this to
+/// tell a diagnostic artifact apart from a self-play replay shard.
+pub const MAGIC_PREFIX: &[u8; 6] = b"C4REFD";
 pub const HEADER_BYTES: usize = 23;
 pub const RECORD_BYTES: usize = 30;
+
+/// Increasing bounded-depth negamax schedule for positions too deep to search
+/// to the end. Each entry is attempted in turn until one proves a win or loss;
+/// a neutral score at the final entry stays `Unresolved`.
+pub const BOUNDED_DEPTH_SCHEDULE: &[u32] = &[6, 8, 10, 12, 14];
+
+/// Opening-band positions (see [`ply_band`]) cap their bounded search here:
+/// forced tactical results that deep are vanishingly rare from near-balanced
+/// play, so the extra depth only costs wall time.
+pub const OPENING_BAND_DEPTH_CAP: u32 = 12;
+
+/// Remaining-ply cap at or below which a position is searched to the end for an
+/// exact label rather than run through [`BOUNDED_DEPTH_SCHEDULE`].
+pub const EXACT_SEARCH_REMAINING_CAP: u32 = 12;
+
+/// Map a disc count to an opening (`0`), middle (`1`), or late (`2`) band.
+/// Edges match the Python diagnostic reader.
+pub fn ply_band(ply: u8) -> u8 {
+    match ply {
+        0..=14 => 0,
+        15..=22 => 1,
+        _ => 2,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -202,9 +233,18 @@ pub fn state_from_record(record: &DiagnosticRecord) -> Result<State<6, 7>, Strin
 }
 
 pub fn encode(records: &[DiagnosticRecord]) -> Vec<u8> {
+    encode_with(records, MAGIC, VERSION)
+}
+
+/// Encode as the expanded-corpus `C4REFD02` artifact.
+pub fn encode_v2(records: &[DiagnosticRecord]) -> Vec<u8> {
+    encode_with(records, MAGIC_V2, VERSION_V2)
+}
+
+fn encode_with(records: &[DiagnosticRecord], magic: &[u8; 8], version: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_BYTES + records.len() * RECORD_BYTES);
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&VERSION.to_le_bytes());
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&(records.len() as u32).to_le_bytes());
     out.push(0xff);
     out.extend_from_slice(&[0; 6]);
@@ -223,10 +263,16 @@ pub fn encode(records: &[DiagnosticRecord]) -> Vec<u8> {
     out
 }
 pub fn decode(bytes: &[u8]) -> Result<Vec<DiagnosticRecord>, String> {
-    if bytes.len() < HEADER_BYTES || &bytes[..8] != MAGIC {
+    if bytes.len() < HEADER_BYTES {
         return Err("reference diagnostic magic mismatch".into());
     }
-    if u32::from_le_bytes(bytes[8..12].try_into().unwrap()) != VERSION {
+    let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let magic_ok = match &bytes[..8] {
+        m if m == MAGIC => version == VERSION,
+        m if m == MAGIC_V2 => version == VERSION_V2,
+        _ => return Err("reference diagnostic magic mismatch".into()),
+    };
+    if !magic_ok {
         return Err("unsupported reference diagnostic version".into());
     }
     if bytes[16] != 0xff {
@@ -364,6 +410,32 @@ mod tests {
         let mut b = encode(&[rec()]);
         b[8] = 2;
         assert!(decode(&b).is_err());
+    }
+    #[test]
+    fn codec_v2_round_trip_and_header_rules() {
+        let b = encode_v2(&[rec()]);
+        assert_eq!(&b[..8], MAGIC_V2);
+        assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), VERSION_V2);
+        assert_eq!(decode(&b).unwrap(), vec![rec()]);
+        // both magics remain decodable so old artifacts keep working
+        assert_eq!(decode(&encode(&[rec()])).unwrap(), vec![rec()]);
+        // v2 magic with a v1 version is rejected
+        let mut wrong = encode_v2(&[rec()]);
+        wrong[8] = VERSION as u8;
+        assert!(decode(&wrong).is_err());
+        assert!(b.starts_with(MAGIC_PREFIX));
+    }
+    #[test]
+    fn ply_bands_and_depth_schedule() {
+        assert_eq!(ply_band(0), 0);
+        assert_eq!(ply_band(14), 0);
+        assert_eq!(ply_band(15), 1);
+        assert_eq!(ply_band(22), 1);
+        assert_eq!(ply_band(23), 2);
+        assert_eq!(ply_band(41), 2);
+        assert!(BOUNDED_DEPTH_SCHEDULE.windows(2).all(|w| w[0] < w[1]));
+        assert!(BOUNDED_DEPTH_SCHEDULE[0] > 0);
+        assert!(*BOUNDED_DEPTH_SCHEDULE.last().unwrap() >= EXACT_SEARCH_REMAINING_CAP);
     }
     #[test]
     fn split_and_mirror() {
