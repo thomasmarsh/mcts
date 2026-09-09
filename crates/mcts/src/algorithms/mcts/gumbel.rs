@@ -445,6 +445,42 @@ mod tests {
     }
 
     #[test]
+    fn visit_offset_controls_how_hard_completed_q_overrides_the_prior() {
+        // `sigma = (c_visit + max_visit) * c_scale * q`. At a small simulation
+        // budget `max_visit` is tiny, so `c_visit` alone decides whether one
+        // shallow completed-Q sample can swamp the prior logits. A large
+        // `c_visit` collapses the improved policy onto the top-Q action after a
+        // single visit; a near-zero `c_visit` leaves the prior largely intact.
+        let logits = [0.0, 0.0, 0.0];
+        let visits = [1, 1, 1];
+        let q = [0.9, 0.1, 0.1];
+        let heavy = improved_policy(
+            &logits,
+            &visits,
+            &q,
+            &GumbelConfig {
+                c_visit: 50.0,
+                c_scale: 0.1,
+                rescale_q: false,
+                ..GumbelConfig::default()
+            },
+        );
+        let light = improved_policy(
+            &logits,
+            &visits,
+            &q,
+            &GumbelConfig {
+                c_visit: 0.0,
+                c_scale: 0.1,
+                rescale_q: false,
+                ..GumbelConfig::default()
+            },
+        );
+        assert!(heavy[0] > 0.95, "heavy c_visit collapses onto top Q: {heavy:?}");
+        assert!(light[0] < 0.45, "light c_visit keeps the policy broad: {light:?}");
+    }
+
+    #[test]
     fn improved_policy_has_additive_logit_invariance() {
         let cfg = GumbelConfig::default();
         let a = improved_policy(&[0.0, 1.0], &[4, 1], &[0.5, -0.5], &cfg);
