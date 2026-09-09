@@ -5,6 +5,7 @@
 //! diagnostic consumers cannot accidentally feed them to the trainer.
 
 use crate::{BitBoard, Move, Player, Standard, State};
+use mcts::algorithms::negamax::{MaterialBlind, Negamax, NegamaxOptions};
 use mcts::game::Game;
 
 pub const MAGIC: &[u8; 8] = b"C4REFD01";
@@ -108,6 +109,112 @@ pub fn classify_score(score: i32, fully_searched: bool) -> ReferenceLabel {
         std::cmp::Ordering::Less => ReferenceLabel::BoundedLoss,
         std::cmp::Ordering::Equal => ReferenceLabel::Unresolved,
     }
+}
+
+/// Transposition-table size for the reference solver, as a power of two.
+const REFERENCE_TABLE_BITS: u32 = 20;
+
+/// Connect Four under the strict negamax turn convention.
+///
+/// [`Standard::apply`] leaves `turn` on the player who completed four in a
+/// row, so a won terminal state reports its `player_to_move` *as the winner*.
+/// Negamax's terminal scoring reads a win for the player to move as
+/// `WIN_SCORE`, which inverts the sign of every proven line and makes the
+/// solver walk into losses and avoid its own wins. This newtype delegates
+/// every rule to [`Standard`] but reports the player to move at a won
+/// terminal as the loser, restoring the convention that a node you are "to
+/// move" in, with the opponent already connected, is a loss for you.
+#[derive(Clone)]
+pub struct Connect4Negamax;
+
+impl Game for Connect4Negamax {
+    type S = State<6, 7>;
+    type A = Move;
+    type P = Player;
+
+    fn apply(state: Self::S, action: &Self::A) -> Self::S {
+        Standard::apply(state, action)
+    }
+    fn generate_actions(state: &Self::S, actions: &mut Vec<Self::A>) {
+        Standard::generate_actions(state, actions);
+    }
+    fn is_terminal(state: &Self::S) -> bool {
+        Standard::is_terminal(state)
+    }
+    fn winner(state: &Self::S) -> Option<Self::P> {
+        Standard::winner(state)
+    }
+    fn player_to_move(state: &Self::S) -> Self::P {
+        let mover = Standard::player_to_move(state);
+        if state.has_winner() {
+            mover.next()
+        } else {
+            mover
+        }
+    }
+    fn zobrist_hash(state: &Self::S) -> u64 {
+        Standard::zobrist_hash(state)
+    }
+}
+
+/// Single-threaded, deterministic bounded `MaterialBlind` negamax score for
+/// `state`, in mate-distance units (`WIN_SCORE - ply` for a proven win).
+pub fn reference_negamax_score(state: &State<6, 7>, depth: u32) -> i32 {
+    let mut solver = Negamax::<Connect4Negamax, MaterialBlind>::new_with_options(
+        MaterialBlind,
+        NegamaxOptions::default()
+            .with_max_depth(depth)
+            .with_table_bits(REFERENCE_TABLE_BITS),
+    );
+    solver.bounded_negamax(state, depth.max(1)).1
+}
+
+/// Bounded-depth reference label for `state` at disc count `ply`, plus its
+/// `(first proof depth, maximum attempted depth)`.
+///
+/// A position with few remaining plies is searched to the end for an exact
+/// label. Otherwise the increasing [`BOUNDED_DEPTH_SCHEDULE`] is attempted in
+/// turn -- capped at [`OPENING_BAND_DEPTH_CAP`] in the opening band -- until one
+/// depth proves a win or loss; a neutral score at the final attempted depth
+/// stays [`ReferenceLabel::Unresolved`] rather than being read as a draw.
+pub fn searched_reference_label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
+    let remaining = 42 - ply as u32;
+    if remaining <= EXACT_SEARCH_REMAINING_CAP {
+        let score = reference_negamax_score(state, remaining);
+        let depth = remaining as u8;
+        return (classify_score(score, true), depth, depth);
+    }
+    let depth_cap = if ply_band(ply) == 0 {
+        OPENING_BAND_DEPTH_CAP
+    } else {
+        u32::MAX
+    };
+    let mut max = 0u8;
+    for &depth in BOUNDED_DEPTH_SCHEDULE {
+        if depth > depth_cap {
+            break;
+        }
+        if depth >= remaining {
+            let score = reference_negamax_score(state, remaining);
+            let d = remaining as u8;
+            return (classify_score(score, true), d, d);
+        }
+        max = depth as u8;
+        let label = classify_score(reference_negamax_score(state, depth), false);
+        if label != ReferenceLabel::Unresolved {
+            return (label, depth as u8, max);
+        }
+    }
+    (ReferenceLabel::Unresolved, 0, max)
+}
+
+/// Soft searched-value scalar in `[-1, 1]` from the side-to-move perspective.
+///
+/// `MaterialBlind` contributes no positional heuristic, so an unresolved
+/// cutoff carries no usable signal and maps to `0.0`; proven tactical results
+/// and exact draws map to their label sign.
+pub fn searched_value_scalar(label: ReferenceLabel) -> f32 {
+    label.sign().unwrap_or(0.0)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -513,6 +620,65 @@ mod tests {
         assert!(state_from_record(&white_to_move).is_ok());
         assert_eq!(-black_to_move.source_outcome, white_to_move.source_outcome);
     }
+    #[test]
+    fn searched_label_proves_a_shallow_forced_win_and_maps_to_plus_one() {
+        // Black holds the bottom row at columns 0, 1, 2 with White scattered;
+        // Black to move has an immediate column-3 win.
+        let mut state = State::<6, 7>::default();
+        for col in [0u8, 4, 1, 5, 2, 6] {
+            state = Standard::apply(state, &Move(col));
+        }
+        assert_eq!(state.turn(), Player::Black);
+        let ply = (state.black().count_ones() + state.white().count_ones()) as u8;
+        let (label, proof_depth, _max) = searched_reference_label(&state, ply);
+        assert_eq!(label.sign(), Some(1.0));
+        assert!(proof_depth >= 1);
+        assert_eq!(searched_value_scalar(label), 1.0);
+    }
+
+    #[test]
+    fn searched_label_proves_a_forced_loss_for_the_side_facing_a_double_threat() {
+        // Black holds bottom-row columns 2, 3, 4; White to move cannot block
+        // both the column-1 and column-5 completions.
+        let mut state = State::<6, 7>::default();
+        for col in [2u8, 0, 3, 6, 4] {
+            state = Standard::apply(state, &Move(col));
+        }
+        assert_eq!(state.turn(), Player::White);
+        let ply = (state.black().count_ones() + state.white().count_ones()) as u8;
+        assert!(reference_negamax_score(&state, 6) < 0);
+        let (label, _proof, _max) = searched_reference_label(&state, ply);
+        assert_eq!(label.sign(), Some(-1.0));
+    }
+
+    #[test]
+    fn raw_connect4_inverts_a_terminal_win_but_the_negamax_newtype_does_not() {
+        use mcts::algorithms::negamax::{Negamax, NegamaxOptions};
+        let mut state = State::<6, 7>::default();
+        for col in [0u8, 4, 1, 5, 2, 6] {
+            state = Standard::apply(state, &Move(col));
+        }
+        let options = || NegamaxOptions::default().with_max_depth(4).with_table_bits(0);
+        // `Standard`'s won terminal reports the winner as the player to move,
+        // so negamax scores the immediate win as a loss and never plays it.
+        let raw = Negamax::<Standard, MaterialBlind>::new_with_options(MaterialBlind, options())
+            .bounded_negamax(&state, 4)
+            .1;
+        assert!(raw <= 0, "raw Standard inverts the win, got {raw}");
+        // The newtype restores the convention.
+        assert!(reference_negamax_score(&state, 4) > 0);
+    }
+
+    #[test]
+    fn searched_value_scalar_maps_every_label_to_its_sign() {
+        assert_eq!(searched_value_scalar(ReferenceLabel::ExactWin), 1.0);
+        assert_eq!(searched_value_scalar(ReferenceLabel::BoundedWin), 1.0);
+        assert_eq!(searched_value_scalar(ReferenceLabel::ExactLoss), -1.0);
+        assert_eq!(searched_value_scalar(ReferenceLabel::BoundedLoss), -1.0);
+        assert_eq!(searched_value_scalar(ReferenceLabel::ExactDraw), 0.0);
+        assert_eq!(searched_value_scalar(ReferenceLabel::Unresolved), 0.0);
+    }
+
     #[test]
     fn forced_child_win_has_the_opposite_parent_perspective() {
         let mut state = State::default();

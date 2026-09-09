@@ -12,64 +12,17 @@
 use std::{collections::HashSet, env, fs, path::PathBuf, process::ExitCode, time::Instant};
 
 use game_connect4::reference_diagnostic::{
-    canonical_key, classify_score, encode_v2, ply_band, split_for_group, DiagnosticRecord,
-    ReferenceLabel, BOUNDED_DEPTH_SCHEDULE, EXACT_SEARCH_REMAINING_CAP, OPENING_BAND_DEPTH_CAP,
+    canonical_key, encode_v2, ply_band, searched_reference_label, split_for_group, DiagnosticRecord,
+    ReferenceLabel, BOUNDED_DEPTH_SCHEDULE, EXACT_SEARCH_REMAINING_CAP,
 };
 use game_connect4::{Move, Player, Standard, State};
-use mcts::{
-    algorithms::negamax::{MaterialBlind, Negamax, NegamaxOptions},
-    game::Game,
-};
+use mcts::game::Game;
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use sha2::{Digest, Sha256};
 
 /// Disc counts sampled from every source game. Both parities appear in each of
 /// the three ply bands so both sides to move are represented per band.
 const SAMPLE_PLIES: [u8; 15] = [6, 7, 10, 13, 16, 17, 20, 21, 24, 25, 28, 29, 32, 33, 36];
-
-const TABLE_BITS: u32 = 20;
-
-fn solve(state: &State<6, 7>, depth: u32) -> i32 {
-    let mut solver = Negamax::<Standard, MaterialBlind>::new_with_options(
-        MaterialBlind,
-        NegamaxOptions::default()
-            .with_max_depth(depth)
-            .with_table_bits(TABLE_BITS),
-    );
-    solver.bounded_negamax(state, depth.max(1)).1
-}
-
-/// Reference label plus (first proof depth, maximum attempted depth).
-fn label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
-    let remaining = 42 - ply as u32;
-    if remaining <= EXACT_SEARCH_REMAINING_CAP {
-        let score = solve(state, remaining);
-        let depth = remaining as u8;
-        return (classify_score(score, true), depth, depth);
-    }
-    let depth_cap = if ply_band(ply) == 0 {
-        OPENING_BAND_DEPTH_CAP
-    } else {
-        u32::MAX
-    };
-    let mut max = 0u8;
-    for &depth in BOUNDED_DEPTH_SCHEDULE {
-        if depth > depth_cap {
-            break;
-        }
-        if depth >= remaining {
-            let score = solve(state, remaining);
-            let d = remaining as u8;
-            return (classify_score(score, true), d, d);
-        }
-        max = depth as u8;
-        let label = classify_score(solve(state, depth), false);
-        if label != ReferenceLabel::Unresolved {
-            return (label, depth as u8, max);
-        }
-    }
-    (ReferenceLabel::Unresolved, 0, max)
-}
 
 /// Deterministic three-move forced opening for a source game.
 fn opening_prefix(group: u32) -> [u8; 3] {
@@ -159,7 +112,7 @@ fn main() -> ExitCode {
                 let side = if state.turn() == Player::Black { 0 } else { 1 };
                 let key = canonical_key(state.black().bits(), state.white().bits(), side);
                 if seen.insert(key) {
-                    let (label, proof_depth, max_depth) = label(&state, ply);
+                    let (label, proof_depth, max_depth) = searched_reference_label(&state, ply);
                     game_positions.push(DiagnosticRecord {
                         black: state.black().bits(),
                         white: state.white().bits(),

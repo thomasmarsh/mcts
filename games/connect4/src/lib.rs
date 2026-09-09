@@ -68,7 +68,7 @@ pub enum Player {
 }
 
 impl Player {
-    fn next(self) -> Player {
+    pub(crate) fn next(self) -> Player {
         match self {
             Player::Black => Player::White,
             Player::White => Player::Black,

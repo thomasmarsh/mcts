@@ -8,10 +8,11 @@ use std::{env, process::ExitCode};
 use game_connect4::{convnet::CnnValuePolicyNet, valuenet::NTupleValueNet};
 use game_connect4::{
     dump::Record,
-    reference_diagnostic::{decode as decode_reference, metrics, ReferenceLabel, Split},
-    BitBoard, Player, Standard, State,
+    reference_diagnostic::{
+        decode as decode_reference, metrics, reference_negamax_score, ReferenceLabel, Split,
+    },
+    BitBoard, Player, State,
 };
-use mcts::algorithms::negamax::{MaterialBlind, Negamax, NegamaxOptions};
 use sha2::Digest;
 
 struct Sample {
@@ -297,12 +298,6 @@ fn main() -> ExitCode {
     let mut all_y = Vec::new();
     let mut tactical_p = Vec::new();
     let mut tactical_y = Vec::new();
-    let mut solver = Negamax::<Standard, MaterialBlind>::new_with_options(
-        MaterialBlind,
-        NegamaxOptions::default()
-            .with_max_depth(depth)
-            .with_table_bits(18),
-    );
     let mut buckets = [(0usize, 0.0f64, 0.0f64); 5];
     let mut by_band = vec![(Vec::new(), Vec::new()); 3];
     let mut by_side = vec![(Vec::new(), Vec::new()); 2];
@@ -324,7 +319,7 @@ fn main() -> ExitCode {
         };
         by_side[side].0.push(p);
         by_side[side].1.push(r.value);
-        let (_, score) = solver.bounded_negamax(&r.state, depth);
+        let score = reference_negamax_score(&r.state, depth);
         if score != 0 {
             tactical_p.push(p);
             tactical_y.push(score.signum() as f64);
