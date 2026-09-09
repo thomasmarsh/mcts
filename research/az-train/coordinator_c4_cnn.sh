@@ -97,7 +97,7 @@ for g in $(seq "$START" $((GENS - 1))); do
     --result "$RUN_DIR/gen$g.result.json" \
     --gate-vs-zero "$RUN_DIR/gen$g.gate-vs-zero.txt" \
     --gate-vs-gen0 "$RUN_DIR/gen$g.gate-vs-gen0.txt" \
-    "${prev_metric_args[@]}" \
+    ${prev_metric_args[@]+"${prev_metric_args[@]}"} \
     --generation "$g" --wall-seconds "$gen_wall" \
     | tee -a "$RUN_DIR/coordinator-metrics.jsonl"
 
