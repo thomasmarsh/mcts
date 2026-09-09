@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C4CNN001 Architecture</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbf9;
+    --fg: #1c1c1a;
+    --muted: #6b6b66;
+    --card: #ffffff;
+    --border: #d9d9d3;
+    --trunk: #2f6f9f;
+    --trunk-bg: #e7f1f8;
+    --value: #b5651d;
+    --value-bg: #f8efe4;
+    --policy: #4a7c3f;
+    --policy-bg: #eaf3e6;
+    --wrap: #7a4a8c;
+    --wrap-bg: #f1e9f4;
+    --accent: #333;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a;
+      --fg: #e6e6e2;
+      --muted: #9a9a94;
+      --card: #202024;
+      --border: #37373d;
+      --trunk: #6db1de;
+      --trunk-bg: #1c2f3d;
+      --value: #e0a267;
+      --value-bg: #352a1e;
+      --policy: #8fc47f;
+      --policy-bg: #1f2e1c;
+      --wrap: #c79fd6;
+      --wrap-bg: #2c2233;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 2.5rem 1.5rem 4rem; }
+  main { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.05rem; margin: 2.2rem 0 .6rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
+  p.sub { color: var(--muted); margin: 0 0 1.5rem; }
+  .diagram { width: 100%; overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+  svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--card); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: .05em .35em; }
+  .legend { display: flex; flex-wrap: wrap; gap: 1rem; margin: .8rem 0 0; font-size: 13px; }
+  .legend span { display: inline-flex; align-items: center; gap: .4rem; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; border: 1px solid var(--border); }
+  ul { margin: .4rem 0; padding-left: 1.3rem; }
+  li { margin: .2rem 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>C4CNN001 &mdash; compact Connect Four value + policy network</h1>
+  <p class="sub">Architecture as implemented in <code>research/az-train/src/az_train/convnet_c4.py</code>. Inference-only NumPy; deterministic Adam fit on self-play outcomes (value) and completed-Q targets (policy).</p>
+
+  <div class="diagram">
+  <svg viewBox="0 0 960 760" role="img" aria-label="C4CNN001 network diagram">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+      </marker>
+    </defs>
+
+    <!-- INPUT -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="380" y="20" width="200" height="56" rx="8" fill="var(--card)" stroke="var(--border)"/>
+      <text x="480" y="42" font-weight="600" fill="var(--fg)">Input</text>
+      <text x="480" y="60" fill="var(--muted)">2 &times; 6 &times; 7  (me plane, opp plane)</text>
+    </g>
+    <line x1="480" y1="76" x2="480" y2="104" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+
+    <!-- STEM -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="360" y="104" width="240" height="58" rx="8" fill="var(--trunk-bg)" stroke="var(--trunk)"/>
+      <text x="480" y="126" font-weight="600" fill="var(--fg)">Stem</text>
+      <text x="480" y="144" fill="var(--muted)">Conv 3&times;3, 2&rarr;16, pad 1 &rarr; ReLU</text>
+    </g>
+    <line x1="480" y1="162" x2="480" y2="188" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+
+    <!-- RES BLOCK 1 -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="330" y="188" width="300" height="92" rx="8" fill="var(--trunk-bg)" stroke="var(--trunk)"/>
+      <text x="480" y="208" font-weight="600" fill="var(--fg)">Residual block 1</text>
+      <text x="480" y="226" fill="var(--muted)">Conv 3&times;3, 16&rarr;16, pad 1 &rarr; ReLU</text>
+      <text x="480" y="242" fill="var(--muted)">Conv 3&times;3, 16&rarr;16, pad 1</text>
+      <text x="480" y="258" fill="var(--muted)">+ skip &rarr; ReLU</text>
+    </g>
+    <path d="M645 234 q40 0 40 -30 v-6 q0 -20 -30 -20" fill="none" stroke="var(--trunk)" stroke-dasharray="4 3" stroke-width="1.3" marker-end="url(#arrow)" color="var(--trunk)"/>
+    <line x1="480" y1="280" x2="480" y2="306" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+
+    <!-- RES BLOCK 2 -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="330" y="306" width="300" height="92" rx="8" fill="var(--trunk-bg)" stroke="var(--trunk)"/>
+      <text x="480" y="326" font-weight="600" fill="var(--fg)">Residual block 2</text>
+      <text x="480" y="344" fill="var(--muted)">Conv 3&times;3, 16&rarr;16, pad 1 &rarr; ReLU</text>
+      <text x="480" y="360" fill="var(--muted)">Conv 3&times;3, 16&rarr;16, pad 1</text>
+      <text x="480" y="376" fill="var(--muted)">+ skip &rarr; ReLU</text>
+    </g>
+    <path d="M645 352 q40 0 40 -30 v-6 q0 -20 -30 -20" fill="none" stroke="var(--trunk)" stroke-dasharray="4 3" stroke-width="1.3" marker-end="url(#arrow)" color="var(--trunk)"/>
+
+    <text x="700" y="345" font-size="11" fill="var(--trunk)" text-anchor="start">shared trunk</text>
+    <text x="700" y="360" font-size="11" fill="var(--muted)" text-anchor="start">16 &times; 6 &times; 7</text>
+
+    <!-- split -->
+    <line x1="480" y1="398" x2="480" y2="418" stroke="currentColor" stroke-width="1.5" color="var(--muted)"/>
+    <line x1="300" y1="418" x2="660" y2="418" stroke="currentColor" stroke-width="1.5" color="var(--muted)"/>
+    <line x1="300" y1="418" x2="300" y2="440" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+    <line x1="660" y1="418" x2="660" y2="440" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+
+    <!-- VALUE HEAD -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="150" y="440" width="300" height="128" rx="8" fill="var(--value-bg)" stroke="var(--value)"/>
+      <text x="300" y="460" font-weight="600" fill="var(--fg)">Value head</text>
+      <text x="300" y="478" fill="var(--muted)">Conv 1&times;1, 16&rarr;1 &rarr; ReLU</text>
+      <text x="300" y="494" fill="var(--muted)">flatten &rarr; 42</text>
+      <text x="300" y="510" fill="var(--muted)">FC 42&rarr;32 &rarr; ReLU</text>
+      <text x="300" y="526" fill="var(--muted)">FC 32&rarr;1</text>
+      <text x="300" y="542" fill="var(--muted)">tanh</text>
+      <text x="300" y="560" fill="var(--value)" font-weight="600">value scalar &isin; (&minus;1, 1)</text>
+    </g>
+
+    <!-- POLICY HEAD -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="510" y="440" width="300" height="128" rx="8" fill="var(--policy-bg)" stroke="var(--policy)"/>
+      <text x="660" y="460" font-weight="600" fill="var(--fg)">Policy head</text>
+      <text x="660" y="478" fill="var(--muted)">Conv 1&times;1, 16&rarr;1 &rarr; ReLU</text>
+      <text x="660" y="494" fill="var(--muted)">flatten &rarr; 42</text>
+      <text x="660" y="510" fill="var(--muted)">FC 42&rarr;7</text>
+      <text x="660" y="534" fill="var(--policy)" font-weight="600">7 column logits</text>
+      <text x="660" y="550" fill="var(--muted)">(softmax over legal cols downstream)</text>
+    </g>
+
+    <line x1="300" y1="568" x2="300" y2="596" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+    <line x1="660" y1="568" x2="660" y2="596" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+
+    <!-- MIRROR WRAPPER -->
+    <g text-anchor="middle" font-size="12">
+      <rect x="150" y="596" width="660" height="88" rx="8" fill="var(--wrap-bg)" stroke="var(--wrap)"/>
+      <text x="480" y="616" font-weight="600" fill="var(--fg)">Mirror-averaged inference &mdash; predict()</text>
+      <text x="480" y="634" fill="var(--muted)">Run the board and its left&ndash;right column reflection through the whole net above.</text>
+      <text x="480" y="650" fill="var(--muted)">value = &frac12;(v + v&#8242;)&nbsp;&nbsp;&middot;&nbsp;&nbsp;logits = &frac12;(l + reflect(l&#8242;))</text>
+      <text x="480" y="668" fill="var(--muted)">Enforces the Connect Four horizontal symmetry at eval time.</text>
+    </g>
+    <line x1="480" y1="684" x2="480" y2="710" stroke="currentColor" stroke-width="1.5" marker-end="url(#arrow)" color="var(--muted)"/>
+    <g text-anchor="middle" font-size="12">
+      <rect x="330" y="710" width="300" height="40" rx="8" fill="var(--card)" stroke="var(--border)"/>
+      <text x="480" y="735" fill="var(--fg)">(value, 7 column logits)</text>
+    </g>
+  </svg>
+  </div>
+
+  <div class="legend">
+    <span><span class="sw" style="background:var(--trunk-bg);border-color:var(--trunk)"></span>Shared trunk</span>
+    <span><span class="sw" style="background:var(--value-bg);border-color:var(--value)"></span>Value head</span>
+    <span><span class="sw" style="background:var(--policy-bg);border-color:var(--policy)"></span>Policy head</span>
+    <span><span class="sw" style="background:var(--wrap-bg);border-color:var(--wrap)"></span>Inference wrapper</span>
+  </div>
+
+  <h2>Fixed hyperparameters</h2>
+  <ul>
+    <li>Board <code>6 &times; 7</code>, input <code>2</code> planes (side-to-move occupancy, opponent occupancy)</li>
+    <li><code>CHANNELS = 16</code> throughout the trunk, <code>BLOCKS = 2</code> residual blocks</li>
+    <li><code>VALUE_HIDDEN = 32</code>, <code>POLICY_OUTPUTS = 7</code></li>
+    <li>All convolutions use zero padding; 3&times;3 in the trunk (pad 1, shape-preserving), 1&times;1 projections in each head (pad 0)</li>
+    <li>Serialized as <code>C4CNN001</code>: <code>&lt;8s9I</code> header then <code>N_WEIGHTS</code> little-endian float32</li>
+  </ul>
+
+  <h2>Parameter budget</h2>
+  <table>
+    <thead><tr><th>Group</th><th>Tensors</th><th class="num">Params</th></tr></thead>
+    <tbody>
+      <tr><td>Stem</td><td>conv 16&times;2&times;3&times;3 + bias 16</td><td class="num">304</td></tr>
+      <tr><td>Residual block 1</td><td>2 &times; (conv 16&times;16&times;3&times;3 + bias 16)</td><td class="num">4,640</td></tr>
+      <tr><td>Residual block 2</td><td>2 &times; (conv 16&times;16&times;3&times;3 + bias 16)</td><td class="num">4,640</td></tr>
+      <tr><td>Value head</td><td>conv 1&times;16&times;1&times;1 + b; FC 42&times;32 + b; FC 32&times;1 + b</td><td class="num">1,426</td></tr>
+      <tr><td>Policy head</td><td>conv 1&times;16&times;1&times;1 + b; FC 42&times;7 + b</td><td class="num">318</td></tr>
+      <tr><td><strong>Total</strong></td><td><code>N_WEIGHTS</code></td><td class="num"><strong>11,328</strong></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Training notes</h2>
+  <ul>
+    <li>Loss = <code>value_loss_weight</code> &middot; value MSE (tanh output vs self-play outcome) + masked policy cross-entropy over legal columns + L2 on weight tensors</li>
+    <li>Deterministic Adam (&beta;&#8321;=0.9, &beta;&#8322;=0.999), seeded shuffle, early-stop checkpoint chosen by highest held-out value Pearson</li>
+    <li>Per-epoch diagnostics: shared-trunk value/policy gradient cosine (head conflict), ReLU activation health, orientation (literal vs mirror-averaged) metrics</li>
+    <li>A structurally mirror-<em>equivariant</em> value variant also exists (<code>fit_equivariant_value_policy</code> / <code>_predict_value_equivariant</code>): both orientations pass through the shared trunk, every feature map is column-symmetrized and averaged before a single value head, making the scalar exactly mirror-invariant for any weights. The policy head there still reads the literal trunk.</li>
+  </ul>
+</main>
+</body>
+</html>
