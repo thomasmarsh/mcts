@@ -173,6 +173,7 @@ impl Search for CnnGumbelPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mcts::algorithms::mcts::gumbel::completed_q;
     use mcts::algorithms::mcts::node::Node;
     use mcts::algorithms::mcts::policy::PolicyLogits;
     use mcts::algorithms::mcts::search::shared::expand;
@@ -401,5 +402,63 @@ mod tests {
             root.children().expected_score(idx, 0) > 0.5,
             "winning edge should be ~+1 for Black"
         );
+    }
+
+    /// End-to-end perspective check of the root Sequential-Halving ranking
+    /// input: on a hand-built position where Black has an immediate vertical
+    /// four in column 3, a forced descent into that column reaches a terminal
+    /// win, so its edge Q is exactly `+1` in Black's perspective. Fed through
+    /// the same `completed_q` completion the SH survivor key uses -- with a
+    /// deliberately *negative* explicit root value, which only fills the
+    /// unvisited actions and must not flip the visited winning entry -- the
+    /// winning column must hold the single largest completed-Q value. Every
+    /// number here is hand-derived from the rules, not pinned from a run.
+    #[test]
+    fn completed_q_ranks_the_winning_drop_first() {
+        let net = NTupleValueNet::default();
+        let mut search: TreeSearch<Standard, GumbelProfile> = TreeSearch::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_playout_depth(0)
+                .q_init(QInit::Loss)
+                .simulate(EvaluatedCutoff::new().evaluator(net))
+                .seed(1),
+        );
+        let state = one_move_from_win();
+        let player = Standard::player_to_move(&state).to_index();
+        let _ = gumbel_search_with_root_value(&mut search, &state, &wide_cfg(), -0.9);
+
+        let root = search.index.get(search.root_id);
+        let children = root.children();
+        let k = children.len();
+        let win_idx = (0..k).find(|&i| children.action(i) == Move(3)).unwrap();
+
+        let visits: Vec<u32> = (0..k).map(|i| children.num_visits(i)).collect();
+        let qs: Vec<f64> = (0..k).map(|i| children.expected_score(i, player)).collect();
+        let logits: Vec<f64> = children.policy_logits().to_vec();
+
+        assert!(visits[win_idx] > 0, "winning drop must have been searched");
+        assert!(
+            (qs[win_idx] - 1.0).abs() < 1e-9,
+            "a forced descent into the win backs up exactly +1 for Black, got {}",
+            qs[win_idx]
+        );
+
+        let completed = completed_q(-0.9, &logits, &visits, &qs);
+        assert!(
+            (completed[win_idx] - 1.0).abs() < 1e-9,
+            "completion must not perturb the visited winning entry, got {}",
+            completed[win_idx]
+        );
+        for i in 0..k {
+            if i != win_idx {
+                assert!(
+                    completed[i] < completed[win_idx],
+                    "action {i} completed-Q {} >= winning {}",
+                    completed[i],
+                    completed[win_idx]
+                );
+            }
+        }
     }
 }
