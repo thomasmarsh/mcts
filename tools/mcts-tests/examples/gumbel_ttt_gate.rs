@@ -20,7 +20,7 @@
 use std::collections::HashSet;
 use std::process::ExitCode;
 
-use mcts::algorithms::mcts::gumbel::GumbelConfig;
+use mcts::algorithms::mcts::gumbel::{GumbelConfig, SigmaMode};
 use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
 use mcts::util::battle_royale;
@@ -140,10 +140,30 @@ fn main() -> ExitCode {
     }
     let baseline = load(&args[1]);
     let candidate = load(&args[2]);
-    let games: usize = args.get(3).map_or(200, |s| s.parse().expect("games"));
-    let sims: u32 = args.get(4).map_or(32, |s| s.parse().expect("sims"));
+    let positional: Vec<&String> = args[3..].iter().filter(|a| !a.starts_with("--")).collect();
+    let games: usize = positional.first().map_or(200, |s| s.parse().expect("games"));
+    let sims: u32 = positional.get(1).map_or(32, |s| s.parse().expect("sims"));
+    // `--sigma-mode node|smooth|gate2|gate3|gate4|realized` exercises the root
+    // Sequential-Halving visit-scaled sigma modes; the default is Mctx-verbatim.
+    let sigma_mode = match args
+        .windows(2)
+        .find(|w| w[0] == "--sigma-mode")
+        .map(|w| w[1].as_str())
+    {
+        None | Some("node") => SigmaMode::NodeFloor,
+        Some("smooth") => SigmaMode::Smooth,
+        Some("gate2") => SigmaMode::HardGate(2),
+        Some("gate3") => SigmaMode::HardGate(3),
+        Some("gate4") => SigmaMode::HardGate(4),
+        Some("realized") => SigmaMode::RealizedOnly,
+        Some(other) => {
+            eprintln!("unknown --sigma-mode {other}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cfg = GumbelConfig {
         sims,
+        sigma_mode,
         ..GumbelConfig::default()
     };
 

@@ -18,6 +18,9 @@
 //!     sweep.
 //!   * `--root-only` runs each anchor as Full Gumbel and as root-only Gumbel
 //!     (interior PUCT, no completed-Q override) at 32/128/256 sims.
+//!   * `--sigma-sweep` runs each visit-evidence-scaled `sigma` mode (smooth,
+//!     hard gate `k in {2,3,4}`, realized-only) across `c_scale in {0.05,0.1}`
+//!     and `c_visit in {50,0}` at 32/128 sims, plus the NodeFloor control.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -25,7 +28,9 @@ use std::process::ExitCode;
 use game_connect4::convnet::CnnValuePolicyNet;
 use game_connect4::reference_diagnostic::reference_negamax_score;
 use game_connect4::{Move, Standard, State};
-use mcts::algorithms::mcts::gumbel::{gumbel_search_with_root_value, GumbelConfig, GumbelOutcome};
+use mcts::algorithms::mcts::gumbel::{
+    gumbel_search_with_root_value, GumbelConfig, GumbelOutcome, SigmaMode,
+};
 use mcts::algorithms::mcts::node::QInit;
 use mcts::algorithms::mcts::profile::Mcts;
 use mcts::algorithms::mcts::select::GumbelCompletedQ;
@@ -133,6 +138,10 @@ struct Config {
     /// `false` selects root-only Gumbel: interior nodes use PUCT, no
     /// completed-Q override. The default Full Gumbel path keeps this `true`.
     interior_completed_q: bool,
+    /// Root Sequential-Halving `sigma` scaling rule. `NodeFloor` is the
+    /// Mctx-verbatim per-node floor; the other modes make it per-action and
+    /// visit-aware.
+    sigma_mode: SigmaMode,
 }
 
 /// The Mctx-verbatim completed-Q constants (`c_visit=50, c_scale=0.1,
@@ -149,7 +158,53 @@ fn anchor(name: &'static str, mctx: bool, interior_completed_q: bool) -> Config 
         gate: 0.0,
         negamax_depth: None,
         interior_completed_q,
+        sigma_mode: SigmaMode::NodeFloor,
     }
+}
+
+/// Visit-evidence-scaled `sigma` sweep. Each visit-aware sigma mode at the
+/// swept budgets with `c_scale in {0.05, 0.1}` and `c_visit in {50, 0}`,
+/// raw completed-Q (no min-max rescale), plus the current best baseline
+/// (`c_visit=0, c_scale=0.05, NodeFloor`) as the control.
+fn sigma_sweep_configs() -> Vec<Config> {
+    let mut out = vec![Config {
+        name: "control_best4.6z",
+        c_scale: 0.05,
+        c_visit: 0.0,
+        rescale_q: false,
+        gain: 1.0,
+        gate: 0.0,
+        negamax_depth: None,
+        interior_completed_q: true,
+        sigma_mode: SigmaMode::NodeFloor,
+    }];
+    for (mtag, mode) in [
+        ("smooth", SigmaMode::Smooth),
+        ("gate2", SigmaMode::HardGate(2)),
+        ("gate3", SigmaMode::HardGate(3)),
+        ("gate4", SigmaMode::HardGate(4)),
+        ("realized", SigmaMode::RealizedOnly),
+    ] {
+        for &c_scale in &[0.05f64, 0.1] {
+            for &c_visit in &[50.0f64, 0.0] {
+                let name: &'static str = Box::leak(
+                    format!("{mtag}_cs{c_scale}_cv{c_visit}").into_boxed_str(),
+                );
+                out.push(Config {
+                    name,
+                    c_scale,
+                    c_visit,
+                    rescale_q: false,
+                    gain: 1.0,
+                    gate: 0.0,
+                    negamax_depth: None,
+                    interior_completed_q: true,
+                    sigma_mode: mode,
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Slice 3.1/3.2 budget sweep: the two anchor configs, Full Gumbel, swept
@@ -183,6 +238,7 @@ fn configs() -> Vec<Config> {
         gate: 0.0,
         negamax_depth: None,
         interior_completed_q: true,
+        sigma_mode: SigmaMode::NodeFloor,
     };
     // c_scale sweep, min-max rescale on (the reference default).
     out.push(base("cscale_0.02", 0.02));
@@ -293,6 +349,7 @@ fn run(cfg_row: &Config, net: &CnnValuePolicyNet, games: usize, sims: u32) -> (u
         c_visit: cfg_row.c_visit,
         rescale_q: cfg_row.rescale_q,
         interior_completed_q: cfg_row.interior_completed_q,
+        sigma_mode: cfg_row.sigma_mode,
         ..GumbelConfig::default()
     };
     let trained_eval = CoupledEvaluator {
@@ -360,12 +417,19 @@ fn main() -> ExitCode {
         ("budget sweep (Full Gumbel, two anchor configs)", budget_configs(), budgets)
     } else if flag("--root-only") {
         ("root-only vs Full Gumbel control", rootonly_configs(), vec![32, 128, 256])
+    } else if flag("--sigma-sweep") {
+        let sweep = if args.iter().any(|a| a == "--budgets") {
+            budgets
+        } else {
+            vec![32, 128]
+        };
+        ("visit-evidence-scaled sigma sweep", sigma_sweep_configs(), sweep)
     } else {
         ("value/search coupling sweep", configs(), vec![sims])
     };
 
     println!("{header}: weights={} games={games}", args[1]);
-    println!("config                         sims c_scale c_visit rescale interiorCQ gain gate negamax  W-D-L        share");
+    println!("config                              sims c_scale c_visit rescale intCQ sigma_mode      gain gate negamax  W-D-L        share");
     for &s in &sweep {
         for row in &rows {
             if filter.is_some_and(|f| !row.name.contains(f)) {
@@ -378,9 +442,10 @@ fn main() -> ExitCode {
             let negamax = row
                 .negamax_depth
                 .map_or_else(|| "-".to_string(), |d| d.to_string());
+            let sigma_tag = format!("{:?}", row.sigma_mode);
             println!(
-                "{:<30} {s:>4} {:>7} {:>7} {:>7} {:>10} {:>4} {:>4} {:>7}  {w:>3}-{d:>3}-{l:<3}  {share:.3}  {secs:.0}s",
-                row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, row.gain, row.gate, negamax
+                "{:<35} {s:>4} {:>7} {:>7} {:>7} {:>5} {:>14} {:>4} {:>4} {:>7}  {w:>3}-{d:>3}-{l:<3}  {share:.3}  {secs:.0}s",
+                row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, sigma_tag, row.gain, row.gate, negamax
             );
             if let Some(path) = &out_path {
                 if let Ok(mut file) =
@@ -388,8 +453,8 @@ fn main() -> ExitCode {
                 {
                     let _ = writeln!(
                         file,
-                        "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"interior_completed_q\":{},\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{s},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4},\"wall_s\":{secs:.1}}}",
-                        row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, row.gain, row.gate, negamax
+                        "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"interior_completed_q\":{},\"sigma_mode\":\"{}\",\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{s},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4},\"wall_s\":{secs:.1}}}",
+                        row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, sigma_tag, row.gain, row.gate, negamax
                     );
                 }
             }

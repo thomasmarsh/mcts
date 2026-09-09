@@ -30,6 +30,51 @@ use crate::algorithms::mcts::search::{SearchContext, TreeSearch};
 use crate::algorithms::mcts::simulate::SimulatePolicy;
 use crate::game::{Game, PlayerIndex};
 
+/// How the Sequential-Halving ranking `sigma` term scales with visits.
+///
+/// `sigma_a = scale(a) * c_scale * transform(Q_a)`. `NodeFloor` is the
+/// Mctx-verbatim rule: `scale(a)` is the per-node `(c_visit + max_visit)`
+/// floor for every action regardless of how many of its own visits landed.
+/// The other modes make `scale(a)` depend on action `a`'s realized visit
+/// count so a barely-visited action's noisy completed-Q cannot dominate the
+/// Gumbel exploration budget at a small simulation budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SigmaMode {
+    /// Mctx-verbatim: `scale(a) = c_visit + max_visit` for every action.
+    #[default]
+    NodeFloor,
+    /// `scale(a) = min(realized_visits_a, c_visit + max_visit)`.
+    Smooth,
+    /// `scale(a) = 0` while `realized_visits_a < k`, else `c_visit + max_visit`.
+    HardGate(u32),
+    /// `scale(a) = realized_visits_a`, dropping the `max_visit` term entirely.
+    RealizedOnly,
+}
+
+/// The per-action multiplier on `c_scale * transform(Q_a)` in the
+/// Sequential-Halving ranking key. Interior selection can reuse this once
+/// visit-aware interior sigma is in scope.
+pub fn sigma_visit_scale(
+    mode: SigmaMode,
+    realized_visits: u32,
+    max_visits: u32,
+    c_visit: f64,
+) -> f64 {
+    let floor = c_visit + max_visits as f64;
+    match mode {
+        SigmaMode::NodeFloor => floor,
+        SigmaMode::Smooth => (realized_visits as f64).min(floor),
+        SigmaMode::HardGate(k) => {
+            if realized_visits < k {
+                0.0
+            } else {
+                floor
+            }
+        }
+        SigmaMode::RealizedOnly => realized_visits as f64,
+    }
+}
+
 /// Knobs for one Gumbel move. All of these belong in `config.toml` for a
 /// real run (`feedback_config_as_data`); the defaults match the paper's
 /// small-budget regime.
@@ -60,6 +105,10 @@ pub struct GumbelConfig {
     /// PUCT exploration constant used at interior nodes only when
     /// `interior_completed_q` is `false`.
     pub interior_c_puct: f64,
+    /// How the root Sequential-Halving `sigma` term scales with visits.
+    /// `NodeFloor` is the Mctx-verbatim default; the visit-aware modes stop a
+    /// one-visit noisy completed-Q from swamping exploration at small budgets.
+    pub sigma_mode: SigmaMode,
 }
 
 impl Default for GumbelConfig {
@@ -73,6 +122,7 @@ impl Default for GumbelConfig {
             use_completed_q: true,
             interior_completed_q: true,
             interior_c_puct: 1.25,
+            sigma_mode: SigmaMode::NodeFloor,
         }
     }
 }
@@ -104,7 +154,7 @@ fn sample_gumbel(rng: &mut impl Rng) -> f64 {
     -(-(u.ln())).ln()
 }
 
-fn root_child_max_visits<G, S>(search: &TreeSearch<G, S>, root_id: Id) -> u32
+fn root_child_visits<G, S>(search: &TreeSearch<G, S>, root_id: Id) -> Vec<u32>
 where
     G: Game,
     S: PolicyProfile<G>,
@@ -113,8 +163,7 @@ where
     let children = search.index.get(root_id).children();
     (0..children.len())
         .map(|i| children.num_visits(i))
-        .max()
-        .unwrap_or(0)
+        .collect()
 }
 
 /// Complete unvisited action values with the prior-weighted mixed value from
@@ -229,10 +278,12 @@ fn candidate_score(
     logits: &[f64],
     completed_q: &[f64],
     cfg: &GumbelConfig,
+    visits: &[u32],
     max_visits: u32,
 ) -> f64 {
     let transformed = transform_completed_q(completed_q, cfg.rescale_q);
-    let sigma = (cfg.c_visit + max_visits as f64) * cfg.c_scale * transformed[idx];
+    let scale = sigma_visit_scale(cfg.sigma_mode, visits[idx], max_visits, cfg.c_visit);
+    let sigma = scale * cfg.c_scale * transformed[idx];
     gumbel[idx] + logits[idx] + sigma
 }
 
@@ -373,23 +424,25 @@ where
         if last_phase {
             break;
         }
-        let max_visits = root_child_max_visits(search, root_id);
+        let visits = root_child_visits(search, root_id);
+        let max_visits = visits.iter().copied().max().unwrap_or(0);
         let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
         considered.sort_by(|&a, &b| {
-            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
-            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
+            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
+            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
             sb.partial_cmp(&sa).unwrap()
         });
         considered.truncate(considered.len().div_ceil(2).max(1));
     }
 
-    let max_visits = root_child_max_visits(search, root_id);
+    let visits = root_child_visits(search, root_id);
+    let max_visits = visits.iter().copied().max().unwrap_or(0);
     let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
     let best = *considered
         .iter()
         .max_by(|&&a, &&b| {
-            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, max_visits);
-            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, max_visits);
+            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
+            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
             sa.partial_cmp(&sb).unwrap()
         })
         .expect("Gumbel keeps at least one candidate");
@@ -408,10 +461,6 @@ where
                 .collect()
         }
     };
-    let visits: Vec<u32> = {
-        let children = search.index.get(root_id).children();
-        (0..k).map(|i| children.num_visits(i)).collect()
-    };
     let improved = improved_policy(&logits, &visits, &completed_q, cfg);
 
     GumbelOutcome {
@@ -424,8 +473,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_score, completed_q, improved_policy, num_phases, transform_completed_q,
-        GumbelConfig,
+        candidate_score, completed_q, improved_policy, num_phases, sigma_visit_scale,
+        transform_completed_q, GumbelConfig, SigmaMode,
     };
 
     #[test]
@@ -543,11 +592,112 @@ mod tests {
         ];
         let max_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         for (idx, expected) in reference.iter().enumerate() {
-            let ours = candidate_score(idx, &gumbel, &logits, &completed, &cfg, max_visits);
+            let ours = candidate_score(idx, &gumbel, &logits, &completed, &cfg, &visits, max_visits);
             assert!((ours - max_logit - expected).abs() < 1e-9);
         }
         // Mctx survivor order: action 0, then action 2, then action 1.
         assert!(reference[0] > reference[2] && reference[2] > reference[1]);
+    }
+
+    /// `NodeFloor` is the Mctx-verbatim default: `sigma_visit_scale` returns
+    /// the `c_visit + max_visit` per-node floor for every action regardless of
+    /// its own realized visits, so `candidate_score` is byte-unchanged.
+    #[test]
+    fn node_floor_sigma_scale_is_the_mctx_per_node_floor() {
+        for realized in [0u32, 1, 3, 7] {
+            assert_eq!(
+                sigma_visit_scale(SigmaMode::NodeFloor, realized, 7, 50.0),
+                57.0
+            );
+        }
+    }
+
+    /// Under the visit-aware modes a 0- or 1-visit action's `sigma` multiplier
+    /// is ~0, so its (possibly wild) completed-Q cannot outrank a well-visited
+    /// action on the `sigma` term alone. Same logits and Gumbel draw; only the
+    /// completed-Q and visits differ.
+    #[test]
+    fn barely_visited_noisy_q_cannot_win_on_sigma_under_visit_aware_modes() {
+        let gumbel = [0.0, 0.0];
+        let logits = [0.0, 0.0];
+        // action 0: 6 visits, modest Q; action 1: 1 visit, extreme Q.
+        let visits = [6u32, 1];
+        let completed = [0.30, 1.0];
+        let max_visits = 6;
+        for mode in [
+            SigmaMode::Smooth,
+            SigmaMode::HardGate(2),
+            SigmaMode::HardGate(3),
+            SigmaMode::HardGate(4),
+            SigmaMode::RealizedOnly,
+        ] {
+            let cfg = GumbelConfig {
+                c_visit: 0.0,
+                c_scale: 0.1,
+                rescale_q: false,
+                sigma_mode: mode,
+                ..GumbelConfig::default()
+            };
+            let s0 = candidate_score(0, &gumbel, &logits, &completed, &cfg, &visits, max_visits);
+            let s1 = candidate_score(1, &gumbel, &logits, &completed, &cfg, &visits, max_visits);
+            assert!(s0 > s1, "{mode:?}: barely-visited noisy Q won ({s0} vs {s1})");
+        }
+    }
+
+    /// A heavily-visited action (`realized ~ max_visit`) reproduces the old
+    /// `NodeFloor` sigma within tolerance once `c_visit = 0`.
+    #[test]
+    fn heavily_visited_action_reproduces_node_floor_sigma() {
+        let realized = 8u32;
+        let max_visits = 8u32;
+        let floor = sigma_visit_scale(SigmaMode::NodeFloor, realized, max_visits, 0.0);
+        for mode in [SigmaMode::Smooth, SigmaMode::HardGate(4), SigmaMode::RealizedOnly] {
+            let scale = sigma_visit_scale(mode, realized, max_visits, 0.0);
+            assert!((scale - floor).abs() < 1e-9, "{mode:?}: {scale} vs {floor}");
+        }
+        // The hard gate is exactly the floor above its threshold, zero below.
+        assert_eq!(sigma_visit_scale(SigmaMode::HardGate(3), 2, 8, 50.0), 0.0);
+        assert_eq!(sigma_visit_scale(SigmaMode::HardGate(3), 3, 8, 50.0), 58.0);
+    }
+
+    /// Additive-invariance of the ranking key under a constant logit shift
+    /// holds under every sigma mode (the sigma term does not touch logits).
+    #[test]
+    fn candidate_score_ranking_is_logit_shift_invariant_under_every_mode() {
+        let gumbel = [0.3, -0.7, 1.1];
+        let logits = [0.2, -0.1, 0.4];
+        let shifted = [17.2, 16.9, 17.4];
+        let visits = [4u32, 1, 0];
+        let completed = completed_q(0.1, &logits, &visits, &[0.5, -0.3, 0.0]);
+        let max_visits = 4;
+        for mode in [
+            SigmaMode::NodeFloor,
+            SigmaMode::Smooth,
+            SigmaMode::HardGate(2),
+            SigmaMode::RealizedOnly,
+        ] {
+            let cfg = GumbelConfig {
+                sigma_mode: mode,
+                ..GumbelConfig::default()
+            };
+            let base: Vec<f64> = (0..3)
+                .map(|i| candidate_score(i, &gumbel, &logits, &completed, &cfg, &visits, max_visits))
+                .collect();
+            let bumped: Vec<f64> = (0..3)
+                .map(|i| candidate_score(i, &gumbel, &shifted, &completed, &cfg, &visits, max_visits))
+                .collect();
+            for i in 0..3 {
+                assert!((base[i] + 17.0 - bumped[i]).abs() < 1e-9, "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn improved_policy_stays_finite_nonneg_and_normalized() {
+        let cfg = GumbelConfig::default();
+        let p = improved_policy(&[2.0, -1.0, 0.5], &[4, 1, 0], &[0.5, -0.5, 0.1], &cfg);
+        assert!((p.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!(p.iter().all(|x| x.is_finite() && *x >= 0.0));
     }
 
     #[test]
