@@ -17,6 +17,7 @@ game-core = { path = "../game-core" }
 bitboard = { path = "../../crates/bitboard" }
 serde = { version = "1", features = ["derive"] }
 rand = { version = "0.8.5", features = ["small_rng"] }
+rayon = "1.8.1"
 
 [lints]
 workspace = true

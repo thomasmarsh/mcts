@@ -23,6 +23,7 @@ use game_connect4::{
     reference_diagnostic::{searched_reference_label, searched_value_scalar, ReferenceLabel},
     BitBoard, Player, State,
 };
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 
 fn peak_rss_bytes() -> u64 {
@@ -101,28 +102,40 @@ fn main() -> ExitCode {
         records.truncate(limit);
     }
 
+    // Every position is scored independently by the deterministic negamax
+    // schedule, so `par_iter` only changes wall time, not the result: the
+    // collected vector stays in record order.
+    let scored_progress = std::sync::atomic::AtomicUsize::new(0);
+    let scored: Vec<(f32, ReferenceLabel, u8)> = records
+        .par_iter()
+        .map(|record| {
+            let turn = if record.side == 0 {
+                Player::Black
+            } else {
+                Player::White
+            };
+            let state = State::<6, 7>::from_parts(
+                BitBoard::from_bits(record.black),
+                BitBoard::from_bits(record.white),
+                turn,
+                false,
+            );
+            let (label, _proof, _max) = searched_reference_label(&state, record.ply);
+            let done = scored_progress.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if done.is_multiple_of(1000) || done == records.len() {
+                eprintln!("  scored {}/{} positions", done, records.len());
+            }
+            (searched_value_scalar(label), label, record.ply)
+        })
+        .collect();
+
     let mut values: Vec<f32> = Vec::with_capacity(records.len());
     let mut label_hist = [0usize; 6];
     let mut ply_hist = [0usize; 42];
-    for (index, record) in records.iter().enumerate() {
-        let turn = if record.side == 0 {
-            Player::Black
-        } else {
-            Player::White
-        };
-        let state = State::<6, 7>::from_parts(
-            BitBoard::from_bits(record.black),
-            BitBoard::from_bits(record.white),
-            turn,
-            false,
-        );
-        let (label, _proof, _max) = searched_reference_label(&state, record.ply);
+    for (value, label, ply) in scored {
+        values.push(value);
         label_hist[label as usize] += 1;
-        ply_hist[record.ply as usize] += 1;
-        values.push(searched_value_scalar(label));
-        if (index + 1) % 200 == 0 || index + 1 == records.len() {
-            eprintln!("  scored {}/{} positions", index + 1, records.len());
-        }
+        ply_hist[ply as usize] += 1;
     }
 
     let mut bytes = Vec::with_capacity(values.len() * 4);

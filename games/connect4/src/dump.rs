@@ -42,10 +42,13 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use mcts::algorithms::mcts::gumbel::GumbelConfig;
 use mcts::game::Game;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rayon::prelude::*;
 
 use crate::convnet::CnnValuePolicyNet;
 use crate::selfplay::{CnnGumbelPlayer, GumbelPlayer};
@@ -68,6 +71,19 @@ fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
 
 /// Bottom-row-origin cell count of the standard board.
 const CELLS: usize = 42;
+
+/// The forced opening column for game `game_index` at opening ply `ply_index`
+/// (`0`-based, `ply_index < forced_plies`). The digits of `game_index` in base
+/// 7, least-significant first, give a distinct forced opening prefix to every
+/// consecutive block of `7^forced_plies` games, so a run sweeps opening lines
+/// deterministically and uniformly instead of leaving diversity to sampling
+/// noise. This is the self-play analogue of the reference corpus's
+/// `opening_prefix` scheme. The column is clamped into `0..7`; the caller
+/// still drops it and falls back to normal move selection if the chosen
+/// column is full.
+fn forced_opening_column(game_index: u64, ply_index: u32) -> u8 {
+    ((game_index / 7u64.pow(ply_index)) % 7) as u8
+}
 
 /// One dumped position. See the module docs for field semantics.
 #[derive(Debug, Clone, PartialEq)]
@@ -234,6 +250,12 @@ struct Config {
     /// trains on a distribution that does not collapse onto its own current
     /// best line each generation.
     temp_moves: u8,
+    /// `--label gumbel` only: number of opening plies whose move is *forced*
+    /// to a deterministic per-game column (see [`forced_opening_column`])
+    /// rather than chosen by search. Forces wide, uniform opening coverage
+    /// across a run. `0` disables forcing. Search still runs and a policy
+    /// target is still recorded at every forced position.
+    forced_opening_plies: u32,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -247,6 +269,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut sims = 32u32;
     let mut max_considered = 8usize;
     let mut temp_moves = 6u8;
+    let mut forced_opening_plies = 0u32;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -268,11 +291,16 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                 max_considered = val().parse().expect("--max-considered must be an integer")
             }
             "--temp-moves" => temp_moves = val().parse().expect("--temp-moves must be an integer"),
+            "--forced-opening-plies" => {
+                forced_opening_plies = val()
+                    .parse()
+                    .expect("--forced-opening-plies must be an integer")
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
                      [--label outcome|gumbel] [--head ntuple|cnn] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
-                     [--max-considered N] [--temp-moves N]"
+                     [--max-considered N] [--temp-moves N] [--forced-opening-plies N]"
                 );
                 std::process::exit(0);
             }
@@ -300,7 +328,56 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         sims,
         max_considered,
         temp_moves,
+        forced_opening_plies,
     }
+}
+
+/// The forced opening move for `game_index` at `ply`, or `None` when `ply` is
+/// past the forced prefix or the deterministic column is already full.
+fn forced_move(state: &State<6, 7>, game_index: u64, ply: u32, forced_plies: u32) -> Option<Move> {
+    if ply >= forced_plies {
+        return None;
+    }
+    let col = forced_opening_column(game_index, ply);
+    let mut actions = Vec::new();
+    Standard::generate_actions(state, &mut actions);
+    actions.into_iter().find(|m| m.0 == col)
+}
+
+/// Play one CNN Gumbel self-play game, returning a [`Record`] with the
+/// completed-Q improved policy for every non-terminal position. `value` is
+/// backfilled from the final outcome before returning.
+fn play_one_cnn_game(
+    net: &CnnValuePolicyNet,
+    gcfg: GumbelConfig,
+    game_index: u64,
+    seed: u64,
+    temp_moves: u8,
+    forced_plies: u32,
+) -> Vec<Record> {
+    let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, seed);
+    let mut move_rng = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
+    let mut state = State::<6, 7>::default();
+    let mut records = Vec::new();
+    let mut ply = 0u8;
+    while !Standard::is_terminal(&state) {
+        let outcome = player.choose(&state);
+        records.push(record_for(
+            &state,
+            outcome.improved_policy.iter().map(|(m, p)| (m.0, *p)).collect(),
+        ));
+        let action = if let Some(forced) = forced_move(&state, game_index, ply as u32, forced_plies) {
+            forced
+        } else if ply < temp_moves {
+            sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
+        } else {
+            outcome.action
+        };
+        state = Standard::apply(state, &action);
+        ply += 1;
+    }
+    finish_game(&mut records, 0, winner_of(&state));
+    records
 }
 
 /// Play `cfg.games` Gumbel self-play games, pushing a [`Record`] with the
@@ -318,40 +395,30 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
             max_considered: cfg.max_considered,
             ..GumbelConfig::default()
         };
-        for g in 0..cfg.games {
-            let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
-            let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, game_seed);
-            let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
-            let mut state = State::<6, 7>::default();
-            let first = records.len();
-            let mut ply = 0u8;
-            while !Standard::is_terminal(&state) {
-                let outcome = player.choose(&state);
-                records.push(record_for(
-                    &state,
-                    outcome
-                        .improved_policy
-                        .iter()
-                        .map(|(m, p)| (m.0, *p))
-                        .collect(),
-                ));
-                let action = if ply < cfg.temp_moves {
-                    sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
-                } else {
-                    outcome.action
-                };
-                state = Standard::apply(state, &action);
-                ply += 1;
-            }
-            finish_game(records, first, winner_of(&state));
-            if (g + 1) % 25 == 0 || g + 1 == cfg.games {
-                eprintln!(
-                    "  played {}/{} CNN Gumbel games ({} records)",
-                    g + 1,
-                    cfg.games,
-                    records.len()
+        // Games are independent; play them in parallel and re-assemble in
+        // game order so the byte stream stays deterministic.
+        let done = AtomicUsize::new(0);
+        let per_game: Vec<Vec<Record>> = (0..cfg.games)
+            .into_par_iter()
+            .map(|g| {
+                let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+                let recs = play_one_cnn_game(
+                    &net,
+                    gcfg,
+                    g,
+                    game_seed,
+                    cfg.temp_moves,
+                    cfg.forced_opening_plies,
                 );
-            }
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n.is_multiple_of(100) || n as u64 == cfg.games {
+                    eprintln!("  played {}/{} CNN Gumbel games", n, cfg.games);
+                }
+                recs
+            })
+            .collect();
+        for game in per_game {
+            records.extend(game);
         }
         return;
     }
@@ -387,7 +454,11 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
                 .map(|(m, p)| (m.0, *p))
                 .collect();
             records.push(record_for(&state, policy));
-            let action = if ply < cfg.temp_moves {
+            let action = if let Some(forced) =
+                forced_move(&state, g, ply as u32, cfg.forced_opening_plies)
+            {
+                forced
+            } else if ply < cfg.temp_moves {
                 sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
             } else {
                 outcome.action
@@ -482,6 +553,62 @@ mod tests {
             sims: 8,
             max_considered: 4,
             temp_moves: 6,
+            forced_opening_plies: 0,
+        }
+    }
+
+    #[test]
+    fn forced_opening_columns_are_base_seven_digits_of_the_game_index() {
+        // Least-significant digit first: game 0 -> [0,0,0], game 8 -> [1,1,0].
+        assert_eq!(
+            [
+                forced_opening_column(8, 0),
+                forced_opening_column(8, 1),
+                forced_opening_column(8, 2)
+            ],
+            [1, 1, 0]
+        );
+        assert_eq!(forced_opening_column(6, 0), 6);
+        assert_eq!(forced_opening_column(7, 1), 1);
+        // Every consecutive block of 7^3 games gets a distinct prefix.
+        let prefix = |g: u64| [0, 1, 2].map(|p| forced_opening_column(g, p));
+        let mut seen = std::collections::HashSet::new();
+        for g in 0..343 {
+            assert!(seen.insert(prefix(g)));
+        }
+        assert_eq!(prefix(343), prefix(0));
+    }
+
+    #[test]
+    fn a_forced_opening_game_follows_the_prefix_then_stays_a_valid_shard() {
+        let mut records = Vec::new();
+        let mut cfg = gumbel_config();
+        cfg.games = 4;
+        cfg.forced_opening_plies = 3;
+        cfg.temp_moves = 6;
+        dump_gumbel_games(&cfg, &mut records);
+        // Each game still starts at ply 0 and increments by one, so the shard
+        // stays compatible with the whole-game replay splitter.
+        assert_eq!(records[0].ply, 0);
+        for pair in records.windows(2) {
+            assert!(pair[1].ply == 0 || pair[1].ply == pair[0].ply + 1);
+        }
+        // Reconstruct game 0 and confirm its first three moves are its prefix.
+        let starts: Vec<usize> = records
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.ply == 0)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(starts.len(), 4);
+        let game0 = &records[starts[0]..starts[1]];
+        let mut state = State::<6, 7>::default();
+        for (ply, forced) in [0u64, 0, 0].iter().enumerate() {
+            let rec = &game0[ply];
+            assert_eq!(rec.black, state.black().bits());
+            let mv = forced_move(&state, 0, ply as u32, 3).expect("prefix column is legal");
+            assert_eq!(mv.0 as u64, *forced);
+            state = Standard::apply(state, &mv);
         }
     }
 
