@@ -9,6 +9,15 @@
 //! same equal-budget zero-net Gumbel opponent used by
 //! `connect4_cnn_smoke_gate`. Each configuration prints one line and, with
 //! `--out`, appends one JSON object so a long sweep checkpoints as it runs.
+//!
+//! Two focused modes reuse the same harness:
+//!
+//!   * `--budget-sweep [--budgets 32,64,...]` runs the two anchor configs
+//!     (Mctx-verbatim `c_visit=50,c_scale=0.1,rescale=true`; Slice 4.6z best
+//!     `c_visit=0,c_scale=0.05,rescale=false`) across a simulation-budget
+//!     sweep.
+//!   * `--root-only` runs each anchor as Full Gumbel and as root-only Gumbel
+//!     (interior PUCT, no completed-Q override) at 32/128/256 sims.
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -121,6 +130,46 @@ struct Config {
     gain: f32,
     gate: f32,
     negamax_depth: Option<u32>,
+    /// `false` selects root-only Gumbel: interior nodes use PUCT, no
+    /// completed-Q override. The default Full Gumbel path keeps this `true`.
+    interior_completed_q: bool,
+}
+
+/// The Mctx-verbatim completed-Q constants (`c_visit=50, c_scale=0.1,
+/// rescale=true`) and Slice 4.6z's best hand-tuned constants
+/// (`c_visit=0, c_scale=0.05, rescale=false`), the two anchors both the
+/// budget sweep and the root-only control run at.
+fn anchor(name: &'static str, mctx: bool, interior_completed_q: bool) -> Config {
+    Config {
+        name,
+        c_scale: if mctx { 0.1 } else { 0.05 },
+        c_visit: if mctx { 50.0 } else { 0.0 },
+        rescale_q: mctx,
+        gain: 1.0,
+        gate: 0.0,
+        negamax_depth: None,
+        interior_completed_q,
+    }
+}
+
+/// Slice 3.1/3.2 budget sweep: the two anchor configs, Full Gumbel, swept
+/// over the simulation budgets supplied on the command line.
+fn budget_configs() -> Vec<Config> {
+    vec![
+        anchor("mctx_verbatim", true, true),
+        anchor("best_4_6z", false, true),
+    ]
+}
+
+/// Root-only-Gumbel control: each anchor as Full Gumbel and as root-only
+/// (interior PUCT, no completed-Q override).
+fn rootonly_configs() -> Vec<Config> {
+    vec![
+        anchor("mctx_full", true, true),
+        anchor("mctx_rootonly", true, false),
+        anchor("best4_6z_full", false, true),
+        anchor("best4_6z_rootonly", false, false),
+    ]
 }
 
 fn configs() -> Vec<Config> {
@@ -133,6 +182,7 @@ fn configs() -> Vec<Config> {
         gain: 1.0,
         gate: 0.0,
         negamax_depth: None,
+        interior_completed_q: true,
     };
     // c_scale sweep, min-max rescale on (the reference default).
     out.push(base("cscale_0.02", 0.02));
@@ -242,6 +292,7 @@ fn run(cfg_row: &Config, net: &CnnValuePolicyNet, games: usize, sims: u32) -> (u
         c_scale: cfg_row.c_scale,
         c_visit: cfg_row.c_visit,
         rescale_q: cfg_row.rescale_q,
+        interior_completed_q: cfg_row.interior_completed_q,
         ..GumbelConfig::default()
     };
     let trained_eval = CoupledEvaluator {
@@ -297,29 +348,50 @@ fn main() -> ExitCode {
         .windows(2)
         .find(|w| w[0] == "--out")
         .map(|w| w[1].clone());
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let budgets: Vec<u32> = args
+        .windows(2)
+        .find(|w| w[0] == "--budgets")
+        .map(|w| w[1].split(',').map(|s| s.parse().expect("budget")).collect())
+        .unwrap_or_else(|| vec![32, 64, 128, 256, 512, 1024]);
 
-    println!("value/search coupling sweep: weights={} games={games} sims={sims}", args[1]);
-    println!("config                         c_scale c_visit rescale gain gate negamax  W-D-L        share");
-    for row in configs() {
-        if filter.is_some_and(|f| !row.name.contains(f)) {
-            continue;
-        }
-        let (w, d, l) = run(&row, &net, games, sims);
-        let share = (w as f64 + 0.5 * d as f64) / games as f64;
-        let negamax = row
-            .negamax_depth
-            .map_or_else(|| "-".to_string(), |d| d.to_string());
-        println!(
-            "{:<30} {:>7} {:>7} {:>7} {:>4} {:>4} {:>7}  {w:>3}-{d:>3}-{l:<3}  {share:.3}",
-            row.name, row.c_scale, row.c_visit, row.rescale_q, row.gain, row.gate, negamax
-        );
-        if let Some(path) = &out_path {
-            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-                let _ = writeln!(
-                    file,
-                    "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{sims},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4}}}",
-                    row.name, row.c_scale, row.c_visit, row.rescale_q, row.gain, row.gate, negamax
-                );
+    // (label for the run header, config table, simulation budgets to sweep).
+    let (header, rows, sweep): (&str, Vec<Config>, Vec<u32>) = if flag("--budget-sweep") {
+        ("budget sweep (Full Gumbel, two anchor configs)", budget_configs(), budgets)
+    } else if flag("--root-only") {
+        ("root-only vs Full Gumbel control", rootonly_configs(), vec![32, 128, 256])
+    } else {
+        ("value/search coupling sweep", configs(), vec![sims])
+    };
+
+    println!("{header}: weights={} games={games}", args[1]);
+    println!("config                         sims c_scale c_visit rescale interiorCQ gain gate negamax  W-D-L        share");
+    for &s in &sweep {
+        for row in &rows {
+            if filter.is_some_and(|f| !row.name.contains(f)) {
+                continue;
+            }
+            let start = std::time::Instant::now();
+            let (w, d, l) = run(row, &net, games, s);
+            let secs = start.elapsed().as_secs_f64();
+            let share = (w as f64 + 0.5 * d as f64) / games as f64;
+            let negamax = row
+                .negamax_depth
+                .map_or_else(|| "-".to_string(), |d| d.to_string());
+            println!(
+                "{:<30} {s:>4} {:>7} {:>7} {:>7} {:>10} {:>4} {:>4} {:>7}  {w:>3}-{d:>3}-{l:<3}  {share:.3}  {secs:.0}s",
+                row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, row.gain, row.gate, negamax
+            );
+            if let Some(path) = &out_path {
+                if let Ok(mut file) =
+                    std::fs::OpenOptions::new().create(true).append(true).open(path)
+                {
+                    let _ = writeln!(
+                        file,
+                        "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"interior_completed_q\":{},\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{s},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4},\"wall_s\":{secs:.1}}}",
+                        row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, row.gain, row.gate, negamax
+                    );
+                }
             }
         }
     }

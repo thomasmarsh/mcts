@@ -51,6 +51,15 @@ pub struct GumbelConfig {
     /// Fill unvisited actions with the mixed root value before ranking and
     /// policy improvement. `false` retains the pre-completion diagnostic.
     pub use_completed_q: bool,
+    /// Interior (non-root) selection rule. `true` (Full Gumbel) runs the
+    /// deterministic completed-Q visit-matching rule at every interior node.
+    /// `false` selects "root-only" Gumbel: the root Sequential-Halving
+    /// schedule is unchanged, but interior nodes fall back to PUCT with no
+    /// completed-Q override.
+    pub interior_completed_q: bool,
+    /// PUCT exploration constant used at interior nodes only when
+    /// `interior_completed_q` is `false`.
+    pub interior_c_puct: f64,
 }
 
 impl Default for GumbelConfig {
@@ -62,6 +71,8 @@ impl Default for GumbelConfig {
             c_scale: 0.1,
             rescale_q: true,
             use_completed_q: true,
+            interior_completed_q: true,
+            interior_c_puct: 1.25,
         }
     }
 }

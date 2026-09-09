@@ -62,6 +62,32 @@ impl GumbelCompletedQ {
             .expect("completed-Q selection needs a legal action")
     }
 
+    /// Classical AlphaZero PUCT interior selection, used for "root-only"
+    /// Gumbel: `argmax_a Q(a) + c_puct * P(a) * sqrt(sum_b N_b) / (1 + N(a))`
+    /// with `P` the softmax of the node's policy logits and unvisited `Q`
+    /// left at the neutral `0.0`. No completed-Q override. Exact ties retain
+    /// action order.
+    pub fn puct_index(logits: &[f64], visits: &[u32], q_values: &[f64], c_puct: f64) -> usize {
+        assert_eq!(logits.len(), visits.len());
+        assert_eq!(visits.len(), q_values.len());
+        let max_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let weights: Vec<f64> = logits.iter().map(|l| (l - max_logit).exp()).collect();
+        let total_weight: f64 = weights.iter().sum();
+        let total_visits: f64 = visits.iter().map(|&v| v as f64).sum();
+        let explore = total_visits.sqrt();
+        let mut best = 0usize;
+        let mut best_score = f64::NEG_INFINITY;
+        for i in 0..logits.len() {
+            let prior = weights[i] / total_weight;
+            let score = q_values[i] + c_puct * prior * explore / (1.0 + visits[i] as f64);
+            if score > best_score {
+                best_score = score;
+                best = i;
+            }
+        }
+        best
+    }
+
     fn completed_q_for_node(
         raw_evaluator_value: Option<f64>,
         logits: &[f64],
@@ -95,6 +121,14 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
         let q_values = (0..children.len())
             .map(|i| children.expected_score(i, ctx.player))
             .collect::<Vec<_>>();
+        if !self.cfg.interior_completed_q {
+            return Self::puct_index(
+                children.policy_logits(),
+                &visits,
+                &q_values,
+                self.cfg.interior_c_puct,
+            );
+        }
         // Both the cached evaluator value and edge Q values are in this
         // node's mover perspective. A profile without an evaluator is the
         // only case that deliberately falls back to a neutral completion.
@@ -217,6 +251,55 @@ mod tests {
             GumbelCompletedQ::visit_matching_completed(&logits, &visits, &completed, &cfg),
             0
         );
+    }
+
+    #[test]
+    fn default_config_keeps_full_gumbel_interior_selection() {
+        assert!(GumbelConfig::default().interior_completed_q);
+    }
+
+    #[test]
+    fn puct_prefers_the_high_q_child_and_breaks_ties_by_action_order() {
+        // Equal priors and visits: the higher-Q child wins outright.
+        assert_eq!(
+            GumbelCompletedQ::puct_index(&[0.0; 3], &[1, 1, 1], &[0.1, 0.9, 0.1], 1.25),
+            1
+        );
+        // Identical inputs across actions: the exploration term is equal, so
+        // the first action is kept.
+        assert_eq!(
+            GumbelCompletedQ::puct_index(&[0.0; 3], &[2, 2, 2], &[0.0; 3], 1.25),
+            0
+        );
+        // A strong prior on an unvisited child pulls selection there even
+        // though its Q is the neutral 0.0 and a rival has positive Q.
+        assert_eq!(
+            GumbelCompletedQ::puct_index(&[5.0, 0.0], &[0, 8], &[0.0, 0.2], 4.0),
+            0
+        );
+    }
+
+    /// The `interior_completed_q = false` flag must route interior selection
+    /// to PUCT, which can disagree with the completed-Q visit-matching rule
+    /// on the same inputs.
+    #[test]
+    fn root_only_flag_routes_interior_selection_away_from_completed_q() {
+        let logits = [0.0, 0.0, 0.0];
+        let visits = [5u32, 0, 0];
+        let q_values = [0.9, 0.0, 0.0];
+        let completed = GumbelCompletedQ::completed_q_for_node(Some(0.9), &logits, &visits, &q_values);
+        // Completed Q collapses to an equal vector, so visit-matching spreads
+        // the next visit toward the two unvisited actions (action 1 first).
+        let full = GumbelCompletedQ::visit_matching_completed(
+            &logits,
+            &visits,
+            &completed,
+            &GumbelConfig::default(),
+        );
+        // PUCT keeps exploiting the proven high-Q action 0.
+        let root_only = GumbelCompletedQ::puct_index(&logits, &visits, &q_values, 1.25);
+        assert_eq!(full, 1);
+        assert_eq!(root_only, 0);
     }
 
     #[test]
