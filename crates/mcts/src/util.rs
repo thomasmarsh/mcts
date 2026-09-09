@@ -166,6 +166,11 @@ pub fn random_best<'a, T, F: Fn(&T) -> f64>(
 ///
 /// Returns `None` if the game ends in a draw, or `Some(0)`, `Some(1)` if the
 /// first or second strategy won, respectively.
+///
+/// The win is attributed to whichever strategy made the last move, which is
+/// correct for games won by making a winning move (Connect Four, tic-tac-toe,
+/// connection games) but not for territory games whose winner is decided by a
+/// terminal count rather than by the final move.
 pub fn battle_royale<G, S1, S2>(s1: &mut S1, s2: &mut S2) -> Option<usize>
 where
     G: Game,
@@ -176,21 +181,30 @@ where
     let mut state = G::S::default();
     let mut strategies: [&mut dyn algorithms::Search<G = G>; 2] = [s1, s2];
     let mut s = 0;
+    // The strategy index and player index that made the most recent move.
+    // Attributing a win must not assume the game advanced the turn on the
+    // winning move: tic-tac-toe does, Connect Four does not (its `turn` stays
+    // on the winner), so `player_to_move` at a won terminal is game-dependent.
+    // The player who actually just moved is not.
+    let mut last_move: Option<(usize, usize)> = None;
     loop {
         if G::is_terminal(&state) {
-            let current_player = G::player_to_move(&state);
             let winner = G::winner(&state);
             return winner.map(|p| {
-                if current_player.to_index() == p.to_index() {
-                    s
+                let (mover_s, mover_player) =
+                    last_move.expect("terminal with a winner but no move was ever made");
+                if mover_player == p.to_index() {
+                    mover_s
                 } else {
-                    1 - s
+                    1 - mover_s
                 }
             });
         }
+        let mover_player = G::player_to_move(&state).to_index();
         let strategy = &mut strategies[s];
         let m = strategy.choose_action(&state);
         state = G::apply(state, &m);
+        last_move = Some((s, mover_player));
         s = 1 - s;
     }
 }
