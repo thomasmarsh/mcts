@@ -185,6 +185,40 @@ mod tests {
         assert_eq!(unavailable, vec![0.5, 0.0, -0.5]);
     }
 
+    /// Freezes the interior decision against DeepMind's Mctx
+    /// `gumbel_muzero_interior_action_selection`, which returns
+    /// `argmax(softmax(logits + qtransform(completed_q)) - visits / (1 + sum_visits))`
+    /// using the reference constants `maxvisit_init = 50`, `value_scale = 0.1`,
+    /// `rescale_values = true`. Our squared-distance visit-matching rule is
+    /// algebraically the same argmax; this pins a hand-computed case.
+    #[test]
+    fn interior_choice_matches_mctx_interior_action_selection() {
+        let cfg = GumbelConfig::default();
+        let logits = [0.0, 1.0, -1.0];
+        let visits = [2u32, 1, 0];
+        let q_values = [0.5, -0.5, 0.0];
+        // Mixed value from the Mctx equations:
+        //   prior_probs = softmax([0,1,-1]); visited sum_probs over idx 0,1
+        //   weighted_q = -0.2310585; value = (0.2 + 3*weighted_q)/4 = -0.1232939
+        let completed = GumbelCompletedQ::completed_q_for_node(Some(0.2), &logits, &visits, &q_values);
+        assert!((completed[2] + 0.123_293_9).abs() < 1e-6);
+
+        // improved policy = softmax(logits + (50 + 2)*0.1*rescaled_completed_q)
+        //   rescaled = [1.0, 0.0, 0.3767060]; qtransform = [5.2, 0.0, 1.9588715]
+        //   softmax([5.2, 1.0, 0.9588715]) = [0.9714558, 0.0145676, 0.0139766]
+        let target = improved_policy(&logits, &visits, &completed, &cfg);
+        let expected = [0.971_455_8_f32, 0.014_567_6, 0.013_976_6];
+        for (a, e) in target.iter().zip(expected) {
+            assert!((a - e).abs() < 1e-5, "{target:?}");
+        }
+        // Mctx argmax(probs - visits/(1+sum_visits))
+        //   = argmax([0.4714558, -0.2354324, 0.0139766]) = 0
+        assert_eq!(
+            GumbelCompletedQ::visit_matching_completed(&logits, &visits, &completed, &cfg),
+            0
+        );
+    }
+
     #[test]
     fn node_value_and_child_qs_keep_the_node_mover_sign() {
         let completed =

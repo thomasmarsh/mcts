@@ -412,7 +412,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{completed_q, improved_policy, num_phases, transform_completed_q, GumbelConfig};
+    use super::{
+        candidate_score, completed_q, improved_policy, num_phases, transform_completed_q,
+        GumbelConfig,
+    };
 
     #[test]
     fn phase_count_is_ceil_log2() {
@@ -499,6 +502,41 @@ mod tests {
             transform_completed_q(&[-2.0, 0.0, 2.0], false),
             vec![-2.0, 0.0, 2.0]
         );
+    }
+
+    /// Cross-checks the Sequential Halving survivor key against DeepMind's
+    /// Mctx `seq_halving.score_considered`, which ranks by
+    /// `gumbel + (logits - max(logits)) + qtransform(completed_q)` where
+    /// `qtransform` is `(maxvisit_init + max_visit) * value_scale * rescaled`
+    /// with the reference constants `maxvisit_init = 50`, `value_scale = 0.1`.
+    /// Our `candidate_score` omits the additive `-max(logits)` term, which is
+    /// a constant shift across actions and therefore cannot change the ranking.
+    #[test]
+    fn root_survivor_ranking_matches_mctx_score_considered() {
+        let cfg = GumbelConfig::default();
+        let visits = [5, 2, 0];
+        let q = [0.6, -0.2, 99.0];
+        let logits = [0.2, -0.1, 0.3];
+        let gumbel = [0.0, 2.0, 1.0];
+        let completed = completed_q(0.25, &logits, &visits, &q);
+        let max_visits = *visits.iter().max().unwrap();
+
+        // Reference scores hand-computed from the Mctx equations:
+        //   transformed completed Q = [1.0, 0.0, 0.5729497]
+        //   qtransform = (50 + 5) * 0.1 * transformed = [5.5, 0.0, 3.1512234]
+        //   score = gumbel + (logits - 0.3) + qtransform
+        let reference = [
+            0.0 + (0.2 - 0.3) + 5.5,
+            2.0 + (-0.1 - 0.3) + 0.0,
+            1.0 + (0.3 - 0.3) + 3.1512233621661086,
+        ];
+        let max_logit = logits.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        for (idx, expected) in reference.iter().enumerate() {
+            let ours = candidate_score(idx, &gumbel, &logits, &completed, &cfg, max_visits);
+            assert!((ours - max_logit - expected).abs() < 1e-9);
+        }
+        // Mctx survivor order: action 0, then action 2, then action 1.
+        assert!(reference[0] > reference[2] && reference[2] > reference[1]);
     }
 
     #[test]
