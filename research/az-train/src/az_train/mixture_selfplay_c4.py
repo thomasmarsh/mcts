@@ -208,6 +208,12 @@ def run_generation(
             "final_epoch": final_path.name,
             "final_epoch_sha256": _sha256(final_path),
         },
+        "fit_metrics": {
+            "train_value_mse": round(float(meta["train_value_mse"]), 5),  # type: ignore[arg-type]
+            "validation_value_mse": round(float(meta["validation_value_mse"]), 5),  # type: ignore[arg-type]
+            "train_policy_cross_entropy": round(float(meta["train_policy_cross_entropy"]), 5),  # type: ignore[arg-type]
+            "validation_policy_cross_entropy": round(float(meta["validation_policy_cross_entropy"]), 5),  # type: ignore[arg-type]
+        },
         "fit_wall_seconds": round(float(meta["fit_wall_seconds"]), 1),  # type: ignore[arg-type]
         "peak_rss_bytes": int(meta["peak_rss_bytes"]),  # type: ignore[arg-type]
         "driver_wall_seconds": round(time.perf_counter() - started, 1),
