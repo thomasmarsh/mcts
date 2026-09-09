@@ -29,7 +29,7 @@ use game_connect4::convnet::CnnValuePolicyNet;
 use game_connect4::reference_diagnostic::reference_negamax_score;
 use game_connect4::{Move, Standard, State};
 use mcts::algorithms::mcts::gumbel::{
-    gumbel_search_with_root_value, GumbelConfig, GumbelOutcome, SigmaMode,
+    gumbel_search_with_root_value, GumbelConfig, GumbelOutcome, RootMoveSelection, SigmaMode,
 };
 use mcts::algorithms::mcts::node::QInit;
 use mcts::algorithms::mcts::profile::Mcts;
@@ -342,7 +342,13 @@ fn configs() -> Vec<Config> {
     out
 }
 
-fn run(cfg_row: &Config, net: &CnnValuePolicyNet, games: usize, sims: u32) -> (usize, usize, usize) {
+fn run(
+    cfg_row: &Config,
+    net: &CnnValuePolicyNet,
+    games: usize,
+    sims: u32,
+    root_move_selection: RootMoveSelection,
+) -> (usize, usize, usize) {
     let gumbel = GumbelConfig {
         sims,
         c_scale: cfg_row.c_scale,
@@ -350,6 +356,7 @@ fn run(cfg_row: &Config, net: &CnnValuePolicyNet, games: usize, sims: u32) -> (u
         rescale_q: cfg_row.rescale_q,
         interior_completed_q: cfg_row.interior_completed_q,
         sigma_mode: cfg_row.sigma_mode,
+        root_move_selection,
         ..GumbelConfig::default()
     };
     let trained_eval = CoupledEvaluator {
@@ -406,6 +413,21 @@ fn main() -> ExitCode {
         .find(|w| w[0] == "--out")
         .map(|w| w[1].clone());
     let flag = |name: &str| args.iter().any(|a| a == name);
+    // `--root-move visit-count` demotes the completed-Q ranking to a
+    // training-only target: search returns `argmax_a N(a)` and interior
+    // selection is plain PUCT.
+    let root_move_selection = match args
+        .windows(2)
+        .find(|w| w[0] == "--root-move")
+        .map(|w| w[1].as_str())
+    {
+        None | Some("completed-q") => RootMoveSelection::CompletedQ,
+        Some("visit-count") => RootMoveSelection::VisitCount,
+        Some(other) => {
+            eprintln!("unknown --root-move {other}");
+            return ExitCode::FAILURE;
+        }
+    };
     let budgets: Vec<u32> = args
         .windows(2)
         .find(|w| w[0] == "--budgets")
@@ -428,7 +450,10 @@ fn main() -> ExitCode {
         ("value/search coupling sweep", configs(), vec![sims])
     };
 
-    println!("{header}: weights={} games={games}", args[1]);
+    println!(
+        "{header}: weights={} games={games} root_move={root_move_selection:?}",
+        args[1]
+    );
     println!("config                              sims c_scale c_visit rescale intCQ sigma_mode      gain gate negamax  W-D-L        share");
     for &s in &sweep {
         for row in &rows {
@@ -436,7 +461,7 @@ fn main() -> ExitCode {
                 continue;
             }
             let start = std::time::Instant::now();
-            let (w, d, l) = run(row, &net, games, s);
+            let (w, d, l) = run(row, &net, games, s, root_move_selection);
             let secs = start.elapsed().as_secs_f64();
             let share = (w as f64 + 0.5 * d as f64) / games as f64;
             let negamax = row
@@ -453,7 +478,7 @@ fn main() -> ExitCode {
                 {
                     let _ = writeln!(
                         file,
-                        "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"interior_completed_q\":{},\"sigma_mode\":\"{}\",\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{s},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4},\"wall_s\":{secs:.1}}}",
+                        "{{\"config\":\"{}\",\"c_scale\":{},\"c_visit\":{},\"rescale_q\":{},\"interior_completed_q\":{},\"sigma_mode\":\"{}\",\"root_move\":\"{root_move_selection:?}\",\"gain\":{},\"gate\":{},\"negamax_depth\":{},\"games\":{games},\"sims\":{s},\"wins\":{w},\"draws\":{d},\"losses\":{l},\"share\":{share:.4},\"wall_s\":{secs:.1}}}",
                         row.name, row.c_scale, row.c_visit, row.rescale_q, row.interior_completed_q, sigma_tag, row.gain, row.gate, negamax
                     );
                 }

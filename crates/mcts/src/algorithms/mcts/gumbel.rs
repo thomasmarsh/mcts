@@ -75,6 +75,31 @@ pub fn sigma_visit_scale(
     }
 }
 
+/// How the final root move is chosen once the Sequential-Halving schedule
+/// finishes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RootMoveSelection {
+    /// Full Gumbel: return the surviving candidate with the largest
+    /// `g_a + logit_a + sigma(completed_q_a)` ranking key.
+    #[default]
+    CompletedQ,
+    /// Return the most-visited root action (`argmax_a N(a)`, ties broken
+    /// toward the lowest action index), ignoring the completed-Q ranking key.
+    /// This also forces plain visit-count / PUCT interior selection with no
+    /// completed-Q override. The Gumbel top-`m` sampling and the
+    /// Sequential-Halving visit allocation are unchanged, and the recorded
+    /// improved-policy training target is unaffected.
+    VisitCount,
+}
+
+/// The most-visited action, ties broken toward the lowest index. A hand-built
+/// root reduces to its child visit vector for this decision.
+pub(crate) fn most_visited_action(visits: &[u32]) -> usize {
+    (0..visits.len())
+        .max_by(|&a, &b| visits[a].cmp(&visits[b]).then(b.cmp(&a)))
+        .expect("root has at least one child")
+}
+
 /// Knobs for one Gumbel move. All of these belong in `config.toml` for a
 /// real run (`feedback_config_as_data`); the defaults match the paper's
 /// small-budget regime.
@@ -109,6 +134,10 @@ pub struct GumbelConfig {
     /// `NodeFloor` is the Mctx-verbatim default; the visit-aware modes stop a
     /// one-visit noisy completed-Q from swamping exploration at small budgets.
     pub sigma_mode: SigmaMode,
+    /// How the final root move is chosen. `CompletedQ` (default) is Full
+    /// Gumbel; `VisitCount` returns `argmax_a N(a)` and forces PUCT interior
+    /// selection.
+    pub root_move_selection: RootMoveSelection,
 }
 
 impl Default for GumbelConfig {
@@ -123,6 +152,7 @@ impl Default for GumbelConfig {
             interior_completed_q: true,
             interior_c_puct: 1.25,
             sigma_mode: SigmaMode::NodeFloor,
+            root_move_selection: RootMoveSelection::CompletedQ,
         }
     }
 }
@@ -438,14 +468,19 @@ where
     let visits = root_child_visits(search, root_id);
     let max_visits = visits.iter().copied().max().unwrap_or(0);
     let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
-    let best = *considered
-        .iter()
-        .max_by(|&&a, &&b| {
-            let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
-            let sb = candidate_score(b, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
-            sa.partial_cmp(&sb).unwrap()
-        })
-        .expect("Gumbel keeps at least one candidate");
+    let best = match cfg.root_move_selection {
+        RootMoveSelection::VisitCount => most_visited_action(&visits),
+        RootMoveSelection::CompletedQ => *considered
+            .iter()
+            .max_by(|&&a, &&b| {
+                let sa =
+                    candidate_score(a, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
+                let sb =
+                    candidate_score(b, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
+                sa.partial_cmp(&sb).unwrap()
+            })
+            .expect("Gumbel keeps at least one candidate"),
+    };
 
     let visit_distribution = {
         let children = search.index.get(root_id).children();
@@ -473,9 +508,59 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_score, completed_q, improved_policy, num_phases, sigma_visit_scale,
-        transform_completed_q, GumbelConfig, SigmaMode,
+        candidate_score, completed_q, improved_policy, most_visited_action, num_phases,
+        sigma_visit_scale, transform_completed_q, GumbelConfig, RootMoveSelection, SigmaMode,
     };
+
+    #[test]
+    fn most_visited_action_breaks_ties_toward_the_lowest_index() {
+        assert_eq!(most_visited_action(&[1, 2, 3]), 2);
+        assert_eq!(most_visited_action(&[3, 5, 5, 2]), 1);
+        assert_eq!(most_visited_action(&[0, 0, 0]), 0);
+        assert_eq!(most_visited_action(&[7]), 0);
+    }
+
+    #[test]
+    fn visit_count_play_ignores_the_completed_q_ranking_key() {
+        // Action 2 has the most visits; action 0 would win the completed-Q
+        // `candidate_score` ranking on its extreme Q. Visit-count play returns
+        // the most-visited action regardless of that key.
+        let gumbel = [0.0, 0.0, 0.0];
+        let logits = [0.0, 0.0, 0.0];
+        let visits = [1u32, 2, 5];
+        let completed = [1.0, 0.0, 0.0];
+        let max_visits = 5;
+        let cfg = GumbelConfig::default();
+        let by_score = (0..3)
+            .max_by(|&a, &b| {
+                let sa = candidate_score(a, &gumbel, &logits, &completed, &cfg, &visits, max_visits);
+                let sb = candidate_score(b, &gumbel, &logits, &completed, &cfg, &visits, max_visits);
+                sa.partial_cmp(&sb).unwrap()
+            })
+            .unwrap();
+        assert_eq!(by_score, 0);
+        assert_eq!(most_visited_action(&visits), 2);
+    }
+
+    #[test]
+    fn improved_policy_target_is_identical_under_both_root_move_modes() {
+        let logits = [2.0, -1.0, 0.5];
+        let visits = [4, 1, 0];
+        let q = [0.5, -0.5, 0.1];
+        let completed_q_mode = GumbelConfig {
+            root_move_selection: RootMoveSelection::CompletedQ,
+            ..GumbelConfig::default()
+        };
+        let visit_count_mode = GumbelConfig {
+            root_move_selection: RootMoveSelection::VisitCount,
+            ..GumbelConfig::default()
+        };
+        let completed = completed_q(0.25, &logits, &visits, &q);
+        assert_eq!(
+            improved_policy(&logits, &visits, &completed, &completed_q_mode),
+            improved_policy(&logits, &visits, &completed, &visit_count_mode),
+        );
+    }
 
     #[test]
     fn phase_count_is_ceil_log2() {

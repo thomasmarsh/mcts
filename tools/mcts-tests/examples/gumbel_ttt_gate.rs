@@ -20,7 +20,7 @@
 use std::collections::HashSet;
 use std::process::ExitCode;
 
-use mcts::algorithms::mcts::gumbel::{GumbelConfig, SigmaMode};
+use mcts::algorithms::mcts::gumbel::{GumbelConfig, RootMoveSelection, SigmaMode};
 use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
 use mcts::util::battle_royale;
@@ -161,9 +161,24 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // `--root-move visit-count` returns `argmax_a N(a)` and uses PUCT interior
+    // selection instead of the completed-Q ranking.
+    let root_move_selection = match args
+        .windows(2)
+        .find(|w| w[0] == "--root-move")
+        .map(|w| w[1].as_str())
+    {
+        None | Some("completed-q") => RootMoveSelection::CompletedQ,
+        Some("visit-count") => RootMoveSelection::VisitCount,
+        Some(other) => {
+            eprintln!("unknown --root-move {other}");
+            return ExitCode::FAILURE;
+        }
+    };
     let cfg = GumbelConfig {
         sims,
         sigma_mode,
+        root_move_selection,
         ..GumbelConfig::default()
     };
 

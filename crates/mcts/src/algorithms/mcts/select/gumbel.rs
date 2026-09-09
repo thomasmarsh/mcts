@@ -4,7 +4,9 @@ use rand::rngs::SmallRng;
 
 use super::{SelectContext, SelectPolicy};
 use crate::algorithms::mcts::config;
-use crate::algorithms::mcts::gumbel::{completed_q, improved_policy, GumbelConfig};
+use crate::algorithms::mcts::gumbel::{
+    completed_q, improved_policy, GumbelConfig, RootMoveSelection,
+};
 use crate::algorithms::mcts::index::Id;
 use crate::algorithms::mcts::node::ChildArray;
 use crate::algorithms::mcts::BackpropFlags;
@@ -121,7 +123,8 @@ impl<G: Game> SelectPolicy<G> for GumbelCompletedQ {
         let q_values = (0..children.len())
             .map(|i| children.expected_score(i, ctx.player))
             .collect::<Vec<_>>();
-        if !self.cfg.interior_completed_q {
+        let visit_count_play = self.cfg.root_move_selection == RootMoveSelection::VisitCount;
+        if !self.cfg.interior_completed_q || visit_count_play {
             return Self::puct_index(
                 children.policy_logits(),
                 &visits,
