@@ -69,8 +69,13 @@ def merge_generation_metrics(
     *,
     generation: int,
     wall_seconds: float,
+    gate_vs_prev_text: str | None = None,
 ) -> dict[str, object]:
-    """One flat metrics record for generation ``generation``."""
+    """One flat metrics record for generation ``generation``.
+
+    ``gate_vs_prev_text`` is the gen(N)-vs-gen(N-1) match stdout; it is absent for
+    generation 0 (no predecessor).
+    """
     held_out = result["held_out_proven"]["principled_early_stop"]  # type: ignore[index]
     in_replay = result["in_replay_mixed_target_pearson"]["principled_early_stop"]  # type: ignore[index]
     fit = result.get("fit_metrics", {})  # type: ignore[assignment]
@@ -91,6 +96,7 @@ def merge_generation_metrics(
         "fit_metrics": fit,
         "gate_vs_zero": parse_gate_line(gate_vs_zero_text),
         "gate_vs_gen0": parse_gate_line(gate_vs_gen0_text),
+        "gate_vs_prev": parse_gate_line(gate_vs_prev_text) if gate_vs_prev_text is not None else None,
         "fit_wall_seconds": result.get("fit_wall_seconds"),
         "peak_rss_bytes": result.get("peak_rss_bytes"),
         "weights": result.get("weights"),
@@ -102,6 +108,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--result", required=True, help="gen<N>.result.json from mixture_selfplay_c4")
     parser.add_argument("--gate-vs-zero", required=True, help="connect4_cnn_smoke_gate stdout, gen vs zero net")
     parser.add_argument("--gate-vs-gen0", required=True, help="connect4_cnn_smoke_gate stdout, gen vs gen0 head")
+    parser.add_argument("--gate-vs-prev", default=None, help="connect4_cnn_smoke_gate stdout, gen vs gen(N-1) head; omit for gen0")
     parser.add_argument("--generation", type=int, required=True)
     parser.add_argument("--wall-seconds", type=float, required=True)
     args = parser.parse_args(argv)
@@ -113,6 +120,7 @@ def main(argv: list[str] | None = None) -> None:
         Path(args.gate_vs_gen0).read_text(),
         generation=args.generation,
         wall_seconds=args.wall_seconds,
+        gate_vs_prev_text=Path(args.gate_vs_prev).read_text() if args.gate_vs_prev else None,
     )
     print(json.dumps(line, sort_keys=True))
 

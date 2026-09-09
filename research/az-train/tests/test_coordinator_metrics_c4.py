@@ -72,3 +72,18 @@ def test_merge_generation_metrics_produces_a_flat_reconstructable_line() -> None
     assert line["gate_vs_zero"]["score_share"] == pytest.approx(0.7675)
     assert line["gate_vs_gen0"]["wins"] == 101
     assert line["coordinator_wall_seconds"] == 999.4
+    assert line["gate_vs_prev"] is None
+
+
+def test_merge_generation_metrics_includes_gate_vs_prev_when_supplied() -> None:
+    result = {
+        "held_out_proven": {"principled_early_stop": {"value_pearson": 0.6, "sign_agreement": 0.87}},
+        "in_replay_mixed_target_pearson": {"principled_early_stop": {"held_out": 0.5, "train": 0.6}},
+        "replay_split": {}, "reference_proven_counts": {}, "searched_value_summary": {},
+    }
+    line = merge_generation_metrics(
+        result, _GATE, _GATE, generation=2, wall_seconds=1.0,
+        gate_vs_prev_text=_GATE.replace("0.767", "0.381").replace("152-3-45", "74-4-122"),
+    )
+    assert line["gate_vs_prev"]["wins"] == 74
+    assert line["gate_vs_prev"]["score_share"] == pytest.approx(0.38)

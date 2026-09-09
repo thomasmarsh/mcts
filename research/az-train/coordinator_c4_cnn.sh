@@ -13,8 +13,15 @@
 # values, weights, result.json and metrics line before the next starts, so an
 # interrupt resumes with START set to the first unfinished generation.
 #
+# Each generation also gates gen(N) vs gen(N-1). Two kill-gates stop the loop
+# early: gen1-vs-gen0 Wilson lower bound < KILL_GEN1_LB after gen1, and any
+# gen(N)-vs-gen(N-1) score share < KILL_PREV_SHARE (catastrophic regression).
+# On a kill-gate the loop writes KILL-GATE.txt and stops with the finished
+# generations checkpointed.
+#
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, EPOCHS, SIMS,
-# FORCED (forced opening plies), GATE_GAMES, B (mixture weight), L2, START.
+# FORCED (forced opening plies), GATE_GAMES, B (mixture weight), L2, START,
+# KILL_GEN1_LB, KILL_PREV_SHARE.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -33,6 +40,8 @@ GATE_GAMES=${GATE_GAMES:-120}
 B=${B:-0.75}
 L2=${L2:-1e-4}
 START=${START:-0}
+KILL_GEN1_LB=${KILL_GEN1_LB:-0.45}
+KILL_PREV_SHARE=${KILL_PREV_SHARE:-0.40}
 
 mkdir -p "$RUN_DIR"
 
@@ -75,14 +84,47 @@ for g in $(seq "$START" $((GENS - 1))); do
     | tee "$RUN_DIR/gen$g.gate-vs-zero.txt"
   "$GATE" "$RUN_DIR/gen$g.c4cnn" "$GATE_GAMES" "$SIMS" --opponent "$RUN_DIR/gen0.c4cnn" \
     | tee "$RUN_DIR/gen$g.gate-vs-gen0.txt"
+  prev_metric_args=()
+  if [ "$g" -ge 1 ]; then
+    "$GATE" "$RUN_DIR/gen$g.c4cnn" "$GATE_GAMES" "$SIMS" \
+      --opponent "$RUN_DIR/gen$((g - 1)).c4cnn" \
+      | tee "$RUN_DIR/gen$g.gate-vs-prev.txt"
+    prev_metric_args=(--gate-vs-prev "$RUN_DIR/gen$g.gate-vs-prev.txt")
+  fi
 
   gen_wall=$(($(date +%s) - gen_start))
   uv run --project research/az-train python -m az_train.coordinator_metrics_c4 \
     --result "$RUN_DIR/gen$g.result.json" \
     --gate-vs-zero "$RUN_DIR/gen$g.gate-vs-zero.txt" \
     --gate-vs-gen0 "$RUN_DIR/gen$g.gate-vs-gen0.txt" \
+    "${prev_metric_args[@]}" \
     --generation "$g" --wall-seconds "$gen_wall" \
     | tee -a "$RUN_DIR/coordinator-metrics.jsonl"
+
+  verdict=$(uv run --project research/az-train python - \
+    "$RUN_DIR/coordinator-metrics.jsonl" "$g" "$KILL_GEN1_LB" "$KILL_PREV_SHARE" <<'PY'
+import json, sys
+path, gen, gen1_lb, prev_share = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+line = json.loads(open(path).read().splitlines()[-1])
+msgs = []
+if gen == 1:
+    lb = line["gate_vs_gen0"]["wilson_lower_bound"]
+    if lb < gen1_lb:
+        msgs.append(f"gen1-vs-gen0 Wilson LB {lb} < {gen1_lb}")
+prev = line.get("gate_vs_prev")
+if prev is not None and prev["score_share"] < prev_share:
+    msgs.append(f"gen{gen}-vs-gen{gen-1} share {prev['score_share']} < {prev_share}")
+print("STOP: " + "; ".join(msgs) if msgs else "CONTINUE")
+PY
+)
+  echo "kill-gate check (gen $g): $verdict"
+  case "$verdict" in
+    STOP*)
+      printf '%s\nfired after generation %s\nresume: START=%s bash research/az-train/coordinator_c4_cnn.sh\n' \
+        "$verdict" "$g" "$((g + 1))" > "$RUN_DIR/KILL-GATE.txt"
+      break
+      ;;
+  esac
 done
 
 echo "=== done @ $(date) ==="
