@@ -81,6 +81,27 @@ def test_resample_fraction_half_gives_even_gen0_share(tmp_path: Path) -> None:
     assert abs(gen0_share - 0.5) < 0.05
 
 
+def test_single_generation_replay_is_a_no_op(tmp_path: Path) -> None:
+    # Generation 0's fit sees only gen0.bin; the reservoir has nothing to hold
+    # against and must fall back to the plain whole-game split, not raise.
+    gen0 = tmp_path / "gen0.bin"
+    n0 = _write_shard(gen0, n_games=20, plies_per_game=6, value=1.0)
+    sv0 = tmp_path / "gen0.f32"
+    sv0.write_bytes(np.zeros(n0, dtype="<f4").tobytes())
+    canonical = np.sort(_canonical_train_idx([gen0], validation_fraction=0.25, split_seed=0))
+
+    train, _held, counts = load_split_replay(
+        [gen0], [sv0], validation_fraction=0.25, split_seed=0, gen0_reservoir_fraction=0.5
+    )
+    reservoir: dict[str, object] = counts["gen0_reservoir"]  # type: ignore[assignment]
+    assert reservoir["fraction"] == 0.5
+    assert reservoir["resampled_train_records"] == reservoir["canonical_train_records"] == canonical.size
+    assert train["outcome"].size == canonical.size
+
+    resampled = gen0_reservoir_resample(canonical, n0, 0.5, np.random.default_rng(0))
+    assert np.array_equal(resampled, canonical)
+
+
 def test_resample_fraction_one_draws_only_gen0(tmp_path: Path) -> None:
     pos_paths, _sv, n0 = _shards(tmp_path)
     canonical = _canonical_train_idx(pos_paths, validation_fraction=0.25, split_seed=0)

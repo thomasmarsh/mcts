@@ -90,8 +90,12 @@ def gen0_reservoir_resample(
     is_gen0 = train_idx < gen0_records
     n_gen0 = int(is_gen0.sum())
     n_rest = int(train_idx.size - n_gen0)
-    if n_gen0 == 0 or n_rest == 0:
-        raise ValueError("gen0 reservoir needs gen0 rows and at least one later generation in the train split")
+    if n_gen0 == 0:
+        raise ValueError("gen0 reservoir needs at least one gen0 row in the train split")
+    if n_rest == 0:
+        # Single-generation replay (generation 0): there is nothing to hold the
+        # reservoir against, so it is a no-op on the canonical whole-game split.
+        return np.sort(train_idx)
     weights = np.where(is_gen0, fraction / n_gen0, (1.0 - fraction) / n_rest)
     probs = weights / weights.sum()
     picked = rng.choice(train_idx.size, size=train_idx.size, replace=True, p=probs)
