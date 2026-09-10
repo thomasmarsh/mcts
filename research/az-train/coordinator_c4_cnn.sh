@@ -20,8 +20,9 @@
 # generations checkpointed.
 #
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, EPOCHS, SIMS,
-# FORCED (forced opening plies), GATE_GAMES, B (mixture weight), L2, START,
-# KILL_GEN1_LB, KILL_PREV_SHARE.
+# FORCED (forced opening plies), GATE_GAMES, B (mixture weight), L2,
+# GEN0_RESERVOIR (expected gen0-shard share of the resampled training rows;
+# 0.0 disables), START, KILL_GEN1_LB, KILL_PREV_SHARE.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -39,6 +40,7 @@ FORCED=${FORCED:-4}
 GATE_GAMES=${GATE_GAMES:-120}
 B=${B:-0.75}
 L2=${L2:-1e-4}
+GEN0_RESERVOIR=${GEN0_RESERVOIR:-0.5}
 START=${START:-0}
 KILL_GEN1_LB=${KILL_GEN1_LB:-0.45}
 KILL_PREV_SHARE=${KILL_PREV_SHARE:-0.40}
@@ -77,7 +79,8 @@ for g in $(seq "$START" $((GENS - 1))); do
   echo "=== generation $g -> $((g + 1)): mixture fit @ $(date) ==="
   uv run --project research/az-train python -m az_train.mixture_selfplay_c4 \
     --reference-corpus "$REF" --positions "$pos" --searched-values "$sv" \
-    --out-dir "$RUN_DIR" --generation "$g" --b "$B" --l2 "$L2" --epochs "$EPOCHS"
+    --out-dir "$RUN_DIR" --generation "$g" --b "$B" --l2 "$L2" --epochs "$EPOCHS" \
+    --gen0-reservoir-fraction "$GEN0_RESERVOIR"
 
   echo "=== generation $g: gates (fixed harness, $GATE_GAMES games) @ $(date) ==="
   "$GATE" "$RUN_DIR/gen$g.c4cnn" "$GATE_GAMES" "$SIMS" \

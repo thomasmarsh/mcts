@@ -15,7 +15,11 @@ bounded-depth negamax scalar from ``connect4_replay_searched_value``. The policy
 target is the recorded completed-Q improved policy.
 
 The replay is split into train and held-out games by whole game (never by
-position). The principled early stop uses only the in-replay held-out split's
+position). With ``--gen0-reservoir-fraction`` above zero the training rows are
+then resampled with replacement so an expected fraction of them come from
+generation 0's shard alone (the diverse near-random zero-net data), guaranteeing
+that batch share as later, sharper generations pile up; the held-out split is
+untouched. The principled early stop uses only the in-replay held-out split's
 mixed-target Pearson. The frozen ``C4REFD02`` proven validation split is scored
 once per epoch through ``epoch_monitor`` purely for measurement, so the
 reference corpus never influences model selection.
@@ -67,20 +71,64 @@ def read_concat_searched_values(paths: list[Path], expected: int) -> np.ndarray:
     return values
 
 
+def gen0_reservoir_resample(
+    train_idx: np.ndarray, gen0_records: int, fraction: float, rng: np.random.Generator
+) -> np.ndarray:
+    """Resample whole-game train rows with replacement to a fixed gen0 batch share.
+
+    The generation-0 shard is the first ``gen0_records`` concatenated records, so
+    a canonical train index is a gen0 row exactly when it is ``< gen0_records``.
+    The rows are redrawn with replacement to the same total count, gen0's rows
+    carrying total probability mass ``fraction`` and every later generation's
+    rows carrying ``1 - fraction``. This mirrors ``replay_composition_c4``'s
+    ``gen0_reservoir`` scheme (at ``fraction == 0.5`` gen0's sampling mass equals
+    the pooled mass of gen1..geng, an expected 50/50 split) and only touches
+    training rows -- the held-out split is never resampled.
+    """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("gen0_reservoir_fraction must be in (0, 1]")
+    is_gen0 = train_idx < gen0_records
+    n_gen0 = int(is_gen0.sum())
+    n_rest = int(train_idx.size - n_gen0)
+    if n_gen0 == 0 or n_rest == 0:
+        raise ValueError("gen0 reservoir needs gen0 rows and at least one later generation in the train split")
+    weights = np.where(is_gen0, fraction / n_gen0, (1.0 - fraction) / n_rest)
+    probs = weights / weights.sum()
+    picked = rng.choice(train_idx.size, size=train_idx.size, replace=True, p=probs)
+    return np.sort(train_idx[picked])
+
+
 def load_split_replay(
     positions_paths: list[Path],
     searched_paths: list[Path],
     *,
     validation_fraction: float,
     split_seed: int,
+    gen0_reservoir_fraction: float = 0.0,
+    gen0_reservoir_seed: int = 20260909,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray], dict[str, object]]:
-    """Whole-game train / held-out replay packs plus their searched-value arrays."""
-    pos = _concat([load_positions(path) for path in positions_paths])
+    """Whole-game train / held-out replay packs plus their searched-value arrays.
+
+    When ``gen0_reservoir_fraction > 0`` the canonical whole-game train rows are
+    resampled with replacement (via :func:`gen0_reservoir_resample`) so an
+    expected ``gen0_reservoir_fraction`` of them come from generation 0's shard;
+    ``0.0`` leaves the plain whole-game split untouched. The held-out split is
+    always the plain whole-game split.
+    """
+    shards = [load_positions(path) for path in positions_paths]
+    gen0_records = int(len(shards[0]))
+    pos = _concat(shards)
     searched_all = read_concat_searched_values(searched_paths, len(pos))
     game_bounds = [(int(s.start), int(s.stop)) for s in game_slices(pos)]
     train_idx, held_out_idx, train_games, held_out_games = replay_game_split_indices(
         game_bounds, validation_fraction, split_seed
     )
+    canonical_train_records = int(train_idx.size)
+    if gen0_reservoir_fraction > 0.0:
+        train_idx = gen0_reservoir_resample(
+            train_idx, gen0_records, gen0_reservoir_fraction,
+            np.random.default_rng(gen0_reservoir_seed),
+        )
     train = _pack_rows(pos, searched_all, train_idx)
     held_out = _pack_rows(pos, searched_all, held_out_idx)
     counts: dict[str, object] = {
@@ -90,6 +138,12 @@ def load_split_replay(
         "train_rows": int(train["outcome"].size),
         "held_out_rows": int(held_out["outcome"].size),
         "total_records": int(len(pos)),
+        "gen0_reservoir": {
+            "fraction": float(gen0_reservoir_fraction),
+            "gen0_records": gen0_records,
+            "canonical_train_records": canonical_train_records,
+            "resampled_train_records": int(train_idx.size),
+        },
     }
     return train, held_out, counts
 
@@ -112,11 +166,15 @@ def run_generation(
     seed: int = 20260907,
     validation_fraction: float = 0.2,
     split_seed: int = 20260908,
+    gen0_reservoir_fraction: float = 0.5,
+    gen0_reservoir_seed: int = 20260909,
 ) -> dict[str, object]:
     corpus = read_reference_corpus(corpus_path)
     train, held_out, counts = load_split_replay(
         positions_paths, searched_paths,
         validation_fraction=validation_fraction, split_seed=split_seed,
+        gen0_reservoir_fraction=gen0_reservoir_fraction,
+        gen0_reservoir_seed=gen0_reservoir_seed,
     )
     return fit_and_diagnose(
         corpus, corpus_path, positions_paths, searched_paths,
@@ -276,6 +334,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--seed", type=int, default=20260907)
     parser.add_argument("--replay-validation-fraction", type=float, default=0.2)
     parser.add_argument("--replay-split-seed", type=int, default=20260908)
+    parser.add_argument(
+        "--gen0-reservoir-fraction", type=float, default=0.5,
+        help="resample train rows so an expected fraction come from the gen0 shard alone; 0.0 disables",
+    )
+    parser.add_argument("--gen0-reservoir-seed", type=int, default=20260909)
     args = parser.parse_args(argv)
 
     positions_paths = [Path(p) for p in args.positions.split(",")]
@@ -289,6 +352,8 @@ def main(argv: list[str] | None = None) -> None:
         b=args.b, l2=args.l2, learning_rate=args.learning_rate, epochs=args.epochs,
         seed=args.seed, validation_fraction=args.replay_validation_fraction,
         split_seed=args.replay_split_seed,
+        gen0_reservoir_fraction=args.gen0_reservoir_fraction,
+        gen0_reservoir_seed=args.gen0_reservoir_seed,
     )
     print(json.dumps({
         "generation": result["generation"],
