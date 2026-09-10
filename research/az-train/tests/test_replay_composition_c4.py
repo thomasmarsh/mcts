@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from az_train.replay_composition_c4 import (
+    RESERVOIR_GEN0_WEIGHT,
     build_training_indices,
     scheme_shards,
     shard_of_row,
@@ -33,6 +34,58 @@ def test_recency_weighted_decays_with_age() -> None:
     spec = scheme_shards("recency_weighted", 4, gamma=0.5)
     assert [s for s, _ in spec] == [0, 1, 2, 3, 4]
     assert [w for _, w in spec] == [0.0625, 0.125, 0.25, 0.5, 1.0]
+
+
+def test_anti_recency_up_weights_older_shards() -> None:
+    spec = scheme_shards("anti_recency", 4, gamma_old=0.5)
+    assert [s for s, _ in spec] == [0, 1, 2, 3, 4]
+    assert [w for _, w in spec] == [1.0, 0.5, 0.25, 0.125, 0.0625]
+    # mirror image of recency_weighted's weights
+    rec = [w for _, w in scheme_shards("recency_weighted", 4, gamma=0.5)]
+    assert [w for _, w in spec] == list(reversed(rec))
+
+
+def test_gen0_reservoir_emits_sentinel_then_uniform_tail() -> None:
+    spec = scheme_shards("gen0_reservoir", 3)
+    assert spec == [(0, RESERVOIR_GEN0_WEIGHT), (1, 1.0), (2, 1.0), (3, 1.0)]
+
+
+def test_anti_recency_resampling_biases_toward_old_shards() -> None:
+    row_shard = shard_of_row([100, 100, 100, 100])
+    canonical = np.arange(400)
+    spec = scheme_shards("anti_recency", 3, gamma_old=0.5)  # weights 8:4:2:1
+    idx = build_training_indices(
+        spec, canonical, row_shard, budget=8000, rng=np.random.default_rng(1)
+    )
+    assert idx.size == 8000
+    counts = np.bincount(row_shard[idx], minlength=4)
+    assert counts[0] > counts[1] > counts[2] > counts[3]
+    assert counts[0] > 3 * counts[3]
+
+
+def test_gen0_reservoir_splits_mass_evenly_across_equal_shards() -> None:
+    # equal shard sizes: gen0 should draw ~half, gen1..gen3 ~half between them.
+    row_shard = shard_of_row([100, 100, 100, 100])
+    canonical = np.arange(400)
+    spec = scheme_shards("gen0_reservoir", 3)
+    idx = build_training_indices(
+        spec, canonical, row_shard, budget=12000, rng=np.random.default_rng(2)
+    )
+    counts = np.bincount(row_shard[idx], minlength=4)
+    assert abs(counts[0] / idx.size - 0.5) < 0.03
+    assert abs(counts[1:].sum() / idx.size - 0.5) < 0.03
+
+
+def test_gen0_reservoir_accounts_for_uneven_shard_sizes() -> None:
+    # gen0 is small; its per-row weight must scale up so it still gets ~half.
+    row_shard = shard_of_row([50, 150, 200])
+    canonical = np.arange(400)
+    spec = scheme_shards("gen0_reservoir", 2)
+    idx = build_training_indices(
+        spec, canonical, row_shard, budget=12000, rng=np.random.default_rng(3)
+    )
+    counts = np.bincount(row_shard[idx], minlength=3)
+    assert abs(counts[0] / idx.size - 0.5) < 0.03
 
 
 def test_scheme_shards_rejects_generation_zero() -> None:

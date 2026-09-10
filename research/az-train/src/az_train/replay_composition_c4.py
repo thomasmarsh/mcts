@@ -33,10 +33,17 @@ Schemes (``g`` is the current generation, shards gen0..geng available):
   data, drops the middle generations).
 * ``recency_weighted`` -- every shard, but rows are drawn with probability
   proportional to ``gamma ** (g - shard_index)`` (gamma=0.5 by default).
+* ``anti_recency`` -- every shard, but rows are drawn with probability
+  proportional to ``gamma_old ** shard_index`` (gamma_old=0.5 by default), so the
+  oldest, most diverse shards are up-weighted -- the mirror image of
+  ``recency_weighted``.
+* ``gen0_reservoir`` -- every shard, but the per-row weights are set so that in
+  expectation half the sampled rows come from gen0 alone and half come uniformly
+  from the pooled gen1..geng rows.
 
-``fit_value_policy_with_diagnostics`` takes no per-sample weight, so
-``recency_weighted`` is realised by *resampling* training rows with replacement
-in proportion to the age weights -- no change to the fit code.
+``fit_value_policy_with_diagnostics`` takes no per-sample weight, so the weighted
+schemes are realised by *resampling* training rows with replacement in proportion
+to the shard weights -- no change to the fit code.
 
 To keep the sweep affordable (the instrumented pure-numpy CNN fit costs roughly
 0.07 s per training row for a 25-epoch fit, so a native full-replay g=4 fit is
@@ -71,10 +78,19 @@ SCHEMES: tuple[str, ...] = (
     "window3",
     "window2_plus_gen0",
     "recency_weighted",
+    "anti_recency",
+    "gen0_reservoir",
 )
 
+# Sentinel shard weight for ``gen0_reservoir``: the gen0 weight is not known until
+# ``build_training_indices`` sees the actual per-shard row counts of the training
+# pool, so ``scheme_shards`` emits this marker and the resampler resolves it.
+RESERVOIR_GEN0_WEIGHT = -1.0
 
-def scheme_shards(scheme: str, g: int, *, gamma: float = 0.5) -> list[tuple[int, float]]:
+
+def scheme_shards(
+    scheme: str, g: int, *, gamma: float = 0.5, gamma_old: float = 0.5
+) -> list[tuple[int, float]]:
     """Return ``(shard_index, relative_sample_weight)`` for a scheme at generation ``g``.
 
     Shard indices are generation numbers 0..g. Weights are relative; only their
@@ -94,6 +110,10 @@ def scheme_shards(scheme: str, g: int, *, gamma: float = 0.5) -> list[tuple[int,
         kept = sorted({0, *every[-2:]})
     elif scheme == "recency_weighted":
         return [(i, float(gamma ** (g - i))) for i in every]
+    elif scheme == "anti_recency":
+        return [(i, float(gamma_old**i)) for i in every]
+    elif scheme == "gen0_reservoir":
+        return [(0, RESERVOIR_GEN0_WEIGHT)] + [(i, 1.0) for i in every[1:]]
     else:
         raise ValueError(f"unknown scheme {scheme!r}")
     return [(i, 1.0) for i in kept]
@@ -128,7 +148,16 @@ def build_training_indices(
     pool = canonical_train_idx[keep_mask]
     if pool.size == 0:
         raise ValueError("scheme kept no training rows")
-    weights = np.array([weight_by_shard[int(s)] for s in pool_shard[keep_mask]], dtype=np.float64)
+    kept_row_shard = pool_shard[keep_mask]
+    if weight_by_shard.get(0) == RESERVOIR_GEN0_WEIGHT:
+        # Resolve the gen0 weight so gen0's total sampling mass equals the pooled
+        # mass of every later shard: expected 50/50 split, gen0 vs gen1..geng.
+        n_gen0 = int((kept_row_shard == 0).sum())
+        n_rest = int(pool.size - n_gen0)
+        if n_gen0 == 0 or n_rest == 0:
+            raise ValueError("gen0_reservoir needs gen0 rows and at least one later shard")
+        weight_by_shard = {**weight_by_shard, 0: n_rest / n_gen0}
+    weights = np.array([weight_by_shard[int(s)] for s in kept_row_shard], dtype=np.float64)
     uniform = bool(np.allclose(weights, weights[0]))
     if budget in (0, None) and uniform:
         return np.sort(pool)
@@ -176,6 +205,7 @@ def run_sweep(
     schemes: tuple[str, ...] = SCHEMES,
     budget: int | None = 12000,
     gamma: float = 0.5,
+    gamma_old: float = 0.5,
     b: float = 0.75,
     l2: float = 1e-4,
     learning_rate: float = 2e-3,
@@ -194,6 +224,7 @@ def run_sweep(
             "schemes": list(schemes),
             "budget": budget,
             "gamma": gamma,
+            "gamma_old": gamma_old,
             "b": b, "l2": l2, "learning_rate": learning_rate, "epochs": epochs,
             "seed": seed, "validation_fraction": validation_fraction, "split_seed": split_seed,
             "n_weights": int(N_WEIGHTS),
@@ -219,7 +250,7 @@ def run_sweep(
 
         by_spec: dict[tuple[tuple[int, float], ...], dict[str, object]] = {}
         for scheme in schemes:
-            spec = scheme_shards(scheme, g, gamma=gamma)
+            spec = scheme_shards(scheme, g, gamma=gamma, gamma_old=gamma_old)
             key = tuple(spec)
             if key not in by_spec:
                 rng = np.random.default_rng([seed, g, SCHEMES.index(scheme)])
@@ -286,7 +317,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--generations", default="1,2,3,4")
     parser.add_argument("--schemes", default=",".join(SCHEMES))
     parser.add_argument("--budget", type=int, default=12000, help="resample every scheme to this many training rows; 0 disables resampling")
-    parser.add_argument("--gamma", type=float, default=0.5)
+    parser.add_argument("--gamma", type=float, default=0.5, help="recency_weighted decay: shard i weight = gamma ** (g - i)")
+    parser.add_argument("--gamma-old", type=float, default=0.5, help="anti_recency decay: shard i weight = gamma_old ** i")
     parser.add_argument("--b", type=float, default=0.75)
     parser.add_argument("--l2", type=float, default=1e-4)
     parser.add_argument("--learning-rate", type=float, default=2e-3)
@@ -301,7 +333,7 @@ def main(argv: list[str] | None = None) -> None:
         generations=tuple(int(t) for t in args.generations.split(",")),
         schemes=tuple(args.schemes.split(",")),
         budget=args.budget or None,
-        gamma=args.gamma, b=args.b, l2=args.l2, learning_rate=args.learning_rate,
+        gamma=args.gamma, gamma_old=args.gamma_old, b=args.b, l2=args.l2, learning_rate=args.learning_rate,
         epochs=args.epochs, seed=args.seed,
         validation_fraction=args.replay_validation_fraction,
         split_seed=args.replay_split_seed,
