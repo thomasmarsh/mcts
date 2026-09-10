@@ -44,7 +44,7 @@ from az_train.convnet_c4 import (
     write_weights,
 )
 from az_train.fitability_c4 import _concat
-from az_train.mirror_diagnostic_c4 import read_reference_corpus
+from az_train.mirror_diagnostic_c4 import ReferenceCorpus, read_reference_corpus
 from az_train.records_c4 import game_slices, load_positions
 from az_train.reference_label_fit_c4 import _proven_split, _sha256, value_report
 from az_train.target_mixture_c4 import mixed_target
@@ -114,11 +114,44 @@ def run_generation(
     split_seed: int = 20260908,
 ) -> dict[str, object]:
     corpus = read_reference_corpus(corpus_path)
-    ref = _proven_split(corpus, 1)
     train, held_out, counts = load_split_replay(
         positions_paths, searched_paths,
         validation_fraction=validation_fraction, split_seed=split_seed,
     )
+    return fit_and_diagnose(
+        corpus, corpus_path, positions_paths, searched_paths,
+        train, held_out, counts, out_dir, generation,
+        b=b, l2=l2, learning_rate=learning_rate, epochs=epochs, seed=seed,
+        validation_fraction=validation_fraction, split_seed=split_seed,
+    )
+
+
+def fit_and_diagnose(
+    corpus: ReferenceCorpus,
+    corpus_path: Path,
+    positions_paths: list[Path],
+    searched_paths: list[Path],
+    train: dict[str, np.ndarray],
+    held_out: dict[str, np.ndarray],
+    counts: dict[str, object],
+    out_dir: Path,
+    generation: int,
+    *,
+    b: float = 0.75,
+    l2: float = 1e-4,
+    learning_rate: float = 2e-3,
+    epochs: int = 30,
+    seed: int = 20260907,
+    validation_fraction: float = 0.2,
+    split_seed: int = 20260908,
+) -> dict[str, object]:
+    """Fit the head on a prepared train/held-out replay pair and assemble the result record.
+
+    Split out of :func:`run_generation` so a diagnostic driver can supply an
+    alternately composed ``train`` pack while holding every fit knob and the
+    reporting path fixed.
+    """
+    ref = _proven_split(corpus, 1)
 
     train_target = mixed_target(train["outcome"], train["searched"], b).astype(np.float32)
     held_out_target = mixed_target(held_out["outcome"], held_out["searched"], b).astype(np.float32)
