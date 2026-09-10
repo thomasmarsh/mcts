@@ -170,7 +170,7 @@ def run_generation(
     seed: int = 20260907,
     validation_fraction: float = 0.2,
     split_seed: int = 20260908,
-    gen0_reservoir_fraction: float = 0.5,
+    gen0_reservoir_fraction: float = 0.0,
     gen0_reservoir_seed: int = 20260909,
 ) -> dict[str, object]:
     corpus = read_reference_corpus(corpus_path)
@@ -339,8 +339,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--replay-validation-fraction", type=float, default=0.2)
     parser.add_argument("--replay-split-seed", type=int, default=20260908)
     parser.add_argument(
-        "--gen0-reservoir-fraction", type=float, default=0.5,
-        help="resample train rows so an expected fraction come from the gen0 shard alone; 0.0 disables",
+        "--gen0-reservoir-fraction", type=float, default=0.0,
+        help="resample train rows so an expected fraction come from the gen0 shard alone; 0.0 (default) disables",
     )
     parser.add_argument("--gen0-reservoir-seed", type=int, default=20260909)
     args = parser.parse_args(argv)

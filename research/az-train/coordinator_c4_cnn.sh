@@ -22,7 +22,9 @@
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, EPOCHS, SIMS,
 # FORCED (forced opening plies), GATE_GAMES, B (mixture weight), L2,
 # GEN0_RESERVOIR (expected gen0-shard share of the resampled training rows;
-# 0.0 disables), START, KILL_GEN1_LB, KILL_PREV_SHARE.
+# 0.0, the default, disables it -- a graded run showed a 0.5 reservoir reverses
+# the value-head reference-Pearson decay but degrades the policy head and
+# weakens end play), START, KILL_GEN1_LB, KILL_PREV_SHARE.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -40,7 +42,7 @@ FORCED=${FORCED:-4}
 GATE_GAMES=${GATE_GAMES:-120}
 B=${B:-0.75}
 L2=${L2:-1e-4}
-GEN0_RESERVOIR=${GEN0_RESERVOIR:-0.5}
+GEN0_RESERVOIR=${GEN0_RESERVOIR:-0.0}
 START=${START:-0}
 KILL_GEN1_LB=${KILL_GEN1_LB:-0.45}
 KILL_PREV_SHARE=${KILL_PREV_SHARE:-0.40}
