@@ -169,43 +169,132 @@ pub fn reference_negamax_score(state: &State<6, 7>, depth: u32) -> i32 {
     solver.bounded_negamax(state, depth.max(1)).1
 }
 
-/// Bounded-depth reference label for `state` at disc count `ply`, plus its
-/// `(first proof depth, maximum attempted depth)`.
+/// Ordered `(depth, fully_searched)` negamax attempts for resolving a position
+/// at disc count `ply`.
 ///
-/// A position with few remaining plies is searched to the end for an exact
-/// label. Otherwise the increasing [`BOUNDED_DEPTH_SCHEDULE`] is attempted in
-/// turn -- capped at [`OPENING_BAND_DEPTH_CAP`] in the opening band -- until one
-/// depth proves a win or loss; a neutral score at the final attempted depth
-/// stays [`ReferenceLabel::Unresolved`] rather than being read as a draw.
-pub fn searched_reference_label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
-    let remaining = 42 - ply as u32;
+/// A position with few remaining plies gets a single exact search to the end.
+/// Otherwise the increasing [`BOUNDED_DEPTH_SCHEDULE`] is returned -- capped at
+/// [`OPENING_BAND_DEPTH_CAP`] in the opening band -- with a trailing exact
+/// search substituted for any scheduled depth that would already reach the end.
+/// Both [`searched_reference_label`] and [`optimal_move_set`] walk this list so
+/// the depth policy lives in exactly one place.
+pub fn resolution_schedule(ply: u8) -> Vec<(u32, bool)> {
+    let remaining = (42 - ply as u32).max(1);
     if remaining <= EXACT_SEARCH_REMAINING_CAP {
-        let score = reference_negamax_score(state, remaining);
-        let depth = remaining as u8;
-        return (classify_score(score, true), depth, depth);
+        return vec![(remaining, true)];
     }
     let depth_cap = if ply_band(ply) == 0 {
         OPENING_BAND_DEPTH_CAP
     } else {
         u32::MAX
     };
-    let mut max = 0u8;
+    let mut out = Vec::new();
     for &depth in BOUNDED_DEPTH_SCHEDULE {
         if depth > depth_cap {
             break;
         }
         if depth >= remaining {
-            let score = reference_negamax_score(state, remaining);
-            let d = remaining as u8;
-            return (classify_score(score, true), d, d);
+            out.push((remaining, true));
+            return out;
+        }
+        out.push((depth, false));
+    }
+    out
+}
+
+/// Bounded-depth reference label for `state` at disc count `ply`, plus its
+/// `(first proof depth, maximum attempted depth)`.
+///
+/// Walks [`resolution_schedule`]: an exact search yields its label directly, a
+/// bounded search is accepted only when it proves a win or loss, and a neutral
+/// score at the final attempted depth stays [`ReferenceLabel::Unresolved`]
+/// rather than being read as a draw.
+pub fn searched_reference_label(state: &State<6, 7>, ply: u8) -> (ReferenceLabel, u8, u8) {
+    let mut max = 0u8;
+    for (depth, exact) in resolution_schedule(ply) {
+        let label = classify_score(reference_negamax_score(state, depth), exact);
+        if exact {
+            return (label, depth as u8, depth as u8);
         }
         max = depth as u8;
-        let label = classify_score(reference_negamax_score(state, depth), false);
         if label != ReferenceLabel::Unresolved {
             return (label, depth as u8, max);
         }
     }
     (ReferenceLabel::Unresolved, 0, max)
+}
+
+/// Proven outcome class for the mover at `state`: `1` a forced win, `0` a
+/// draw, `-1` a forced loss, `None` if [`resolution_schedule`] cannot resolve
+/// it. Mate distance is deliberately discarded -- a slower forced win is still
+/// a win.
+fn proven_outcome_class(state: &State<6, 7>, ply: u8) -> Option<i32> {
+    for (depth, exact) in resolution_schedule(ply) {
+        match classify_score(reference_negamax_score(state, depth), exact) {
+            ReferenceLabel::ExactWin | ReferenceLabel::BoundedWin => return Some(1),
+            ReferenceLabel::ExactLoss | ReferenceLabel::BoundedLoss => return Some(-1),
+            ReferenceLabel::ExactDraw => return Some(0),
+            ReferenceLabel::Unresolved => continue,
+        }
+    }
+    None
+}
+
+/// Why [`optimal_move_set`] declined to return a move set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OracleSkip {
+    /// No legal child could be resolved even at the capped depth.
+    NoChildResolved,
+    /// Some child stayed unresolved and no resolved child forces a win, so an
+    /// unresolved child could secretly beat the best resolved outcome.
+    AmbiguousUnresolvedChild,
+}
+
+/// The set of columns whose child preserves the best achievable proven outcome
+/// class for the mover at a non-terminal `state`.
+///
+/// Every legal child is scored with [`proven_outcome_class`]. Optimal = every
+/// move reaching the best class among `win > draw > loss`; a lost position
+/// still returns the (whole) least-bad set. Returns `Err` when the position
+/// should be skipped: either nothing resolved, or an unresolved child could
+/// still beat the best resolved outcome (see [`OracleSkip`]).
+pub fn optimal_move_set(state: &State<6, 7>) -> Result<Vec<u8>, OracleSkip> {
+    let child_ply = (state.black().count_ones() + state.white().count_ones()) as u8 + 1;
+    let mut actions = Vec::new();
+    crate::Standard::generate_actions(state, &mut actions);
+    debug_assert!(
+        !crate::Standard::is_terminal(state) && !actions.is_empty(),
+        "oracle needs a non-terminal position with legal moves"
+    );
+    let mut classes: Vec<(u8, i32)> = Vec::new();
+    let mut unresolved = false;
+    for action in &actions {
+        let child = crate::Standard::apply(*state, action);
+        if child.has_winner() {
+            classes.push((action.0, 1));
+        } else if crate::Standard::is_terminal(&child) {
+            classes.push((action.0, 0));
+        } else {
+            match proven_outcome_class(&child, child_ply) {
+                // The child score is from the child mover's perspective; negate
+                // it back to the perspective of the mover at `state`.
+                Some(child_class) => classes.push((action.0, -child_class)),
+                None => unresolved = true,
+            }
+        }
+    }
+    if classes.is_empty() {
+        return Err(OracleSkip::NoChildResolved);
+    }
+    let best = classes.iter().map(|&(_, c)| c).max().unwrap();
+    if unresolved && best < 1 {
+        return Err(OracleSkip::AmbiguousUnresolvedChild);
+    }
+    Ok(classes
+        .iter()
+        .filter(|&&(_, c)| c == best)
+        .map(|&(col, _)| col)
+        .collect())
 }
 
 /// Soft searched-value scalar in `[-1, 1]` from the side-to-move perspective.
@@ -677,6 +766,66 @@ mod tests {
         assert_eq!(searched_value_scalar(ReferenceLabel::BoundedLoss), -1.0);
         assert_eq!(searched_value_scalar(ReferenceLabel::ExactDraw), 0.0);
         assert_eq!(searched_value_scalar(ReferenceLabel::Unresolved), 0.0);
+    }
+
+    #[test]
+    fn optimal_move_set_is_a_singleton_for_a_forced_win() {
+        // Black holds bottom-row columns 0,1,2; White holds 4,5,6. Black to
+        // move: column 3 wins immediately, and every other move lets White
+        // complete columns 3-6, so column 3 is the only optimal move.
+        let mut state = State::<6, 7>::default();
+        for col in [0u8, 4, 1, 5, 2, 6] {
+            state = Standard::apply(state, &Move(col));
+        }
+        assert_eq!(state.turn(), Player::Black);
+        assert_eq!(optimal_move_set(&state), Ok(vec![3]));
+    }
+
+    #[test]
+    fn optimal_move_set_returns_both_drawing_moves() {
+        // A full 40-disc board with no four in a row (colour = `(row + 2*col)
+        // mod 4 < 2`), minus the two top cells of columns 0 and 6. Black to
+        // move; only columns 0 and 6 are legal, each leaves White a single
+        // forced reply, and neither ordering completes a four -- so both moves
+        // hold the draw.
+        let (mut black, mut white) = (0u64, 0u64);
+        for row in 0..6u64 {
+            for col in 0..7u64 {
+                if (row, col) == (5, 0) || (row, col) == (5, 6) {
+                    continue;
+                }
+                let bit = 1u64 << (row * 7 + col);
+                if (row + 2 * col) % 4 < 2 {
+                    black |= bit;
+                } else {
+                    white |= bit;
+                }
+            }
+        }
+        let state = State::<6, 7>::from_parts(
+            BitBoard::from_bits(black),
+            BitBoard::from_bits(white),
+            Player::Black,
+            false,
+        );
+        assert!(!Standard::is_terminal(&state));
+        let mut set = optimal_move_set(&state).expect("2-cell endgame resolves");
+        set.sort_unstable();
+        assert_eq!(set, vec![0, 6]);
+    }
+
+    #[test]
+    fn optimal_move_set_returns_every_move_for_a_lost_position() {
+        // Black holds bottom-row columns 2,3,4; White to move cannot block both
+        // the column-1 and column-5 completions. No White move wins or draws,
+        // so the least-bad set is every legal column.
+        let mut state = State::<6, 7>::default();
+        for col in [2u8, 0, 3, 6, 4] {
+            state = Standard::apply(state, &Move(col));
+        }
+        assert_eq!(state.turn(), Player::White);
+        assert!(reference_negamax_score(&state, 6) < 0);
+        assert_eq!(optimal_move_set(&state), Ok(vec![0, 1, 2, 3, 4, 5, 6]));
     }
 
     #[test]
