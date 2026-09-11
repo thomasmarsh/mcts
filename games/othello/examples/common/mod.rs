@@ -292,6 +292,158 @@ pub fn report_row(label: &str, t: &Tally) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use game_othello::{Player, BB};
+
+    /// A player that plays a fixed, pre-scripted sequence of moves,
+    /// ignoring the board it is handed.
+    struct Scripted {
+        moves: Vec<Move>,
+        next: usize,
+    }
+
+    impl Scripted {
+        fn new(moves: Vec<Move>) -> Self {
+            Self { moves, next: 0 }
+        }
+    }
+
+    impl Search for Scripted {
+        type G = Othello;
+
+        fn friendly_name(&self) -> String {
+            "scripted".to_string()
+        }
+
+        fn set_friendly_name(&mut self, _name: &str) {}
+
+        fn choose_action(&mut self, _state: &State) -> Move {
+            let m = self.moves[self.next];
+            self.next += 1;
+            m
+        }
+    }
+
+    /// Union of single-square bitboards at `indices`.
+    fn bb(indices: impl IntoIterator<Item = usize>) -> BB {
+        indices
+            .into_iter()
+            .fold(BB::EMPTY, |b, i| b | BB::from_index(i))
+    }
+
+    /// A state one square short of a full board (index 63 empty), split so
+    /// that whichever colour plays there ends up with a strict, known
+    /// count-based lead once the disc lands, with no flips: 63's only
+    /// neighbours (54, 55, 62) are pre-set to `mover`'s colour, so
+    /// `get_flips` finds an own-coloured disc immediately adjacent in every
+    /// direction and flips nothing.
+    fn one_square_from_full(mover: Player) -> (State, /* mover count after move */ u32) {
+        let corner_neighbours = [54usize, 55, 62];
+        let empty = 63usize;
+        let mut mover_idx: Vec<usize> = corner_neighbours.to_vec();
+        let mut other_idx: Vec<usize> = Vec::new();
+        for i in 0..64 {
+            if i == empty || corner_neighbours.contains(&i) {
+                continue;
+            }
+            // Split the remaining 60 squares 37/23 so the mover, after
+            // placing at 63, leads 41-23 (or trails into a 23-41 loss,
+            // depending on which colour is `mover`) -- either way a clean,
+            // unambiguous count winner.
+            if mover_idx.len() < 40 {
+                mover_idx.push(i);
+            } else {
+                other_idx.push(i);
+            }
+        }
+        let (black_idx, white_idx) = match mover {
+            Player::Black => (mover_idx, other_idx),
+            Player::White => (other_idx, mover_idx),
+        };
+        let state = State {
+            black: bb(black_idx),
+            white: bb(white_idx),
+            turn: mover,
+            last_pass: false,
+            hashes: [0u64; 8],
+        };
+        (state, 41)
+    }
+
+    /// One ply from a full board (`play_from`'s only ply) must attribute a
+    /// decisive win to the seat whose colour actually has more discs, when
+    /// that seat's colour also made the winning, board-filling move.
+    #[test]
+    fn play_from_attributes_a_win_made_on_the_final_ply() {
+        let (state, mover_discs) = one_square_from_full(Player::Black);
+        assert_eq!(state.black.count_ones() + 1, mover_discs); // sanity on the setup above.
+
+        let mut first = Scripted::new(vec![Move(63)]);
+        let mut second = Scripted::new(vec![]);
+        let result = play_from(state, &mut first, &mut second);
+
+        // Black plays the winning move and Black ends up with more discs:
+        // seat 0 (`first`) wins.
+        assert_eq!(result, Some(0));
+    }
+
+    /// The decisive case: the seat that makes the literal last move (fills
+    /// the last empty square) is the *loser* by disc count. `play_from`
+    /// must still attribute the win to the seat whose colour has more
+    /// discs, not to whoever moved last -- this is exactly the shape of the
+    /// Connect Four `battle_royale` bug (see `crates/mcts/src/util.rs`),
+    /// which used `player_to_move` at the terminal as if it named the last
+    /// mover. It is safe here because `State::apply` always advances
+    /// `turn`, on every move including a pass, so `player_to_move` at the
+    /// terminal names the *next* mover's colour, which stays in lockstep
+    /// with the alternating seat index `s` for the whole game.
+    #[test]
+    fn play_from_does_not_attribute_the_win_to_the_last_mover() {
+        // Two empty squares: 0 and 63, opposite corners so neither's
+        // neighbourhood overlaps the other's.
+        let black_neighbours = [54usize, 55, 62]; // around 63, black plays there first.
+        let white_neighbours = [1usize, 8, 9]; // around 0, white plays there second.
+        let empties = [0usize, 63usize];
+
+        let mut black_idx: Vec<usize> = black_neighbours.to_vec();
+        let mut white_idx: Vec<usize> = white_neighbours.to_vec();
+        for i in 0..64 {
+            if empties.contains(&i)
+                || black_neighbours.contains(&i)
+                || white_neighbours.contains(&i)
+            {
+                continue;
+            }
+            // 37 more black, 19 more white: black 40, white 22 before the
+            // last two discs land: 41-23 after, an unambiguous black lead
+            // even though white plays the literal final move.
+            if black_idx.len() < 40 {
+                black_idx.push(i);
+            } else {
+                white_idx.push(i);
+            }
+        }
+        assert_eq!(black_idx.len(), 40);
+        assert_eq!(white_idx.len(), 22);
+
+        let state = State {
+            black: bb(black_idx),
+            white: bb(white_idx),
+            turn: Player::Black,
+            last_pass: false,
+            hashes: [0u64; 8],
+        };
+
+        let mut first = Scripted::new(vec![Move(63)]); // plays black, first.
+        let mut second = Scripted::new(vec![Move(0)]); // plays white, second and last.
+        let result = play_from(state, &mut first, &mut second);
+
+        let final_black = 41u32;
+        let final_white = 23u32;
+        assert!(final_black > final_white);
+        // Black (seat 0, `first`) has the disc-count lead, even though
+        // white (seat 1, `second`) made the game-ending move.
+        assert_eq!(result, Some(0));
+    }
 
     #[test]
     fn record_game_folds_colour_swaps_correctly() {
