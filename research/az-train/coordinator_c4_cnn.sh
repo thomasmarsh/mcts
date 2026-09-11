@@ -24,7 +24,10 @@
 # GEN0_RESERVOIR (expected gen0-shard share of the resampled training rows;
 # 0.0, the default, disables it -- a graded run showed a 0.5 reservoir reverses
 # the value-head reference-Pearson decay but degrades the policy head and
-# weakens end play), START, KILL_GEN1_LB, KILL_PREV_SHARE.
+# weakens end play), START, KILL_GEN1_LB, KILL_PREV_SHARE,
+# TARGET_C_SCALE / TARGET_RESCALE_Q (recording-only improved-policy target
+# sharpness; unset keeps the Mctx-verbatim target -- the played move is
+# Mctx-verbatim regardless).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -47,6 +50,10 @@ START=${START:-0}
 KILL_GEN1_LB=${KILL_GEN1_LB:-0.45}
 KILL_PREV_SHARE=${KILL_PREV_SHARE:-0.40}
 
+TARGET_ARGS=()
+[ -n "${TARGET_C_SCALE:-}" ] && TARGET_ARGS+=(--target-c-scale "$TARGET_C_SCALE")
+[ -n "${TARGET_RESCALE_Q:-}" ] && TARGET_ARGS+=(--target-rescale-q "$TARGET_RESCALE_Q")
+
 mkdir -p "$RUN_DIR"
 
 cargo build --release -p game-connect4
@@ -65,7 +72,8 @@ for g in $(seq "$START" $((GENS - 1))); do
   echo "=== generation $g: self-play ($GAMES games, $SIMS sims) @ $(date) ==="
   "$BIN" dump --label gumbel --head cnn --value-weights "$weights" \
     --out "$RUN_DIR/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
-    --max-considered 7 --temp-moves 6 --forced-opening-plies "$FORCED"
+    --max-considered 7 --temp-moves 6 --forced-opening-plies "$FORCED" \
+    ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}
 
   echo "=== generation $g: searched-value annotation @ $(date) ==="
   "$ANNOT" --positions "$RUN_DIR/gen$g.bin" --out "$RUN_DIR/gen$g.sv.f32"

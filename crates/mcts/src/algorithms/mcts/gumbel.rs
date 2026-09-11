@@ -138,6 +138,34 @@ pub struct GumbelConfig {
     /// Gumbel; `VisitCount` returns `argmax_a N(a)` and forces PUCT interior
     /// selection.
     pub root_move_selection: RootMoveSelection,
+    /// Recording-only override for the improved-policy target's `c_scale`.
+    /// `None` (default) reuses the played-move `c_scale`, so the recorded
+    /// target is byte-identical to current behaviour. A larger value sharpens
+    /// the recorded target toward the completed-Q argmax without touching the
+    /// played move, the Sequential-Halving survivor ranking, or the returned
+    /// action -- those stay Mctx-verbatim.
+    pub target_c_scale: Option<f64>,
+    /// Recording-only override for the improved-policy target's `rescale_q`.
+    /// `None` (default) reuses the played-move `rescale_q`. Setting it to
+    /// `false` stops the completed-Q spread being compressed into `[0, 1]`
+    /// before the visit scale, which at a small simulation budget is the
+    /// dominant reason the recorded target collapses back onto the raw prior.
+    pub target_rescale_q: Option<bool>,
+}
+
+impl GumbelConfig {
+    /// The config [`improved_policy`] sees when building the *recorded*
+    /// training target: `target_c_scale` / `target_rescale_q` applied over the
+    /// played-move values. Every other field, including the played-move
+    /// `c_scale` / `rescale_q` used by [`candidate_score`] and the returned
+    /// action, is left untouched.
+    fn recorded_target_config(&self) -> GumbelConfig {
+        GumbelConfig {
+            c_scale: self.target_c_scale.unwrap_or(self.c_scale),
+            rescale_q: self.target_rescale_q.unwrap_or(self.rescale_q),
+            ..*self
+        }
+    }
 }
 
 impl Default for GumbelConfig {
@@ -153,6 +181,8 @@ impl Default for GumbelConfig {
             interior_c_puct: 1.25,
             sigma_mode: SigmaMode::NodeFloor,
             root_move_selection: RootMoveSelection::CompletedQ,
+            target_c_scale: None,
+            target_rescale_q: None,
         }
     }
 }
@@ -532,7 +562,9 @@ where
                 .collect()
         }
     };
-    let improved = improved_policy(&logits, &visits, &completed_q, cfg);
+    // The recorded training target may be sharpened independently of the
+    // played move: only this call sees the `target_*` overrides.
+    let improved = improved_policy(&logits, &visits, &completed_q, &cfg.recorded_target_config());
 
     GumbelOutcome {
         action: actions[best].clone(),
@@ -547,6 +579,74 @@ mod tests {
         candidate_score, completed_q, improved_policy, mctx_sh_schedule, most_visited_action,
         sigma_visit_scale, transform_completed_q, GumbelConfig, RootMoveSelection, SigmaMode,
     };
+
+    /// Shannon entropy of a probability vector, in nats.
+    fn entropy(p: &[f32]) -> f64 {
+        p.iter()
+            .filter(|&&x| x > 0.0)
+            .map(|&x| -(x as f64) * (x as f64).ln())
+            .sum()
+    }
+
+    /// `target_c_scale` / `target_rescale_q` sharpen the *recorded* improved
+    /// policy (lower entropy, more mass on the completed-Q argmax) while
+    /// `candidate_score` -- the Sequential-Halving survivor key and the
+    /// returned-action score -- is byte-identical, because it never reads the
+    /// `target_*` fields.
+    #[test]
+    fn target_overrides_sharpen_the_recorded_target_only() {
+        // A near-balanced root: small completed-Q spread, so the Mctx-verbatim
+        // target barely moves off the prior.
+        let logits = [0.20, 0.10, -0.05, 0.15];
+        let visits = [10u32, 8, 6, 8];
+        let q = [0.62, 0.55, 0.40, 0.58];
+        let completed = completed_q(0.55, &logits, &visits, &q);
+
+        let base = GumbelConfig::default();
+        let sharp = GumbelConfig {
+            target_c_scale: Some(1.0),
+            target_rescale_q: Some(false),
+            ..GumbelConfig::default()
+        };
+
+        // Played-move machinery is untouched: the target fields never reach
+        // `candidate_score`, and `recorded_target_config` leaves every other
+        // field alone.
+        let max_visits = *visits.iter().max().unwrap();
+        let gumbel = [0.0; 4];
+        for idx in 0..4 {
+            let a = candidate_score(idx, &gumbel, &logits, &completed, &base, &visits, max_visits);
+            let b = candidate_score(idx, &gumbel, &logits, &completed, &sharp, &visits, max_visits);
+            assert_eq!(a, b, "candidate_score changed at {idx}");
+        }
+        assert_eq!(base.recorded_target_config().c_scale, 0.1);
+        assert_eq!(sharp.recorded_target_config().c_scale, 1.0);
+        assert!(!sharp.recorded_target_config().rescale_q);
+
+        // The recorded target itself: sharper under the overrides.
+        let baseline_target = improved_policy(&logits, &visits, &completed, &base);
+        let baseline_recorded =
+            improved_policy(&logits, &visits, &completed, &base.recorded_target_config());
+        assert_eq!(
+            baseline_target, baseline_recorded,
+            "default config: recorded target unchanged"
+        );
+        let sharp_recorded =
+            improved_policy(&logits, &visits, &completed, &sharp.recorded_target_config());
+        assert!(
+            entropy(&sharp_recorded) < entropy(&baseline_recorded) - 0.05,
+            "sharpened target entropy {} vs baseline {}",
+            entropy(&sharp_recorded),
+            entropy(&baseline_recorded),
+        );
+        let argmax = |p: &[f32]| {
+            (0..p.len())
+                .max_by(|&i, &j| p[i].partial_cmp(&p[j]).unwrap())
+                .unwrap()
+        };
+        assert_eq!(argmax(&sharp_recorded), 0, "sharpened toward completed-Q argmax");
+        assert!(sharp_recorded[0] > baseline_recorded[0] + 0.1);
+    }
 
     #[test]
     fn most_visited_action_breaks_ties_toward_the_lowest_index() {

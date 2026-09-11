@@ -33,7 +33,9 @@
 //! positions from uniform-random self-play with no search-derived policy.
 //! `--label gumbel` runs Gumbel self-play with the n-tuple value head
 //! (`--value-weights` / `--policy-weights`), recording completed-Q improvement as
-//! the policy target.
+//! the policy target. `--target-c-scale` / `--target-rescale-q` sharpen that
+//! recorded target independently of the played move (the played move stays
+//! Mctx-verbatim); the default keeps the Mctx-verbatim target.
 //!
 //! v2 records are variable-width, so a reader must walk them sequentially
 //! (`research/az-train/`'s `az_train.records_c4`).
@@ -250,6 +252,12 @@ struct Config {
     /// trains on a distribution that does not collapse onto its own current
     /// best line each generation.
     temp_moves: u8,
+    /// `--label gumbel` only: recording-only overrides for the improved-policy
+    /// training target's sharpness (see `GumbelConfig::target_c_scale` /
+    /// `target_rescale_q`). The played move stays Mctx-verbatim; only the
+    /// recorded policy tail changes. `None` keeps the Mctx-verbatim target.
+    target_c_scale: Option<f64>,
+    target_rescale_q: Option<bool>,
     /// `--label gumbel` only: number of opening plies whose move is *forced*
     /// to a deterministic per-game column (see [`forced_opening_column`])
     /// rather than chosen by search. Forces wide, uniform opening coverage
@@ -270,6 +278,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut max_considered = 8usize;
     let mut temp_moves = 6u8;
     let mut forced_opening_plies = 0u32;
+    let mut target_c_scale: Option<f64> = None;
+    let mut target_rescale_q: Option<bool> = None;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -296,11 +306,20 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                     .parse()
                     .expect("--forced-opening-plies must be an integer")
             }
+            "--target-c-scale" => {
+                target_c_scale =
+                    Some(val().parse().expect("--target-c-scale must be a float"))
+            }
+            "--target-rescale-q" => {
+                target_rescale_q =
+                    Some(val().parse().expect("--target-rescale-q must be true|false"))
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
                      [--label outcome|gumbel] [--head ntuple|cnn] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
-                     [--max-considered N] [--temp-moves N] [--forced-opening-plies N]"
+                     [--max-considered N] [--temp-moves N] [--forced-opening-plies N] \
+                     [--target-c-scale F] [--target-rescale-q true|false]"
                 );
                 std::process::exit(0);
             }
@@ -329,6 +348,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         max_considered,
         temp_moves,
         forced_opening_plies,
+        target_c_scale,
+        target_rescale_q,
     }
 }
 
@@ -393,6 +414,8 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
         let gcfg = GumbelConfig {
             sims: cfg.sims,
             max_considered: cfg.max_considered,
+            target_c_scale: cfg.target_c_scale,
+            target_rescale_q: cfg.target_rescale_q,
             ..GumbelConfig::default()
         };
         // Games are independent; play them in parallel and re-assemble in
@@ -435,6 +458,8 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
     let gcfg = GumbelConfig {
         sims: cfg.sims,
         max_considered: cfg.max_considered,
+        target_c_scale: cfg.target_c_scale,
+        target_rescale_q: cfg.target_rescale_q,
         ..GumbelConfig::default()
     };
 
@@ -554,6 +579,8 @@ mod tests {
             max_considered: 4,
             temp_moves: 6,
             forced_opening_plies: 0,
+            target_c_scale: None,
+            target_rescale_q: None,
         }
     }
 
