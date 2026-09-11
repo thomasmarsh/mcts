@@ -337,11 +337,13 @@ def fit_structured_value_head_with_diagnostics(
     regularizer[0] = 0.0
 
     def xt(vector: np.ndarray, indices: np.ndarray) -> np.ndarray:
-        result = np.zeros(STRUCTURED_WEIGHTS, dtype=np.float64)
-        # Avoid a `repeat(vector, 272)` temporary on the clean-data fit.
-        for column in range(indices.shape[1]):
-            np.add.at(result, indices[:, column], vector)
-        return result
+        # Vectorized scatter-add: np.add.at is correct but walks the index
+        # array one element at a time, effectively unbuffered. np.bincount
+        # accumulates repeated indices with real vectorization and is
+        # faster even with the `repeat(vector, 272)` temporary it takes to
+        # flatten the row-major active-index matrix first.
+        weights = np.repeat(vector, indices.shape[1])
+        return np.bincount(indices.ravel(), weights=weights, minlength=STRUCTURED_WEIGHTS)
 
     def row_sum(vector: np.ndarray, indices: np.ndarray) -> np.ndarray:
         result = np.zeros(len(indices), dtype=np.float64)
