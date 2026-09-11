@@ -168,14 +168,61 @@ pub struct GumbelOutcome<A> {
     pub improved_policy: Vec<(A, f32)>,
 }
 
-/// Number of Sequential Halving phases for `m` candidates: `ceil(log2 m)`,
-/// and `0` when there is nothing to halve.
-pub(crate) fn num_phases(m: usize) -> usize {
-    if m <= 1 {
-        0
-    } else {
-        (m - 1).ilog2() as usize + 1
+/// One Sequential-Halving phase: the top `num_considered` candidates (ranked
+/// by the survivor key carried over from the previous phase) each receive
+/// `visits[rank]` additional forced root visits this phase.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShPhase {
+    /// How many of the ranked candidates are visited this phase.
+    pub num_considered: usize,
+    /// Forced visits for the candidate at each rank `0..num_considered`. The
+    /// final phase can be ragged when the budget runs out part-way through a
+    /// round, so higher-ranked candidates may get one more visit than the rest.
+    pub visits: Vec<u32>,
+}
+
+/// The DeepMind Mctx Sequential-Halving visit schedule, expressed as a list of
+/// phases. This is a transcription of `get_sequence_of_considered_visits` in
+/// `mctx/_src/seq_halving.py`: `log2max = ceil(log2 m)` rounds of budget, each
+/// round giving `max(1, n / (log2max * num_considered))` visits to every one of
+/// the current `num_considered` top candidates, then halving
+/// `num_considered <- max(2, num_considered / 2)`, stopping once the budget `n`
+/// is spent. The total visits issued equal `n` exactly (Mctx truncates its
+/// per-simulation sequence to `n`); the schedule never overspends and never
+/// leaves budget unused.
+pub(crate) fn mctx_sh_schedule(m: usize, n: u32) -> Vec<ShPhase> {
+    if n == 0 {
+        return Vec::new();
     }
+    if m <= 1 {
+        return vec![ShPhase {
+            num_considered: 1,
+            visits: vec![n],
+        }];
+    }
+    let log2max = u32::BITS - (m as u32 - 1).leading_zeros();
+    let mut phases = Vec::new();
+    let mut num_considered = m;
+    let mut spent = 0u32;
+    while spent < n {
+        let per_round = (n / (log2max * num_considered as u32)).max(1);
+        let mut visits = vec![0u32; num_considered];
+        'rounds: for _ in 0..per_round {
+            for slot in visits.iter_mut() {
+                if spent == n {
+                    break 'rounds;
+                }
+                *slot += 1;
+                spent += 1;
+            }
+        }
+        phases.push(ShPhase {
+            num_considered,
+            visits,
+        });
+        num_considered = (num_considered / 2).max(2);
+    }
+    phases
 }
 
 /// A standard Gumbel(0, 1) draw, `-ln(-ln u)` for `u` uniform on `(0, 1]`.
@@ -432,28 +479,17 @@ where
     });
     considered.truncate(m);
 
-    let phases = num_phases(m);
-    let mut budget_left = cfg.sims;
-    for phase in 0..phases {
-        let n_actions = considered.len() as u32;
-        let last_phase = phase == phases - 1;
-        let per_action = if last_phase {
-            (budget_left / n_actions).max(1)
-        } else {
-            (cfg.sims / (phases as u32 * n_actions)).max(1)
-        };
-        for &a in &considered {
-            for _ in 0..per_action {
-                if budget_left == 0 {
-                    break;
-                }
+    let schedule = mctx_sh_schedule(m, cfg.sims);
+    for (phase_idx, sh_phase) in schedule.iter().enumerate() {
+        debug_assert_eq!(considered.len(), sh_phase.num_considered);
+        for (rank, &a) in considered.iter().enumerate() {
+            for _ in 0..sh_phase.visits[rank] {
                 run_forced_iteration(search, root_id, state, &actions[a]);
-                budget_left -= 1;
             }
         }
-        if last_phase {
+        let Some(next_phase) = schedule.get(phase_idx + 1) else {
             break;
-        }
+        };
         let visits = root_child_visits(search, root_id);
         let max_visits = visits.iter().copied().max().unwrap_or(0);
         let completed_q = root_completed_q(search, root_id, player, root_value, &logits, cfg);
@@ -462,7 +498,7 @@ where
             let sa = candidate_score(a, &gumbel, &logits, &completed_q, cfg, &visits, max_visits);
             sb.partial_cmp(&sa).unwrap()
         });
-        considered.truncate(considered.len().div_ceil(2).max(1));
+        considered.truncate(next_phase.num_considered);
     }
 
     let visits = root_child_visits(search, root_id);
@@ -508,7 +544,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_score, completed_q, improved_policy, most_visited_action, num_phases,
+        candidate_score, completed_q, improved_policy, mctx_sh_schedule, most_visited_action,
         sigma_visit_scale, transform_completed_q, GumbelConfig, RootMoveSelection, SigmaMode,
     };
 
@@ -562,16 +598,101 @@ mod tests {
         );
     }
 
+    /// Independent transcription of DeepMind Mctx
+    /// `get_sequence_of_considered_visits` (`mctx/_src/seq_halving.py`),
+    /// returning the per-simulation sequence of considered-visit counts.
+    fn mctx_considered_visits(m: usize, n: usize) -> Vec<usize> {
+        if m <= 1 {
+            return (0..n).collect();
+        }
+        let log2max = (u32::BITS - (m as u32 - 1).leading_zeros()) as usize;
+        let mut sequence: Vec<usize> = Vec::new();
+        let mut visits = vec![0usize; m];
+        let mut num_considered = m;
+        while sequence.len() < n {
+            let num_extra_visits = std::cmp::max(1, n / (log2max * num_considered));
+            for _ in 0..num_extra_visits {
+                sequence.extend_from_slice(&visits[..num_considered]);
+                for v in visits[..num_considered].iter_mut() {
+                    *v += 1;
+                }
+            }
+            num_considered = std::cmp::max(2, num_considered / 2);
+        }
+        sequence.truncate(n);
+        sequence
+    }
+
+    /// Per-candidate total visit allocation (rank-sorted) and the survivor-count
+    /// sequence that the Mctx schedule produces, derived independently from
+    /// [`mctx_considered_visits`] by replaying its round structure.
+    fn mctx_summary(m: usize, n: u32) -> (Vec<u32>, Vec<usize>) {
+        let n = n as usize;
+        // Confirm our phase-derived helper agrees with the flat sequence port.
+        let flat = mctx_considered_visits(m, n);
+        assert_eq!(flat.len(), n);
+        if m <= 1 {
+            return (vec![n as u32], if n == 0 { vec![] } else { vec![1] });
+        }
+        let log2max = (u32::BITS - (m as u32 - 1).leading_zeros()) as usize;
+        let mut alloc = vec![0u32; m];
+        let mut survivors = Vec::new();
+        let mut num_considered = m;
+        let mut appended = 0usize;
+        let mut assigned = 0usize;
+        while appended < n {
+            let num_extra_visits = std::cmp::max(1, n / (log2max * num_considered));
+            survivors.push(num_considered);
+            for _ in 0..num_extra_visits {
+                for slot in alloc.iter_mut().take(num_considered) {
+                    appended += 1;
+                    if assigned < n {
+                        *slot += 1;
+                        assigned += 1;
+                    }
+                }
+            }
+            num_considered = std::cmp::max(2, num_considered / 2);
+        }
+        (alloc, survivors)
+    }
+
+    fn our_summary(m: usize, n: u32) -> (Vec<u32>, Vec<usize>) {
+        let schedule = mctx_sh_schedule(m, n);
+        let mut alloc = vec![0u32; m];
+        for phase in &schedule {
+            for (rank, &v) in phase.visits.iter().enumerate() {
+                alloc[rank] += v;
+            }
+        }
+        let survivors = schedule.iter().map(|p| p.num_considered).collect();
+        (alloc, survivors)
+    }
+
+    /// Pins our Sequential-Halving schedule to DeepMind Mctx's
+    /// `get_sequence_of_considered_visits`: the rank-sorted per-candidate visit
+    /// allocation and the survivor-count sequence must match exactly, and the
+    /// schedule must spend the whole budget.
     #[test]
-    fn phase_count_is_ceil_log2() {
-        assert_eq!(num_phases(0), 0);
-        assert_eq!(num_phases(1), 0);
-        assert_eq!(num_phases(2), 1);
-        assert_eq!(num_phases(3), 2);
-        assert_eq!(num_phases(4), 2);
-        assert_eq!(num_phases(5), 3);
-        assert_eq!(num_phases(8), 3);
-        assert_eq!(num_phases(16), 4);
+    fn sh_schedule_matches_mctx_considered_visits() {
+        for &(n, m) in &[(32u32, 7usize), (32, 8), (16, 16), (8, 4)] {
+            let (ours_alloc, ours_surv) = our_summary(m, n);
+            let (mctx_alloc, mctx_surv) = mctx_summary(m, n);
+            assert_eq!(ours_alloc, mctx_alloc, "allocation mismatch n={n} m={m}");
+            assert_eq!(ours_surv, mctx_surv, "survivor sequence mismatch n={n} m={m}");
+            assert_eq!(
+                ours_alloc.iter().sum::<u32>(),
+                n,
+                "schedule must spend the whole budget n={n} m={m}"
+            );
+        }
+        // Explicit reference vectors (see local/work/plan/gumbel-connect4-recovery.md row 7.1).
+        assert_eq!(our_summary(7, 32).0, vec![12, 12, 4, 1, 1, 1, 1]);
+        assert_eq!(our_summary(7, 32).1, vec![7, 3, 2, 2]);
+        assert_eq!(our_summary(8, 32).0, vec![11, 11, 3, 3, 1, 1, 1, 1]);
+        assert_eq!(our_summary(4, 8).0, vec![3, 3, 1, 1]);
+        assert_eq!(our_summary(16, 16).0, vec![1; 16]);
+        assert_eq!(our_summary(16, 16).1, vec![16]);
     }
 
     #[test]
