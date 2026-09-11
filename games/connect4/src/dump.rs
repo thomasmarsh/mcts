@@ -71,6 +71,105 @@ fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
     dist[0].0
 }
 
+/// Value-filtered visit-proportional move sampler, after minizero's
+/// `selectChildBySoftmaxCount`. `visit_dist` is the `(move, visit-probability)`
+/// distribution over children that received a visit (sums to 1); `child_q` is
+/// the completed-Q of each child in the root mover's perspective, on a roughly
+/// `[-1, 1]` scale. A child is dropped when its completed-Q is more than
+/// `value_margin` below the completed-Q of the *most-visited* child (best is by
+/// visit count, not by value, so the most-visited child always survives); among
+/// the survivors a move is drawn proportional to `p^(1/temperature)`. As
+/// `temperature -> 0` this converges on the most-visited surviving child.
+fn sample_visit_pow(
+    visit_dist: &[(Move, f32)],
+    child_q: &[(Move, f32)],
+    temperature: f32,
+    value_margin: f32,
+    rng: &mut SmallRng,
+) -> Move {
+    let q_of = |m: Move| child_q.iter().find(|(x, _)| *x == m).map(|(_, q)| *q);
+    let most_visited = visit_dist
+        .iter()
+        .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+        .map(|(m, _)| *m)
+        .unwrap_or(visit_dist[0].0);
+    let best_q = q_of(most_visited).unwrap_or(f32::NEG_INFINITY);
+    let survivors: Vec<(Move, f32)> = visit_dist
+        .iter()
+        .filter(|(m, p)| {
+            *p > 0.0 && q_of(*m).is_none_or(|q| q >= best_q - value_margin)
+        })
+        .copied()
+        .collect();
+    if survivors.is_empty() {
+        return most_visited;
+    }
+    let p_max = survivors.iter().map(|(_, p)| *p).fold(0.0f32, f32::max);
+    let inv_t = 1.0 / temperature;
+    let mut weighted: Vec<(Move, f32)> = survivors
+        .iter()
+        .map(|(m, p)| (*m, (p / p_max).powf(inv_t)))
+        .collect();
+    let total: f32 = weighted.iter().map(|(_, w)| *w).sum();
+    if total <= 0.0 {
+        return most_visited;
+    }
+    for (_, w) in weighted.iter_mut() {
+        *w /= total;
+    }
+    sample_visit_distribution(&weighted, rng)
+}
+
+/// Whole-game visit-power move sampling settings for Gumbel self-play. When
+/// `enabled`, every move past the forced opening prefix is drawn with
+/// [`sample_visit_pow`] rather than the `temp_moves`-then-argmax rule.
+#[derive(Clone, Copy)]
+struct FullGameSampling {
+    enabled: bool,
+    temperature: f32,
+    value_margin: f32,
+}
+
+impl FullGameSampling {
+    fn from_config(cfg: &Config) -> Self {
+        Self {
+            enabled: cfg.full_game_sampling,
+            temperature: cfg.sample_temperature,
+            value_margin: cfg.sample_value_margin,
+        }
+    }
+}
+
+/// Pick the move for a Gumbel self-play position. `forced` is the deterministic
+/// opening-prefix column when one applies. Otherwise, with `sampling.enabled`,
+/// draw from the value-filtered visit-power distribution for the whole rest of
+/// the game; without it, sample the Sequential-Halving visit distribution for
+/// the first `temp_moves` plies and play the argmax after that.
+fn choose_selfplay_move(
+    outcome: &mcts::algorithms::mcts::gumbel::GumbelOutcome<Move>,
+    forced: Option<Move>,
+    ply: u8,
+    temp_moves: u8,
+    sampling: FullGameSampling,
+    rng: &mut SmallRng,
+) -> Move {
+    if let Some(forced) = forced {
+        forced
+    } else if sampling.enabled {
+        sample_visit_pow(
+            &outcome.visit_distribution,
+            &outcome.completed_q,
+            sampling.temperature,
+            sampling.value_margin,
+            rng,
+        )
+    } else if ply < temp_moves {
+        sample_visit_distribution(&outcome.improved_policy, rng)
+    } else {
+        outcome.action
+    }
+}
+
 /// Bottom-row-origin cell count of the standard board.
 const CELLS: usize = 42;
 
@@ -264,6 +363,22 @@ struct Config {
     /// across a run. `0` disables forcing. Search still runs and a policy
     /// target is still recorded at every forced position.
     forced_opening_plies: u32,
+    /// `--label gumbel` only: after the forced opening prefix, sample *every*
+    /// remaining move of the game from the value-filtered visit-power
+    /// distribution ([`sample_visit_pow`]) instead of sampling only the first
+    /// `temp_moves` plies and playing the argmax thereafter. Keeps whole
+    /// trajectories diverse so later-generation shards do not collapse onto a
+    /// handful of mid/endgame lines. `false` (default) is byte-identical to the
+    /// `temp_moves`-then-argmax rule; `temp_moves` is ignored when this is set.
+    full_game_sampling: bool,
+    /// `--label gumbel` + `--full-game-sampling` only: the softmax temperature
+    /// on `visit^(1/T)`. `1.0` samples proportional to visit count.
+    sample_temperature: f32,
+    /// `--label gumbel` + `--full-game-sampling` only: drop a child whose
+    /// completed-Q is more than this far below the most-visited child's
+    /// completed-Q. Completed-Q is on a roughly `[-1, 1]` scale, so `0.2` here
+    /// matches minizero's `0.1` on its `[0, 1]`-normalized value.
+    sample_value_margin: f32,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -280,6 +395,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut forced_opening_plies = 0u32;
     let mut target_c_scale: Option<f64> = None;
     let mut target_rescale_q: Option<bool> = None;
+    let mut full_game_sampling = false;
+    let mut sample_temperature = 1.0f32;
+    let mut sample_value_margin = 0.2f32;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -314,12 +432,28 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                 target_rescale_q =
                     Some(val().parse().expect("--target-rescale-q must be true|false"))
             }
+            "--full-game-sampling" => full_game_sampling = true,
+            "--sample-temperature" => {
+                sample_temperature = val()
+                    .parse()
+                    .expect("--sample-temperature must be a float");
+                assert!(
+                    sample_temperature > 0.0,
+                    "--sample-temperature must be positive"
+                );
+            }
+            "--sample-value-margin" => {
+                sample_value_margin = val()
+                    .parse()
+                    .expect("--sample-value-margin must be a float")
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-connect4 dump --out <path> [--games N] [--seed N] \
                      [--label outcome|gumbel] [--head ntuple|cnn] [--value-weights <weights.bin>] [--policy-weights <policy.bin>] [--sims N] \
                      [--max-considered N] [--temp-moves N] [--forced-opening-plies N] \
-                     [--target-c-scale F] [--target-rescale-q true|false]"
+                     [--target-c-scale F] [--target-rescale-q true|false] \
+                     [--full-game-sampling] [--sample-temperature F] [--sample-value-margin F]"
                 );
                 std::process::exit(0);
             }
@@ -350,6 +484,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         forced_opening_plies,
         target_c_scale,
         target_rescale_q,
+        full_game_sampling,
+        sample_temperature,
+        sample_value_margin,
     }
 }
 
@@ -375,6 +512,7 @@ fn play_one_cnn_game(
     seed: u64,
     temp_moves: u8,
     forced_plies: u32,
+    sampling: FullGameSampling,
 ) -> Vec<Record> {
     let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, seed);
     let mut move_rng = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
@@ -387,13 +525,9 @@ fn play_one_cnn_game(
             &state,
             outcome.improved_policy.iter().map(|(m, p)| (m.0, *p)).collect(),
         ));
-        let action = if let Some(forced) = forced_move(&state, game_index, ply as u32, forced_plies) {
-            forced
-        } else if ply < temp_moves {
-            sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
-        } else {
-            outcome.action
-        };
+        let forced = forced_move(&state, game_index, ply as u32, forced_plies);
+        let action =
+            choose_selfplay_move(&outcome, forced, ply, temp_moves, sampling, &mut move_rng);
         state = Standard::apply(state, &action);
         ply += 1;
     }
@@ -432,6 +566,7 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
                     game_seed,
                     cfg.temp_moves,
                     cfg.forced_opening_plies,
+                    FullGameSampling::from_config(cfg),
                 );
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if n.is_multiple_of(100) || n as u64 == cfg.games {
@@ -479,15 +614,15 @@ fn dump_gumbel_games(cfg: &Config, records: &mut Vec<Record>) {
                 .map(|(m, p)| (m.0, *p))
                 .collect();
             records.push(record_for(&state, policy));
-            let action = if let Some(forced) =
-                forced_move(&state, g, ply as u32, cfg.forced_opening_plies)
-            {
-                forced
-            } else if ply < cfg.temp_moves {
-                sample_visit_distribution(&outcome.improved_policy, &mut move_rng)
-            } else {
-                outcome.action
-            };
+            let forced = forced_move(&state, g, ply as u32, cfg.forced_opening_plies);
+            let action = choose_selfplay_move(
+                &outcome,
+                forced,
+                ply,
+                cfg.temp_moves,
+                FullGameSampling::from_config(cfg),
+                &mut move_rng,
+            );
             state = Standard::apply(state, &action);
             ply += 1;
         }
@@ -581,7 +716,75 @@ mod tests {
             forced_opening_plies: 0,
             target_c_scale: None,
             target_rescale_q: None,
+            full_game_sampling: false,
+            sample_temperature: 1.0,
+            sample_value_margin: 0.2,
         }
+    }
+
+    fn q_pairs(qs: &[(u8, f32)]) -> Vec<(Move, f32)> {
+        qs.iter().map(|&(c, q)| (Move(c), q)).collect()
+    }
+
+    fn vd_pairs(vs: &[(u8, f32)]) -> Vec<(Move, f32)> {
+        vs.iter().map(|&(c, p)| (Move(c), p)).collect()
+    }
+
+    #[test]
+    fn sample_visit_pow_converges_on_the_max_visit_survivor_as_temperature_falls() {
+        let vd = vd_pairs(&[(0, 0.2), (1, 0.5), (2, 0.3)]);
+        let q = q_pairs(&[(0, 0.5), (1, 0.5), (2, 0.5)]);
+        let mut rng = SmallRng::seed_from_u64(7);
+        for _ in 0..50 {
+            assert_eq!(sample_visit_pow(&vd, &q, 1e-6, 0.2, &mut rng), Move(1));
+        }
+    }
+
+    #[test]
+    fn sample_visit_pow_drops_a_low_q_child_even_with_visits() {
+        // Move(0) is the most-visited child (best-q reference); Move(1) sits
+        // 0.7 below it, past the 0.2 margin, so it is never played despite
+        // carrying 40% of the visits.
+        let vd = vd_pairs(&[(0, 0.6), (1, 0.4)]);
+        let q = q_pairs(&[(0, 0.9), (1, 0.2)]);
+        let mut rng = SmallRng::seed_from_u64(1);
+        for _ in 0..500 {
+            assert_eq!(sample_visit_pow(&vd, &q, 1.0, 0.2, &mut rng), Move(0));
+        }
+    }
+
+    #[test]
+    fn sample_visit_pow_never_picks_a_mid_visit_child_below_the_margin() {
+        // Three survivors by visits, but Move(1) is 0.5 below the max-visit
+        // child's Q and must be filtered regardless of its 33% visit share.
+        let vd = vd_pairs(&[(0, 0.34), (1, 0.33), (2, 0.33)]);
+        let q = q_pairs(&[(0, 0.6), (1, 0.1), (2, 0.55)]);
+        let mut rng = SmallRng::seed_from_u64(99);
+        let mut seen1 = 0;
+        for _ in 0..1000 {
+            if sample_visit_pow(&vd, &q, 1.0, 0.2, &mut rng) == Move(1) {
+                seen1 += 1;
+            }
+        }
+        assert_eq!(seen1, 0);
+    }
+
+    #[test]
+    fn sample_visit_pow_proportions_track_visit_pow_one_over_t() {
+        // T = 2, equal Q: weights proportional to sqrt(p).
+        // p = [0.25, 0.75] -> sqrt -> [0.5, 0.8660] -> normalized [0.366, 0.634].
+        let vd = vd_pairs(&[(0, 0.25), (1, 0.75)]);
+        let q = q_pairs(&[(0, 0.5), (1, 0.5)]);
+        let mut rng = SmallRng::seed_from_u64(2024);
+        let n = 20_000;
+        let mut ones = 0;
+        for _ in 0..n {
+            if sample_visit_pow(&vd, &q, 2.0, 0.2, &mut rng) == Move(1) {
+                ones += 1;
+            }
+        }
+        let frac = ones as f64 / n as f64;
+        assert!((frac - 0.634).abs() < 0.02, "empirical fraction {frac}");
     }
 
     #[test]

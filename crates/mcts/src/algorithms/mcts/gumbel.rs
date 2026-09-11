@@ -196,6 +196,13 @@ pub struct GumbelOutcome<A> {
     pub visit_distribution: Vec<(A, f32)>,
     /// `(action, probability)` from the completed-Q policy improvement rule.
     pub improved_policy: Vec<(A, f32)>,
+    /// `(action, completed_q)` in the same order as `improved_policy`, in the
+    /// root mover's perspective. This is the raw completed-Q vector the
+    /// improved policy is built from -- roughly on a `[-1, 1]` scale (leaf
+    /// `tanh` value or terminal `+/-1`), *before* any `rescale_q` `[0, 1]`
+    /// normalization. Exposed so a self-play move sampler can apply a value
+    /// filter over the children.
+    pub completed_q: Vec<(A, f32)>,
 }
 
 /// One Sequential-Halving phase: the top `num_considered` candidates (ranked
@@ -566,10 +573,17 @@ where
     // played move: only this call sees the `target_*` overrides.
     let improved = improved_policy(&logits, &visits, &completed_q, &cfg.recorded_target_config());
 
+    let action = actions[best].clone();
+    let child_completed_q: Vec<(G::A, f32)> = actions
+        .iter()
+        .cloned()
+        .zip(completed_q.iter().map(|&q| q as f32))
+        .collect();
     GumbelOutcome {
-        action: actions[best].clone(),
+        action,
         visit_distribution,
         improved_policy: actions.into_iter().zip(improved).collect(),
+        completed_q: child_completed_q,
     }
 }
 

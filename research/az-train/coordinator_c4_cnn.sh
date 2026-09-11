@@ -27,7 +27,10 @@
 # weakens end play), START, KILL_GEN1_LB, KILL_PREV_SHARE,
 # TARGET_C_SCALE / TARGET_RESCALE_Q (recording-only improved-policy target
 # sharpness; unset keeps the Mctx-verbatim target -- the played move is
-# Mctx-verbatim regardless).
+# Mctx-verbatim regardless),
+# FULL_GAME_SAMPLING / SAMPLE_TEMPERATURE / SAMPLE_VALUE_MARGIN (whole-game
+# value-filtered visit-power self-play move sampling; unset keeps the
+# temp-moves-then-argmax rule).
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -54,6 +57,11 @@ TARGET_ARGS=()
 [ -n "${TARGET_C_SCALE:-}" ] && TARGET_ARGS+=(--target-c-scale "$TARGET_C_SCALE")
 [ -n "${TARGET_RESCALE_Q:-}" ] && TARGET_ARGS+=(--target-rescale-q "$TARGET_RESCALE_Q")
 
+SAMPLING_ARGS=()
+[ -n "${FULL_GAME_SAMPLING:-}" ] && SAMPLING_ARGS+=(--full-game-sampling)
+[ -n "${SAMPLE_TEMPERATURE:-}" ] && SAMPLING_ARGS+=(--sample-temperature "$SAMPLE_TEMPERATURE")
+[ -n "${SAMPLE_VALUE_MARGIN:-}" ] && SAMPLING_ARGS+=(--sample-value-margin "$SAMPLE_VALUE_MARGIN")
+
 mkdir -p "$RUN_DIR"
 
 cargo build --release -p game-connect4
@@ -73,7 +81,8 @@ for g in $(seq "$START" $((GENS - 1))); do
   "$BIN" dump --label gumbel --head cnn --value-weights "$weights" \
     --out "$RUN_DIR/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
     --max-considered 7 --temp-moves 6 --forced-opening-plies "$FORCED" \
-    ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"}
+    ${TARGET_ARGS[@]+"${TARGET_ARGS[@]}"} \
+    ${SAMPLING_ARGS[@]+"${SAMPLING_ARGS[@]}"}
 
   echo "=== generation $g: searched-value annotation @ $(date) ==="
   "$ANNOT" --positions "$RUN_DIR/gen$g.bin" --out "$RUN_DIR/gen$g.sv.f32"
