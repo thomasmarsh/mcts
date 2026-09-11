@@ -244,9 +244,12 @@ def fit_value_head_with_diagnostics(
     regularizer[0] = 0.0
 
     def xt(vector: np.ndarray) -> np.ndarray:
-        result = np.zeros(N_WEIGHTS, dtype=np.float64)
-        np.add.at(result, active.ravel(), np.repeat(vector, active.shape[1]))
-        return result
+        # Vectorized scatter-add: np.add.at is correct but walks the index
+        # array one element at a time, effectively unbuffered. np.bincount
+        # accumulates repeated indices with real vectorization and is much
+        # faster for this dense, small (N_WEIGHTS-sized) target.
+        weights = np.repeat(vector, active.shape[1])
+        return np.bincount(active.ravel(), weights=weights, minlength=N_WEIGHTS)
 
     def apply(vector: np.ndarray) -> np.ndarray:
         return xt(vector[active].sum(axis=1)) + regularizer * vector

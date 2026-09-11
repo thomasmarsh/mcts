@@ -51,6 +51,23 @@ def metrics(raw: np.ndarray, target: np.ndarray, legal: np.ndarray) -> dict[str,
     }
 
 
+def _scatter_add_rows(
+    shape: tuple[int, int], row_index: np.ndarray, values: np.ndarray
+) -> np.ndarray:
+    """Add `values` (M, C) into the rows of a (rows, C) array given by `row_index` (M,).
+
+    Equivalent to `np.add.at(target, row_index, values)`, but np.add.at walks the
+    index array one element at a time (effectively unbuffered) while this collapses
+    row and column into one flat index and uses np.bincount, which vectorizes the
+    accumulation of repeated indices and is much faster.
+    """
+    rows, cols = shape
+    col_index = np.arange(cols)
+    combined = row_index.astype(np.int64)[:, None] * cols + col_index[None, :]
+    flat = np.bincount(combined.ravel(), weights=values.ravel(), minlength=rows * cols)
+    return flat.reshape(rows, cols)
+
+
 def fit(
     me: np.ndarray,
     opp: np.ndarray,
@@ -85,10 +102,13 @@ def fit(
             masked = np.where(legal[rows], raw, -np.inf)
             prob = np.exp(masked - np.logaddexp.reduce(masked, axis=1)[:, None])
             delta = (prob - target[rows]) / len(rows)
-            grad = np.zeros_like(weights)
-            np.add.at(grad, a.ravel(), np.repeat(delta * 0.5, a.shape[1], axis=0))
+            grad = _scatter_add_rows(
+                weights.shape, a.ravel(), np.repeat(delta * 0.5, a.shape[1], axis=0)
+            )
             mirrored_delta = delta[:, ::-1]
-            np.add.at(grad, am.ravel(), np.repeat(mirrored_delta * 0.5, am.shape[1], axis=0))
+            grad += _scatter_add_rows(
+                weights.shape, am.ravel(), np.repeat(mirrored_delta * 0.5, am.shape[1], axis=0)
+            )
             grad += l2 * weights
             grad[0] -= l2 * weights[0]
             weights -= 0.15 * grad
