@@ -686,7 +686,7 @@ mod tests {
                 "schedule must spend the whole budget n={n} m={m}"
             );
         }
-        // Explicit reference vectors (see local/work/plan/gumbel-connect4-recovery.md row 7.1).
+        // Explicit reference vectors for the schedules exercised by Connect Four self-play.
         assert_eq!(our_summary(7, 32).0, vec![12, 12, 4, 1, 1, 1, 1]);
         assert_eq!(our_summary(7, 32).1, vec![7, 3, 2, 2]);
         assert_eq!(our_summary(8, 32).0, vec![11, 11, 3, 3, 1, 1, 1, 1]);
