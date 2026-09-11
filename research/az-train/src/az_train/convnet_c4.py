@@ -297,12 +297,35 @@ def _conv_backward(
     return dx, dw, grad.sum(axis=(0, 2, 3))
 
 
+def _check_policy_row_weight(policy_row_weight: np.ndarray | None, rows: int) -> np.ndarray | None:
+    """Validate an optional per-row policy-loss weight vector.
+
+    The vector is returned in ``float32`` so that weighting the policy term does
+    not silently promote the gradient arithmetic to ``float64``: an all-ones
+    weight then reproduces the unweighted path exactly rather than approximately.
+    """
+    if policy_row_weight is None:
+        return None
+    w = np.asarray(policy_row_weight, dtype=np.float32)
+    if w.shape != (rows,):
+        raise ValueError(f"policy_row_weight must have shape ({rows},), got {w.shape}")
+    if not np.all(np.isfinite(w)) or np.any(w < 0.0):
+        raise ValueError("policy_row_weight entries must be finite and non-negative")
+    return w
+
+
 def _literal_loss_gradient_terms(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray, l2: float,
     *, value_weight: float, policy_weight: float, include_regularization: bool,
+    policy_row_weight: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray]:
-    """Value MSE plus legal-column policy cross entropy and its dense gradient."""
+    """Value MSE plus legal-column policy cross entropy and its dense gradient.
+
+    ``policy_row_weight``, when given, scales each row's policy cross-entropy
+    term (and matching gradient) individually; the value term is untouched, so
+    the two heads can be trained on differently weighted views of the same rows.
+    """
     p = _unpack(weights)
     x0 = np.stack((me, opp), axis=1).reshape((-1, 2, ROWS, COLS))
     z0 = _conv(x0, p[0], p[1], 1); x = np.maximum(z0, 0.0)
@@ -326,8 +349,10 @@ def _literal_loss_gradient_terms(
     probability = np.exp(shifted) * legal
     probability /= probability.sum(axis=1, keepdims=True)
     n = len(me)
+    row_weight = _check_policy_row_weight(policy_row_weight, n)
     value_loss = np.mean((value_prediction - value) ** 2)
-    policy_loss = -np.mean(np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1))
+    row_log_likelihood = np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1)
+    policy_loss = -np.mean(row_log_likelihood if row_weight is None else row_weight * row_log_likelihood)
     gradient = np.zeros_like(weights)
     gp = _unpack(gradient)
     dv = value_weight * (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
@@ -342,6 +367,8 @@ def _literal_loss_gradient_terms(
     gp[value_at][:] = d_value_weight
     gp[value_at + 1][:] = d_value_bias
     dp = policy_weight * (probability - policy) / n
+    if row_weight is not None:
+        dp = dp * row_weight[:, None]
     gp[at + 2][:] = policy_features.T @ dp
     gp[at + 3][:] = dp.sum(axis=0)
     d_policy_features = dp @ p[at + 2].T
@@ -377,7 +404,7 @@ def _literal_loss_gradient_terms(
 def _literal_loss_gradient(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray, l2: float,
-    *, value_loss_weight: float = 1.0,
+    *, value_loss_weight: float = 1.0, policy_row_weight: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray]:
     """Value MSE plus legal-column policy cross entropy and its dense gradient."""
     if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
@@ -385,12 +412,14 @@ def _literal_loss_gradient(
     return _literal_loss_gradient_terms(
         weights, me, opp, value, policy, legal, l2,
         value_weight=value_loss_weight, policy_weight=1.0, include_regularization=True,
+        policy_row_weight=policy_row_weight,
     )
 
 
 def _head_gradient_components(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     policy: np.ndarray, legal: np.ndarray, l2: float,
+    *, policy_row_weight: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Separate value, policy, and regularization gradients without changing fitting."""
     _, value_gradient = _literal_loss_gradient_terms(
@@ -400,6 +429,7 @@ def _head_gradient_components(
     _, policy_gradient = _literal_loss_gradient_terms(
         weights, me, opp, value, policy, legal, l2,
         value_weight=0.0, policy_weight=1.0, include_regularization=False,
+        policy_row_weight=policy_row_weight,
     )
     _, regularization_gradient = _literal_loss_gradient_terms(
         weights, me, opp, value, policy, legal, l2,
@@ -444,6 +474,7 @@ def fit_value_policy_with_diagnostics(
     validation: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 64, epochs: int = 24, learning_rate: float = 2e-3,
     value_loss_weight: float = 1.0,
+    policy_row_weight: np.ndarray | None = None,
     selected_validation_checkpoint_out: str | None = None,
     epoch_monitor: Callable[[np.ndarray], dict[str, float]] | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
@@ -454,11 +485,17 @@ def fit_value_policy_with_diagnostics(
     ``monitor_epoch_trace`` metadata entry.  It never influences fitting or the
     ``validation``-driven early-stop checkpoint, so a held-out reference score
     can be tracked per epoch without leaking into model selection.
+
+    ``policy_row_weight``, when given, is one non-negative weight per training
+    row applied to that row's policy cross-entropy term only.  The value term
+    keeps every row at weight one, so the two heads can be trained on
+    differently weighted views of the same replay.
     """
     if not len(me) or not np.all(legal.any(axis=1)):
         raise ValueError("CNN fitting requires non-empty rows with legal policy targets")
     if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
         raise ValueError("value_loss_weight must be finite and non-negative")
+    policy_row_weight = _check_policy_row_weight(policy_row_weight, len(me))
     rng = np.random.default_rng(seed)
     weights = initial_weights(seed)
     starting_weights = weights.copy()
@@ -479,12 +516,16 @@ def fit_value_policy_with_diagnostics(
     vm, vo, vv, vp, vl = validation
     for _ in range(epochs):
         for batch in _epoch_batches(rng, len(me), batch_size):
+            batch_policy_row_weight = (
+                None if policy_row_weight is None else policy_row_weight[batch]
+            )
             _, gradient = _literal_loss_gradient(
                 weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
-                value_loss_weight=value_loss_weight,
+                value_loss_weight=value_loss_weight, policy_row_weight=batch_policy_row_weight,
             )
             value_gradient, policy_gradient, regularization_gradient = _head_gradient_components(
                 weights, me[batch], opp[batch], value[batch], policy[batch], legal[batch], l2,
+                policy_row_weight=batch_policy_row_weight,
             )
             batch_head_gradient_conflict = {
                 name: _gradient_conflict_metrics(value_gradient[start:end], policy_gradient[start:end])
@@ -526,7 +567,7 @@ def fit_value_policy_with_diagnostics(
         }
         for name, delta in _group_l2(weights - starting_weights).items()
     }
-    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "value_loss_weight": value_loss_weight, "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], **({"monitor_epoch_trace": monitor_epoch_trace} if epoch_monitor is not None else {}), "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
+    return weights, {"optimizer": "adam_value_mse_policy_ce", "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs, "optimizer_learning_rate": learning_rate, "value_loss_weight": value_loss_weight, "policy_row_weight_summary": (None if policy_row_weight is None else {"rows": int(policy_row_weight.size), "mean": float(policy_row_weight.mean()), "min": float(policy_row_weight.min()), "max": float(policy_row_weight.max())}), "optimizer_steps": step, "fit_wall_seconds": time.perf_counter() - started, "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)), "parameter_groups": parameter_groups, "first_batch_shared_head_gradient_conflict": first_batch_head_gradient_conflict, "first_batch_activation_health": first_batch_activation_health, "shared_head_gradient_conflict_timeline": _aggregate_gradient_conflict(shared_head_gradient_cosines), "validation_epoch_trace": validation_epoch_trace, "selected_validation_epoch": selected_epoch + 1, "selected_validation_metrics": validation_epoch_trace[selected_epoch], **({"monitor_epoch_trace": monitor_epoch_trace} if epoch_monitor is not None else {}), "selected_validation_checkpoint_out": selected_validation_checkpoint_out, "train_value_mse": train_value_mse, "validation_value_mse": validation_value_mse, "train_policy_cross_entropy": train_policy_ce, "validation_policy_cross_entropy": validation_policy_ce, "orientation_diagnostics": {"train": orientation_diagnostics(weights, me, opp, value, policy, legal), "validation": orientation_diagnostics(weights, vm, vo, vv, vp, vl)}}
 
 
 def _mirror_planes(me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

@@ -206,12 +206,15 @@ def fit_and_diagnose(
     seed: int = 20260907,
     validation_fraction: float = 0.2,
     split_seed: int = 20260908,
+    policy_row_weight: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Fit the head on a prepared train/held-out replay pair and assemble the result record.
 
     Split out of :func:`run_generation` so a diagnostic driver can supply an
     alternately composed ``train`` pack while holding every fit knob and the
-    reporting path fixed.
+    reporting path fixed. ``policy_row_weight`` is an optional per-train-row
+    weight on the policy cross-entropy term alone, leaving the value term
+    uniform over the same rows.
     """
     ref = _proven_split(corpus, 1)
 
@@ -242,6 +245,7 @@ def fit_and_diagnose(
     weights, meta = fit_value_policy_with_diagnostics(
         train["me"], train["opp"], train_target, train["policy"], train["legal"],
         val_pack, l2=l2, seed=seed, epochs=epochs, learning_rate=learning_rate,
+        policy_row_weight=policy_row_weight,
         selected_validation_checkpoint_out=str(early_path),
         epoch_monitor=monitor,
     )
@@ -282,6 +286,7 @@ def fit_and_diagnose(
         },
         "principled_early_stop_epoch": principled_epoch,
         "oracle_epoch": oracle,
+        "policy_row_weight_summary": meta["policy_row_weight_summary"],
         "held_out_proven": {
             "principled_early_stop": proven(early_weights),
             "final_epoch": proven(weights),
