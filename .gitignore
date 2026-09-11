@@ -29,3 +29,8 @@ games/othello/edax/vendor/
 # Per-machine Cargo build configuration (machine-specific paths like
 # DUCKDB_LIB_DIR, DUCKDB_INCLUDE_DIR for Homebrew-installed DuckDB)
 .cargo/config.toml
+
+# Trained n-tuple evaluator corpora/weights (large generated artifacts,
+# reproducible via games/othello/src/dump.rs + research/othello-eval/) --
+# kept outside local/ for durability across sessions but not version-controlled.
+games/othello/ntuple/weights/
