@@ -98,7 +98,7 @@ HELD="$WORK/heldout/arm_b.bin"
 for arm in a b c d; do
   out="$WORK/weights_$arm"
   if [[ ! -f "$out/weights.bin" ]]; then
-    stage "train_$arm" uv run --project othello-eval othello-eval-train \
+    stage "train_$arm" uv run --project research/othello-eval othello-eval-train \
       --positions "$WORK/harvest/arm_$arm.bin" \
       --model "$MODEL_TOML" --config "$TRAIN_CFG" --out "$out"
   fi
@@ -107,7 +107,7 @@ done
 # ---------------------------------------------------------------------------
 # 4. Held-out MSE + pairwise bootstrap CI (A vs C is the gate tie-breaker).
 # ---------------------------------------------------------------------------
-stage mse uv run --project othello-eval othello-eval-mse --held "$HELD" \
+stage mse uv run --project research/othello-eval othello-eval-mse --held "$HELD" \
   --weights "A=$WORK/weights_a" --weights "B=$WORK/weights_b" \
   --weights "C=$WORK/weights_c" --weights "D=$WORK/weights_d" \
   --json-out "$WORK/mse.json"
@@ -138,7 +138,7 @@ done
 # ---------------------------------------------------------------------------
 # 7. Roll up: strength vs cumulative CPU-seconds.
 # ---------------------------------------------------------------------------
-uv run --project othello-eval python games/othello/ntuple/plot_bakeoff.py "$WORK"
+uv run --project research/othello-eval python games/othello/ntuple/plot_bakeoff.py "$WORK"
 
 echo "=== bake-off done $(date -u +%FT%TZ) ==="
 echo "CPU-second accounting: $ACCT"
