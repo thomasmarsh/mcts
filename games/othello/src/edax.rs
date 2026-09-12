@@ -31,7 +31,7 @@ use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{Move, Player, State};
 
@@ -112,13 +112,18 @@ pub struct EdaxScore {
 ///
 /// ## Timeout
 ///
-/// A `go` read is bounded by a wall-clock `timeout`: Edax's alpha-beta can
-/// spend minutes-to-hours on a hard mid-game position at a deep level, and a
-/// blocking read there would wedge a whole label run indefinitely. On
-/// timeout [`EdaxEval::eval`] aborts the search (any queued stdin line does
-/// that), resynchronises the line protocol against a full-board `*** Game
-/// Over ***` sentinel, and falls back the same way it does for an
-/// unparseable result -- one shallow retry, then a neutral score.
+/// A `go` search is bounded by a wall-clock `timeout` measured from the
+/// moment `go` is issued, not from the last line read: Edax's iterative
+/// deepening prints one score line per completed depth, and a hard position
+/// can complete depths just under the timeout apart indefinitely, so an
+/// inter-line (quiescence) timeout would never fire while the *total* search
+/// time blows past any budget. Edax's alpha-beta can spend minutes-to-hours
+/// on a hard mid-game position at a deep level, and a blocking read there
+/// would wedge a whole label run indefinitely. On timeout [`EdaxEval::eval`]
+/// aborts the search (any queued stdin line does that), resynchronises the
+/// line protocol against a full-board `*** Game Over ***` sentinel, and
+/// falls back the same way it does for an unparseable result -- one shallow
+/// retry, then a neutral score.
 ///
 /// ## Score-line parse (pinned against `edax-reversi` v4.6, `mEdax-native`)
 ///
@@ -269,8 +274,10 @@ impl EdaxEval {
         let empties = 64 - (state.black.bits() | state.white.bits()).count_ones();
         let mut last: Option<(f32, u32, bool, u64)> = None;
         let mut played = false;
+        let started = Instant::now();
         loop {
-            let line = match self.lines.recv_timeout(self.timeout) {
+            let remaining = self.timeout.saturating_sub(started.elapsed());
+            let line = match self.lines.recv_timeout(remaining) {
                 Ok(line) => line,
                 Err(RecvTimeoutError::Timeout) => {
                     self.timeouts += 1;
