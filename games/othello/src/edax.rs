@@ -369,7 +369,7 @@ impl Drop for EdaxEval {
 
 /// Disc difference from the side-to-move perspective, counting empties as
 /// lost by the trailing side (Edax's own final-score convention).
-fn terminal_disc_diff(state: &State) -> i32 {
+pub(crate) fn terminal_disc_diff(state: &State) -> i32 {
     let b = state.black.bits().count_ones() as i32;
     let w = state.white.bits().count_ones() as i32;
     let empty = 64 - b - w;

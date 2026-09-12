@@ -440,32 +440,78 @@ impl EdaxLabel {
             exact_hits: 0,
         }
     }
+
+    fn map_score(&self, score: f32) -> f32 {
+        match self.mode {
+            EdaxMode::Sign => {
+                if score > 0.0 {
+                    1.0
+                } else if score < 0.0 {
+                    -1.0
+                } else {
+                    0.0
+                }
+            }
+            EdaxMode::Squash => (score / self.squash_t).tanh(),
+        }
+    }
+}
+
+/// Repeatedly applies a forced pass -- a position whose *only* legal action
+/// is `Move::PASS` -- until the side to move has a real action or the game
+/// is over, folding the perspective flip each pass causes. A pass changes
+/// no discs, so `value(pre-pass state) == -value(post-pass state)`.
+///
+/// Edax auto-plays a lone forced pass on its own when it has *some* other
+/// legal continuation to search into, but a `go` on a position whose only
+/// legal action is that pass does not reliably return at all (observed as
+/// a `go` that never completes, traced from the D1c level-sweep "no score"
+/// flood -- a harvested MCTS tree node can be exactly such a position, even
+/// though it never arises in ordinary alternating self-play). Passing
+/// ourselves first sidesteps asking Edax to search a lone-pass position at
+/// all.
+fn skip_forced_passes(mut state: State) -> (State, f32) {
+    let mut sign = 1.0f32;
+    loop {
+        if Othello::is_terminal(&state) {
+            return (state, sign);
+        }
+        let mut acts = Vec::new();
+        Othello::generate_actions(&state, &mut acts);
+        if acts.len() == 1 && acts[0] == Move::PASS {
+            state = Othello::apply(state, &Move::PASS);
+            sign = -sign;
+        } else {
+            return (state, sign);
+        }
+    }
 }
 
 impl crate::harvest::TargetOracle for EdaxLabel {
     fn target(&mut self, state: &State) -> f32 {
+        let (state, sign) = skip_forced_passes(*state);
+
+        // A harvested tree node can be a genuinely terminal position (no
+        // legal move for either side). Handing Edax a `setboard` on an
+        // already-over game does not reliably reach its `*** Game Over
+        // ***` report either; the final margin is already exact and known
+        // without a search, so skip Edax entirely.
+        if Othello::is_terminal(&state) {
+            self.exact_hits += 1;
+            return sign * self.map_score(crate::edax::terminal_disc_diff(&state) as f32);
+        }
+
         let empties = 64 - state.occupied().count_ones();
         let level = if empties <= self.exact_ply {
             60
         } else {
             self.level
         };
-        let s = self.edax.eval(state, level);
+        let s = self.edax.eval(&state, level);
         if s.exact {
             self.exact_hits += 1;
         }
-        match self.mode {
-            EdaxMode::Sign => {
-                if s.score > 0.0 {
-                    1.0
-                } else if s.score < 0.0 {
-                    -1.0
-                } else {
-                    0.0
-                }
-            }
-            EdaxMode::Squash => (s.score / self.squash_t).tanh(),
-        }
+        sign * self.map_score(s.score)
     }
 }
 
@@ -827,5 +873,84 @@ mod tests {
             assert!(r.ply >= last_ply);
             last_ply = r.ply;
         }
+    }
+
+    /// Decode an Edax `setboard` string (64 square chars + side-to-move
+    /// token) into a `State`. `hashes` are left at the default zeroed
+    /// value -- fine for tests that don't touch Zobrist lookups.
+    fn state_from_edax_board(board: &str) -> State {
+        let (squares, turn_tok) = board.split_once(' ').unwrap();
+        let bytes = squares.as_bytes();
+        assert_eq!(bytes.len(), 64);
+        let mut black = 0u64;
+        let mut white = 0u64;
+        for (i, &c) in bytes.iter().enumerate() {
+            match c {
+                b'X' => black |= 1 << i,
+                b'O' => white |= 1 << i,
+                b'-' => {}
+                other => panic!("unexpected board char {other}"),
+            }
+        }
+        State {
+            black: crate::BB::from_bits(black),
+            white: crate::BB::from_bits(white),
+            turn: if turn_tok == "X" {
+                Player::Black
+            } else {
+                Player::White
+            },
+            ..State::default()
+        }
+    }
+
+    /// The exact board from the Phase 2.5 D1c level-sweep run that wedged
+    /// `EdaxEval::eval` for a full 60s (two 30s timeouts, then a "no
+    /// score" 0.0 fallback): White to move has no real action, only
+    /// `Move::PASS`, and Edax's `go` never returns for a lone-pass
+    /// position. `skip_forced_passes` must resolve it locally instead of
+    /// ever handing it to Edax.
+    #[test]
+    fn skip_forced_passes_resolves_a_lone_pass_without_asking_edax() {
+        let white_to_move_only_pass = state_from_edax_board(
+            "OOOOOOOOXOXXXOOOXXOXXOOOXOXXOXOOXOOXXOOOXOOOOXOXXOOOOOXXXOOXO-XX O",
+        );
+        let mut acts = Vec::new();
+        Othello::generate_actions(&white_to_move_only_pass, &mut acts);
+        assert_eq!(acts, vec![Move::PASS], "fixture must be a lone-pass position");
+
+        let (resolved, sign) = skip_forced_passes(white_to_move_only_pass);
+        assert_eq!(sign, -1.0, "one pass folds one perspective flip");
+        assert_eq!(resolved.turn, Player::Black);
+        let mut resolved_acts = Vec::new();
+        Othello::generate_actions(&resolved, &mut resolved_acts);
+        assert_ne!(
+            resolved_acts,
+            vec![Move::PASS],
+            "must stop once the side to move has a real action"
+        );
+        // Passing changes no discs.
+        assert_eq!(resolved.black, white_to_move_only_pass.black);
+        assert_eq!(resolved.white, white_to_move_only_pass.white);
+    }
+
+    #[test]
+    fn skip_forced_passes_is_a_no_op_when_a_real_move_exists() {
+        let (resolved, sign) = skip_forced_passes(State::default());
+        assert_eq!(sign, 1.0);
+        assert_eq!(resolved, State::default());
+    }
+
+    #[test]
+    fn skip_forced_passes_stops_immediately_at_an_already_terminal_state() {
+        let full_board = State {
+            black: crate::BB::from_bits(u64::MAX),
+            white: crate::BB::from_bits(0),
+            turn: Player::Black,
+            ..State::default()
+        };
+        let (resolved, sign) = skip_forced_passes(full_board);
+        assert_eq!(sign, 1.0);
+        assert!(Othello::is_terminal(&resolved));
     }
 }
