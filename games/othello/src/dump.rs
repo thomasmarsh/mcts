@@ -464,12 +464,10 @@ impl EdaxLabel {
 ///
 /// Edax auto-plays a lone forced pass on its own when it has *some* other
 /// legal continuation to search into, but a `go` on a position whose only
-/// legal action is that pass does not reliably return at all (observed as
-/// a `go` that never completes, traced from the D1c level-sweep "no score"
-/// flood -- a harvested MCTS tree node can be exactly such a position, even
-/// though it never arises in ordinary alternating self-play). Passing
-/// ourselves first sidesteps asking Edax to search a lone-pass position at
-/// all.
+/// legal action is that pass does not reliably return at all -- a harvested
+/// MCTS tree node can be exactly such a position, even though it never
+/// arises in ordinary alternating self-play. Passing ourselves first
+/// sidesteps asking Edax to search a lone-pass position at all.
 fn skip_forced_passes(mut state: State) -> (State, f32) {
     let mut sign = 1.0f32;
     loop {
@@ -904,12 +902,10 @@ mod tests {
         }
     }
 
-    /// The exact board from the Phase 2.5 D1c level-sweep run that wedged
-    /// `EdaxEval::eval` for a full 60s (two 30s timeouts, then a "no
-    /// score" 0.0 fallback): White to move has no real action, only
-    /// `Move::PASS`, and Edax's `go` never returns for a lone-pass
-    /// position. `skip_forced_passes` must resolve it locally instead of
-    /// ever handing it to Edax.
+    /// A position where White to move has no real action, only
+    /// `Move::PASS`: Edax's `go` never returns for a lone-pass position,
+    /// so `skip_forced_passes` must resolve it locally instead of ever
+    /// handing it to Edax.
     #[test]
     fn skip_forced_passes_resolves_a_lone_pass_without_asking_edax() {
         let white_to_move_only_pass = state_from_edax_board(
