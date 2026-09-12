@@ -14,7 +14,17 @@
 # an arm-B held-out fit -- both before running bakeoff.sh, and independently
 # of any strength result it produces.
 
-edax_level     = 10        # fixed-depth Edax search for heuristic labels
+edax_level     = 6         # fixed-depth Edax search for heuristic labels. A
+                           # level sweep found held-out MSE/sign-acc statistically
+                           # indistinguishable across levels {6,8,10} at ~2000
+                           # positions/level (the fit needs a larger corpus than
+                           # that to show any signal at all, let alone a
+                           # level-vs-level difference -- confirmed by fitting the
+                           # same model on larger same-size corpora with an easier
+                           # target), while wall-clock cost rose steeply with level
+                           # (3m44s / 8m28s / 42m2s for 40 games at levels 6/8/10).
+                           # With no measured quality difference, the cheapest
+                           # level wins on cost.
 edax_exact_ply = 12        # empties <= this: raise to a full solve (level 60).
                            # Keep this modest: a 12-empty solve is ~1 ms, but
                            # each extra ply roughly quadruples it, and arm C
