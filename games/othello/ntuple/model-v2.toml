@@ -1,0 +1,87 @@
+# A larger n-tuple geometry for the Othello sparse-linear evaluator: the
+# existing `model.toml`'s 6 tuples plus 7 new ones, extending it with more
+# and bigger line- and block-shaped tuples.
+#
+# Every [[tuple]]'s weights are shared across all 8 D4 orientations (see
+# games/othello/src/ntuple.rs's module docs), so two tuples are only
+# *independent* capacity if they are not D4 images of each other. The 7 new
+# tuples below were chosen to be genuinely new orbits, not restatements of
+# the existing 6:
+#
+# - `row2`/`row3`/`row4`: the 2nd/3rd/4th board rows. `model.toml` only ever
+#   covered the edge (row 0, via `edge`/`edge-plus-x`) and two long
+#   diagonals; it had no feature at all for the row immediately inside the
+#   edge (X-square/C-square adjacency, well known in Othello theory to
+#   matter for mobility and edge stability) or the two center rows. Each is
+#   a plain 8-square row, a different orbit from the edge and from each
+#   other (D4 preserves distance-from-board-edge).
+# - `diag-6`/`diag-5`/`diag-4`: diagonals parallel to the main diagonal at
+#   offsets 2/3/4 (offsets 0 and 1 are already `main-diagonal` and
+#   `off-diagonal-7`). D4 preserves a diagonal's offset-from-center, so
+#   these are distinct orbits, progressively shorter as they approach a
+#   corner.
+# - `corner-rect-2x4`: an 8-square rectangle (rows 0-1, cols 0-3), a
+#   different shape from the existing 9- and 10-square corner tuples
+#   (`corner-3x3`, `edge-rect-2x5`), not a subset relationship that D4
+#   folds away.
+#
+# Tuple sizes are kept <= 10 (matching the existing file's largest tuple,
+# `edge-rect-2x5`): with ~200k self-play positions in the broad corpus, a
+# 3^12 = 531,441-entry table would see most specific 12-square patterns well
+# under once on average, more combinatorial-scale capacity than this corpus
+# can support.
+#
+# Weight count: existing 113,724 (6561 + 19683 + 6561 + 2187 + 19683 + 59049)
+# + new 27,297 (6561*4 + 729 + 243 + 81) = 141,021.
+
+[[tuple]]
+name = "edge"
+squares = [0, 1, 2, 3, 4, 5, 6, 7]
+
+[[tuple]]
+name = "edge-plus-x"
+squares = [0, 1, 2, 3, 4, 5, 6, 7, 9]
+
+[[tuple]]
+name = "main-diagonal"
+squares = [0, 9, 18, 27, 36, 45, 54, 63]
+
+[[tuple]]
+name = "off-diagonal-7"
+squares = [8, 17, 26, 35, 44, 53, 62]
+
+[[tuple]]
+name = "corner-3x3"
+squares = [0, 1, 2, 8, 9, 10, 16, 17, 18]
+
+[[tuple]]
+name = "edge-rect-2x5"
+squares = [0, 1, 2, 3, 4, 8, 9, 10, 11, 12]
+
+[[tuple]]
+name = "row2"
+squares = [8, 9, 10, 11, 12, 13, 14, 15]
+
+[[tuple]]
+name = "row3"
+squares = [16, 17, 18, 19, 20, 21, 22, 23]
+
+[[tuple]]
+name = "row4"
+squares = [24, 25, 26, 27, 28, 29, 30, 31]
+
+[[tuple]]
+name = "diag-6"
+squares = [2, 11, 20, 29, 38, 47]
+
+[[tuple]]
+name = "diag-5"
+squares = [3, 12, 21, 30, 39]
+
+[[tuple]]
+name = "diag-4"
+squares = [4, 13, 22, 31]
+
+[[tuple]]
+name = "corner-rect-2x4"
+squares = [0, 1, 2, 3, 8, 9, 10, 11]

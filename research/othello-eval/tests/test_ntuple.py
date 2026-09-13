@@ -86,6 +86,31 @@ def test_featurize_matches_the_committed_cross_impl_fixture() -> None:
         assert got == sorted(case["expected"]), case
 
 
+def test_model_v2_toml_parses_to_the_documented_weight_count() -> None:
+    geom = load_model_toml(REPO_ROOT / "games/othello/ntuple/model-v2.toml")
+    assert geom.n_weights == 141_021
+
+
+def test_model_v2_logit_cases_fixture_matches() -> None:
+    # Cross-language pin: games/othello/src/ntuple.rs's
+    # `model_v2_logit_cases_fixture_matches` computes the same weight formula
+    # over the same geometry in Rust and must agree with this.
+    geom = load_model_toml(REPO_ROOT / "games/othello/ntuple/model-v2.toml")
+    raw = np.arange(geom.n_weights, dtype=np.float64) * 0.1
+    w = np.sin(raw).astype(np.float32).astype(np.float64)
+
+    doc = json.loads((TINY_DIR / "model_v2_logit_cases.json").read_text())
+    assert doc["n_weights"] == geom.n_weights
+    cases = doc["cases"]
+    pos = _positions(
+        [(int(c["black"], 16), int(c["white"], 16), c["side"]) for c in cases]
+    )
+    feat = featurize(pos, geom)
+    logits = w[feat].sum(axis=1)
+    for logit, case in zip(logits, cases, strict=True):
+        assert abs(float(logit) - case["expected_logit"]) < 1e-3, case
+
+
 def test_fit_drives_bce_down_on_a_separable_synthetic_set() -> None:
     rng = np.random.default_rng(0)
     n, n_weights = 4000, 12

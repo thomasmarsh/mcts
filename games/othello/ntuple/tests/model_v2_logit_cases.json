@@ -1,0 +1,31 @@
+{
+  "model": "model-v2.toml",
+  "n_weights": 141021,
+  "weight_formula": "sin(i * 0.1) for i in 0..n_weights, f32",
+  "cases": [
+    {
+      "black": "0000000000000001",
+      "white": "0000000000000200",
+      "side": 0,
+      "expected_logit": -3.8938239701092243
+    },
+    {
+      "black": "0000000008000001",
+      "white": "0000001000000200",
+      "side": 0,
+      "expected_logit": 2.9858179800212383
+    },
+    {
+      "black": "0000008100000000",
+      "white": "0000001008000000",
+      "side": 1,
+      "expected_logit": 2.134362767217681
+    },
+    {
+      "black": "0000001818000000",
+      "white": "0000240024000000",
+      "side": 0,
+      "expected_logit": 0.15289466083049774
+    }
+  ]
+}

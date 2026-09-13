@@ -203,6 +203,19 @@ impl NTupleModel {
         }
     }
 
+    /// A model over `geom` with explicit weights (mirrors
+    /// [`crate::policy::NTuplePolicyNet::from_weights`]). `weights.len()`
+    /// must equal `geom.n_weights()`. For tests that need a deterministic
+    /// non-zero model without a trained checkpoint on disk.
+    pub fn from_weights(geom: ModelGeometry, weights: Vec<f32>) -> NTupleModel {
+        assert_eq!(
+            weights.len(),
+            geom.n_weights(),
+            "weights.len() must equal geom.n_weights()"
+        );
+        NTupleModel { geom, weights }
+    }
+
     /// Load `model.toml` + `weights.bin` + `weights.meta.json` from `dir`.
     /// Panics with an actionable message on any mismatch.
     pub fn from_dir(dir: &Path) -> NTupleModel {
@@ -534,6 +547,67 @@ mod tests {
                 .collect();
             want.sort_unstable();
             assert_eq!(got, want, "case {case}");
+        }
+    }
+
+    fn model_v2_geom() -> ModelGeometry {
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ntuple/model-v2.toml"),
+        )
+        .unwrap();
+        ModelGeometry::parse(&bytes)
+    }
+
+    /// The deterministic weight formula shared with
+    /// `ntuple/tests/model_v2_logit_cases.json`'s Python-computed fixture.
+    fn sin_weights(n: usize) -> Vec<f32> {
+        (0..n).map(|i| ((i as f64) * 0.1).sin() as f32).collect()
+    }
+
+    #[test]
+    fn committed_model_v2_toml_parses_to_the_documented_weight_count() {
+        assert_eq!(model_v2_geom().n_weights(), 141_021);
+    }
+
+    #[test]
+    fn model_v2_logit_is_invariant_under_board_rotation() {
+        let geom = model_v2_geom();
+        let n = geom.n_weights();
+        let m = NTupleModel::from_weights(geom, sin_weights(n));
+        let cases = [
+            (1u64 << 0, 1u64 << 9),
+            ((1 << 0) | (1 << 27), (1 << 9) | (1 << 36)),
+            (0x0000_0081_0000_0000, 0x0000_0010_0800_0000),
+        ];
+        for (b, w) in cases {
+            let a = m.logit(&state(b, w, Player::Black));
+            let r = m.logit(&state(rotate(b), rotate(w), Player::Black));
+            assert!((a - r).abs() < 1e-3, "rotation changed logit: {a} vs {r}");
+        }
+    }
+
+    /// Cross-language pin: `research/othello-eval/tests/test_ntuple.py`'s
+    /// counterpart computes the same weight formula over the same geometry
+    /// with numpy and must agree with this Rust computation.
+    #[test]
+    fn model_v2_logit_cases_fixture_matches() {
+        let geom = model_v2_geom();
+        let n = geom.n_weights();
+        let m = NTupleModel::from_weights(geom, sin_weights(n));
+
+        let text = std::fs::read_to_string(tiny_dir().join("model_v2_logit_cases.json")).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&text).unwrap();
+        for case in doc["cases"].as_array().unwrap() {
+            let black = u64::from_str_radix(case["black"].as_str().unwrap(), 16).unwrap();
+            let white = u64::from_str_radix(case["white"].as_str().unwrap(), 16).unwrap();
+            let turn = if case["side"].as_u64().unwrap() == 0 {
+                Player::Black
+            } else {
+                Player::White
+            };
+            let got = m.logit(&state(black, white, turn));
+            let want = case["expected_logit"].as_f64().unwrap() as f32;
+            assert!((got - want).abs() < 1e-3, "case {case}: got {got}, want {want}");
         }
     }
 }
