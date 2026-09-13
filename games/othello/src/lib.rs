@@ -12,6 +12,7 @@ pub const INITIAL_WHITE: u64 = (1 << 27) | (1 << 36); // d4, e5
 
 pub const BOARD_SIZE: usize = 8;
 
+pub mod convnet;
 pub mod dump;
 pub mod edax;
 pub mod harvest;
