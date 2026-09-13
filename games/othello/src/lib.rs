@@ -16,6 +16,7 @@ pub mod dump;
 pub mod edax;
 pub mod harvest;
 pub mod ntuple;
+pub mod policy;
 
 pub const USE_SYMMETRY: bool = true;
 

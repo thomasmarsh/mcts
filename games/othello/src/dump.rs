@@ -45,18 +45,139 @@
 //! with probability `--epsilon` (default 0.1) a uniform-random legal move
 //! is played instead -- diversity so a deterministic seeded engine doesn't
 //! emit the same game repeatedly. The label is unchanged either way.
+//!
+//! ## Record v2 (Gumbel self-play, not yet wired to a CLI label)
+//!
+//! [`RecordV2`] adds a completed-Q improved-policy tail to the 22-byte head
+//! above (23-byte head + `n_policy` `(square, prob)` pairs), following
+//! `games/connect4/src/dump.rs`'s v2-connect4 record shape exactly:
+//! [`RecordV2::from_record`] converts a completed-Q distribution
+//! (`mcts::algorithms::mcts::gumbel::GumbelOutcome::improved_policy`) into
+//! the tail. No CLI label produces these records yet -- that needs a Gumbel
+//! self-play driver (`games/connect4/src/selfplay.rs`'s `GumbelPlayer` is
+//! the pattern) which does not exist for Othello yet.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::game::Game;
 use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::ntuple::NTupleEval;
 use crate::{Move, Othello, Player, State};
+
+// ---------------------------------------------------------------------------
+// Record v2: fixed head + a variable-length improved-policy tail
+// ---------------------------------------------------------------------------
+
+/// One dumped position with a completed-Q improved-policy target, following
+/// `games/connect4/src/dump.rs`'s v2-connect4 record shape. A 22-byte head
+/// identical in meaning to [`Record`] (see the module docs), followed by
+/// `n_policy` `(square: u8, prob: f32 LE)` pairs -- `square` is a [`Move`]'s
+/// raw `u8` (0..=63 a board square, 64 == [`Move::PASS`]). `policy` is empty
+/// for a record with no search-derived policy (e.g. `--label outcome`).
+///
+/// v2 records are variable-width, so a reader must walk them sequentially
+/// (the Python counterpart, `research/az-train/src/az_train/records_othello.py`,
+/// is added alongside the Gumbel self-play driver that will produce these
+/// records).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordV2 {
+    pub black: u64,
+    pub white: u64,
+    pub side: u8,
+    pub ply: u8,
+    pub value: f32,
+    /// `(square, probability)` pairs -- the completed-Q improved-policy
+    /// target. Empty when no search produced a policy for this position.
+    pub policy: Vec<(u8, f32)>,
+}
+
+/// Size of a [`RecordV2`]'s fixed head, in bytes (everything up to and
+/// including the `n_policy` count byte, before the policy tail).
+pub const RECORD_V2_HEAD_BYTES: usize = 23;
+
+/// Size of one policy tail entry, in bytes: `(square: u8, prob: f32 LE)`.
+pub const POLICY_ENTRY_BYTES: usize = 5;
+
+impl RecordV2 {
+    /// Build a [`RecordV2`] from an existing [`Record`] head plus a
+    /// completed-Q improved-policy distribution
+    /// (`mcts::algorithms::mcts::gumbel::GumbelOutcome::improved_policy`).
+    pub fn from_record(head: Record, policy: &[(Move, f32)]) -> RecordV2 {
+        RecordV2 {
+            black: head.black,
+            white: head.white,
+            side: head.side,
+            ply: head.ply,
+            value: head.target,
+            policy: policy.iter().map(|(m, p)| (m.0, *p)).collect(),
+        }
+    }
+
+    /// Append this record's little-endian bytes to `buf`. Fields are
+    /// written one at a time -- never a `#[repr(C)]` struct cast, which
+    /// could introduce padding.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.black.to_le_bytes());
+        buf.extend_from_slice(&self.white.to_le_bytes());
+        buf.push(self.side);
+        buf.push(self.ply);
+        buf.extend_from_slice(&self.value.to_le_bytes());
+        let n: u8 = self
+            .policy
+            .len()
+            .try_into()
+            .expect("policy tail longer than 255 entries");
+        buf.push(n);
+        for (square, prob) in &self.policy {
+            buf.push(*square);
+            buf.extend_from_slice(&prob.to_le_bytes());
+        }
+    }
+
+    /// Decode one record from the front of `bytes`, returning it and the
+    /// number of bytes it consumed. Returns `None` if `bytes` is too short
+    /// to hold a complete record.
+    pub fn decode(bytes: &[u8]) -> Option<(RecordV2, usize)> {
+        if bytes.len() < RECORD_V2_HEAD_BYTES {
+            return None;
+        }
+        let black = u64::from_le_bytes(bytes[0..8].try_into().unwrap());
+        let white = u64::from_le_bytes(bytes[8..16].try_into().unwrap());
+        let side = bytes[16];
+        let ply = bytes[17];
+        let value = f32::from_le_bytes(bytes[18..22].try_into().unwrap());
+        let n_policy = bytes[22] as usize;
+        let total = RECORD_V2_HEAD_BYTES + n_policy * POLICY_ENTRY_BYTES;
+        if bytes.len() < total {
+            return None;
+        }
+        let mut policy = Vec::with_capacity(n_policy);
+        for i in 0..n_policy {
+            let off = RECORD_V2_HEAD_BYTES + i * POLICY_ENTRY_BYTES;
+            let square = bytes[off];
+            let prob = f32::from_le_bytes(bytes[off + 1..off + 5].try_into().unwrap());
+            policy.push((square, prob));
+        }
+        Some((
+            RecordV2 {
+                black,
+                white,
+                side,
+                ply,
+                value,
+                policy,
+            },
+            total,
+        ))
+    }
+}
 
 /// One dumped position. See the module docs for field semantics.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,6 +262,13 @@ struct Config {
     /// `--edax-level N` overrides the config's `edax_level` (used by the
     /// `edax_level_sweep.sh` diagnostic and the higher-level held-out relabel).
     edax_level_override: Option<u32>,
+    /// `max_iterations` / `max_playout_depth` for `--engine ntuple` (an
+    /// n-tuple-evaluator-guided UCB1 search, reading `$OTHELLO_NTUPLE_WEIGHTS`
+    /// -- unlike other `--engine` values, this bypasses `presets.json`
+    /// because the evaluator is a game-specific `mcts::Evaluator`, not a
+    /// generic `config_ir` axis).
+    ntuple_iters: usize,
+    ntuple_depth: usize,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -158,6 +286,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut edax_level_override = None;
     let mut games_overridden = false;
     let mut seed_overridden = false;
+    let mut ntuple_iters = 200usize;
+    let mut ntuple_depth = 0usize;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -181,12 +311,21 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--edax-level" => {
                 edax_level_override = Some(val().parse().expect("--edax-level must be an integer"))
             }
+            "--ntuple-iters" => {
+                ntuple_iters = val().parse().expect("--ntuple-iters must be an integer")
+            }
+            "--ntuple-depth" => {
+                ntuple_depth = val().parse().expect("--ntuple-depth must be an integer")
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-othello dump --out <path> [--games N] [--seed N] \
-                     [--label outcome|harvest] [--engine <preset>] [--epsilon P] \
-                     [--presets <path>] [--manifest <path>] [--harvest-config <path>]\n\
+                     [--label outcome|harvest] [--engine <preset>|ntuple] [--epsilon P] \
+                     [--presets <path>] [--manifest <path>] [--harvest-config <path>] \
+                     [--ntuple-iters N] [--ntuple-depth N]\n\
                      \n\
+                     --engine ntuple: self-play guided by $OTHELLO_NTUPLE_WEIGHTS instead of \
+                     a presets.json entry.\n\
                      --label harvest: --out is a directory; writes arm_{{a,b,c,d}}.bin \
                      + manifests + harvest.json"
                 );
@@ -226,6 +365,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         oracle,
         edax_config,
         edax_level_override,
+        ntuple_iters,
+        ntuple_depth,
     }
 }
 
@@ -297,6 +438,33 @@ fn dump_one_game_engine(
     finish_game(records, first, Othello::winner(&state));
 }
 
+/// `EvaluatedCutoff` + the n-tuple evaluator: UCB1 to `ntuple_iters`, playout
+/// cut off at `ntuple_depth` and replaced by the n-tuple value -- the same
+/// recipe `examples/ntuple_match.rs`'s `ContenderProfile` uses to gate the
+/// evaluator, reused here as a self-play *source*: a modest node budget
+/// guided by a real trained value net approximates what early-generation
+/// self-play in a self-play training loop looks like (sharper than uniform
+/// rollouts, without full-strength search cost).
+type NtupleSelfPlayProfile =
+    profile::Mcts<select::Ucb1, simulate::EvaluatedCutoff<Othello, NTupleEval, simulate::Uniform>>;
+
+/// Build one `--engine ntuple` game's search, reading
+/// `$OTHELLO_NTUPLE_WEIGHTS` (via [`NTupleEval`]'s lazy process-wide load).
+fn ntuple_engine(k: usize, d: usize, seed: u64) -> Box<dyn Search<G = Othello>> {
+    Box::new(
+        TreeSearch::<Othello, NtupleSelfPlayProfile>::new().config(
+            SearchConfig::new()
+                .name("dump/ntuple-selfplay")
+                .expand_threshold(1)
+                .q_init(QInit::Loss)
+                .max_iterations(k)
+                .max_playout_depth(d)
+                .simulate(simulate::EvaluatedCutoff::new())
+                .seed(seed),
+        ),
+    )
+}
+
 /// Entry point for `game-othello dump ...`. `args` is the argument iterator
 /// positioned just past the `dump` token.
 pub fn run(args: impl Iterator<Item = String>) {
@@ -307,22 +475,35 @@ pub fn run(args: impl Iterator<Item = String>) {
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
 
-    let preset_table = cfg.engine.as_ref().map(|_| {
-        PresetTable::load_from_path(&cfg.presets_path)
-            .unwrap_or_else(|e| panic!("cannot load {}: {e}", cfg.presets_path.display()))
-    });
+    let preset_table = cfg
+        .engine
+        .as_ref()
+        .filter(|e| e.as_str() != "ntuple")
+        .map(|_| {
+            PresetTable::load_from_path(&cfg.presets_path)
+                .unwrap_or_else(|e| panic!("cannot load {}: {e}", cfg.presets_path.display()))
+        });
 
     for g in 0..cfg.games {
-        match (&cfg.engine, &preset_table) {
-            (Some(preset), Some(table)) => {
+        match cfg.engine.as_deref() {
+            Some("ntuple") => {
+                let mut engine = ntuple_engine(
+                    cfg.ntuple_iters,
+                    cfg.ntuple_depth,
+                    cfg.seed.wrapping_add(g).wrapping_add(1),
+                );
+                dump_one_game_engine(&mut rng, &mut records, &mut *engine, cfg.epsilon);
+            }
+            Some(preset) => {
                 // Rebuild per game with a game-specific seed so a persistent
                 // search tree can't carry across games.
+                let table = preset_table.as_ref().expect("preset table not loaded");
                 let mut engine = table
                     .build::<Othello>(preset, cfg.seed.wrapping_add(g).wrapping_add(1))
                     .unwrap_or_else(|e| panic!("preset {preset:?} did not resolve: {e}"));
                 dump_one_game_engine(&mut rng, &mut records, &mut *engine, cfg.epsilon);
             }
-            _ => dump_one_game(&mut rng, &mut records),
+            None => dump_one_game(&mut rng, &mut records),
         }
         if (g + 1) % 100 == 0 || g + 1 == cfg.games {
             eprintln!(
@@ -830,6 +1011,53 @@ mod tests {
             ..State::default()
         };
         vec![State::default(), d3, d3c5, hand]
+    }
+
+    #[test]
+    fn record_v2_round_trips_through_encode_decode_with_an_empty_policy() {
+        for st in sample_states() {
+            let head = record_for(&st, Some(Player::Black));
+            let rec = RecordV2::from_record(head, &[]);
+            let mut buf = Vec::new();
+            rec.encode(&mut buf);
+            assert_eq!(buf.len(), RECORD_V2_HEAD_BYTES);
+            let (back, consumed) = RecordV2::decode(&buf).expect("decode");
+            assert_eq!(consumed, buf.len());
+            assert_eq!(back, rec);
+        }
+    }
+
+    #[test]
+    fn record_v2_round_trips_a_completed_q_shaped_policy_tail() {
+        let st = sample_states()[1];
+        let head = record_for(&st, Some(Player::White));
+        let policy = vec![(Move(19), 0.6_f32), (Move(26), 0.25), (Move::PASS, 0.15)];
+        let rec = RecordV2::from_record(head, &policy);
+        assert_eq!(rec.policy, vec![(19, 0.6), (26, 0.25), (64, 0.15)]);
+
+        let mut buf = Vec::new();
+        rec.encode(&mut buf);
+        assert_eq!(
+            buf.len(),
+            RECORD_V2_HEAD_BYTES + policy.len() * POLICY_ENTRY_BYTES
+        );
+        let (back, consumed) = RecordV2::decode(&buf).expect("decode");
+        assert_eq!(consumed, buf.len());
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn record_v2_decode_returns_none_on_a_truncated_buffer() {
+        let policy = vec![(Move(0), 1.0_f32)];
+        let rec = RecordV2::from_record(record_for(&State::default(), None), &policy);
+        let mut buf = Vec::new();
+        rec.encode(&mut buf);
+        // Missing the last policy entry byte.
+        assert!(RecordV2::decode(&buf[..buf.len() - 1]).is_none());
+        // Missing the whole tail (head only, but n_policy byte says 1).
+        assert!(RecordV2::decode(&buf[..RECORD_V2_HEAD_BYTES]).is_none());
+        // Truncated before even the head is complete.
+        assert!(RecordV2::decode(&buf[..RECORD_V2_HEAD_BYTES - 1]).is_none());
     }
 
     #[test]

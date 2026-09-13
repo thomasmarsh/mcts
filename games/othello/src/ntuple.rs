@@ -116,6 +116,19 @@ impl ModelGeometry {
         self.n_weights
     }
 
+    /// Number of tuples in this geometry (== `feature_indices(_).len() / 8`,
+    /// exposed directly so callers don't need a dummy state to learn it).
+    pub fn n_tuples(&self) -> usize {
+        self.tuples.len()
+    }
+
+    /// Lowercase hex SHA-256 of the `model.toml` bytes this geometry was
+    /// parsed from, for a sibling weights file's mismatch check (see
+    /// [`crate::policy::NTuplePolicyNet::from_dir`]).
+    pub fn sha256_hex(&self) -> &str {
+        &self.sha256_hex
+    }
+
     /// Every global weight index (`offset + feature`) this position selects,
     /// one per (tuple, orientation) pair. Order is tuple-major then
     /// orientation; callers that compare against another featuriser should
@@ -264,6 +277,13 @@ impl NTupleModel {
         let dir = std::env::var("OTHELLO_NTUPLE_WEIGHTS_B")
             .expect("OTHELLO_NTUPLE_WEIGHTS_B is unset (needed for the bake-off h2h opponent)");
         NTupleModel::from_dir(Path::new(&dir))
+    }
+
+    /// The [`ModelGeometry`] backing this loaded model, shared with
+    /// [`crate::policy::NTuplePolicyNet`] so the policy sidecar reads
+    /// features over the same tuples as the value head.
+    pub fn geometry(&self) -> &ModelGeometry {
+        &self.geom
     }
 }
 
