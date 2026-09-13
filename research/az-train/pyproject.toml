@@ -9,6 +9,7 @@ dependencies = [
 
 [project.scripts]
 az-train = "az_train.train:train_cli"
+az-train-othello = "az_train.train_othello:train_cli"
 
 [dependency-groups]
 dev = [
