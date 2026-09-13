@@ -1,25 +1,39 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
 # pyright: reportUnknownArgumentType=false, reportUnusedVariable=false
 # ruff: noqa: E501, E702
-"""Versioned compact Othello convolutional value network.
+"""Versioned compact Othello convolutional value+policy network.
 
-``OTCNN001`` stores a concrete two-plane 8x8 model: a 3x3 stem with 16
-channels, two 16-channel residual blocks, then a value head -- the direct
-8x8 generalization of Connect Four's ``C4CNN001``
-(``research/az-train/src/az_train/convnet_c4.py`` / ``games/connect4/src/
-convnet.rs``). Value-only for now: the corpora available to fit a
-from-scratch architecture against are outcome-labelled only, with no
-completed-Q policy targets, so a policy head is deferred to whenever the CNN
-is actually wired into a self-play loop that produces those targets -- the
-same value-then-policy sequencing the n-tuple port used.
+``OTCNN001`` (version 2) stores a concrete two-plane 8x8 model: a 3x3 stem
+with 16 channels, two 16-channel residual blocks, then separate value and
+policy heads sharing that trunk -- the direct 8x8 generalization of Connect
+Four's ``C4CNN001`` (``research/az-train/src/az_train/convnet_c4.py`` /
+``games/connect4/src/convnet.rs``), which also shares one trunk between both
+heads. Version 1 was value-only; the policy head was deferred until a
+self-play loop existed to produce completed-Q targets to train it against
+(the same value-then-policy sequencing the n-tuple port used) -- see
+``games/othello/src/policy.rs``'s D4-equivariant linear policy sidecar for
+the interface this head's D4-averaging and pass-as-mean-logit convention
+matches.
 
-Training uses the board's single natural (literal) orientation only, the
-same choice ``convnet_c4``'s main fit path makes; equivariance is instead a
-property of :func:`predict`, which averages the literal network's output
-over all 8 D4-transformed copies of the input board. This is cheaper than
-folding D4-averaging into the training loss (as the linear n-tuple/policy
-sidecar does, where it is nearly free) and matches the already-accepted C4
-precedent for a network with real per-orientation compute cost.
+Training uses the board's single natural (literal) orientation only for
+*both* heads, the same choice ``convnet_c4``'s main fit path and this
+module's own value-only predecessor make; equivariance is instead a property
+of :func:`predict`, which averages the literal network's output over all 8
+D4-transformed copies of the input board and, for the policy head, maps each
+orientation's canonical-frame logits back to real board squares via the
+inverse permutation (mirroring ``othello_eval.policy``'s ``INV`` table). This
+is cheaper than folding D4-averaging into the training loss and matches the
+already-accepted C4/value precedent for a network with real per-orientation
+compute cost.
+
+``Move::PASS`` has no board square. Following ``games/othello/src/
+policy.rs``/``az_train.policy_othello``'s convention, the *training* loss
+treats PASS as logit-space column 64 (``COLUMNS = 65``) whose logit is the
+mean of the 64 real-square logits, so its gradient is spread evenly back
+across all 64 columns during backprop. Inference-time callers that only need
+per-square logits (e.g. cross-language fixtures) get the 64-column D4-averaged
+array from :func:`predict` and can take the mean themselves for PASS, exactly
+as ``games/othello/src/policy.rs::NTuplePolicyNet::logits`` does.
 """
 
 from __future__ import annotations
@@ -33,27 +47,32 @@ from pathlib import Path
 import numpy as np
 
 from othello_eval.ntuple import D4
+from othello_eval.policy import INV
 
 BOARD = 8
 CHANNELS = 16
 BLOCKS = 2
 VALUE_HIDDEN = 32
+POLICY_OUTPUTS = 64
+SQUARES = 64
+COLUMNS = SQUARES + 1  # 64 real squares + PASS
 MAGIC = b"OTCNN001"
-VERSION = 1
+VERSION = 2
 # magic, version, rows, cols, input channels, channels, residual blocks,
-# value hidden width, float count
-HEADER = struct.Struct("<8s8I")
+# value hidden width, policy outputs, float count
+HEADER = struct.Struct("<8s9I")
 
 
 def _count() -> int:
     stem = CHANNELS * 2 * 3 * 3 + CHANNELS
     blocks = BLOCKS * 2 * (CHANNELS * CHANNELS * 3 * 3 + CHANNELS)
     value = CHANNELS + 1 + BOARD * BOARD * VALUE_HIDDEN + VALUE_HIDDEN + VALUE_HIDDEN + 1
-    return stem + blocks + value
+    policy = CHANNELS + 1 + BOARD * BOARD * POLICY_OUTPUTS + POLICY_OUTPUTS
+    return stem + blocks + value + policy
 
 
 N_WEIGHTS = _count()
-_BIAS_PARAMETER_INDICES = (1, 3, 5, 7, 9, 11)
+_BIAS_PARAMETER_INDICES = (1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
 
 
 def _unpack(w: np.ndarray) -> list[np.ndarray]:
@@ -77,6 +96,8 @@ def _unpack(w: np.ndarray) -> list[np.ndarray]:
             take((1, CHANNELS, 1, 1)), take((1,)),
             take((BOARD * BOARD, VALUE_HIDDEN)), take((VALUE_HIDDEN,)),
             take((VALUE_HIDDEN,)), take((1,)),
+            take((1, CHANNELS, 1, 1)), take((1,)),
+            take((BOARD * BOARD, POLICY_OUTPUTS)), take((POLICY_OUTPUTS,)),
         )
     )
     assert at == N_WEIGHTS
@@ -132,8 +153,9 @@ def _planes(me: np.ndarray, opp: np.ndarray) -> np.ndarray:
     return np.stack((me, opp), axis=1).reshape((-1, 2, BOARD, BOARD))
 
 
-def _predict_literal(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
-    """Value only, single (literal) orientation -- no D4 averaging."""
+def _predict_literal(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Value and 64-column policy logits, single (literal) orientation -- no
+    D4 averaging, no PASS column."""
     p = _unpack(weights)
     x = np.maximum(_conv(_planes(me, opp), p[0], p[1], 1), 0.0)
     at = 2
@@ -144,7 +166,11 @@ def _predict_literal(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np
         at += 4
     value = np.maximum(_conv(x, p[at], p[at + 1], 0), 0.0).reshape((-1, BOARD * BOARD))
     value = np.maximum(value @ p[at + 2] + p[at + 3], 0.0)
-    return np.tanh(value @ p[at + 4] + p[at + 5][0]).astype(np.float32)
+    value = np.tanh(value @ p[at + 4] + p[at + 5][0]).astype(np.float32)
+    at += 6
+    policy_features = np.maximum(_conv(x, p[at], p[at + 1], 0), 0.0).reshape((-1, BOARD * BOARD))
+    policy = (policy_features @ p[at + 2] + p[at + 3]).astype(np.float32)
+    return value, policy
 
 
 def me_opp_planes(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -160,15 +186,21 @@ def me_opp_planes(positions: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return me, opp
 
 
-def predict(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> np.ndarray:
-    """D4-averaged value: run the literal network on all 8 D4-transformed
-    copies of the board and average -- see the module docstring for why
-    this, not a symmetrized training loss, carries the equivariance."""
-    total = np.zeros(me.shape[0], dtype=np.float64)
+def predict(weights: np.ndarray, me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """D4-averaged value and 64-column policy logits: run the literal network
+    on all 8 D4-transformed copies of the board, average the value directly,
+    and map each orientation's canonical-frame policy logits back to real
+    board squares via ``INV`` before averaging -- see the module docstring
+    for why this, not a symmetrized training loss, carries the equivariance.
+    """
+    value_total = np.zeros(me.shape[0], dtype=np.float64)
+    policy_total = np.zeros((me.shape[0], SQUARES), dtype=np.float64)
     for sym in range(8):
         cols = D4[sym]
-        total += _predict_literal(weights, me[:, cols], opp[:, cols]).astype(np.float64)
-    return (total / 8.0).astype(np.float32)
+        v, logits = _predict_literal(weights, me[:, cols], opp[:, cols])
+        value_total += v.astype(np.float64)
+        policy_total += logits[:, INV[sym]].astype(np.float64)
+    return (value_total / 8.0).astype(np.float32), (policy_total / 8.0).astype(np.float32)
 
 
 def _pearson(prediction: np.ndarray, target: np.ndarray) -> float:
@@ -179,8 +211,26 @@ def _pearson(prediction: np.ndarray, target: np.ndarray) -> float:
     return float(np.corrcoef(prediction, target)[0, 1])
 
 
-def validation_metrics(weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray) -> dict[str, float]:
-    prediction = predict(weights, me, opp)
+def _with_pass(policy64: np.ndarray) -> np.ndarray:
+    """Append the PASS column (mean of the 64 real-square columns)."""
+    return np.concatenate([policy64, policy64.mean(axis=1, keepdims=True)], axis=1)
+
+
+def _masked_policy_cross_entropy(policy64: np.ndarray, target: np.ndarray, legal: np.ndarray) -> float:
+    """Finite legal-column (65 = 64 squares + PASS) cross entropy."""
+    logits = _with_pass(policy64)
+    masked = np.where(legal, logits, -np.inf)
+    shifted = masked - np.max(masked, axis=1, keepdims=True)
+    probability = np.exp(shifted) * legal
+    probability /= probability.sum(axis=1, keepdims=True)
+    return float(-np.mean(np.sum(target * np.log(np.maximum(probability, 1e-30)), axis=1)))
+
+
+def validation_metrics(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+) -> dict[str, float]:
+    prediction, logits = predict(weights, me, opp)
     nonzero = value != 0.0
     metrics = {
         "value_mse": float(np.mean((prediction - value) ** 2)),
@@ -189,13 +239,27 @@ def validation_metrics(weights: np.ndarray, me: np.ndarray, opp: np.ndarray, val
             np.mean(np.sign(prediction[nonzero]) == np.sign(value[nonzero]))
         ) if np.any(nonzero) else 0.0,
     }
+    if policy is not None and legal is not None:
+        metrics["masked_policy_cross_entropy"] = _masked_policy_cross_entropy(logits, policy, legal)
     return {name: m if np.isfinite(m) else 0.0 for name, m in metrics.items()}
 
 
 def _literal_loss_gradient(
     weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    *, value_loss_weight: float = 1.0,
 ) -> tuple[float, np.ndarray]:
-    """Value MSE (literal orientation only) plus its dense gradient."""
+    """Value MSE (literal orientation only), plus legal-column policy cross
+    entropy when ``policy``/``legal`` (dense ``(N, 65)`` arrays, PASS as
+    column 64) are given, plus L2, and the dense gradient of all of it.
+
+    Passing ``policy=None`` (the value-only v1 path) skips the policy head's
+    contribution entirely -- it still gets an L2 gradient like any other
+    parameter group, so an all-zero policy head stays exactly zero under
+    value-only fitting rather than drifting from regularization alone.
+    """
+    if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
+        raise ValueError("value_loss_weight must be finite and non-negative")
     p = _unpack(weights)
     x0 = _planes(me, opp)
     z0 = _conv(x0, p[0], p[1], 1); x = np.maximum(z0, 0.0)
@@ -212,22 +276,51 @@ def _literal_loss_gradient(
     value_hidden = np.maximum(value_hidden_z, 0.0)
     value_score = value_hidden @ p[at + 4] + p[at + 5][0]
     value_prediction = np.tanh(value_score)
+    value_at = at; at += 6
     n = len(me)
     value_loss = np.mean((value_prediction - value) ** 2)
 
     gradient = np.zeros_like(weights)
     gp = _unpack(gradient)
-    dv = (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
-    gp[at + 4][:] = value_hidden.T @ dv
-    gp[at + 5][0] = dv.sum()
-    d_hidden = (dv[:, None] * p[at + 4]) * (value_hidden_z > 0.0)
-    gp[at + 2][:] = value_features.T @ d_hidden
-    gp[at + 3][:] = d_hidden.sum(axis=0)
-    d_value_features = d_hidden @ p[at + 2].T
+    dv = value_loss_weight * (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
+    gp[value_at + 4][:] = value_hidden.T @ dv
+    gp[value_at + 5][0] = dv.sum()
+    d_hidden = (dv[:, None] * p[value_at + 4]) * (value_hidden_z > 0.0)
+    gp[value_at + 2][:] = value_features.T @ d_hidden
+    gp[value_at + 3][:] = d_hidden.sum(axis=0)
+    d_value_features = d_hidden @ p[value_at + 2].T
     d_z_value = d_value_features.reshape(z_value.shape) * (z_value > 0.0)
-    dx, d_value_weight, d_value_bias = _conv_backward(x, p[at], d_z_value, 0)
-    gp[at][:] = d_value_weight
-    gp[at + 1][:] = d_value_bias
+    dx_value, d_value_weight, d_value_bias = _conv_backward(x, p[value_at], d_z_value, 0)
+    gp[value_at][:] = d_value_weight
+    gp[value_at + 1][:] = d_value_bias
+
+    z_policy = _conv(x, p[at], p[at + 1], 0)
+    policy_features = np.maximum(z_policy, 0.0).reshape((-1, BOARD * BOARD))
+    policy_logits = policy_features @ p[at + 2] + p[at + 3]
+    dx_policy = np.zeros_like(x)
+    policy_loss = 0.0
+    if policy is not None and legal is not None:
+        logits65 = _with_pass(policy_logits)
+        masked = np.where(legal, logits65, -np.inf)
+        shifted = masked - np.max(masked, axis=1, keepdims=True)
+        probability = np.exp(shifted) * legal
+        probability /= probability.sum(axis=1, keepdims=True)
+        row_log_likelihood = np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1)
+        policy_loss = float(-np.mean(row_log_likelihood))
+        dp65 = (probability - policy) / n
+        # PASS (column 64) has no board square; its gradient is the mean of
+        # the 64 real-square logits, so its adjoint spreads dp65's PASS
+        # column evenly back across all 64 policy_logits columns.
+        dp = dp65[:, :SQUARES] + dp65[:, SQUARES : SQUARES + 1] / SQUARES
+        gp[at + 2][:] = policy_features.T @ dp
+        gp[at + 3][:] = dp.sum(axis=0)
+        d_policy_features = dp @ p[at + 2].T
+        d_z_policy = d_policy_features.reshape(z_policy.shape) * (z_policy > 0.0)
+        dx_policy, d_policy_weight, d_policy_bias = _conv_backward(x, p[at], d_z_policy, 0)
+        gp[at][:] = d_policy_weight
+        gp[at + 1][:] = d_policy_bias
+
+    dx = dx_value + dx_policy
     for block in range(BLOCKS - 1, -1, -1):
         residual, z1, h1, z2 = blocks[block]
         d_z2 = dx * (z2 + residual > 0.0)
@@ -244,11 +337,11 @@ def _literal_loss_gradient(
     _, d_stem_weight, d_stem_bias = _conv_backward(x0, p[0], d_z0, 1)
     gp[0][:] = d_stem_weight
     gp[1][:] = d_stem_bias
-    regularized = [0, 2, 4, 6, 8, at, at + 2, at + 4]
+    regularized = [0, 2, 4, 6, 8, value_at, value_at + 2, value_at + 4, at, at + 2]
     reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
     for i in regularized:
         gp[i][:] += 2.0 * l2 * p[i]
-    return float(value_loss + l2 * reg), gradient
+    return float(value_loss_weight * value_loss + policy_loss + l2 * reg), gradient
 
 
 def _epoch_batches(rng: np.random.Generator, row_count: int, batch_size: int) -> tuple[np.ndarray, ...]:
@@ -261,8 +354,15 @@ def fit(
     validation: tuple[np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 256, epochs: int = 24, learning_rate: float = 2e-3,
     validate_every: int = 1, report_every: int = 0,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    validation_policy: np.ndarray | None = None, validation_legal: np.ndarray | None = None,
 ) -> tuple[np.ndarray, dict[str, object]]:
-    """Deterministic Adam fit of the literal-orientation value network.
+    """Deterministic Adam fit of the literal-orientation value(+policy) network.
+
+    ``policy``/``legal`` (dense ``(N, 65)`` arrays, PASS as column 64), when
+    both given, add the policy cross-entropy term to the loss alongside value
+    MSE; omitting them fits the value head only (the v1 behaviour), leaving
+    the policy head's weights at their (zero-drifting-under-L2) initializer.
 
     ``validate_every`` skips the (D4-averaged, 8x-cost) validation pass on
     epochs not a multiple of it, purely to cut wall time on a large
@@ -274,6 +374,7 @@ def fit(
     """
     if not len(me):
         raise ValueError("CNN fitting requires non-empty rows")
+    has_policy = policy is not None and legal is not None
     rng = np.random.default_rng(seed)
     weights = initial_weights(seed)
     moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
@@ -283,25 +384,32 @@ def fit(
     validation_epoch_trace: list[dict[str, float]] = []
     for epoch in range(1, epochs + 1):
         for batch in _epoch_batches(rng, len(me), batch_size):
-            _, gradient = _literal_loss_gradient(weights, me[batch], opp[batch], value[batch], l2)
+            batch_policy = policy[batch] if has_policy and policy is not None else None
+            batch_legal = legal[batch] if has_policy and legal is not None else None
+            _, gradient = _literal_loss_gradient(
+                weights, me[batch], opp[batch], value[batch], l2, batch_policy, batch_legal,
+            )
             step += 1
             moment = beta1 * moment + (1.0 - beta1) * gradient
             velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
             weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
         if epoch % validate_every == 0 or epoch == epochs:
-            validation_epoch_trace.append(validation_metrics(weights, vm, vo, vv))
+            validation_epoch_trace.append(
+                validation_metrics(weights, vm, vo, vv, validation_policy, validation_legal)
+            )
             if report_every and (epoch % report_every == 0 or epoch == epochs):
                 m = validation_epoch_trace[-1]
                 elapsed = time.perf_counter() - started
+                extra = f"  policy ce {m['masked_policy_cross_entropy']:.4f}" if "masked_policy_cross_entropy" in m else ""
                 print(
                     f"  epoch {epoch:4d}  val mse {m['value_mse']:.4f}  "
-                    f"pearson {m['value_pearson']:.4f}  sign-acc {m['value_sign_agreement']:.4f}  "
-                    f"({elapsed:.1f}s)",
+                    f"pearson {m['value_pearson']:.4f}  sign-acc {m['value_sign_agreement']:.4f}"
+                    f"{extra}  ({elapsed:.1f}s)",
                     flush=True,
                 )
-    train_metrics = validation_metrics(weights, me, opp, value)
+    train_metrics = validation_metrics(weights, me, opp, value, policy, legal)
     metadata: dict[str, object] = {
-        "optimizer": "adam_literal_value_mse",
+        "optimizer": "adam_literal_value_mse" + ("_policy_ce" if has_policy else ""),
         "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
         "optimizer_learning_rate": learning_rate, "optimizer_steps": step,
         "fit_wall_seconds": time.perf_counter() - started,
@@ -317,7 +425,7 @@ def write_weights(path: str, weights: np.ndarray) -> None:
     weights = np.asarray(weights, dtype="<f4")
     _unpack(weights)
     Path(path).write_bytes(
-        HEADER.pack(MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, N_WEIGHTS)
+        HEADER.pack(MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, POLICY_OUTPUTS, N_WEIGHTS)
         + weights.tobytes()
     )
 
@@ -327,7 +435,7 @@ def read_weights(path: str) -> np.ndarray:
     if len(raw) < HEADER.size:
         raise ValueError(f"{path}: missing OTCNN001 header")
     header = HEADER.unpack(raw[: HEADER.size])
-    expected = (MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, N_WEIGHTS)
+    expected = (MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, POLICY_OUTPUTS, N_WEIGHTS)
     if header != expected or len(raw) != HEADER.size + N_WEIGHTS * 4:
         raise ValueError(f"{path}: unsupported OTCNN001 layout")
     weights = np.frombuffer(raw[HEADER.size :], dtype="<f4").copy()

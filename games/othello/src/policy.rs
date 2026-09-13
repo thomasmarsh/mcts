@@ -30,8 +30,10 @@ const SQUARES: usize = 64;
 
 /// `INV[k]` is the inverse permutation of `D4[k]`: `INV[k][D4[k][i]] == i`.
 /// Used to map a canonical-frame (orientation `k`) output column back to the
-/// real board square it corresponds to.
-static INV: LazyLock<[[u8; SQUARES]; 8]> = LazyLock::new(|| {
+/// real board square it corresponds to. `pub(crate)` so `crate::convnet`'s
+/// policy head can reuse the exact same D4-averaging convention rather than
+/// duplicating this table.
+pub(crate) static INV: LazyLock<[[u8; SQUARES]; 8]> = LazyLock::new(|| {
     std::array::from_fn(|k| {
         let mut inv = [0u8; SQUARES];
         for canon in 0..SQUARES {

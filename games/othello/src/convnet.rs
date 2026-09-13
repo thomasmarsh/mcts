@@ -1,44 +1,58 @@
-//! Compact, versioned Othello convolutional value inference.
+//! Compact, versioned Othello convolutional value+policy inference.
 //!
-//! `OTCNN001` is a two-plane 8x8 network with a 16-channel stem, two
-//! residual blocks, and a value head -- the direct 8x8 generalization of
-//! Connect Four's `C4CNN001` (`games/connect4/src/convnet.rs`). Value-only
-//! for now: see `research/othello-eval/src/othello_eval/convnet.py`'s module
-//! doc for why a policy head is deferred rather than built alongside it.
+//! `OTCNN001` (version 2) is a two-plane 8x8 network with a 16-channel stem,
+//! two residual blocks, and separate value and policy heads sharing that
+//! trunk -- the direct 8x8 generalization of Connect Four's `C4CNN001`
+//! (`games/connect4/src/convnet.rs`), which also shares one trunk between
+//! both heads. Version 1 was value-only; see
+//! `research/othello-eval/src/othello_eval/convnet.py`'s module doc for why
+//! the policy head was deferred rather than built alongside it, and for why
+//! it's a version bump (not an additive extension) once built.
 //!
-//! Inference averages the value network's output over all 8 D4-transformed
-//! copies of the input board, so the scalar is exactly D4-invariant
-//! regardless of the learned weights -- generalizing `C4CNN001`'s
-//! literal-plus-reflected averaging (Connect Four only has a left-right
-//! mirror) to Othello's full 8-element D4 group. Weights are trained by the
-//! Python counterpart (`othello_eval.convnet`), which fits on a single
-//! (literal) orientation only and relies on this same D4-averaging at
-//! evaluation time for the equivariance property, not a symmetrized
-//! training loss.
+//! Value inference averages the value network's output over all 8
+//! D4-transformed copies of the input board, so the scalar is exactly
+//! D4-invariant regardless of the learned weights -- generalizing
+//! `C4CNN001`'s literal-plus-reflected averaging (Connect Four only has a
+//! left-right mirror) to Othello's full 8-element D4 group. Policy inference
+//! does the same for each of the 64 per-square logits, mapping each
+//! orientation's canonical-frame output back to real board squares via
+//! `crate::policy::INV` -- the same convention `NTuplePolicyNet` already
+//! uses for the linear policy sidecar, so both models agree on what
+//! orientation `sym` means and how PASS (mean of the 64 square logits) is
+//! scored. Weights are trained by the Python counterpart
+//! (`othello_eval.convnet`), which fits on a single (literal) orientation
+//! only and relies on this same D4-averaging at evaluation time for the
+//! equivariance property, not a symmetrized training loss.
 
 use std::path::Path;
 
+use mcts::algorithms::mcts::policy::PolicyLogits;
 use mcts::evaluator::{Evaluator, Score, EVAL_MAGNITUDE_LIMIT};
 
 use crate::ntuple::D4;
-use crate::{Othello, Player, State};
+use crate::policy::INV;
+use crate::{Move, Othello, Player, State};
 
 const BOARD: usize = 8;
 const CHANNELS: usize = 16;
 const BLOCKS: usize = 2;
 const VALUE_HIDDEN: usize = 32;
+const POLICY_OUTPUTS: usize = 64;
 const MAGIC: &[u8; 8] = b"OTCNN001";
-const VERSION: u32 = 1;
-const HEADER_BYTES: usize = 40;
-pub const CNN_WEIGHTS: usize = CHANNELS * 2 * 9
-    + CHANNELS
-    + BLOCKS * 2 * (CHANNELS * CHANNELS * 9 + CHANNELS)
-    + CHANNELS
+const VERSION: u32 = 2;
+const HEADER_BYTES: usize = 44;
+const VALUE_HEAD_WEIGHTS: usize = CHANNELS
     + 1
     + BOARD * BOARD * VALUE_HIDDEN
     + VALUE_HIDDEN
     + VALUE_HIDDEN
     + 1;
+const POLICY_HEAD_WEIGHTS: usize = CHANNELS + 1 + BOARD * BOARD * POLICY_OUTPUTS + POLICY_OUTPUTS;
+pub const CNN_WEIGHTS: usize = CHANNELS * 2 * 9
+    + CHANNELS
+    + BLOCKS * 2 * (CHANNELS * CHANNELS * 9 + CHANNELS)
+    + VALUE_HEAD_WEIGHTS
+    + POLICY_HEAD_WEIGHTS;
 
 #[derive(Clone, Debug)]
 pub struct CnnValueNet {
@@ -62,10 +76,10 @@ impl CnnValueNet {
         if bytes.len() != HEADER_BYTES + CNN_WEIGHTS * 4 || !bytes.starts_with(MAGIC) {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid OTCNN001 byte length or magic"));
         }
-        let header: [u32; 8] = std::array::from_fn(|i| {
+        let header: [u32; 9] = std::array::from_fn(|i| {
             u32::from_le_bytes(bytes[8 + i * 4..12 + i * 4].try_into().unwrap())
         });
-        if header != [VERSION, BOARD as u32, BOARD as u32, 2, CHANNELS as u32, BLOCKS as u32, VALUE_HIDDEN as u32, CNN_WEIGHTS as u32] {
+        if header != [VERSION, BOARD as u32, BOARD as u32, 2, CHANNELS as u32, BLOCKS as u32, VALUE_HIDDEN as u32, POLICY_OUTPUTS as u32, CNN_WEIGHTS as u32] {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "unsupported OTCNN001 layout"));
         }
         Ok(Self::from_weights(bytes[HEADER_BYTES..].chunks_exact(4).map(|b| f32::from_le_bytes(b.try_into().unwrap())).collect()))
@@ -113,8 +127,10 @@ impl CnnValueNet {
         }
     }
 
-    /// Value from a single (already-transformed) orientation's input planes.
-    fn raw(&self, input: &[f32; 2 * BOARD * BOARD]) -> f32 {
+    /// Shared stem+residual trunk from a single (already-transformed)
+    /// orientation's input planes, plus the weight offset just past it
+    /// (where the value head's weights start).
+    fn trunk(&self, input: &[f32; 2 * BOARD * BOARD]) -> (Vec<f32>, usize) {
         let mut at = 0;
         let mut x = vec![0.0; CHANNELS * BOARD * BOARD];
         Self::conv3(input, &mut x, &self.weights[at..at + CHANNELS * 2 * 9], &self.weights[at + CHANNELS * 2 * 9..at + CHANNELS * 2 * 9 + CHANNELS], 2);
@@ -130,6 +146,12 @@ impl CnnValueNet {
             for (v, skip) in x.iter_mut().zip(residual) { *v = (*v + skip).max(0.0); }
             at += CHANNELS * CHANNELS * 9 + CHANNELS;
         }
+        (x, at)
+    }
+
+    /// Value from a single (already-transformed) orientation's input planes.
+    fn raw_value(&self, input: &[f32; 2 * BOARD * BOARD]) -> f32 {
+        let (x, mut at) = self.trunk(input);
         let value_conv = &self.weights[at..at + CHANNELS];
         let value_bias = self.weights[at + CHANNELS];
         at += CHANNELS + 1;
@@ -139,19 +161,75 @@ impl CnnValueNet {
         let hidden: Vec<f32> = (0..VALUE_HIDDEN).map(|unit| (value_b1[unit] + (0..BOARD * BOARD).map(|cell| value_features[cell] * value_w1[cell * VALUE_HIDDEN + unit]).sum::<f32>()).max(0.0)).collect();
         let value_w2 = &self.weights[at..at + VALUE_HIDDEN]; at += VALUE_HIDDEN;
         let value = (self.weights[at] + hidden.iter().zip(value_w2).map(|(a, b)| a * b).sum::<f32>()).tanh(); at += 1;
-        debug_assert_eq!(at, CNN_WEIGHTS);
+        debug_assert_eq!(at, CNN_WEIGHTS - POLICY_HEAD_WEIGHTS);
         value
+    }
+
+    /// 64 canonical-frame (this orientation's own coordinate system) policy
+    /// logits from a single (already-transformed) orientation's input
+    /// planes -- no D4 averaging, no PASS.
+    fn raw_policy(&self, input: &[f32; 2 * BOARD * BOARD]) -> [f32; POLICY_OUTPUTS] {
+        let (x, mut at) = self.trunk(input);
+        at += VALUE_HEAD_WEIGHTS;
+        let policy_conv = &self.weights[at..at + CHANNELS];
+        let policy_bias = self.weights[at + CHANNELS];
+        at += CHANNELS + 1;
+        let policy_features: Vec<f32> = (0..BOARD * BOARD).map(|cell| (policy_bias + (0..CHANNELS).map(|ch| x[ch * BOARD * BOARD + cell] * policy_conv[ch]).sum::<f32>()).max(0.0)).collect();
+        let policy_w = &self.weights[at..at + BOARD * BOARD * POLICY_OUTPUTS]; at += BOARD * BOARD * POLICY_OUTPUTS;
+        let policy_b = &self.weights[at..at + POLICY_OUTPUTS]; at += POLICY_OUTPUTS;
+        let logits = std::array::from_fn(|out| {
+            policy_b[out] + (0..BOARD * BOARD).map(|cell| policy_features[cell] * policy_w[cell * POLICY_OUTPUTS + out]).sum::<f32>()
+        });
+        debug_assert_eq!(at, CNN_WEIGHTS);
+        logits
     }
 
     /// D4-averaged value: the mean, over all 8 orientations, of the literal
     /// network's output on that orientation's transformed input.
     pub fn value(&self, state: &State) -> f32 {
-        (0..8).map(|sym| self.raw(&Self::input(state, sym))).sum::<f32>() / 8.0
+        (0..8).map(|sym| self.raw_value(&Self::input(state, sym))).sum::<f32>() / 8.0
+    }
+
+    /// D4-symmetrized policy logits over every board square, in the real
+    /// board's coordinate frame: the average, over all 8 orientations, of
+    /// that orientation's canonical-frame output mapped back via `INV` --
+    /// the same convention `crate::policy::NTuplePolicyNet::all_logits`
+    /// uses for the linear sidecar.
+    pub fn all_policy_logits(&self, state: &State) -> [f64; POLICY_OUTPUTS] {
+        let mut out = [0.0f64; POLICY_OUTPUTS];
+        for sym in 0..8 {
+            let raw = self.raw_policy(&Self::input(state, sym));
+            for real_sq in 0..POLICY_OUTPUTS {
+                out[real_sq] += raw[INV[sym][real_sq] as usize] as f64;
+            }
+        }
+        for v in out.iter_mut() {
+            *v /= 8.0;
+        }
+        out
     }
 }
 
 impl Evaluator<Othello> for CnnValueNet {
     fn evaluate(&self, state: &State) -> Score { (self.value(state) * EVAL_MAGNITUDE_LIMIT as f32).round() as Score }
+}
+
+impl PolicyLogits<Othello> for CnnValueNet {
+    fn logits(&mut self, state: &State, actions: &[Move]) -> Vec<f64> {
+        let all = self.all_policy_logits(state);
+        actions
+            .iter()
+            .map(|a| {
+                if *a == Move::PASS {
+                    // Same pass-as-mean-square-logit convention as
+                    // `crate::policy::NTuplePolicyNet::logits`.
+                    all.iter().sum::<f64>() / POLICY_OUTPUTS as f64
+                } else {
+                    all[a.0 as usize]
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -167,19 +245,20 @@ mod tests {
     fn layout_is_versioned_and_validated() {
         let path = std::env::temp_dir().join(format!("mcts-othello-cnn-{}", std::process::id()));
         let mut bytes = Vec::from(*MAGIC);
-        for n in [VERSION, BOARD as u32, BOARD as u32, 2, CHANNELS as u32, BLOCKS as u32, VALUE_HIDDEN as u32, CNN_WEIGHTS as u32] { bytes.extend(n.to_le_bytes()); }
+        for n in [VERSION, BOARD as u32, BOARD as u32, 2, CHANNELS as u32, BLOCKS as u32, VALUE_HIDDEN as u32, POLICY_OUTPUTS as u32, CNN_WEIGHTS as u32] { bytes.extend(n.to_le_bytes()); }
         bytes.extend(std::iter::repeat_n(0u8, CNN_WEIGHTS * 4));
         std::fs::write(&path, &bytes).unwrap();
         assert_eq!(CnnValueNet::load(&path).unwrap().weights().len(), CNN_WEIGHTS);
-        bytes[8] = 2; std::fs::write(&path, bytes).unwrap();
+        bytes[8] = 3; std::fs::write(&path, bytes).unwrap();
         assert!(CnnValueNet::load(&path).is_err());
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
-    fn zero_weights_score_zero() {
+    fn zero_weights_score_zero_and_uniform_policy() {
         let net = CnnValueNet::default();
         assert_eq!(net.value(&State::default()), 0.0);
+        assert_eq!(net.all_policy_logits(&State::default()), [0.0; POLICY_OUTPUTS]);
     }
 
     /// Rotate a raw bitboard by D4 element `k` (bit `i` moves to bit
@@ -221,6 +300,63 @@ mod tests {
         let net = CnnValueNet::from_weights(weights);
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = net.value(&s);
-        assert!((got - 0.007_168_648).abs() < 1e-6);
+        assert!((got - 0.004_248_809_5).abs() < 1e-6, "{got}");
+    }
+
+    #[test]
+    fn policy_is_d4_equivariant() {
+        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0007).sin()).collect();
+        let net = CnnValueNet::from_weights(weights);
+        let black = (1u64 << 0) | (1 << 9) | (1 << 20);
+        let white = (1u64 << 27) | (1 << 36) | (1 << 45);
+        let base = state(black, white, Player::Black);
+        let base_logits = net.all_policy_logits(&base);
+        for k in 0..8 {
+            let transformed = state(transform_bits(black, k), transform_bits(white, k), Player::Black);
+            let got = net.all_policy_logits(&transformed);
+            for sq in 0..POLICY_OUTPUTS {
+                let want = base_logits[sq];
+                let actual = got[D4[k][sq] as usize];
+                assert!((want - actual).abs() < 1e-4, "orientation {k}, square {sq}: want {want}, got {actual}");
+            }
+        }
+    }
+
+    /// Cross-language fixture: same weights formula, geometry and state as
+    /// `othello-eval/tests/test_convnet.py`'s
+    /// `test_policy_matches_the_rust_reference_fixture` -- pins that the
+    /// Rust hot path and the numpy trainer agree bit-for-bit (within float
+    /// tolerance) on the D4-averaged policy logits, not just each
+    /// independently passing its own tests.
+    #[test]
+    fn policy_matches_python_reference_fixture() {
+        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| ((i as f64 - CNN_WEIGHTS as f64 / 2.0) * 1e-6) as f32).collect();
+        let net = CnnValueNet::from_weights(weights);
+        let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
+        let got = net.all_policy_logits(&s);
+        let expected = [
+            0.009_362_561_628_222_466,
+            0.009_362_562_559_545_04,
+            0.009_362_562_559_545_04,
+            0.009_362_562_559_545_04,
+            0.009_362_562_559_545_04,
+            0.009_362_562_559_545_04,
+            0.009_362_562_559_545_04,
+            0.009_362_561_628_222_466,
+        ];
+        for (actual, expected) in got.iter().take(8).zip(expected) {
+            assert!((actual - expected).abs() < 1e-5, "{actual} vs {expected}");
+        }
+    }
+
+    #[test]
+    fn pass_logit_is_the_mean_square_logit() {
+        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0011).cos()).collect();
+        let mut net = CnnValueNet::from_weights(weights);
+        let s = state(1 << 0, 1 << 9, Player::Black);
+        let all = net.all_policy_logits(&s);
+        let want = all.iter().sum::<f64>() / POLICY_OUTPUTS as f64;
+        let got = net.logits(&s, &[Move::PASS]);
+        assert_eq!(got, vec![want]);
     }
 }
