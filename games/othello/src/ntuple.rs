@@ -190,6 +190,19 @@ pub struct NTupleModel {
 }
 
 impl NTupleModel {
+    /// An all-zero-weight model over `geom` -- every position scores `0.0`,
+    /// the generation-0 net a self-play loop starts from before any
+    /// training has happened (mirrors `games/connect4/src/valuenet.rs`'s
+    /// `Default` impl, which Connect Four's fixed-shape geometry can give
+    /// for free; Othello's geometry is data, so this takes it explicitly).
+    pub fn zeros(geom: ModelGeometry) -> NTupleModel {
+        let n = geom.n_weights();
+        NTupleModel {
+            geom,
+            weights: vec![0.0; n],
+        }
+    }
+
     /// Load `model.toml` + `weights.bin` + `weights.meta.json` from `dir`.
     /// Panics with an actionable message on any mismatch.
     pub fn from_dir(dir: &Path) -> NTupleModel {
@@ -287,6 +300,44 @@ impl NTupleModel {
     }
 }
 
+/// An [`Evaluator`] wrapping an owned, in-process [`NTupleModel`] rather than
+/// resolving a process-wide singleton from an env var the way [`NTupleEval`]
+/// does. A Gumbel self-play loop loads a fresh generation's `weights.bin`
+/// every generation (`crate::selfplay::GumbelPlayer`, `dump --label gumbel`)
+/// and needs an evaluator instance per load, mirroring
+/// `games/connect4/src/valuenet.rs::NTupleValueNet`'s per-instance `.value`.
+///
+/// `None` (its `Default`) scores every position `0.0` -- the generation-0 net
+/// a self-play loop starts from, and the value `EvaluatedCutoff`'s `E:
+/// Default` bound needs structurally even though callers always immediately
+/// override it via `.evaluator(...)`. Unlike Connect Four's fixed-shape
+/// geometry, Othello's tuple geometry is data (`model.toml`), so there is no
+/// zero-weight model to build without first parsing one -- `None` gives the
+/// same all-zero score without needing a geometry at all.
+#[derive(Clone, Debug, Default)]
+pub struct NTupleModelEval(pub Option<NTupleModel>);
+
+impl NTupleModelEval {
+    pub fn new(model: NTupleModel) -> Self {
+        NTupleModelEval(Some(model))
+    }
+
+    /// The raw `tanh`-squashed value in `(-1, 1)`, from the side-to-move
+    /// perspective. `0.0` when no model is loaded.
+    pub fn value(&self, state: &State) -> f32 {
+        match &self.0 {
+            Some(model) => model.logit(state).tanh(),
+            None => 0.0,
+        }
+    }
+}
+
+impl Evaluator<Othello> for NTupleModelEval {
+    fn evaluate(&self, state: &State) -> Score {
+        (self.value(state) * EVAL_MAGNITUDE_LIMIT as f32) as Score
+    }
+}
+
 static MODEL: OnceLock<NTupleModel> = OnceLock::new();
 static MODEL_B: OnceLock<NTupleModel> = OnceLock::new();
 
@@ -297,11 +348,21 @@ static MODEL_B: OnceLock<NTupleModel> = OnceLock::new();
 #[derive(Clone, Copy, Default)]
 pub struct NTupleEval;
 
+impl NTupleEval {
+    /// The raw `tanh`-squashed value in `(-1, 1)`, from the side-to-move
+    /// perspective -- the same quantity [`Evaluator::evaluate`] rescales to a
+    /// [`Score`], exposed directly for a Gumbel self-play root-value seed
+    /// (`crate::selfplay::GumbelPlayer::choose`), mirroring
+    /// `games/connect4/src/valuenet.rs::NTupleValueNet::value`.
+    pub fn value(&self, state: &State) -> f32 {
+        let model = MODEL.get_or_init(NTupleModel::from_env);
+        model.logit(state).tanh()
+    }
+}
+
 impl Evaluator<Othello> for NTupleEval {
     fn evaluate(&self, state: &State) -> Score {
-        let model = MODEL.get_or_init(NTupleModel::from_env);
-        let v = model.logit(state).tanh(); // (-1, 1)
-        (v * EVAL_MAGNITUDE_LIMIT as f32) as Score
+        (self.value(state) * EVAL_MAGNITUDE_LIMIT as f32) as Score
     }
 }
 

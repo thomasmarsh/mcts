@@ -789,7 +789,7 @@ mod tests {
     /// schedule must spend the whole budget.
     #[test]
     fn sh_schedule_matches_mctx_considered_visits() {
-        for &(n, m) in &[(32u32, 7usize), (32, 8), (16, 16), (8, 4)] {
+        for &(n, m) in &[(32u32, 7usize), (32, 8), (16, 16), (8, 4), (8, 1)] {
             let (ours_alloc, ours_surv) = our_summary(m, n);
             let (mctx_alloc, mctx_surv) = mctx_summary(m, n);
             assert_eq!(ours_alloc, mctx_alloc, "allocation mismatch n={n} m={m}");
@@ -807,6 +807,12 @@ mod tests {
         assert_eq!(our_summary(4, 8).0, vec![3, 3, 1, 1]);
         assert_eq!(our_summary(16, 16).0, vec![1; 16]);
         assert_eq!(our_summary(16, 16).1, vec![16]);
+        // A forced single-legal-action root (Othello's pass positions, or any
+        // game with a branching factor of 1) must not divide by zero via the
+        // general branch's `log2max` (computed from `m - 1`): `m <= 1` takes
+        // the dedicated one-phase, all-visits-at-once path instead.
+        assert_eq!(our_summary(1, 8).0, vec![8]);
+        assert_eq!(our_summary(1, 8).1, vec![1]);
     }
 
     #[test]

@@ -37,6 +37,18 @@
 //!   TD(lambda) return along the game). Each `arm_*.bin` has a matching
 //!   `arm_*.json` manifest; `harvest.json` records the counts and the
 //!   harvest ratio.
+//! - `--label gumbel --out <path>`: Gumbel self-play (`crate::selfplay::
+//!   GumbelPlayer`) with the n-tuple value head and policy sidecar, writing
+//!   [`RecordV2`]s whose policy tail is the completed-Q improved-policy
+//!   target. `--weights-dir <dir>` points at a trained `research/az-train`
+//!   checkpoint (`model.toml` + `weights.bin` + `weights.meta.json` +
+//!   `policy.bin` + `policy.meta.json`); absent, self-play uses the all-zero
+//!   generation-0 net over `--model`'s geometry (default `games/othello/
+//!   ntuple/model.toml`). `--sims` / `--max-considered` set the Gumbel
+//!   budget; `--temp-moves` samples the Sequential-Halving visit
+//!   distribution for the first N plies before switching to the argmax;
+//!   `--forced-opening-plies` forces a deterministic per-game opening choice
+//!   (see [`forced_move`]) for wide, uniform opening coverage.
 //!
 //! ## Position source
 //!
@@ -45,22 +57,23 @@
 //! with probability `--epsilon` (default 0.1) a uniform-random legal move
 //! is played instead -- diversity so a deterministic seeded engine doesn't
 //! emit the same game repeatedly. The label is unchanged either way.
+//! (`--label gumbel`'s position source is Gumbel self-play itself, not this
+//! `--engine` mechanism.)
 //!
-//! ## Record v2 (Gumbel self-play, not yet wired to a CLI label)
+//! ## Record v2 (Gumbel self-play)
 //!
 //! [`RecordV2`] adds a completed-Q improved-policy tail to the 22-byte head
 //! above (23-byte head + `n_policy` `(square, prob)` pairs), following
 //! `games/connect4/src/dump.rs`'s v2-connect4 record shape exactly:
 //! [`RecordV2::from_record`] converts a completed-Q distribution
 //! (`mcts::algorithms::mcts::gumbel::GumbelOutcome::improved_policy`) into
-//! the tail. No CLI label produces these records yet -- that needs a Gumbel
-//! self-play driver (`games/connect4/src/selfplay.rs`'s `GumbelPlayer` is
-//! the pattern) which does not exist for Othello yet.
+//! the tail. `--label gumbel` is the only mode that produces these records.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
+use mcts::algorithms::mcts::gumbel::{GumbelConfig, GumbelOutcome};
 use mcts::algorithms::mcts::{node::QInit, profile, select, simulate, SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::game::Game;
@@ -68,7 +81,9 @@ use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use crate::ntuple::NTupleEval;
+use crate::ntuple::{NTupleEval, NTupleModel, NTupleModelEval};
+use crate::policy::NTuplePolicyNet;
+use crate::selfplay::GumbelPlayer;
 use crate::{Move, Othello, Player, State};
 
 // ---------------------------------------------------------------------------
@@ -269,6 +284,32 @@ struct Config {
     /// generic `config_ir` axis).
     ntuple_iters: usize,
     ntuple_depth: usize,
+    /// `--label gumbel` only: `model.toml` geometry to use when
+    /// `--weights-dir` is absent (the generation-0 net: zero value, zero
+    /// policy). Ignored when `--weights-dir` is given, since
+    /// `NTupleModel::from_dir` reads its own `model.toml`.
+    model_toml: PathBuf,
+    /// `--label gumbel` only: a trained checkpoint directory holding
+    /// `model.toml` + `weights.bin` + `weights.meta.json` + `policy.bin` +
+    /// `policy.meta.json` (`research/az-train`'s per-generation output
+    /// layout). Absent == the all-zero generation-0 net.
+    weights_dir: Option<PathBuf>,
+    /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
+    gumbel_sims: u32,
+    gumbel_max_considered: usize,
+    /// `--label gumbel` only: number of opening plies whose move is *sampled*
+    /// from the Sequential-Halving visit distribution rather than taken as
+    /// the argmax. Keeps self-play trajectories diverse so the value head
+    /// trains on a distribution that does not collapse onto its own current
+    /// best line each generation, even before any generational feedback
+    /// loop exists to amplify a narrowing self-play distribution.
+    temp_moves: u8,
+    /// `--label gumbel` only: number of opening plies whose move is *forced*
+    /// to a deterministic per-game choice (see [`forced_move`]) rather than
+    /// chosen by search, for wide, uniform opening coverage across a run.
+    /// `0` disables forcing. Search still runs and a policy target is still
+    /// recorded at every forced position.
+    forced_opening_plies: u32,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
@@ -288,6 +329,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut seed_overridden = false;
     let mut ntuple_iters = 200usize;
     let mut ntuple_depth = 0usize;
+    let mut model_toml = PathBuf::from("games/othello/ntuple/model.toml");
+    let mut weights_dir = None;
+    let mut gumbel_sims = 32u32;
+    let mut gumbel_max_considered = 8usize;
+    let mut temp_moves = 6u8;
+    let mut forced_opening_plies = 0u32;
     while let Some(a) = args.next() {
         let mut val = || args.next().expect("flag needs a value");
         match a.as_str() {
@@ -317,17 +364,36 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--ntuple-depth" => {
                 ntuple_depth = val().parse().expect("--ntuple-depth must be an integer")
             }
+            "--model" => model_toml = PathBuf::from(val()),
+            "--weights-dir" => weights_dir = Some(PathBuf::from(val())),
+            "--sims" => gumbel_sims = val().parse().expect("--sims must be an integer"),
+            "--max-considered" => {
+                gumbel_max_considered = val().parse().expect("--max-considered must be an integer")
+            }
+            "--temp-moves" => temp_moves = val().parse().expect("--temp-moves must be an integer"),
+            "--forced-opening-plies" => {
+                forced_opening_plies = val()
+                    .parse()
+                    .expect("--forced-opening-plies must be an integer")
+            }
             "-h" | "--help" => {
                 eprintln!(
                     "usage: game-othello dump --out <path> [--games N] [--seed N] \
-                     [--label outcome|harvest] [--engine <preset>|ntuple] [--epsilon P] \
+                     [--label outcome|harvest|gumbel] [--engine <preset>|ntuple] [--epsilon P] \
                      [--presets <path>] [--manifest <path>] [--harvest-config <path>] \
-                     [--ntuple-iters N] [--ntuple-depth N]\n\
+                     [--ntuple-iters N] [--ntuple-depth N] \
+                     [--model <model.toml>] [--weights-dir <dir>] [--sims N] \
+                     [--max-considered N] [--temp-moves N] [--forced-opening-plies N]\n\
                      \n\
                      --engine ntuple: self-play guided by $OTHELLO_NTUPLE_WEIGHTS instead of \
                      a presets.json entry.\n\
                      --label harvest: --out is a directory; writes arm_{{a,b,c,d}}.bin \
-                     + manifests + harvest.json"
+                     + manifests + harvest.json\n\
+                     --label gumbel: Gumbel self-play with the n-tuple value/policy heads, \
+                     writing v2 records with a completed-Q policy tail. --weights-dir points \
+                     at a research/az-train checkpoint (model.toml + weights.bin + \
+                     weights.meta.json + policy.bin + policy.meta.json); absent, self-play \
+                     uses the all-zero generation-0 net over --model's geometry."
                 );
                 std::process::exit(0);
             }
@@ -339,7 +405,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         other => panic!("unknown --oracle {other:?} (want mcts | edax)"),
     }
     match label.as_str() {
-        "outcome" | "harvest" => {}
+        "outcome" | "harvest" | "gumbel" => {}
         "treestrap" | "root_value" => panic!(
             "--label {label} is superseded by --label harvest, which emits arms a/b/c/d \
              (outcome, root searched value, TreeStrap, TD(lambda)) from one self-play pass"
@@ -349,6 +415,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     assert!(
         (0.0..=1.0).contains(&epsilon),
         "--epsilon must be in [0, 1], got {epsilon}"
+    );
+    assert!(gumbel_sims >= 1, "--sims must be positive");
+    assert!(
+        gumbel_max_considered >= 1,
+        "--max-considered must be positive"
     );
     Config {
         out: out.expect("--out is required"),
@@ -367,6 +438,12 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         edax_level_override,
         ntuple_iters,
         ntuple_depth,
+        model_toml,
+        weights_dir,
+        gumbel_sims,
+        gumbel_max_considered,
+        temp_moves,
+        forced_opening_plies,
     }
 }
 
@@ -465,12 +542,185 @@ fn ntuple_engine(k: usize, d: usize, seed: u64) -> Box<dyn Search<G = Othello>> 
     )
 }
 
+// ---------------------------------------------------------------------------
+// `--label gumbel`: Gumbel self-play with the n-tuple value/policy heads
+// ---------------------------------------------------------------------------
+
+/// Load the value/policy nets for `--label gumbel` self-play: a trained
+/// checkpoint from `--weights-dir` (`model.toml` + `weights.bin` +
+/// `weights.meta.json` + `policy.bin` + `policy.meta.json`, `research/
+/// az-train`'s per-generation output layout), or the all-zero generation-0
+/// net over `--model`'s geometry when no checkpoint is given yet.
+fn load_gumbel_nets(cfg: &Config) -> (NTupleModelEval, NTuplePolicyNet) {
+    match &cfg.weights_dir {
+        Some(dir) => {
+            let model = NTupleModel::from_dir(dir);
+            let geom = model.geometry().clone();
+            let policy = NTuplePolicyNet::from_dir(geom, dir);
+            (NTupleModelEval::new(model), policy)
+        }
+        None => {
+            let bytes = std::fs::read(&cfg.model_toml)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", cfg.model_toml.display()));
+            let geom = crate::ntuple::ModelGeometry::parse(&bytes);
+            (NTupleModelEval::default(), NTuplePolicyNet::zeros(geom))
+        }
+    }
+}
+
+/// Draw one move from a policy distribution (probabilities summing to 1),
+/// falling back to the first entry on a rounding shortfall.
+fn sample_visit_distribution(dist: &[(Move, f32)], rng: &mut SmallRng) -> Move {
+    let r: f32 = rng.gen_range(0.0..1.0);
+    let mut acc = 0.0f32;
+    for (m, p) in dist {
+        acc += *p;
+        if r < acc {
+            return *m;
+        }
+    }
+    dist[0].0
+}
+
+/// Pick the move for a Gumbel self-play position: `forced` when one applies,
+/// else the Sequential-Halving visit distribution for the first `temp_moves`
+/// plies, else the argmax.
+fn choose_selfplay_move(
+    outcome: &GumbelOutcome<Move>,
+    forced: Option<Move>,
+    ply: u8,
+    temp_moves: u8,
+    rng: &mut SmallRng,
+) -> Move {
+    if let Some(forced) = forced {
+        forced
+    } else if ply < temp_moves {
+        sample_visit_distribution(&outcome.improved_policy, rng)
+    } else {
+        outcome.action
+    }
+}
+
+/// The forced opening move for `game_index` at `ply`, or `None` past the
+/// forced prefix or when the position has no real choice to force (a single
+/// legal action, including a forced pass). Unlike Connect Four's
+/// `forced_opening_column` (digits of `game_index` in a fixed base 7, one
+/// per column), Othello's branching factor is not fixed -- it varies move to
+/// move and can be as low as 1 -- so this hashes `(game_index, ply)` into an
+/// index over whatever the *actual* legal-move list is at this position,
+/// rather than reading digits of a fixed base.
+fn forced_move(state: &State, game_index: u64, ply: u32, forced_plies: u32) -> Option<Move> {
+    if ply >= forced_plies {
+        return None;
+    }
+    let mut actions = Vec::new();
+    Othello::generate_actions(state, &mut actions);
+    if actions.len() <= 1 {
+        return None;
+    }
+    let h = (game_index ^ (ply as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    Some(actions[(h as usize) % actions.len()])
+}
+
+/// One dumped Gumbel self-play position before the final outcome is known:
+/// the v2 record head (`target` filled in below) plus its completed-Q
+/// improved-policy target.
+struct GumbelRow {
+    head: Record,
+    policy: Vec<(Move, f32)>,
+}
+
+/// Play `cfg.games` Gumbel self-play games, pushing a [`RecordV2`] with the
+/// completed-Q improved policy as its policy tail for every non-terminal
+/// position.
+fn dump_gumbel_games(cfg: &Config, out: &mut Vec<RecordV2>) {
+    let (value_net, policy_net) = load_gumbel_nets(cfg);
+    let gcfg = GumbelConfig {
+        sims: cfg.gumbel_sims,
+        max_considered: cfg.gumbel_max_considered,
+        ..GumbelConfig::default()
+    };
+
+    for g in 0..cfg.games {
+        let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+        let mut player =
+            GumbelPlayer::with_policy(value_net.clone(), policy_net.clone(), gcfg, game_seed);
+        let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
+
+        let mut state = State::default();
+        let mut rows: Vec<GumbelRow> = Vec::new();
+        let mut ply = 0u8;
+        while !Othello::is_terminal(&state) {
+            let outcome = player.choose(&state);
+            rows.push(GumbelRow {
+                head: record_for(&state, None),
+                policy: outcome.improved_policy.clone(),
+            });
+            let forced = forced_move(&state, g, ply as u32, cfg.forced_opening_plies);
+            let action = choose_selfplay_move(&outcome, forced, ply, cfg.temp_moves, &mut move_rng);
+            state = Othello::apply(state, &action);
+            ply += 1;
+        }
+
+        let winner = Othello::winner(&state);
+        for row in &mut rows {
+            let side_player = if row.head.side == 0 {
+                Player::Black
+            } else {
+                Player::White
+            };
+            row.head.target = match winner {
+                None => 0.0,
+                Some(w) if w == side_player => 1.0,
+                Some(_) => -1.0,
+            };
+        }
+        for row in rows {
+            out.push(RecordV2::from_record(row.head, &row.policy));
+        }
+
+        if (g + 1) % 25 == 0 || g + 1 == cfg.games {
+            eprintln!(
+                "  played {}/{} gumbel games ({} records)",
+                g + 1,
+                cfg.games,
+                out.len()
+            );
+        }
+    }
+}
+
 /// Entry point for `game-othello dump ...`. `args` is the argument iterator
 /// positioned just past the `dump` token.
 pub fn run(args: impl Iterator<Item = String>) {
     let cfg = parse_args(args);
     if cfg.label == "harvest" {
         return run_harvest(&cfg);
+    }
+    if cfg.label == "gumbel" {
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+
+        let mut buf = Vec::with_capacity(records.len() * RECORD_V2_HEAD_BYTES);
+        for r in &records {
+            r.encode(&mut buf);
+        }
+        if let Some(parent) = cfg.out.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).expect("cannot create --out parent directory");
+        }
+        let mut w = BufWriter::new(File::create(&cfg.out).expect("cannot create --out file"));
+        w.write_all(&buf).expect("write failed");
+        w.flush().expect("flush failed");
+
+        eprintln!(
+            "wrote {} v2 records ({} bytes) from {} gumbel games to {}",
+            records.len(),
+            buf.len(),
+            cfg.games,
+            cfg.out.display()
+        );
+        return;
     }
     let mut rng = SmallRng::seed_from_u64(cfg.seed);
     let mut records = Vec::new();
@@ -999,6 +1249,185 @@ fn run_harvest(cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn gumbel_config() -> Config {
+        Config {
+            out: PathBuf::new(),
+            manifest: None,
+            games: 2,
+            seed: 3,
+            engine: None,
+            epsilon: 0.1,
+            presets_path: PathBuf::from("games/othello/presets.json"),
+            label: "gumbel".to_string(),
+            harvest_config: PathBuf::from("games/othello/ntuple/harvest.toml"),
+            games_overridden: false,
+            seed_overridden: false,
+            oracle: "mcts".to_string(),
+            edax_config: PathBuf::from("games/othello/ntuple/harvest_edax.toml"),
+            edax_level_override: None,
+            ntuple_iters: 200,
+            ntuple_depth: 0,
+            model_toml: PathBuf::from("ntuple/tests/tiny.toml"),
+            weights_dir: None,
+            gumbel_sims: 8,
+            gumbel_max_considered: 4,
+            temp_moves: 6,
+            forced_opening_plies: 0,
+        }
+    }
+
+    /// `model_toml` above is relative to the crate root (`CARGO_MANIFEST_DIR`),
+    /// matching how `--model` is resolved from a shell invocation; tests run
+    /// from the crate directory too, so resolve it the same way rather than
+    /// hand-building an absolute path per call site.
+    fn with_crate_relative_model(mut cfg: Config) -> Config {
+        cfg.model_toml =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(&cfg.model_toml);
+        cfg
+    }
+
+    /// Builds a throwaway `research/az-train`-shaped checkpoint directory
+    /// (`model.toml` + `weights.bin` + `weights.meta.json` + `policy.bin` +
+    /// `policy.meta.json`, all zero-weight) from the committed `tiny.toml`
+    /// fixture, so `--weights-dir`'s load path -- distinct from the
+    /// `--model`-only generation-0 path the other tests exercise -- gets a
+    /// real end-to-end check. Removed by the caller.
+    fn write_tiny_checkpoint_dir() -> std::path::PathBuf {
+        let tiny_toml = std::fs::read(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ntuple/tests/tiny.toml"),
+        )
+        .unwrap();
+        let geom = crate::ntuple::ModelGeometry::parse(&tiny_toml);
+
+        let dir = std::env::temp_dir().join(format!(
+            "othello_gumbel_dump_test_{}_{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("model.toml"), &tiny_toml).unwrap();
+
+        let value_weights = vec![0.0f32; geom.n_weights()];
+        let value_bytes: Vec<u8> = value_weights.iter().flat_map(|w| w.to_le_bytes()).collect();
+        std::fs::write(dir.join("weights.bin"), &value_bytes).unwrap();
+        std::fs::write(
+            dir.join("weights.meta.json"),
+            format!(
+                r#"{{"model_toml_sha256": "{}", "n_weights": {}}}"#,
+                geom.sha256_hex(),
+                geom.n_weights()
+            ),
+        )
+        .unwrap();
+
+        let policy_weights = vec![0.0f32; geom.n_weights() * 64];
+        let policy_bytes: Vec<u8> = policy_weights
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        std::fs::write(dir.join("policy.bin"), &policy_bytes).unwrap();
+        std::fs::write(
+            dir.join("policy.meta.json"),
+            format!(
+                r#"{{"model_toml_sha256": "{}", "n_weights": {}}}"#,
+                geom.sha256_hex(),
+                geom.n_weights()
+            ),
+        )
+        .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn a_gumbel_selfplay_run_loads_a_trained_checkpoint_via_weights_dir() {
+        let dir = write_tiny_checkpoint_dir();
+        let mut cfg = gumbel_config();
+        cfg.weights_dir = Some(dir.clone());
+        cfg.games = 1;
+
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+        assert!(!records.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_gumbel_selfplay_game_records_a_completed_q_policy_tail_per_position() {
+        let cfg = with_crate_relative_model(gumbel_config());
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+        assert!(!records.is_empty());
+        for r in &records {
+            assert!([1.0f32, -1.0, 0.0].contains(&r.value));
+            assert!(
+                !r.policy.is_empty(),
+                "gumbel positions carry a policy target"
+            );
+            let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
+            assert!((sum - 1.0).abs() < 1e-4, "policy tail sums to {sum}");
+            for (square, _) in &r.policy {
+                assert!(*square as usize <= Move::PASS.0 as usize);
+            }
+        }
+    }
+
+    /// A forced-opening-plies run must still start every game at ply 0 and
+    /// increment by one, so the shard stays compatible with a whole-game
+    /// replay splitter -- mirrors Connect Four's
+    /// `a_forced_opening_game_follows_the_prefix_then_stays_a_valid_shard`.
+    #[test]
+    fn a_forced_opening_gumbel_run_still_labels_plies_consistently() {
+        let mut cfg = with_crate_relative_model(gumbel_config());
+        cfg.games = 3;
+        cfg.forced_opening_plies = 4;
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+        assert_eq!(records[0].ply, 0);
+        for pair in records.windows(2) {
+            // A pass leaves the disc count (and so `ply`) unchanged, unlike
+            // Connect Four where every move places a disc -- non-decreasing
+            // is the real invariant here, matching
+            // `a_dumped_game_labels_every_position_consistently` above.
+            assert!(pair[1].ply == 0 || pair[1].ply >= pair[0].ply);
+        }
+    }
+
+    /// `forced_move` must never fabricate a choice at a genuinely
+    /// single-legal-action position (a forced pass, or Othello's rare
+    /// single-real-move positions) -- it returns `None` and lets the search
+    /// decide, rather than looping the trivial one-element action list.
+    #[test]
+    fn forced_move_defers_to_search_when_there_is_no_real_choice() {
+        let lone_pass = State {
+            black: crate::BB::from_bits(1 << 0),
+            white: crate::BB::from_bits(1 << 63),
+            turn: Player::Black,
+            last_pass: false,
+            ..State::default()
+        };
+        let mut actions = Vec::new();
+        Othello::generate_actions(&lone_pass, &mut actions);
+        assert_eq!(actions, vec![Move::PASS]);
+        assert_eq!(forced_move(&lone_pass, 0, 0, 10), None);
+    }
+
+    #[test]
+    fn forced_move_picks_a_legal_action_deterministically_per_game_and_ply() {
+        let state = State::default();
+        for g in 0..20u64 {
+            for ply in 0..3u32 {
+                let a = forced_move(&state, g, ply, 3).expect("opening has real choices");
+                let mut actions = Vec::new();
+                Othello::generate_actions(&state, &mut actions);
+                assert!(actions.contains(&a));
+                // Deterministic: same inputs, same output.
+                assert_eq!(forced_move(&state, g, ply, 3), Some(a));
+            }
+        }
+    }
 
     fn sample_states() -> Vec<State> {
         let d3 = Othello::apply(State::default(), &Move(19));

@@ -17,6 +17,7 @@ pub mod edax;
 pub mod harvest;
 pub mod ntuple;
 pub mod policy;
+pub mod selfplay;
 
 pub const USE_SYMMETRY: bool = true;
 
