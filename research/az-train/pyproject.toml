@@ -5,11 +5,16 @@ description = "Gumbel AlphaZero self-play trainer for the mcts workspace"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "numpy>=2,<3",
+    "othello-eval",
 ]
 
 [project.scripts]
 az-train = "az_train.train:train_cli"
 az-train-othello = "az_train.train_othello:train_cli"
+az-train-othello-cnn = "az_train.convnet_othello:train_cli"
+
+[tool.uv.sources]
+othello-eval = { path = "../othello-eval" }
 
 [dependency-groups]
 dev = [

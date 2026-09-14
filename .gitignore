@@ -12,6 +12,7 @@ research/othello-eval/.venv/
 research/az-train/.venv/
 # setuptools build metadata
 *.egg-info/
+research/*/build/
 # pnpm workspace (ui/)
 ui/node_modules/
 .pnpm-store/
