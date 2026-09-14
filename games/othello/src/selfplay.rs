@@ -10,6 +10,19 @@
 //! process-wide env-resolved singleton (`crate::ntuple::NTupleEval`) --
 //! a self-play loop loads a fresh `weights.bin` every generation and needs
 //! an owned instance per load, not process-global state.
+//!
+//! [`CnnGumbelPlayer`] is the CNN-backed alternative, mirroring Connect
+//! Four's `CnnGumbelPlayer` (`games/connect4/src/selfplay.rs`): a joint
+//! value+policy container (`crate::convnet::CnnValueNet`, which implements
+//! both `Evaluator<Othello>` and `PolicyLogits<Othello>`) plugged into the
+//! same `GumbelCompletedQ`/`EvaluatedCutoff` machinery as a single type
+//! parameter, rather than `GumbelProfile` itself becoming generic over the
+//! value/policy model class -- `GumbelProfile`'s two type parameters
+//! (`NTupleModelEval` as both the `Evaluator` and, via `with_policy_logits`,
+//! the value-prior seam) are concrete, not bounded by a shared trait
+//! `GumbelPlayer` and `CnnGumbelPlayer` could both implement, so a separate
+//! struct is the smaller change and matches the precedent already landed for
+//! Connect Four.
 
 use mcts::algorithms::mcts::gumbel::{gumbel_search_with_root_value, GumbelConfig, GumbelOutcome};
 use mcts::algorithms::mcts::node::QInit;
@@ -19,6 +32,7 @@ use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 
+use crate::convnet::CnnValueNet;
 use crate::ntuple::NTupleModelEval;
 use crate::policy::NTuplePolicyNet;
 use crate::{Move, Othello, State};
@@ -73,6 +87,60 @@ impl GumbelPlayer {
 }
 
 impl Search for GumbelPlayer {
+    type G = Othello;
+
+    fn friendly_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
+    fn choose_action(&mut self, state: &State) -> Move {
+        self.choose(state).action
+    }
+}
+
+/// Gumbel player backed by the compact joint value-and-policy convolutional
+/// container (`CnnValueNet`), the Othello analogue of Connect Four's
+/// `CnnGumbelPlayer`. The shared container supplies both the `Evaluator`
+/// and `PolicyLogits` contracts without seeding policy logits as child
+/// values, exactly as `GumbelPlayer` above does for the n-tuple heads.
+pub struct CnnGumbelPlayer {
+    search: TreeSearch<Othello, Mcts<GumbelCompletedQ, EvaluatedCutoff<Othello, CnnValueNet>>>,
+    net: CnnValueNet,
+    cfg: GumbelConfig,
+    name: String,
+}
+
+impl CnnGumbelPlayer {
+    pub fn new(net: CnnValueNet, cfg: GumbelConfig, seed: u64) -> Self {
+        let search = TreeSearch::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_playout_depth(0)
+                .q_init(QInit::Loss)
+                .select(GumbelCompletedQ::with_config(cfg))
+                .simulate(EvaluatedCutoff::new().evaluator(net.clone()))
+                .with_policy_logits(net.clone())
+                .seed(seed),
+        );
+        Self {
+            search,
+            net,
+            cfg,
+            name: "gumbel-cnn".to_string(),
+        }
+    }
+
+    /// The full Gumbel outcome, including its completed-Q policy target.
+    pub fn choose(&mut self, state: &State) -> GumbelOutcome<Move> {
+        gumbel_search_with_root_value(&mut self.search, state, &self.cfg, self.net.value(state) as f64)
+    }
+}
+
+impl Search for CnnGumbelPlayer {
     type G = Othello;
 
     fn friendly_name(&self) -> String {
@@ -255,5 +323,34 @@ mod tests {
             biased_count > uniform_count + 50,
             "uniform={uniform_count}, biased={biased_count}"
         );
+    }
+
+    /// `CnnGumbelPlayer` wiring smoke tests: the same two sign-audit fixtures
+    /// `GumbelPlayer` uses above, re-run through the CNN seam so a wiring bug
+    /// (wrong `Evaluator`/`PolicyLogits` plumbing, a panic on the CNN's own
+    /// forward pass under real search) would show up here rather than only
+    /// in a slow graded run. `CnnValueNet`'s own value/policy correctness
+    /// (D4 equivariance, cross-language fixtures) is already covered in
+    /// `convnet.rs`; these tests are about the search seam, not the network.
+    fn cnn_player_with(cfg: GumbelConfig, seed: u64) -> CnnGumbelPlayer {
+        CnnGumbelPlayer::new(CnnValueNet::default(), cfg, seed)
+    }
+
+    #[test]
+    fn cnn_gumbel_takes_the_only_real_move_and_it_is_terminal_and_a_win() {
+        let s = near_full_black_win();
+        for seed in [1u64, 2, 3] {
+            let action = cnn_player_with(wide_cfg(), seed).choose_action(&s);
+            assert_eq!(action, Move(60));
+        }
+    }
+
+    #[test]
+    fn cnn_gumbel_search_handles_a_forced_pass_root_without_panicking() {
+        let s = state(1 << 0, 1 << 63, Player::Black);
+        for seed in [1u64, 2, 3] {
+            let action = cnn_player_with(wide_cfg(), seed).choose_action(&s);
+            assert_eq!(action, Move::PASS);
+        }
     }
 }

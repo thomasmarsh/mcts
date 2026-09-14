@@ -37,18 +37,23 @@
 //!   TD(lambda) return along the game). Each `arm_*.bin` has a matching
 //!   `arm_*.json` manifest; `harvest.json` records the counts and the
 //!   harvest ratio.
-//! - `--label gumbel --out <path>`: Gumbel self-play (`crate::selfplay::
-//!   GumbelPlayer`) with the n-tuple value head and policy sidecar, writing
-//!   [`RecordV2`]s whose policy tail is the completed-Q improved-policy
-//!   target. `--weights-dir <dir>` points at a trained `research/az-train`
-//!   checkpoint (`model.toml` + `weights.bin` + `weights.meta.json` +
-//!   `policy.bin` + `policy.meta.json`); absent, self-play uses the all-zero
-//!   generation-0 net over `--model`'s geometry (default `games/othello/
-//!   ntuple/model.toml`). `--sims` / `--max-considered` set the Gumbel
-//!   budget; `--temp-moves` samples the Sequential-Halving visit
-//!   distribution for the first N plies before switching to the argmax;
-//!   `--forced-opening-plies` forces a deterministic per-game opening choice
-//!   (see [`forced_move`]) for wide, uniform opening coverage.
+//! - `--label gumbel --out <path>`: Gumbel self-play with either the n-tuple
+//!   value head + policy sidecar (`GumbelPlayer`, `--head ntuple`, the
+//!   default) or the joint CNN value+policy container (`CnnGumbelPlayer`,
+//!   `--head cnn`), both in `crate::selfplay`, writing [`RecordV2`]s whose
+//!   policy tail is the completed-Q improved-policy target either way.
+//!   `--head ntuple`'s `--weights-dir <dir>` points at a trained checkpoint
+//!   (`model.toml` + `weights.bin` + `weights.meta.json` + `policy.bin` +
+//!   `policy.meta.json`, `research/az-train`'s layout); absent, self-play
+//!   uses the all-zero generation-0 net over `--model`'s geometry (default
+//!   `games/othello/ntuple/model.toml`). `--head cnn`'s `--cnn-weights
+//!   <path>` points at a single `OTCNN001`-layout checkpoint file
+//!   (`crate::convnet::CnnValueNet::load`); absent, self-play uses the
+//!   all-zero CNN. `--sims` / `--max-considered` set the Gumbel budget;
+//!   `--temp-moves` samples the Sequential-Halving visit distribution for
+//!   the first N plies before switching to the argmax;
+//!   `--forced-opening-plies` forces a deterministic per-game opening
+//!   choice (see [`forced_move`]) for wide, uniform opening coverage.
 //!
 //! ## Position source
 //!
@@ -81,9 +86,10 @@ use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use crate::convnet::CnnValueNet;
 use crate::ntuple::{NTupleEval, NTupleModel, NTupleModelEval};
 use crate::policy::NTuplePolicyNet;
-use crate::selfplay::GumbelPlayer;
+use crate::selfplay::{CnnGumbelPlayer, GumbelPlayer};
 use crate::{Move, Othello, Player, State};
 
 // ---------------------------------------------------------------------------
@@ -292,8 +298,15 @@ struct Config {
     /// `--label gumbel` only: a trained checkpoint directory holding
     /// `model.toml` + `weights.bin` + `weights.meta.json` + `policy.bin` +
     /// `policy.meta.json` (`research/az-train`'s per-generation output
-    /// layout). Absent == the all-zero generation-0 net.
+    /// layout). Absent == the all-zero generation-0 net. Ignored when
+    /// `head == "cnn"`.
     weights_dir: Option<PathBuf>,
+    /// `--label gumbel` only: which value/policy model class self-play uses
+    /// -- `ntuple` (default, `GumbelPlayer`) or `cnn` (`CnnGumbelPlayer`).
+    head: String,
+    /// `--label gumbel --head cnn` only: a single `OTCNN001`-layout
+    /// checkpoint file (`CnnValueNet::load`). Absent == the all-zero CNN.
+    cnn_weights: Option<PathBuf>,
     /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
     gumbel_sims: u32,
     gumbel_max_considered: usize,
@@ -331,6 +344,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut ntuple_depth = 0usize;
     let mut model_toml = PathBuf::from("games/othello/ntuple/model.toml");
     let mut weights_dir = None;
+    let mut head = "ntuple".to_string();
+    let mut cnn_weights = None;
     let mut gumbel_sims = 32u32;
     let mut gumbel_max_considered = 8usize;
     let mut temp_moves = 6u8;
@@ -366,6 +381,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             }
             "--model" => model_toml = PathBuf::from(val()),
             "--weights-dir" => weights_dir = Some(PathBuf::from(val())),
+            "--head" => head = val(),
+            "--cnn-weights" => cnn_weights = Some(PathBuf::from(val())),
             "--sims" => gumbel_sims = val().parse().expect("--sims must be an integer"),
             "--max-considered" => {
                 gumbel_max_considered = val().parse().expect("--max-considered must be an integer")
@@ -382,18 +399,22 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                      [--label outcome|harvest|gumbel] [--engine <preset>|ntuple] [--epsilon P] \
                      [--presets <path>] [--manifest <path>] [--harvest-config <path>] \
                      [--ntuple-iters N] [--ntuple-depth N] \
-                     [--model <model.toml>] [--weights-dir <dir>] [--sims N] \
+                     [--model <model.toml>] [--weights-dir <dir>] [--head ntuple|cnn] \
+                     [--cnn-weights <path>] [--sims N] \
                      [--max-considered N] [--temp-moves N] [--forced-opening-plies N]\n\
                      \n\
                      --engine ntuple: self-play guided by $OTHELLO_NTUPLE_WEIGHTS instead of \
                      a presets.json entry.\n\
                      --label harvest: --out is a directory; writes arm_{{a,b,c,d}}.bin \
                      + manifests + harvest.json\n\
-                     --label gumbel: Gumbel self-play with the n-tuple value/policy heads, \
-                     writing v2 records with a completed-Q policy tail. --weights-dir points \
-                     at a research/az-train checkpoint (model.toml + weights.bin + \
-                     weights.meta.json + policy.bin + policy.meta.json); absent, self-play \
-                     uses the all-zero generation-0 net over --model's geometry."
+                     --label gumbel: Gumbel self-play with either the n-tuple value/policy \
+                     heads (--head ntuple, default) or the joint CNN value+policy container \
+                     (--head cnn), writing v2 records with a completed-Q policy tail. \
+                     --head ntuple's --weights-dir points at a research/az-train checkpoint \
+                     (model.toml + weights.bin + weights.meta.json + policy.bin + \
+                     policy.meta.json); absent, self-play uses the all-zero generation-0 net \
+                     over --model's geometry. --head cnn's --cnn-weights points at a single \
+                     OTCNN001-layout checkpoint file; absent, self-play uses the all-zero CNN."
                 );
                 std::process::exit(0);
             }
@@ -415,6 +436,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     assert!(
         (0.0..=1.0).contains(&epsilon),
         "--epsilon must be in [0, 1], got {epsilon}"
+    );
+    assert!(
+        matches!(head.as_str(), "ntuple" | "cnn"),
+        "unknown --head mode: {head}"
     );
     assert!(gumbel_sims >= 1, "--sims must be positive");
     assert!(
@@ -440,6 +465,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         ntuple_depth,
         model_toml,
         weights_dir,
+        head,
+        cnn_weights,
         gumbel_sims,
         gumbel_max_considered,
         temp_moves,
@@ -631,55 +658,101 @@ struct GumbelRow {
     policy: Vec<(Move, f32)>,
 }
 
+/// Play one Gumbel self-play game via `choose` (either `GumbelPlayer::choose`
+/// or `CnnGumbelPlayer::choose` -- the two players share no trait beyond
+/// `Search`, so a closure over the already-constructed player is the
+/// smallest way to share this loop between `--head ntuple` and `--head cnn`
+/// rather than duplicating it), returning one [`RecordV2`] with a
+/// completed-Q improved-policy tail per non-terminal position.
+fn play_one_gumbel_game(
+    mut choose: impl FnMut(&State) -> GumbelOutcome<Move>,
+    g: u64,
+    game_seed: u64,
+    cfg: &Config,
+) -> Vec<RecordV2> {
+    let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
+    let mut state = State::default();
+    let mut rows: Vec<GumbelRow> = Vec::new();
+    let mut ply = 0u8;
+    while !Othello::is_terminal(&state) {
+        let outcome = choose(&state);
+        rows.push(GumbelRow {
+            head: record_for(&state, None),
+            policy: outcome.improved_policy.clone(),
+        });
+        let forced = forced_move(&state, g, ply as u32, cfg.forced_opening_plies);
+        let action = choose_selfplay_move(&outcome, forced, ply, cfg.temp_moves, &mut move_rng);
+        state = Othello::apply(state, &action);
+        ply += 1;
+    }
+
+    let winner = Othello::winner(&state);
+    for row in &mut rows {
+        let side_player = if row.head.side == 0 {
+            Player::Black
+        } else {
+            Player::White
+        };
+        row.head.target = match winner {
+            None => 0.0,
+            Some(w) if w == side_player => 1.0,
+            Some(_) => -1.0,
+        };
+    }
+    rows.into_iter()
+        .map(|row| RecordV2::from_record(row.head, &row.policy))
+        .collect()
+}
+
 /// Play `cfg.games` Gumbel self-play games, pushing a [`RecordV2`] with the
 /// completed-Q improved policy as its policy tail for every non-terminal
-/// position.
+/// position, using either the n-tuple heads (`--head ntuple`, default) or
+/// the joint CNN value+policy container (`--head cnn`).
 fn dump_gumbel_games(cfg: &Config, out: &mut Vec<RecordV2>) {
-    let (value_net, policy_net) = load_gumbel_nets(cfg);
     let gcfg = GumbelConfig {
         sims: cfg.gumbel_sims,
         max_considered: cfg.gumbel_max_considered,
         ..GumbelConfig::default()
     };
 
+    if cfg.head == "cnn" {
+        let net = match &cfg.cnn_weights {
+            Some(p) => CnnValueNet::load(p)
+                .unwrap_or_else(|e| panic!("cannot load CNN weights {}: {e}", p.display())),
+            None => CnnValueNet::default(),
+        };
+        for g in 0..cfg.games {
+            let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+            let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, game_seed);
+            out.extend(play_one_gumbel_game(
+                |s| player.choose(s),
+                g,
+                game_seed,
+                cfg,
+            ));
+            if (g + 1) % 25 == 0 || g + 1 == cfg.games {
+                eprintln!(
+                    "  played {}/{} gumbel games ({} records) [cnn]",
+                    g + 1,
+                    cfg.games,
+                    out.len()
+                );
+            }
+        }
+        return;
+    }
+
+    let (value_net, policy_net) = load_gumbel_nets(cfg);
     for g in 0..cfg.games {
         let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
         let mut player =
             GumbelPlayer::with_policy(value_net.clone(), policy_net.clone(), gcfg, game_seed);
-        let mut move_rng = SmallRng::seed_from_u64(game_seed ^ 0x9E37_79B9_7F4A_7C15);
-
-        let mut state = State::default();
-        let mut rows: Vec<GumbelRow> = Vec::new();
-        let mut ply = 0u8;
-        while !Othello::is_terminal(&state) {
-            let outcome = player.choose(&state);
-            rows.push(GumbelRow {
-                head: record_for(&state, None),
-                policy: outcome.improved_policy.clone(),
-            });
-            let forced = forced_move(&state, g, ply as u32, cfg.forced_opening_plies);
-            let action = choose_selfplay_move(&outcome, forced, ply, cfg.temp_moves, &mut move_rng);
-            state = Othello::apply(state, &action);
-            ply += 1;
-        }
-
-        let winner = Othello::winner(&state);
-        for row in &mut rows {
-            let side_player = if row.head.side == 0 {
-                Player::Black
-            } else {
-                Player::White
-            };
-            row.head.target = match winner {
-                None => 0.0,
-                Some(w) if w == side_player => 1.0,
-                Some(_) => -1.0,
-            };
-        }
-        for row in rows {
-            out.push(RecordV2::from_record(row.head, &row.policy));
-        }
-
+        out.extend(play_one_gumbel_game(
+            |s| player.choose(s),
+            g,
+            game_seed,
+            cfg,
+        ));
         if (g + 1) % 25 == 0 || g + 1 == cfg.games {
             eprintln!(
                 "  played {}/{} gumbel games ({} records)",
@@ -1270,6 +1343,8 @@ mod tests {
             ntuple_depth: 0,
             model_toml: PathBuf::from("ntuple/tests/tiny.toml"),
             weights_dir: None,
+            head: "ntuple".to_string(),
+            cnn_weights: None,
             gumbel_sims: 8,
             gumbel_max_considered: 4,
             temp_moves: 6,
@@ -1352,6 +1427,42 @@ mod tests {
         assert!(!records.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Ignored in the default `cargo test --lib` run: `dump_gumbel_games`
+    /// always plays to a real terminal (Othello games run ~60 plies, unlike
+    /// a hand-built short fixture), and `CnnValueNet`'s direct-loop
+    /// numpy-style convolution -- fast under `--release` -- costs ~1s/ply
+    /// under an unoptimized debug build even at the smallest possible
+    /// search budget (1 game, 2 sims, 1 max-considered), landing this
+    /// single test at ~60s. That is exactly the class of check
+    /// `AGENTS.md`'s "keep `cargo test --lib` fast" rule exists for. Run
+    /// explicitly (`cargo test --release -p game-othello
+    /// dump::tests::a_cnn_gumbel_selfplay_run_produces_completed_q_records`)
+    /// after touching `--head cnn` wiring; `selfplay::tests::cnn_gumbel_*`
+    /// above cover the same seam on hand-built near-terminal fixtures at
+    /// negligible cost and do run by default.
+    #[test]
+    #[ignore = "plays a full ~60-ply game through CnnValueNet's unoptimized-debug-build conv; ~60s, run with --release"]
+    fn a_cnn_gumbel_selfplay_run_produces_completed_q_records() {
+        let mut cfg = gumbel_config();
+        cfg.head = "cnn".to_string();
+        cfg.games = 1;
+        cfg.gumbel_sims = 2;
+        cfg.gumbel_max_considered = 1;
+
+        let mut records = Vec::new();
+        dump_gumbel_games(&cfg, &mut records);
+        assert!(!records.is_empty());
+        for r in &records {
+            assert!([1.0f32, -1.0, 0.0].contains(&r.value));
+            assert!(
+                !r.policy.is_empty(),
+                "cnn gumbel positions carry a policy target"
+            );
+            let sum: f32 = r.policy.iter().map(|(_, p)| p).sum();
+            assert!((sum - 1.0).abs() < 1e-4, "policy tail sums to {sum}");
+        }
     }
 
     #[test]
