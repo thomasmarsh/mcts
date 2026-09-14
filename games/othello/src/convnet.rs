@@ -87,6 +87,30 @@ impl CnnValueNet {
 
     pub fn weights(&self) -> &[f32] { &self.weights }
 
+    /// Serialize to the exact `OTCNN001` byte layout `load` reads back --
+    /// the counterpart test fixtures need to round-trip a checkpoint without
+    /// depending on the Python trainer's own writer.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::from(*MAGIC);
+        for n in [
+            VERSION,
+            BOARD as u32,
+            BOARD as u32,
+            2,
+            CHANNELS as u32,
+            BLOCKS as u32,
+            VALUE_HIDDEN as u32,
+            POLICY_OUTPUTS as u32,
+            CNN_WEIGHTS as u32,
+        ] {
+            bytes.extend(n.to_le_bytes());
+        }
+        for w in &self.weights {
+            bytes.extend(w.to_le_bytes());
+        }
+        bytes
+    }
+
     /// Two occupancy planes (own discs, opponent discs) for board square `j`
     /// read from square `D4[sym][j]` of the real board -- the same
     /// "read the transformed location" convention `crate::ntuple`'s

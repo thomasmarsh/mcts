@@ -20,18 +20,15 @@
 # `gen<N>.cnn.bin` file (`games/othello/src/convnet.rs::CnnValueNet::load`'s
 # exact byte layout) plus a `gen<N>.cnn.bin.meta.json` sidecar.
 #
-# KNOWN GAP, not fixed by this script: there is no CNN-aware gate yet.
-# `games/othello/examples/gumbel_gate.rs` is written
-# directly against `NTupleModel`/`NTuplePolicyNet`/`GumbelPlayer`, not
-# `CnnValueNet`/`CnnGumbelPlayer`, so it cannot score a CNN checkpoint as-is.
-# This coordinator therefore logs self-play and training metrics only --
-# gen-vs-gen0/gen-vs-prev/Edax head-to-head columns are absent from
-# `log.jsonl` until `gumbel_gate.rs` gets a `--head cnn` path (a real but
-# modest change: both `GumbelPlayer` and `CnnGumbelPlayer` already implement
-# the same `mcts::algorithms::Search` trait `battle_royale` is generic over,
-# so `score_share`/`load_dir` need to become head-dispatching, not a
-# redesign). Do not treat a run driven by this script as gated until that
-# lands and is re-run against it.
+# KNOWN GAP, not fixed by this script: this coordinator does not call a gate.
+# `games/othello/examples/gumbel_gate.rs` now has a `--head cnn` path
+# (`cargo run --release -p game-othello --example gumbel_gate -- <baseline
+# .cnn.bin> <candidate.cnn.bin> [games] [sims] --head cnn`), so a generation
+# pair written by this script can be scored by hand, but the coordinator
+# itself still only logs self-play and training metrics -- it does not shell
+# out to the gate per generation, so `log.jsonl` still has no gen-vs-gen0/
+# gen-vs-prev/Edax head-to-head columns. Do not treat a run driven by this
+# script as gated until that per-generation wiring is added.
 #
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
