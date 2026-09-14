@@ -9,10 +9,11 @@
 #
 # Per generation: Gumbel self-play (gen k weights, `--head cnn`) -> az-train-
 # othello-cnn fit (value + policy, both against the self-play outcome/
-# completed-Q label) -> one merged JSON metrics line appended to log.jsonl.
-# Every generation checkpoints its shard, weights, and metrics line before
-# the next starts, so an interrupt resumes with START set to the first
-# unfinished generation.
+# completed-Q label) -> gumbel_gate --head cnn vs gen0 and vs gen(k-1), with
+# an Edax yardstick line folded into the same gate run -> one merged JSON
+# metrics line appended to log.jsonl. Every generation checkpoints its
+# shard, weights, gate output, and metrics line before the next starts, so
+# an interrupt resumes with START set to the first unfinished generation.
 #
 # Checkpoint format: unlike the n-tuple head's checkpoint *directory*
 # (`model.toml` geometry-as-data + `weights.bin` + `policy.bin`), the CNN's
@@ -20,19 +21,18 @@
 # `gen<N>.cnn.bin` file (`games/othello/src/convnet.rs::CnnValueNet::load`'s
 # exact byte layout) plus a `gen<N>.cnn.bin.meta.json` sidecar.
 #
-# KNOWN GAP, not fixed by this script: this coordinator does not call a gate.
-# `games/othello/examples/gumbel_gate.rs` now has a `--head cnn` path
-# (`cargo run --release -p game-othello --example gumbel_gate -- <baseline
-# .cnn.bin> <candidate.cnn.bin> [games] [sims] --head cnn`), so a generation
-# pair written by this script can be scored by hand, but the coordinator
-# itself still only logs self-play and training metrics -- it does not shell
-# out to the gate per generation, so `log.jsonl` still has no gen-vs-gen0/
-# gen-vs-prev/Edax head-to-head columns. Do not treat a run driven by this
-# script as gated until that per-generation wiring is added.
+# The gate call and its stdout->JSON merge mirror coordinator_othello.sh's
+# own n-tuple gate wiring exactly (same `gumbel_gate` binary, same
+# `az_train.coordinator_metrics_othello.parse_gate_output` stdout parser --
+# `run_checks`'s output text is identical across `--head ntuple`/`--head
+# cnn`), just with `--head cnn` added to the gate invocation and the CNN's
+# single `.meta.json` sidecar merged in place of the n-tuple's separate
+# weights/policy meta files.
 #
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
-# L2, VALIDATION_FRACTION, START.
+# L2, VALIDATION_FRACTION, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
+# EDAX_LEVEL, START.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -51,13 +51,18 @@ BATCH_SIZE=${BATCH_SIZE:-4096}
 LR=${LR:-2e-3}
 L2=${L2:-1e-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.1}
+GATE_GAMES=${GATE_GAMES:-100}
+EDAX_BINARY=${EDAX_BINARY:-games/othello/edax/vendor/bin/mEdax-native}
+EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
+EDAX_LEVEL=${EDAX_LEVEL:-3}
 START=${START:-0}
 
 mkdir -p "$RUN_DIR/shards"
 
-cargo build --release -p game-othello --bin game-othello
+cargo build --release -p game-othello --bin game-othello --example gumbel_gate
 
 BIN="$ROOT/target/release/game-othello"
+GATE="$ROOT/target/release/examples/gumbel_gate"
 
 # Generation-0 checkpoint: the all-zero OTCNN001 net, written as a real,
 # loadable file (matching coordinator_othello.sh's own "gen0 is a real
@@ -97,25 +102,45 @@ for g in $(seq "$START" $((GENS - 1))); do
     --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --learning-rate "$LR" --l2 "$L2" \
     --validation-fraction "$VALIDATION_FRACTION" --split-seed "$g"
 
+  echo "=== generation $((g + 1)): gates ($GATE_GAMES games) @ $(date) ==="
+  # Gates are diagnostic, not a hard stop -- a FAIL must not abort the loop,
+  # same rationale as coordinator_othello.sh.
+  set +e
+  "$GATE" "$RUN_DIR/gen0.cnn.bin" "$RUN_DIR/gen$((g + 1)).cnn.bin" "$GATE_GAMES" "$SIMS" \
+    --head cnn --edax-binary "$EDAX_BINARY" --edax-data-dir "$EDAX_DATA_DIR" --edax-level "$EDAX_LEVEL" \
+    | tee "$RUN_DIR/gen$((g + 1)).gate-vs-gen0.txt"
+  prev_gate_arg=""
+  if [ "$g" -ge 1 ]; then
+    "$GATE" "$RUN_DIR/gen$g.cnn.bin" "$RUN_DIR/gen$((g + 1)).cnn.bin" "$GATE_GAMES" "$SIMS" --head cnn \
+      | tee "$RUN_DIR/gen$((g + 1)).gate-vs-prev.txt"
+    prev_gate_arg="$RUN_DIR/gen$((g + 1)).gate-vs-prev.txt"
+  fi
+  set -e
+
   gen_wall=$(($(date +%s) - gen_start))
   uv run --project research/az-train python - \
-    "$RUN_DIR/gen$((g + 1)).cnn.bin.meta.json" "$g" "$gen_wall" <<'PY' | tee -a "$RUN_DIR/log.jsonl"
+    "$RUN_DIR/gen$((g + 1)).cnn.bin.meta.json" "$g" "$gen_wall" \
+    "$RUN_DIR/gen$((g + 1)).gate-vs-gen0.txt" "$prev_gate_arg" <<'PY' | tee -a "$RUN_DIR/log.jsonl"
 import json
 import sys
 
-meta_path, generation, wall_seconds = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+from az_train.coordinator_metrics_othello import parse_gate_output
+
+meta_path, generation, wall_seconds, gate_vs_gen0_path, gate_vs_prev_path = sys.argv[1:6]
 meta = json.loads(open(meta_path).read())
 line = {
-    "generation": generation + 1,
-    "wall_seconds": round(wall_seconds, 1),
+    "generation": int(generation) + 1,
+    "wall_seconds": round(float(wall_seconds), 1),
     "positions": meta["train"]["positions"],
     "train_games": meta["train"]["train_games"],
     "validation_games": meta["train"]["validation_games"],
     "final_validation_metrics": meta["metrics"]["final_validation_metrics"],
+    "gate_vs_gen0": parse_gate_output(open(gate_vs_gen0_path).read()),
+    "gate_vs_prev": parse_gate_output(open(gate_vs_prev_path).read()) if gate_vs_prev_path else None,
 }
 print(json.dumps(line, sort_keys=True))
 PY
 done
 
 echo "=== done @ $(date) ==="
-echo "curve: $RUN_DIR/log.jsonl (self-play/training metrics only -- no gate, see this script's header)"
+echo "curve: $RUN_DIR/log.jsonl"
