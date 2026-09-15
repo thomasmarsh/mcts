@@ -32,7 +32,16 @@
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
 # L2, VALIDATION_FRACTION, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
-# EDAX_LEVEL, START.
+# EDAX_LEVEL, REPLAY_WINDOW, START.
+#
+# REPLAY_WINDOW: number of most recent generations' shards to train on each
+# generation (default 0 = unlimited/cumulative, every shard from gen0 on,
+# the original behaviour). When set to N > 0, generation g trains only on
+# shards from generations max(0, g - N + 1)..=g -- a real sliding window,
+# which (unlike the default) does *not* force gen0's diverse shard to stay
+# in the window once it ages out, since the point of this knob is to
+# measure the staleness/RAM tradeoff a true bounded window has, not to
+# preserve the default's own gen0-anchoring choice.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -55,6 +64,7 @@ GATE_GAMES=${GATE_GAMES:-100}
 EDAX_BINARY=${EDAX_BINARY:-games/othello/edax/vendor/bin/mEdax-native}
 EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
 EDAX_LEVEL=${EDAX_LEVEL:-3}
+REPLAY_WINDOW=${REPLAY_WINDOW:-0}
 START=${START:-0}
 
 mkdir -p "$RUN_DIR/shards"
@@ -91,10 +101,19 @@ for g in $(seq "$START" $((GENS - 1))); do
     --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
     --forced-opening-plies "$FORCED_OPENING_PLIES"
 
-  # Replay window: every generation's shards, always including the diverse
-  # generation-0 (zero-net) data -- same rationale as coordinator_othello.sh.
+  # Replay window: default (REPLAY_WINDOW=0) is every generation's shards,
+  # always including the diverse generation-0 (zero-net) data -- same
+  # rationale as coordinator_othello.sh. REPLAY_WINDOW=N > 0 switches to a
+  # true sliding window of the last N generations only (see the env-knob
+  # doc comment above).
   parts=""
-  for s in $(seq 0 "$g"); do parts="$parts${parts:+,}$RUN_DIR/shards/gen$s.bin"; done
+  if [ "$REPLAY_WINDOW" -gt 0 ]; then
+    window_start=$((g - REPLAY_WINDOW + 1))
+    if [ "$window_start" -lt 0 ]; then window_start=0; fi
+  else
+    window_start=0
+  fi
+  for s in $(seq "$window_start" "$g"); do parts="$parts${parts:+,}$RUN_DIR/shards/gen$s.bin"; done
 
   echo "=== generation $g -> $((g + 1)): train @ $(date) ==="
   uv run --project research/az-train az-train-othello-cnn \

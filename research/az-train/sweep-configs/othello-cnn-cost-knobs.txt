@@ -1,0 +1,31 @@
+# Cost-knob sweep for the Othello CNN Gumbel loop. Run with:
+#   SWEEP_ROOT=local/output/az/othello-cnn/sweep5 \
+#     bash research/az-train/sweep_othello_cnn.sh \
+#     research/az-train/sweep-configs/othello-cnn-session5.txt
+#
+# Three axes, each held at a fixed small scale so several points fit in a
+# reasonable wall-clock budget (a single 5-generation graded run at
+# GAMES=800/GENS=5/SIMS=32 scale costs on the order of a full day):
+#
+# 1. simulations/move: 8, 16, 32, 64, at fixed GAMES=40/GENS=2/GATE_GAMES=20.
+# 2. self-play games/generation vs. generation count, same total self-play
+#    budget (120 games): GAMES=60/GENS=2 vs GAMES=30/GENS=4, at SIMS=16.
+# 3. replay-window size: unlimited/cumulative (REPLAY_WINDOW=0, the
+#    coordinator's default) vs a true 1-generation sliding window
+#    (REPLAY_WINDOW=1), at fixed GAMES=40/GENS=3/SIMS=16.
+#
+# All other knobs (MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS,
+# BATCH_SIZE, LR, L2, VALIDATION_FRACTION, EDAX_LEVEL) stay at
+# coordinator_othello_cnn.sh's own defaults, so the only things varying
+# between configs are the ones this sweep is measuring.
+
+sims8              GAMES=40 GENS=2 SIMS=8  GATE_GAMES=20
+sims16              GAMES=40 GENS=2 SIMS=16 GATE_GAMES=20
+sims32              GAMES=40 GENS=2 SIMS=32 GATE_GAMES=20
+sims64              GAMES=40 GENS=2 SIMS=64 GATE_GAMES=20
+
+games60-gens2        GAMES=60 GENS=2 SIMS=16 GATE_GAMES=20
+games30-gens4        GAMES=30 GENS=4 SIMS=16 GATE_GAMES=20
+
+replaywindow-full   GAMES=40 GENS=3 SIMS=16 GATE_GAMES=20 REPLAY_WINDOW=0
+replaywindow-1      GAMES=40 GENS=3 SIMS=16 GATE_GAMES=20 REPLAY_WINDOW=1
