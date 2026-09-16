@@ -11,17 +11,25 @@ from __future__ import annotations
 import numpy as np
 
 from othello_eval.convnet import (
+    BLOCKS,
     BOARD,
     COLUMNS,
     D4,
     N_WEIGHTS,
+    POLICY_OUTPUTS,
     SQUARES,
     _literal_loss_gradient,
+    _literal_loss_gradient_k,
     _predict_literal,
+    _unpack_k,
     fit,
+    fit_k,
     initial_weights,
+    initial_weights_k,
     me_opp_planes,
+    n_weights_for,
     predict,
+    predict_k,
     read_weights,
     write_weights,
 )
@@ -79,6 +87,192 @@ def _two_square_targets(me: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     target[choose_zero, 0] = 1.0
     target[~choose_zero, 1] = 1.0
     return target, legal
+
+
+def test_n_weights_for_default_matches_n_weights() -> None:
+    assert n_weights_for(BLOCKS, tied=False) == N_WEIGHTS
+
+
+def test_n_weights_for_channels_and_value_hidden_defaults_match_n_weights() -> None:
+    """Calling ``n_weights_for`` with no ``channels``/``value_hidden``
+    override still reproduces ``N_WEIGHTS`` -- confirms the new parameters
+    are additive and don't change default behavior."""
+    assert n_weights_for(BLOCKS, tied=False) == N_WEIGHTS
+
+
+def test_predict_k_matches_predict_at_the_default_geometry() -> None:
+    """``blocks=BLOCKS, tied=False`` is the same architecture as OTCNN001
+    itself -- the generic path must reproduce the specific one exactly, not
+    just have the same weight count."""
+    weights = initial_weights(seed=30)
+    me, opp, _ = _rng_batch(seed=31, n=5)
+    value_a, policy_a = predict(weights, me, opp)
+    value_b, policy_b = predict_k(weights, me, opp, blocks=BLOCKS, tied=False)
+    assert np.allclose(value_a, value_b)
+    assert np.allclose(policy_a, policy_b)
+
+
+def test_gradient_k_matches_finite_differences_distinct_blocks() -> None:
+    """K=4 independently-parameterized residual blocks -- the direct
+    scale-up of OTCNN001's 2-block trunk."""
+    me, opp, value = _rng_batch(seed=40, n=6)
+    policy, legal = _rng_policy_targets(seed=41, n=6)
+    weights = initial_weights_k(seed=42, blocks=4, tied=False)
+    _, analytic = _literal_loss_gradient_k(
+        weights, me, opp, value, l2=1e-3, blocks=4, tied=False, policy=policy, legal=legal,
+    )
+    n_weights = n_weights_for(4, tied=False)
+    rng = np.random.default_rng(43)
+    indices = rng.choice(n_weights, size=48, replace=False)
+    eps = 1e-3
+    for i in indices:
+        bumped = weights.copy()
+        bumped[i] += eps
+        loss_plus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=4, tied=False, policy=policy, legal=legal,
+        )
+        bumped[i] -= 2 * eps
+        loss_minus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=4, tied=False, policy=policy, legal=legal,
+        )
+        numeric = (loss_plus - loss_minus) / (2 * eps)
+        assert abs(numeric - analytic[i]) < 5e-3, (i, numeric, analytic[i])
+
+
+def test_gradient_k_matches_finite_differences_tied_blocks() -> None:
+    """K=4 weight-tied residual blocks (one block's weights applied 4 times).
+    This is the backprop-through-time case: every sampled index, including
+    ones inside the single shared block, must match finite differences
+    computed over the *whole* K=4 forward pass -- if the backward pass only
+    summed one iteration's contribution (or averaged instead of summing),
+    this would show up as a systematic mismatch on exactly the shared-block
+    weight indices."""
+    me, opp, value = _rng_batch(seed=44, n=6)
+    policy, legal = _rng_policy_targets(seed=45, n=6)
+    weights = initial_weights_k(seed=46, blocks=4, tied=True)
+    _, analytic = _literal_loss_gradient_k(
+        weights, me, opp, value, l2=1e-3, blocks=4, tied=True, policy=policy, legal=legal,
+    )
+    n_weights = n_weights_for(4, tied=True)
+    # Small geometry (one block's worth of weights): sample every index
+    # rather than a subset, so a bug isolated to (say) only the second conv
+    # in the shared block isn't missed by chance.
+    rng = np.random.default_rng(47)
+    indices = rng.choice(n_weights, size=min(60, n_weights), replace=False)
+    eps = 1e-3
+    for i in indices:
+        bumped = weights.copy()
+        bumped[i] += eps
+        loss_plus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=4, tied=True, policy=policy, legal=legal,
+        )
+        bumped[i] -= 2 * eps
+        loss_minus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=4, tied=True, policy=policy, legal=legal,
+        )
+        numeric = (loss_plus - loss_minus) / (2 * eps)
+        assert abs(numeric - analytic[i]) < 5e-3, (i, numeric, analytic[i])
+
+
+def test_gradient_k_matches_finite_differences_bumped_channels_and_value_hidden() -> None:
+    """Small, non-default ``channels``/``value_hidden`` -- isolates a bug in
+    the channels/value_hidden generalization specifically, distinct from the
+    blocks/tied generalization the other gradient_k tests already cover."""
+    me, opp, value = _rng_batch(seed=60, n=6)
+    policy, legal = _rng_policy_targets(seed=61, n=6)
+    weights = initial_weights_k(seed=62, blocks=2, tied=False, channels=24, value_hidden=48)
+    _, analytic = _literal_loss_gradient_k(
+        weights, me, opp, value, l2=1e-3, blocks=2, tied=False, policy=policy, legal=legal,
+        channels=24, value_hidden=48,
+    )
+    n_weights = n_weights_for(2, tied=False, channels=24, value_hidden=48)
+    rng = np.random.default_rng(63)
+    indices = rng.choice(n_weights, size=48, replace=False)
+    eps = 1e-3
+    for i in indices:
+        bumped = weights.copy()
+        bumped[i] += eps
+        loss_plus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=2, tied=False, policy=policy, legal=legal,
+            channels=24, value_hidden=48,
+        )
+        bumped[i] -= 2 * eps
+        loss_minus, _ = _literal_loss_gradient_k(
+            bumped, me, opp, value, l2=1e-3, blocks=2, tied=False, policy=policy, legal=legal,
+            channels=24, value_hidden=48,
+        )
+        numeric = (loss_plus - loss_minus) / (2 * eps)
+        assert abs(numeric - analytic[i]) < 5e-3, (i, numeric, analytic[i])
+
+
+def test_predict_k_with_bumped_channels_differs_from_default_geometry_shape() -> None:
+    """Structural check: a bumped geometry produces a larger weight count
+    than the default, and ``_unpack_k`` round-trips into tensors of exactly
+    the shapes the bumped ``channels``/``value_hidden`` imply -- not a
+    numerical-value assertion."""
+    blocks, channels, value_hidden = 3, 24, 64
+    bumped_n = n_weights_for(blocks, tied=False, channels=channels, value_hidden=value_hidden)
+    default_n = n_weights_for(blocks, tied=False)
+    assert bumped_n > default_n
+
+    weights = initial_weights_k(
+        seed=64, blocks=blocks, tied=False, channels=channels, value_hidden=value_hidden,
+    )
+    assert weights.shape == (bumped_n,)
+    p = _unpack_k(weights, blocks, tied=False, channels=channels, value_hidden=value_hidden)
+    assert p[0].shape == (channels, 2, 3, 3)
+    assert p[1].shape == (channels,)
+    for i in range(blocks * 2):
+        block_at = 2 + i * 2
+        assert p[block_at].shape == (channels, channels, 3, 3)
+        assert p[block_at + 1].shape == (channels,)
+    at = 2 + blocks * 4
+    assert p[at].shape == (1, channels, 1, 1)
+    assert p[at + 1].shape == (1,)
+    assert p[at + 2].shape == (BOARD * BOARD, value_hidden)
+    assert p[at + 3].shape == (value_hidden,)
+    assert p[at + 4].shape == (value_hidden,)
+    assert p[at + 5].shape == (1,)
+    assert p[at + 6].shape == (1, channels, 1, 1)
+    assert p[at + 7].shape == (1,)
+    assert p[at + 8].shape == (BOARD * BOARD, POLICY_OUTPUTS)
+    assert p[at + 9].shape == (POLICY_OUTPUTS,)
+
+    me, opp, _ = _rng_batch(seed=65, n=3)
+    value_out, policy_out = predict_k(
+        weights, me, opp, blocks, tied=False, channels=channels, value_hidden=value_hidden,
+    )
+    assert value_out.shape == (3,)
+    assert policy_out.shape == (3, SQUARES)
+
+
+def test_tied_blocks_have_roughly_a_quarter_of_the_distinct_blocks_trunk() -> None:
+    """Weight-tying doesn't reduce FLOPs (still 4 block-forward-passes) but
+    does reduce parameter count to ~1/K of the distinct-block geometry's
+    trunk -- pin that relationship directly rather than trust the arithmetic
+    unverified."""
+    distinct = n_weights_for(4, tied=False)
+    tied = n_weights_for(4, tied=True)
+    non_trunk = n_weights_for(0, tied=False)  # stem + value + policy, blocks=0
+    distinct_trunk = distinct - non_trunk
+    tied_trunk = tied - non_trunk
+    assert distinct_trunk == 4 * tied_trunk
+
+
+def test_fit_k_reduces_validation_mse_below_a_constant_baseline() -> None:
+    """Smoke-check both the distinct and tied training loops actually learn
+    something on a small synthetic batch, the K-block analogue of
+    ``test_fit_reduces_validation_mse_below_a_constant_baseline``."""
+    me, opp, value = _rng_batch(seed=50, n=200)
+    val_me, val_opp, val_value = _rng_batch(seed=51, n=50)
+    baseline_mse = float(np.mean(val_value**2))
+    for tied in (False, True):
+        _weights, meta = fit_k(
+            me, opp, value, (val_me, val_opp, val_value), blocks=4, tied=tied,
+            seed=0, epochs=6, batch_size=32, learning_rate=5e-3,
+        )
+        final_metrics: dict[str, float] = meta["final_validation_metrics"]  # type: ignore[assignment]
+        assert final_metrics["value_mse"] < baseline_mse, tied
 
 
 def test_weight_count_matches_the_documented_layout() -> None:

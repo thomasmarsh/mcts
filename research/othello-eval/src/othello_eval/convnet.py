@@ -421,6 +421,321 @@ def fit(
     return weights, metadata
 
 
+def _block_param_count(channels: int = CHANNELS) -> int:
+    return 2 * (channels * channels * 3 * 3 + channels)
+
+
+def n_weights_for(
+    blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> int:
+    """Weight count for a ``blocks``-residual-block trunk, either
+    independently-parameterized (``tied=False``, ``blocks`` distinct block
+    weight sets) or weight-tied (``tied=True``, one block's weights reused
+    ``blocks`` times), with a ``channels``-wide trunk and a ``value_hidden``-
+    wide value dense layer -- otherwise the same stem/value/policy head
+    shapes as ``OTCNN001``. Policy output width stays fixed at
+    ``POLICY_OUTPUTS`` (one column per board square) regardless of trunk
+    capacity. ``n_weights_for(BLOCKS, False) == N_WEIGHTS``."""
+    stem = channels * 2 * 3 * 3 + channels
+    block_total = _block_param_count(channels) if tied else blocks * _block_param_count(channels)
+    value = channels + 1 + BOARD * BOARD * value_hidden + value_hidden + value_hidden + 1
+    policy = channels + 1 + BOARD * BOARD * POLICY_OUTPUTS + POLICY_OUTPUTS
+    return stem + block_total + value + policy
+
+
+def _unpack_k(
+    w: np.ndarray, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> list[np.ndarray]:
+    """Same layout ``_unpack`` uses, generalized to ``blocks`` residual
+    blocks that are either each independently parameterized or all sharing
+    one block's weights (``tied``). Every tensor list produced this way
+    alternates (weight, bias) pairs start to finish, the same property
+    ``_unpack``'s own ``_BIAS_PARAMETER_INDICES``/L2 list relies on, so the
+    generic gradient/L2 code below can use ``range(1, len(p), 2)`` /
+    ``range(0, len(p), 2)`` instead of a hardcoded index list."""
+    w = np.asarray(w, dtype=np.float32)
+    expected = n_weights_for(blocks, tied, channels, value_hidden)
+    if w.shape != (expected,):
+        raise ValueError(
+            f"expected {expected} weights for blocks={blocks} tied={tied} "
+            f"channels={channels} value_hidden={value_hidden}, got {w.shape}"
+        )
+    at = 0
+
+    def take(shape: tuple[int, ...]) -> np.ndarray:
+        nonlocal at
+        n = int(np.prod(shape))
+        out = w[at : at + n].reshape(shape)
+        at += n
+        return out
+
+    out = [take((channels, 2, 3, 3)), take((channels,))]
+    n_block_sets = 1 if tied else blocks
+    for _ in range(n_block_sets * 2):
+        out.extend((take((channels, channels, 3, 3)), take((channels,))))
+    out.extend(
+        (
+            take((1, channels, 1, 1)), take((1,)),
+            take((BOARD * BOARD, value_hidden)), take((value_hidden,)),
+            take((value_hidden,)), take((1,)),
+            take((1, channels, 1, 1)), take((1,)),
+            take((BOARD * BOARD, POLICY_OUTPUTS)), take((POLICY_OUTPUTS,)),
+        )
+    )
+    assert at == expected
+    return out
+
+
+def initial_weights_k(
+    seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> np.ndarray:
+    """Deterministic initializer, generalized from :func:`initial_weights`:
+    constants only on actual biases, found generically as the odd-indexed
+    tensors of :func:`_unpack_k`'s output."""
+    rng = np.random.default_rng(seed)
+    weights = (rng.standard_normal(n_weights_for(blocks, tied, channels, value_hidden)) * 0.03).astype(np.float32)
+    parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
+    for index in range(1, len(parameters), 2):
+        parameters[index].fill(0.05)
+    return weights
+
+
+def _predict_literal_k(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, blocks: int, tied: bool,
+    channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`_predict_literal`, generalized to ``blocks`` residual blocks,
+    tied or not. When ``tied``, every block iteration reads the same weight
+    slice (``bi`` is constant across the loop) instead of advancing to a new
+    slice each time."""
+    p = _unpack_k(weights, blocks, tied, channels, value_hidden)
+    x = np.maximum(_conv(_planes(me, opp), p[0], p[1], 1), 0.0)
+    at = 2
+    for i in range(blocks):
+        bi = at if tied else at + i * 4
+        residual = x
+        x = np.maximum(_conv(x, p[bi], p[bi + 1], 1), 0.0)
+        x = np.maximum(_conv(x, p[bi + 2], p[bi + 3], 1) + residual, 0.0)
+    n_block_sets = 1 if tied else blocks
+    at = 2 + n_block_sets * 4
+    value = np.maximum(_conv(x, p[at], p[at + 1], 0), 0.0).reshape((-1, BOARD * BOARD))
+    value = np.maximum(value @ p[at + 2] + p[at + 3], 0.0)
+    value = np.tanh(value @ p[at + 4] + p[at + 5][0]).astype(np.float32)
+    at += 6
+    policy_features = np.maximum(_conv(x, p[at], p[at + 1], 0), 0.0).reshape((-1, BOARD * BOARD))
+    policy = (policy_features @ p[at + 2] + p[at + 3]).astype(np.float32)
+    return value, policy
+
+
+def predict_k(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, blocks: int, tied: bool,
+    channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> tuple[np.ndarray, np.ndarray]:
+    """:func:`predict`, generalized to ``blocks``/``tied``: same D4-averaging
+    scheme, over :func:`_predict_literal_k` instead of the fixed-``BLOCKS``
+    literal forward pass."""
+    value_total = np.zeros(me.shape[0], dtype=np.float64)
+    policy_total = np.zeros((me.shape[0], SQUARES), dtype=np.float64)
+    for sym in range(8):
+        cols = D4[sym]
+        v, logits = _predict_literal_k(weights, me[:, cols], opp[:, cols], blocks, tied, channels, value_hidden)
+        value_total += v.astype(np.float64)
+        policy_total += logits[:, INV[sym]].astype(np.float64)
+    return (value_total / 8.0).astype(np.float32), (policy_total / 8.0).astype(np.float32)
+
+
+def validation_metrics_k(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray, blocks: int, tied: bool,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> dict[str, float]:
+    prediction, logits = predict_k(weights, me, opp, blocks, tied, channels, value_hidden)
+    nonzero = value != 0.0
+    metrics = {
+        "value_mse": float(np.mean((prediction - value) ** 2)),
+        "value_pearson": _pearson(prediction, value),
+        "value_sign_agreement": float(
+            np.mean(np.sign(prediction[nonzero]) == np.sign(value[nonzero]))
+        ) if np.any(nonzero) else 0.0,
+    }
+    if policy is not None and legal is not None:
+        metrics["masked_policy_cross_entropy"] = _masked_policy_cross_entropy(logits, policy, legal)
+    return {name: m if np.isfinite(m) else 0.0 for name, m in metrics.items()}
+
+
+def _literal_loss_gradient_k(
+    weights: np.ndarray, me: np.ndarray, opp: np.ndarray, value: np.ndarray, l2: float,
+    blocks: int, tied: bool,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    *, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN, value_loss_weight: float = 1.0,
+) -> tuple[float, np.ndarray]:
+    """:func:`_literal_loss_gradient`, generalized to ``blocks``/``tied``.
+
+    When ``tied``, every block iteration's forward pass reads the *same*
+    weight slice ``p[bi:bi+4]`` (``bi`` does not advance with the loop
+    index), the standard weight-tied/backprop-through-time forward. Each
+    iteration's own activations (``residual``, ``z1``, ``h1``, ``z2``) are
+    still cached separately in ``iterations``, so the backward pass below
+    can replay the single shared block's existing backward computation once
+    per iteration and accumulate (``+=``, not overwrite) each iteration's
+    weight-gradient contribution into the one shared ``gp[bi:bi+4]`` slot --
+    summing, not averaging, matching how a shared weight's total gradient is
+    the sum of every place it was used. When not tied, ``bi`` is distinct
+    per iteration, so the same ``+=`` accumulation degenerates to a single
+    assignment per block, identical to :func:`_literal_loss_gradient`'s own
+    per-block loop.
+    """
+    if not np.isfinite(value_loss_weight) or value_loss_weight < 0.0:
+        raise ValueError("value_loss_weight must be finite and non-negative")
+    p = _unpack_k(weights, blocks, tied, channels, value_hidden)
+    n_block_sets = 1 if tied else blocks
+    x0 = _planes(me, opp)
+    z0 = _conv(x0, p[0], p[1], 1); x = np.maximum(z0, 0.0)
+    iterations: list[tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = []
+    at = 2
+    for i in range(blocks):
+        bi = at if tied else at + i * 4
+        residual = x
+        z1 = _conv(x, p[bi], p[bi + 1], 1); h1 = np.maximum(z1, 0.0)
+        z2 = _conv(h1, p[bi + 2], p[bi + 3], 1); x = np.maximum(z2 + residual, 0.0)
+        iterations.append((bi, residual, z1, h1, z2))
+    at = 2 + n_block_sets * 4
+    z_value = _conv(x, p[at], p[at + 1], 0)
+    value_features = np.maximum(z_value, 0.0).reshape((-1, BOARD * BOARD))
+    hidden_z = value_features @ p[at + 2] + p[at + 3]
+    hidden_activation = np.maximum(hidden_z, 0.0)
+    value_score = hidden_activation @ p[at + 4] + p[at + 5][0]
+    value_prediction = np.tanh(value_score)
+    value_at = at; at += 6
+    n = len(me)
+    value_loss = np.mean((value_prediction - value) ** 2)
+
+    gradient = np.zeros_like(weights)
+    gp = _unpack_k(gradient, blocks, tied, channels, value_hidden)
+    dv = value_loss_weight * (2.0 / n) * (value_prediction - value) * (1.0 - value_prediction**2)
+    gp[value_at + 4][:] = hidden_activation.T @ dv
+    gp[value_at + 5][0] = dv.sum()
+    d_hidden = (dv[:, None] * p[value_at + 4]) * (hidden_z > 0.0)
+    gp[value_at + 2][:] = value_features.T @ d_hidden
+    gp[value_at + 3][:] = d_hidden.sum(axis=0)
+    d_value_features = d_hidden @ p[value_at + 2].T
+    d_z_value = d_value_features.reshape(z_value.shape) * (z_value > 0.0)
+    dx_value, d_value_weight, d_value_bias = _conv_backward(x, p[value_at], d_z_value, 0)
+    gp[value_at][:] = d_value_weight
+    gp[value_at + 1][:] = d_value_bias
+
+    z_policy = _conv(x, p[at], p[at + 1], 0)
+    policy_features = np.maximum(z_policy, 0.0).reshape((-1, BOARD * BOARD))
+    policy_logits = policy_features @ p[at + 2] + p[at + 3]
+    dx_policy = np.zeros_like(x)
+    policy_loss = 0.0
+    if policy is not None and legal is not None:
+        logits65 = _with_pass(policy_logits)
+        masked = np.where(legal, logits65, -np.inf)
+        shifted = masked - np.max(masked, axis=1, keepdims=True)
+        probability = np.exp(shifted) * legal
+        probability /= probability.sum(axis=1, keepdims=True)
+        row_log_likelihood = np.sum(policy * np.log(np.maximum(probability, 1e-30)), axis=1)
+        policy_loss = float(-np.mean(row_log_likelihood))
+        dp65 = (probability - policy) / n
+        dp = dp65[:, :SQUARES] + dp65[:, SQUARES : SQUARES + 1] / SQUARES
+        gp[at + 2][:] = policy_features.T @ dp
+        gp[at + 3][:] = dp.sum(axis=0)
+        d_policy_features = dp @ p[at + 2].T
+        d_z_policy = d_policy_features.reshape(z_policy.shape) * (z_policy > 0.0)
+        dx_policy, d_policy_weight, d_policy_bias = _conv_backward(x, p[at], d_z_policy, 0)
+        gp[at][:] = d_policy_weight
+        gp[at + 1][:] = d_policy_bias
+
+    dx = dx_value + dx_policy
+    for bi, residual, z1, h1, z2 in reversed(iterations):
+        d_z2 = dx * (z2 + residual > 0.0)
+        d_h1, d_second_weight, d_second_bias = _conv_backward(h1, p[bi + 2], d_z2, 1)
+        gp[bi + 2][:] += d_second_weight
+        gp[bi + 3][:] += d_second_bias
+        d_z1 = d_h1 * (z1 > 0.0)
+        dx_branch, d_first_weight, d_first_bias = _conv_backward(residual, p[bi], d_z1, 1)
+        gp[bi][:] += d_first_weight
+        gp[bi + 1][:] += d_first_bias
+        dx = d_z2 + dx_branch
+    d_z0 = dx * (z0 > 0.0)
+    _, d_stem_weight, d_stem_bias = _conv_backward(x0, p[0], d_z0, 1)
+    gp[0][:] = d_stem_weight
+    gp[1][:] = d_stem_bias
+    regularized = list(range(0, len(p), 2))
+    reg = sum(float(np.dot(p[i].ravel(), p[i].ravel())) for i in regularized)
+    for i in regularized:
+        gp[i][:] += 2.0 * l2 * p[i]
+    return float(value_loss_weight * value_loss + policy_loss + l2 * reg), gradient
+
+
+def fit_k(
+    me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    validation: tuple[np.ndarray, np.ndarray, np.ndarray], blocks: int, tied: bool,
+    l2: float = 1e-4,
+    *, seed: int = 0, batch_size: int = 256, epochs: int = 24, learning_rate: float = 2e-3,
+    validate_every: int = 1, report_every: int = 0,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    validation_policy: np.ndarray | None = None, validation_legal: np.ndarray | None = None,
+    channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """:func:`fit`, generalized to ``blocks``/``tied`` -- same Adam loop and
+    metadata shape, over :func:`_literal_loss_gradient_k`/
+    :func:`validation_metrics_k` instead of the fixed-``BLOCKS`` versions."""
+    if not len(me):
+        raise ValueError("CNN fitting requires non-empty rows")
+    has_policy = policy is not None and legal is not None
+    rng = np.random.default_rng(seed)
+    weights = initial_weights_k(seed, blocks, tied, channels, value_hidden)
+    moment, velocity = np.zeros_like(weights), np.zeros_like(weights)
+    beta1, beta2, step = 0.9, 0.999, 0
+    started = time.perf_counter()
+    vm, vo, vv = validation
+    validation_epoch_trace: list[dict[str, float]] = []
+    for epoch in range(1, epochs + 1):
+        for batch in _epoch_batches(rng, len(me), batch_size):
+            batch_policy = policy[batch] if has_policy and policy is not None else None
+            batch_legal = legal[batch] if has_policy and legal is not None else None
+            _, gradient = _literal_loss_gradient_k(
+                weights, me[batch], opp[batch], value[batch], l2, blocks, tied, batch_policy, batch_legal,
+                channels=channels, value_hidden=value_hidden,
+            )
+            step += 1
+            moment = beta1 * moment + (1.0 - beta1) * gradient
+            velocity = beta2 * velocity + (1.0 - beta2) * gradient * gradient
+            weights -= learning_rate * (moment / (1.0 - beta1**step)) / (np.sqrt(velocity / (1.0 - beta2**step)) + 1e-8)
+        if epoch % validate_every == 0 or epoch == epochs:
+            validation_epoch_trace.append(
+                validation_metrics_k(
+                    weights, vm, vo, vv, blocks, tied, validation_policy, validation_legal, channels, value_hidden,
+                )
+            )
+            if report_every and (epoch % report_every == 0 or epoch == epochs):
+                m = validation_epoch_trace[-1]
+                elapsed = time.perf_counter() - started
+                extra = f"  policy ce {m['masked_policy_cross_entropy']:.4f}" if "masked_policy_cross_entropy" in m else ""
+                print(
+                    f"  epoch {epoch:4d}  val mse {m['value_mse']:.4f}  "
+                    f"pearson {m['value_pearson']:.4f}  sign-acc {m['value_sign_agreement']:.4f}"
+                    f"{extra}  ({elapsed:.1f}s)",
+                    flush=True,
+                )
+    train_metrics = validation_metrics_k(weights, me, opp, value, blocks, tied, policy, legal, channels, value_hidden)
+    metadata: dict[str, object] = {
+        "optimizer": "adam_literal_value_mse" + ("_policy_ce" if has_policy else ""),
+        "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
+        "optimizer_learning_rate": learning_rate, "optimizer_steps": step,
+        "blocks": blocks, "tied": tied, "channels": channels, "value_hidden": value_hidden,
+        "n_weights": int(n_weights_for(blocks, tied, channels, value_hidden)),
+        "fit_wall_seconds": time.perf_counter() - started,
+        "peak_rss_bytes": int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * (1 if sys.platform == "darwin" else 1024)),
+        "train_metrics": train_metrics,
+        "validation_epoch_trace": validation_epoch_trace,
+        "final_validation_metrics": validation_epoch_trace[-1],
+    }
+    return weights, metadata
+
+
 def write_weights(path: str, weights: np.ndarray) -> None:
     weights = np.asarray(weights, dtype="<f4")
     _unpack(weights)
