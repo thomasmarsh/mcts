@@ -10,6 +10,7 @@ on.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from othello_eval.convnet import (
     BLOCKS,
@@ -19,10 +20,16 @@ from othello_eval.convnet import (
     _literal_loss_gradient_k,  # pyright: ignore[reportPrivateUsage]
     initial_weights,
     initial_weights_k,
+    n_weights_for,
     predict,
+    predict_k,
 )
 
-from az_train.convnet_othello_torch import OTCNN001Torch, fit_torch
+from az_train.convnet_othello_torch import (
+    OTCNN001Torch,
+    _cosine_lr,  # pyright: ignore[reportPrivateUsage]
+    fit_torch,
+)
 
 
 def test_flat_round_trips_through_load_and_to_flat() -> None:
@@ -179,6 +186,76 @@ def test_weight_decay_alone_would_have_missed_the_untouched_policy_head() -> Non
     assert torch.equal(model.policy_dense.weight, before), (
         "weight_decay alone should leave an untouched parameter unchanged"
     )
+
+
+def test_k4_tied_geometry_flat_round_trips_and_matches_numpy_predict_k() -> None:
+    """Generalization check for ``blocks``/``tied``/``channels``/
+    ``value_hidden``, mirroring ``test_predict_k_matches_predict_for_the_
+    baseline_geometry``-style parity: a non-default geometry (4 blocks,
+    weight-tied, 16 channels) must round-trip through ``load_from_flat``/
+    ``to_flat`` and match ``othello_eval.convnet.predict_k`` on the same
+    weights, not just the ``OTCNN001``-default geometry."""
+    blocks, tied, channels, value_hidden = 4, True, CHANNELS, VALUE_HIDDEN
+    weights = initial_weights_k(
+        seed=5, blocks=blocks, tied=tied, channels=channels, value_hidden=value_hidden
+    )
+    model = OTCNN001Torch(blocks, tied, channels, value_hidden)
+    model.load_from_flat(weights)
+    assert np.array_equal(model.to_flat(), weights)
+    assert model.to_flat().shape == (n_weights_for(blocks, tied, channels, value_hidden),)
+
+    rng = np.random.default_rng(6)
+    n = 5
+    me = (rng.random((n, 64)) > 0.7).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
+    torch_value, torch_policy = model.predict(me, opp)
+    numpy_value, numpy_policy = predict_k(weights, me, opp, blocks, tied, channels, value_hidden)
+    assert np.allclose(torch_value, numpy_value, atol=1e-5)
+    assert np.allclose(torch_policy, numpy_policy, atol=1e-5)
+
+
+def test_cosine_lr_is_constant_through_first_half_then_decays_to_zero() -> None:
+    epochs = 20
+    for epoch in range(1, epochs // 2 + 1):
+        assert _cosine_lr(epoch, epochs, 2e-3, decay=True) == 2e-3
+    assert _cosine_lr(epochs, epochs, 2e-3, decay=True) == pytest.approx(0.0, abs=1e-12)
+    mid = _cosine_lr(15, epochs, 2e-3, decay=True)
+    assert 0.0 < mid < 2e-3
+    # disabled: stays constant everywhere, including the back half.
+    assert _cosine_lr(epochs, epochs, 2e-3, decay=False) == 2e-3
+
+
+def test_fit_torch_reports_best_checkpoint_alongside_final_epoch() -> None:
+    """``fit_torch``'s new best-validation-checkpoint tracking: the reported
+    best-checkpoint weights must actually reproduce the best-checkpoint
+    validation metrics when reloaded independently, and the best epoch must
+    be the epoch in ``validation_epoch_trace`` with the lowest ``value_mse``
+    -- not just "some earlier snapshot"."""
+    rng = np.random.default_rng(21)
+    n = 256
+    me = (rng.random((n, 64)) > 0.6).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.6).astype(np.float32) * (1.0 - me)
+    value = np.tanh((me.sum(axis=1) - opp.sum(axis=1)) / 8.0).astype(np.float64)
+    split = n * 3 // 4
+    train_slice, val_slice = slice(0, split), slice(split, n)
+
+    _model, metadata = fit_torch(
+        me[train_slice], opp[train_slice], value[train_slice],
+        (me[val_slice], opp[val_slice], value[val_slice]),
+        l2=1e-4, seed=0, batch_size=64, epochs=20, learning_rate=5e-3,
+        report_every=0,
+    )
+    trace = metadata["validation_epoch_trace"]
+    best_trace_mse = min(m["value_mse"] for m in trace)
+    best_checkpoint = metadata["best_checkpoint_validation_metrics"]
+    assert best_checkpoint["value_mse"] == pytest.approx(best_trace_mse)
+    assert 1 <= metadata["best_checkpoint_epoch"] <= 20
+
+    reloaded = OTCNN001Torch(BLOCKS, False, CHANNELS, VALUE_HIDDEN)
+    reloaded.load_from_flat(metadata["best_checkpoint_weights"])
+    val_prediction, _ = reloaded.predict(me[val_slice], opp[val_slice])
+    reloaded_mse = float(np.mean((val_prediction - value[val_slice]) ** 2))
+    assert reloaded_mse == pytest.approx(best_checkpoint["value_mse"], abs=1e-5)
 
 
 def test_fit_torch_reduces_held_out_mse_on_a_tiny_synthetic_fit() -> None:

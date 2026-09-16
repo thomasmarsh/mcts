@@ -9,8 +9,17 @@
 """PyTorch reimplementation of ``othello_eval.convnet``'s ``OTCNN001``
 architecture, plus a ``torch.autograd``-based training loop
 (:func:`fit_torch`) that replaces the numpy trainer's hand-derived backward
-pass. No dropout, no LR scheduling, no architecture change here -- this
-module is deliberately "same recipe, new engine" only.
+pass.
+
+``OTCNN001Torch`` and :func:`fit_torch` are generalized over
+``blocks``/``tied``/``channels``/``value_hidden`` exactly the way
+``othello_eval.convnet``'s own ``_unpack_k``/``predict_k``/``fit_k`` family
+generalizes the fixed-``OTCNN001`` functions -- the default arguments
+(``BLOCKS``, ``tied=False``, ``CHANNELS``, ``VALUE_HIDDEN``) reproduce
+``OTCNN001`` exactly, so a caller that never passes these keeps the original
+fixed geometry. :func:`fit_torch` also tracks a best-validation-checkpoint
+snapshot and applies a cosine learning-rate decay over the back half of
+training by default, not as opt-in flags a caller must remember to pass.
 
 ``load_from_flat``/``to_flat`` convert to/from the exact flat ``f32``
 layout ``othello_eval.convnet._unpack`` documents (stem, ``BLOCKS``
@@ -59,6 +68,7 @@ batch, must match ``fit_k``'s own hand-derived-gradient step exactly:
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Any
 
@@ -70,12 +80,12 @@ from othello_eval.convnet import (
     CHANNELS,
     D4,
     INV,
-    N_WEIGHTS,
     POLICY_OUTPUTS,
     SQUARES,
     VALUE_HIDDEN,
     _pearson,  # pyright: ignore[reportPrivateUsage]
     initial_weights_k,
+    n_weights_for,
 )
 from torch import nn
 
@@ -93,35 +103,50 @@ class _ResidualBlock(nn.Module):
 
 
 class OTCNN001Torch(nn.Module):
-    """Same architecture as ``othello_eval.convnet``'s ``OTCNN001``: a 3x3
-    stem (2 input planes -> ``CHANNELS``), ``BLOCKS`` residual blocks, then
-    a value head (1x1 conv -> dense ``64->VALUE_HIDDEN`` -> dense
-    ``VALUE_HIDDEN->1`` -> tanh) and a policy head (1x1 conv -> dense
-    ``64->POLICY_OUTPUTS``) sharing the trunk. ``predict`` reproduces
-    ``othello_eval.convnet.predict``'s D4-orientation-averaging wrapper and
+    """Same architecture as ``othello_eval.convnet``'s ``_unpack_k`` family:
+    a 3x3 stem (2 input planes -> ``channels``), ``blocks`` residual blocks
+    (independently-parameterized, or one block's weights reused ``blocks``
+    times when ``tied=True``), then a value head (1x1 conv -> dense
+    ``64->value_hidden`` -> dense ``value_hidden->1`` -> tanh) and a policy
+    head (1x1 conv -> dense ``64->POLICY_OUTPUTS``) sharing the trunk. The
+    defaults (``BLOCKS``, ``tied=False``, ``CHANNELS``, ``VALUE_HIDDEN``)
+    reproduce ``OTCNN001`` exactly. ``predict`` reproduces
+    ``othello_eval.convnet.predict_k``'s D4-orientation-averaging wrapper and
     PASS-as-mean-of-64-logits convention (the mean is left to the caller,
-    exactly as ``predict`` does -- see its docstring)."""
+    exactly as ``predict_k`` does -- see its docstring)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        blocks: int = BLOCKS,
+        tied: bool = False,
+        channels: int = CHANNELS,
+        value_hidden: int = VALUE_HIDDEN,
+    ) -> None:
         super().__init__()
-        self.stem = nn.Conv2d(2, CHANNELS, 3, padding=1)
-        self.blocks = nn.ModuleList(_ResidualBlock(CHANNELS) for _ in range(BLOCKS))
-        self.value_conv = nn.Conv2d(CHANNELS, 1, 1)
-        self.value_dense1 = nn.Linear(BOARD * BOARD, VALUE_HIDDEN)
-        self.value_dense2 = nn.Linear(VALUE_HIDDEN, 1)
-        self.policy_conv = nn.Conv2d(CHANNELS, 1, 1)
+        self.n_blocks = blocks
+        self.tied = tied
+        self.channels = channels
+        self.value_hidden = value_hidden
+        self.stem = nn.Conv2d(2, channels, 3, padding=1)
+        n_block_modules = 1 if tied else blocks
+        self.blocks = nn.ModuleList(_ResidualBlock(channels) for _ in range(n_block_modules))
+        self.value_conv = nn.Conv2d(channels, 1, 1)
+        self.value_dense1 = nn.Linear(BOARD * BOARD, value_hidden)
+        self.value_dense2 = nn.Linear(value_hidden, 1)
+        self.policy_conv = nn.Conv2d(channels, 1, 1)
         self.policy_dense = nn.Linear(BOARD * BOARD, POLICY_OUTPUTS)
 
     def forward_literal(
         self, me: torch.Tensor, opp: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Value and 64-column policy logits, single (literal) orientation --
-        mirrors ``othello_eval.convnet._predict_literal`` exactly. ``me``/
+        mirrors ``othello_eval.convnet._predict_literal_k`` exactly. ``me``/
         ``opp`` are ``(N, 64)`` float tensors."""
         n = me.shape[0]
         x = torch.stack((me, opp), dim=1).reshape(n, 2, BOARD, BOARD)
         x = torch.relu(self.stem(x))
-        for block in self.blocks:
+        for i in range(self.n_blocks):
+            block = self.blocks[0] if self.tied else self.blocks[i]
             x = block(x)
         value_features = torch.relu(self.value_conv(x)).reshape(n, BOARD * BOARD)
         value_hidden = torch.relu(self.value_dense1(value_features))
@@ -148,11 +173,16 @@ class OTCNN001Torch(nn.Module):
         return (value_total / 8.0).astype(np.float32), (policy_total / 8.0).astype(np.float32)
 
     def load_from_flat(self, weights: np.ndarray) -> None:
-        """Load the exact ``OTCNN001`` flat ``f32`` layout
-        ``othello_eval.convnet._unpack`` documents."""
+        """Load the flat ``f32`` layout ``othello_eval.convnet._unpack_k``
+        documents, for this model's own ``blocks``/``tied``/``channels``/
+        ``value_hidden`` geometry (``n_weights_for(...)`` wide; the
+        ``blocks=BLOCKS, tied=False`` default reproduces ``OTCNN001``'s exact
+        ``N_WEIGHTS``-wide layout ``_unpack`` documents)."""
+        channels, value_hidden = self.channels, self.value_hidden
+        expected = n_weights_for(self.n_blocks, self.tied, channels, value_hidden)
         w = np.asarray(weights, dtype=np.float32)
-        if w.shape != (N_WEIGHTS,):
-            raise ValueError(f"expected {N_WEIGHTS} OTCNN001 weights, got {w.shape}")
+        if w.shape != (expected,):
+            raise ValueError(f"expected {expected} weights, got {w.shape}")
         at = 0
 
         def take(shape: tuple[int, ...]) -> np.ndarray:
@@ -163,35 +193,38 @@ class OTCNN001Torch(nn.Module):
             return out
 
         with torch.no_grad():
-            self.stem.weight.copy_(torch.from_numpy(take((CHANNELS, 2, 3, 3))))
-            self.stem.bias.copy_(torch.from_numpy(take((CHANNELS,))))
+            self.stem.weight.copy_(torch.from_numpy(take((channels, 2, 3, 3))))
+            self.stem.bias.copy_(torch.from_numpy(take((channels,))))
             for block in self.blocks:
-                block.conv1.weight.copy_(torch.from_numpy(take((CHANNELS, CHANNELS, 3, 3))))
-                block.conv1.bias.copy_(torch.from_numpy(take((CHANNELS,))))
-                block.conv2.weight.copy_(torch.from_numpy(take((CHANNELS, CHANNELS, 3, 3))))
-                block.conv2.bias.copy_(torch.from_numpy(take((CHANNELS,))))
-            self.value_conv.weight.copy_(torch.from_numpy(take((1, CHANNELS, 1, 1))))
+                block.conv1.weight.copy_(torch.from_numpy(take((channels, channels, 3, 3))))
+                block.conv1.bias.copy_(torch.from_numpy(take((channels,))))
+                block.conv2.weight.copy_(torch.from_numpy(take((channels, channels, 3, 3))))
+                block.conv2.bias.copy_(torch.from_numpy(take((channels,))))
+            self.value_conv.weight.copy_(torch.from_numpy(take((1, channels, 1, 1))))
             self.value_conv.bias.copy_(torch.from_numpy(take((1,))))
             self.value_dense1.weight.copy_(
-                torch.from_numpy(take((BOARD * BOARD, VALUE_HIDDEN)).T.copy())
+                torch.from_numpy(take((BOARD * BOARD, value_hidden)).T.copy())
             )
-            self.value_dense1.bias.copy_(torch.from_numpy(take((VALUE_HIDDEN,))))
+            self.value_dense1.bias.copy_(torch.from_numpy(take((value_hidden,))))
             self.value_dense2.weight.copy_(
-                torch.from_numpy(take((VALUE_HIDDEN,)).reshape(1, VALUE_HIDDEN))
+                torch.from_numpy(take((value_hidden,)).reshape(1, value_hidden))
             )
             self.value_dense2.bias.copy_(torch.from_numpy(take((1,))))
-            self.policy_conv.weight.copy_(torch.from_numpy(take((1, CHANNELS, 1, 1))))
+            self.policy_conv.weight.copy_(torch.from_numpy(take((1, channels, 1, 1))))
             self.policy_conv.bias.copy_(torch.from_numpy(take((1,))))
             self.policy_dense.weight.copy_(
                 torch.from_numpy(take((BOARD * BOARD, POLICY_OUTPUTS)).T.copy())
             )
             self.policy_dense.bias.copy_(torch.from_numpy(take((POLICY_OUTPUTS,))))
-        assert at == N_WEIGHTS
+        assert at == expected
 
     def to_flat(self) -> np.ndarray:
         """Inverse of :meth:`load_from_flat`: the current parameters as the
-        exact ``OTCNN001`` flat ``f32`` layout, ready for
-        ``othello_eval.convnet.write_weights``."""
+        flat ``f32`` layout matching this model's own geometry, ready for
+        ``othello_eval.convnet.write_weights`` when ``blocks=BLOCKS,
+        tied=False, channels=CHANNELS, value_hidden=VALUE_HIDDEN`` (the
+        ``OTCNN001``-compatible geometry)."""
+        expected = n_weights_for(self.n_blocks, self.tied, self.channels, self.value_hidden)
         parts: list[np.ndarray] = []
         with torch.no_grad():
             parts.append(self.stem.weight.detach().cpu().numpy().ravel())
@@ -212,7 +245,7 @@ class OTCNN001Torch(nn.Module):
             parts.append(self.policy_dense.weight.detach().cpu().numpy().T.ravel())
             parts.append(self.policy_dense.bias.detach().cpu().numpy().ravel())
         flat = np.concatenate(parts).astype(np.float32)
-        assert flat.shape == (N_WEIGHTS,)
+        assert flat.shape == (expected,)
         return flat
 
 
@@ -232,11 +265,26 @@ def _value_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, floa
     return {name: m if np.isfinite(m) else 0.0 for name, m in metrics.items()}
 
 
+def _cosine_lr(epoch: int, epochs: int, base_lr: float, *, decay: bool) -> float:
+    """Constant at ``base_lr`` through the first half of training, then a
+    cosine decay from ``base_lr`` down to 0 across the back half. A no-op
+    (always ``base_lr``) when ``decay`` is false, so this stays a pure
+    additive default rather than a silent behavior change for any caller
+    that opts out."""
+    half = epochs // 2
+    if not decay or epoch <= half or epochs <= half:
+        return base_lr
+    progress = (epoch - half) / (epochs - half)
+    return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+
 def fit_torch(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
     *, seed: int = 0, batch_size: int = 256, epochs: int = 24, learning_rate: float = 2e-3,
     validate_every: int = 1, report_every: int = 0, device: str = "cpu",
+    blocks: int = BLOCKS, tied: bool = False, channels: int = CHANNELS,
+    value_hidden: int = VALUE_HIDDEN, lr_decay: bool = True,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
     """``othello_eval.convnet.fit_k``'s Adam loop, over ``torch.autograd``
     instead of a hand-derived gradient. Value-only (no policy target) --
@@ -246,13 +294,24 @@ def fit_torch(
     seeded initializer), not torch's default
     init, so a torch fit and a numpy fit at the same seed start from
     identical weights -- the only remaining difference is the optimizer
-    engine itself.
+    engine itself. ``blocks``/``tied``/``channels``/``value_hidden`` select
+    the trunk geometry (defaults reproduce ``OTCNN001``); ``lr_decay``
+    (default on) applies :func:`_cosine_lr`.
+
+    Tracks a best-validation-checkpoint snapshot (by ``value_mse``)
+    alongside the final-epoch weights the returned ``model`` carries --
+    ``metadata["best_checkpoint_epoch"]``/``best_checkpoint_train_metrics``/
+    ``best_checkpoint_validation_metrics``/``best_checkpoint_weights`` (a
+    flat ``np.ndarray`` in this geometry's ``n_weights_for`` layout, ready
+    for ``load_from_flat`` or ``write_weights``) report it explicitly
+    alongside the pre-existing final-epoch ``train_metrics``/
+    ``final_validation_metrics`` -- report both, never just one.
     """
     if not len(me):
         raise ValueError("CNN fitting requires non-empty rows")
     torch_device = torch.device(device)
-    model = OTCNN001Torch().to(torch_device)
-    model.load_from_flat(initial_weights_k(seed, BLOCKS, False, CHANNELS, VALUE_HIDDEN))
+    model = OTCNN001Torch(blocks, tied, channels, value_hidden).to(torch_device)
+    model.load_from_flat(initial_weights_k(seed, blocks, tied, channels, value_hidden))
 
     weight_params = [p for name, p in model.named_parameters() if not name.endswith(".bias")]
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
@@ -265,9 +324,15 @@ def fit_torch(
     started = time.perf_counter()
     vm, vo, vv = validation
     validation_epoch_trace: list[dict[str, float]] = []
+    best_val_mse = float("inf")
+    best_epoch = 0
+    best_flat: np.ndarray | None = None
     step = 0
     n = len(me)
     for epoch in range(1, epochs + 1):
+        epoch_lr = _cosine_lr(epoch, epochs, learning_rate, decay=lr_decay)
+        for group in optimizer.param_groups:
+            group["lr"] = epoch_lr
         order = rng.permutation(n)
         for start in range(0, n, batch_size):
             batch = order[start : start + batch_size]
@@ -281,25 +346,44 @@ def fit_torch(
             step += 1
         if epoch % validate_every == 0 or epoch == epochs:
             val_prediction, _ = model.predict(vm, vo)
-            validation_epoch_trace.append(_value_metrics(val_prediction, vv))
+            metrics = _value_metrics(val_prediction, vv)
+            validation_epoch_trace.append(metrics)
+            if metrics["value_mse"] < best_val_mse:
+                best_val_mse = metrics["value_mse"]
+                best_epoch = epoch
+                best_flat = model.to_flat()
             if report_every and (epoch % report_every == 0 or epoch == epochs):
                 m = validation_epoch_trace[-1]
                 elapsed = time.perf_counter() - started
                 print(
-                    f"  epoch {epoch:4d}  val mse {m['value_mse']:.4f}  "
+                    f"  epoch {epoch:4d}  lr {epoch_lr:.2e}  val mse {m['value_mse']:.4f}  "
                     f"pearson {m['value_pearson']:.4f}  sign-acc {m['value_sign_agreement']:.4f}"
                     f"  ({elapsed:.1f}s)",
                     flush=True,
                 )
     train_prediction, _ = model.predict(me, opp)
+    if best_flat is None:
+        best_flat = model.to_flat()
+        best_epoch = epochs
+    best_model = OTCNN001Torch(blocks, tied, channels, value_hidden).to(torch_device)
+    best_model.load_from_flat(best_flat)
+    best_train_prediction, _ = best_model.predict(me, opp)
+    best_val_prediction, _ = best_model.predict(vm, vo)
     metadata: dict[str, Any] = {
         "optimizer": "torch_adam_value_mse",
         "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
         "optimizer_learning_rate": learning_rate, "optimizer_l2": l2, "optimizer_steps": step,
+        "optimizer_lr_decay": lr_decay,
         "device": device,
+        "blocks": blocks, "tied": tied, "channels": channels, "value_hidden": value_hidden,
+        "n_weights": int(n_weights_for(blocks, tied, channels, value_hidden)),
         "fit_wall_seconds": time.perf_counter() - started,
         "train_metrics": _value_metrics(train_prediction, value),
         "validation_epoch_trace": validation_epoch_trace,
         "final_validation_metrics": validation_epoch_trace[-1],
+        "best_checkpoint_epoch": best_epoch,
+        "best_checkpoint_train_metrics": _value_metrics(best_train_prediction, value),
+        "best_checkpoint_validation_metrics": _value_metrics(best_val_prediction, vv),
+        "best_checkpoint_weights": best_flat,
     }
     return model, metadata
