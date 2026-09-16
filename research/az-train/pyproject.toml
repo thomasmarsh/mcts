@@ -6,6 +6,7 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
     "numpy>=2,<3",
     "othello-eval",
+    "torch>=2.14.0",
 ]
 
 [project.scripts]
