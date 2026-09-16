@@ -38,6 +38,7 @@ as ``games/othello/src/policy.rs::NTuplePolicyNet::logits`` does.
 
 from __future__ import annotations
 
+import math
 import resource
 import struct
 import sys
@@ -497,6 +498,97 @@ def initial_weights_k(
     parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
     for index in range(1, len(parameters), 2):
         parameters[index].fill(0.05)
+    return weights
+
+
+def _fan_in(tensor: np.ndarray) -> int:
+    """Fan-in of a weight tensor in :func:`_unpack_k`'s layout: conv weights
+    are ``(out_channels, in_channels, kh, kw)`` (fan-in = the trailing dims'
+    product); dense weights are stored ``(in_features, out_features)`` --
+    or, when ``out_features == 1``, squeezed to a 1-D ``(in_features,)``
+    vector -- so fan-in is the leading dimension either way."""
+    return int(np.prod(tensor.shape[1:])) if tensor.ndim == 4 else int(tensor.shape[0])
+
+
+def kaiming_weights_k(
+    seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> np.ndarray:
+    """Kaiming/He-normal alternative to :func:`initial_weights_k`: unlike
+    that function's single fixed 0.03 standard deviation applied to every
+    weight tensor regardless of size, each tensor here is drawn with std
+    ``sqrt(2 / fan_in)`` -- the standard scaling for ReLU networks, derived
+    to keep forward-pass activation variance roughly constant layer to layer
+    regardless of a layer's width or the stack's depth, unlike a fixed std
+    applied uniformly to every tensor (whose fit to a ReLU stack's actual
+    signal propagation only holds for one particular width/depth
+    combination and drifts arbitrarily far from that for any other). Biases
+    are zero-initialized -- the standard Kaiming pairing -- not
+    ``initial_weights_k``'s fixed 0.05; a second, deliberate deviation from
+    that function, not silently conflated with the init-scale change. A
+    wholly separate function: ``initial_weights_k`` and every existing
+    caller of it are untouched."""
+    rng = np.random.default_rng(seed)
+    weights = np.zeros(n_weights_for(blocks, tied, channels, value_hidden), dtype=np.float32)
+    parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
+    for index in range(0, len(parameters), 2):
+        tensor = parameters[index]
+        std = math.sqrt(2.0 / _fan_in(tensor))
+        tensor[...] = rng.standard_normal(tensor.shape).astype(np.float32) * std
+    for index in range(1, len(parameters), 2):
+        parameters[index].fill(0.0)
+    return weights
+
+
+def _orthogonal(rng: np.random.Generator, shape: tuple[int, ...], gain: float) -> np.ndarray:
+    """Saxe/Sussillo/Ganguli orthogonal init, matching ``torch.nn.init.
+    orthogonal_``'s construction exactly: draw a random Gaussian matrix of
+    the tensor's flattened ``(rows, cols)`` shape (``rows`` the leading/
+    fan-out dimension, ``cols`` the flattened remainder), take the ``Q``
+    factor of its QR decomposition, sign-correct against ``R``'s diagonal so
+    the distribution isn't biased toward a particular orientation, scale by
+    ``gain``, and reshape back to the tensor's real shape. Only
+    ``min(rows, cols)`` vectors can be exactly mutually orthonormal in a
+    space of the other dimension's size, so whichever side is smaller is the
+    one QR is asked to orthogonalize -- built by transposing before the QR
+    (and back after) whenever ``rows < cols``, the standard trick for that
+    case."""
+    rows = shape[0]
+    cols = int(np.prod(shape[1:])) if len(shape) > 1 else 1
+    transpose = rows < cols
+    a = rng.standard_normal((cols, rows) if transpose else (rows, cols))
+    q, r = np.linalg.qr(a)
+    q = q * np.sign(np.diag(r))
+    if transpose:
+        q = q.T
+    return (gain * q).reshape(shape).astype(np.float32)
+
+
+def orthogonal_weights_k(
+    seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+    gain: float = math.sqrt(2.0),
+) -> np.ndarray:
+    """Orthogonal alternative to :func:`initial_weights_k`/
+    :func:`kaiming_weights_k`: every weight tensor's rows (or columns, for a
+    "tall" tensor) are exactly orthogonal rather than independently
+    Gaussian, which can stabilize deep/tied stacks better than fan-in
+    scaling alone since it preserves a transform's singular-value spectrum
+    exactly rather than only in expectation -- a repeated (tied) transform's
+    spectrum compounds across every application, so exact orthogonality
+    matters more for those stacks than for an untied one. Default ``gain``
+    is ``sqrt(2)``, the standard ReLU
+    correction (Saxe et al.'s original construction targets a linear/tanh
+    network; ReLU halves the signal on average, so the same ``sqrt(2)``
+    correction Kaiming uses applies here too). Biases zero-initialized, same
+    pairing as :func:`kaiming_weights_k`. A wholly separate function --
+    ``initial_weights_k`` is untouched."""
+    rng = np.random.default_rng(seed)
+    weights = np.zeros(n_weights_for(blocks, tied, channels, value_hidden), dtype=np.float32)
+    parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
+    for index in range(0, len(parameters), 2):
+        tensor = parameters[index]
+        tensor[...] = _orthogonal(rng, tensor.shape, gain)
+    for index in range(1, len(parameters), 2):
+        parameters[index].fill(0.0)
     return weights
 
 

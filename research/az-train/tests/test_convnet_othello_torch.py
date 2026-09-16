@@ -20,16 +20,20 @@ from othello_eval.convnet import (
     _literal_loss_gradient_k,  # pyright: ignore[reportPrivateUsage]
     initial_weights,
     initial_weights_k,
+    kaiming_weights_k,
     n_weights_for,
     predict,
     predict_k,
 )
 
 from az_train.convnet_othello_torch import (
+    AllSeedsStalledError,
     OTCNN001Torch,
     TrainingStalledError,
     _cosine_lr,  # pyright: ignore[reportPrivateUsage]
+    _lr_schedule,  # pyright: ignore[reportPrivateUsage]
     fit_torch,
+    fit_torch_with_retry,
 )
 
 
@@ -326,3 +330,129 @@ def test_stall_check_does_not_raise_once_check_epoch_is_never_reached() -> None:
         report_every=0, stall_check=(1000, 0.05),
     )
     assert len(metadata["validation_epoch_trace"]) == 40
+
+
+def test_fit_torch_init_kaiming_starts_from_kaiming_weights_k() -> None:
+    """``init="kaiming"`` must actually change what ``fit_torch`` loads, not
+    just be accepted and ignored. ``learning_rate=0.0`` makes every Adam
+    step's update exactly zero regardless of the gradient, so the
+    post-"training" weights are still the initial ones -- an end-to-end
+    check that doesn't require reaching into ``fit_torch``'s internals."""
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    expected = kaiming_weights_k(0, BLOCKS, False, CHANNELS, VALUE_HIDDEN)
+    model, metadata = fit_torch(
+        me_tr, opp_tr, value_tr, validation,
+        l2=0.0, seed=0, batch_size=len(me_tr), epochs=1, learning_rate=0.0,
+        report_every=0, init="kaiming", lr_decay=False,
+    )
+    assert np.allclose(model.to_flat(), expected, atol=1e-6)
+    assert metadata["optimizer_init"] == "kaiming"
+
+
+def test_fit_torch_grad_clip_norm_invokes_clip_grad_norm(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_clip = torch.nn.utils.clip_grad_norm_
+    calls: list[float] = []
+
+    def spy(parameters: object, max_norm: float) -> object:
+        calls.append(max_norm)
+        return real_clip(parameters, max_norm)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", spy)
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    fit_torch(
+        me_tr, opp_tr, value_tr, validation,
+        l2=1e-4, seed=0, batch_size=64, epochs=1, learning_rate=1e-3,
+        report_every=0, grad_clip_norm=0.5,
+    )
+    assert calls and all(c == 0.5 for c in calls)
+
+
+def test_fit_torch_without_grad_clip_norm_never_calls_clip(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = False
+
+    def spy(*_args: object, **_kwargs: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", spy)
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    fit_torch(
+        me_tr, opp_tr, value_tr, validation,
+        l2=1e-4, seed=0, batch_size=64, epochs=1, learning_rate=1e-3, report_every=0,
+    )
+    assert not called
+
+
+def test_lr_schedule_warmup_ramps_linearly_then_hands_off_to_cosine() -> None:
+    epochs, warmup, base = 20, 4, 2e-3
+    kw: dict[str, object] = dict(decay=True, warmup_epochs=warmup)
+    assert _lr_schedule(1, epochs, base, **kw) == pytest.approx(base * 1 / 4)
+    assert _lr_schedule(2, epochs, base, **kw) == pytest.approx(base * 2 / 4)
+    assert _lr_schedule(warmup, epochs, base, **kw) == pytest.approx(base)
+    after = _lr_schedule(warmup + 1, epochs, base, **kw)
+    assert after == _cosine_lr(warmup + 1, epochs, base, decay=True)
+
+
+def test_lr_schedule_is_a_noop_when_warmup_epochs_is_zero() -> None:
+    epochs, base = 20, 2e-3
+    for epoch in range(1, epochs + 1):
+        assert _lr_schedule(epoch, epochs, base, decay=True, warmup_epochs=0) == _cosine_lr(
+            epoch, epochs, base, decay=True
+        )
+
+
+def test_fit_torch_with_retry_succeeds_on_first_seed_when_nothing_stalls() -> None:
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    _model, metadata = fit_torch_with_retry(
+        me_tr, opp_tr, value_tr, validation,
+        l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
+        report_every=0, stall_check=(1000, 0.05),
+    )
+    assert metadata["seed_used"] == 0
+    assert metadata["seed_attempts"] == []
+
+
+def test_fit_torch_with_retry_retries_past_a_stalled_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    import az_train.convnet_othello_torch as cot
+
+    calls: list[int] = []
+
+    def fake_fit_torch(
+        _me: object, _opp: object, _value: object, _validation: object, _l2: float = 1e-4,
+        *, seed: int = 0, stall_check: object = None, **_kwargs: object,
+    ) -> tuple[str, dict[str, object]]:
+        calls.append(seed)
+        if seed == 0:
+            raise TrainingStalledError(20, 0.0, 0.05)
+        return "model", {"seed": seed}
+
+    monkeypatch.setattr(cot, "fit_torch", fake_fit_torch)
+    model, metadata = fit_torch_with_retry(
+        np.zeros((1,)), np.zeros((1,)), np.zeros((1,)),
+        (np.zeros((1,)), np.zeros((1,)), np.zeros((1,))),
+        seed=0, max_retries=3,
+    )
+    assert calls == [0, 1]
+    assert model == "model"
+    assert metadata["seed_used"] == 1
+    assert metadata["seed_attempts"] == [{"seed": 0, "epoch": 20, "pearson": 0.0}]
+
+
+def test_fit_torch_with_retry_raises_after_every_attempt_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import az_train.convnet_othello_torch as cot
+
+    def always_stall(
+        *_args: object, seed: int = 0, **_kwargs: object,
+    ) -> tuple[str, dict[str, object]]:
+        raise TrainingStalledError(20, 0.0, 0.05)
+
+    monkeypatch.setattr(cot, "fit_torch", always_stall)
+    with pytest.raises(AllSeedsStalledError) as exc_info:
+        fit_torch_with_retry(
+            np.zeros((1,)), np.zeros((1,)), np.zeros((1,)),
+            (np.zeros((1,)), np.zeros((1,)), np.zeros((1,))),
+            seed=5, max_retries=2,
+        )
+    assert [a["seed"] for a in exc_info.value.attempts] == [5, 6, 7]

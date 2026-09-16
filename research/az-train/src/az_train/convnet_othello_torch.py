@@ -85,9 +85,25 @@ from othello_eval.convnet import (
     VALUE_HIDDEN,
     _pearson,  # pyright: ignore[reportPrivateUsage]
     initial_weights_k,
+    kaiming_weights_k,
     n_weights_for,
+    orthogonal_weights_k,
 )
 from torch import nn
+
+#: Selectable initializers for :func:`fit_torch`'s ``init`` parameter.
+#: ``"fixed_normal"`` is ``initial_weights_k`` -- the existing
+#: fixed-0.03-std/0.05-bias initializer, kept as the default so no existing
+#: caller's behavior changes. ``"kaiming"``/``"orthogonal"`` are fan-in-aware
+#: alternatives that scale (or exactly orthogonalize) each weight tensor by
+#: its own fan-in instead of using one fixed std for every tensor regardless
+#: of layer size, each its own function in ``othello_eval.convnet`` --
+#: ``initial_weights_k`` itself is untouched.
+INIT_FUNCTIONS: dict[str, Any] = {
+    "fixed_normal": initial_weights_k,
+    "kaiming": kaiming_weights_k,
+    "orthogonal": orthogonal_weights_k,
+}
 
 
 class _ResidualBlock(nn.Module):
@@ -278,6 +294,23 @@ def _cosine_lr(epoch: int, epochs: int, base_lr: float, *, decay: bool) -> float
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+def _lr_schedule(
+    epoch: int, epochs: int, base_lr: float, *, decay: bool, warmup_epochs: int = 0,
+) -> float:
+    """:func:`_cosine_lr`, preceded by a linear ramp from ``0`` up to
+    ``base_lr`` over the first ``warmup_epochs`` epochs -- a brief early-
+    training LR ramp meant to bound the damage a bad batch/bad early
+    trajectory can do before the network has settled. A no-op (delegates
+    straight to ``_cosine_lr``) when ``warmup_epochs`` is 0, its default --
+    existing callers see no behavior change. Ramp and cosine decay don't
+    overlap for any short warmup (a handful of epochs, well inside the
+    first half of a 120-epoch fit where ``_cosine_lr`` is
+    already constant)."""
+    if warmup_epochs > 0 and epoch <= warmup_epochs:
+        return base_lr * epoch / warmup_epochs
+    return _cosine_lr(epoch, epochs, base_lr, decay=decay)
+
+
 class TrainingStalledError(RuntimeError):
     """Raised by :func:`fit_torch` when ``stall_check`` is set and validation
     pearson hasn't escaped noise by the checked epoch. Some seeded inits
@@ -307,6 +340,8 @@ def fit_torch(
     blocks: int = BLOCKS, tied: bool = False, channels: int = CHANNELS,
     value_hidden: int = VALUE_HIDDEN, lr_decay: bool = True,
     stall_check: tuple[int, float] | None = None,
+    init: str = "fixed_normal", grad_clip_norm: float | None = None,
+    warmup_epochs: int = 0,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
     """``othello_eval.convnet.fit_k``'s Adam loop, over ``torch.autograd``
     instead of a hand-derived gradient. Value-only (no policy target) --
@@ -335,12 +370,22 @@ def fit_torch(
     :class:`TrainingStalledError` immediately rather than running the
     remaining epochs to confirm what's already apparent. Off by default
     (``None``) -- existing callers see no behavior change.
+
+    ``init`` selects the initializer from :data:`INIT_FUNCTIONS` (default
+    ``"fixed_normal"`` == ``initial_weights_k``, so existing callers are
+    unaffected). ``grad_clip_norm``, if given, clips the global gradient
+    norm (``torch.nn.utils.clip_grad_norm_``) before each optimizer step.
+    ``warmup_epochs`` (default 0, a no-op) ramps the learning rate linearly
+    from 0 over that many initial epochs before ``_cosine_lr`` takes over --
+    see :func:`_lr_schedule`. All three are independent training-stability
+    levers, each its own opt-in parameter so they can be gated individually
+    or in combination.
     """
     if not len(me):
         raise ValueError("CNN fitting requires non-empty rows")
     torch_device = torch.device(device)
     model = OTCNN001Torch(blocks, tied, channels, value_hidden).to(torch_device)
-    model.load_from_flat(initial_weights_k(seed, blocks, tied, channels, value_hidden))
+    model.load_from_flat(INIT_FUNCTIONS[init](seed, blocks, tied, channels, value_hidden))
 
     weight_params = [p for name, p in model.named_parameters() if not name.endswith(".bias")]
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
@@ -359,7 +404,9 @@ def fit_torch(
     step = 0
     n = len(me)
     for epoch in range(1, epochs + 1):
-        epoch_lr = _cosine_lr(epoch, epochs, learning_rate, decay=lr_decay)
+        epoch_lr = _lr_schedule(
+            epoch, epochs, learning_rate, decay=lr_decay, warmup_epochs=warmup_epochs
+        )
         for group in optimizer.param_groups:
             group["lr"] = epoch_lr
         order = rng.permutation(n)
@@ -371,6 +418,8 @@ def fit_torch(
             reg = sum((p * p).sum() for p in weight_params)
             loss = torch.mean((prediction - value_t[idx]) ** 2) + l2 * reg
             loss.backward()
+            if grad_clip_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             optimizer.step()
             step += 1
         if epoch % validate_every == 0 or epoch == epochs:
@@ -406,7 +455,8 @@ def fit_torch(
         "optimizer": "torch_adam_value_mse",
         "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
         "optimizer_learning_rate": learning_rate, "optimizer_l2": l2, "optimizer_steps": step,
-        "optimizer_lr_decay": lr_decay,
+        "optimizer_lr_decay": lr_decay, "optimizer_init": init,
+        "optimizer_grad_clip_norm": grad_clip_norm, "optimizer_warmup_epochs": warmup_epochs,
         "device": device,
         "blocks": blocks, "tied": tied, "channels": channels, "value_hidden": value_hidden,
         "n_weights": int(n_weights_for(blocks, tied, channels, value_hidden)),
@@ -420,3 +470,52 @@ def fit_torch(
         "best_checkpoint_weights": best_flat,
     }
     return model, metadata
+
+
+class AllSeedsStalledError(RuntimeError):
+    """Raised by :func:`fit_torch_with_retry` when every seed it tried,
+    ``seed`` through ``seed + max_retries``, stalled -- vanishingly unlikely
+    at the dead-rates this plan family measures (even a raw ~1-in-4 rate
+    makes 6 consecutive stalls a ~1-in-4096 event), so in practice this
+    signals something worse than ordinary seed-to-seed bad luck (a
+    misconfigured hypothesis, a bad data split) worth surfacing loudly
+    rather than silently exhausting retries."""
+
+    def __init__(self, attempts: list[dict[str, float]]) -> None:
+        super().__init__(f"all {len(attempts)} seed attempts stalled: {attempts}")
+        self.attempts = attempts
+
+
+def fit_torch_with_retry(
+    me: np.ndarray, opp: np.ndarray, value: np.ndarray,
+    validation: tuple[np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
+    *, seed: int = 0, max_retries: int = 5, stall_check: tuple[int, float] = (20, 0.05),
+    **kwargs: Any,
+) -> tuple[OTCNN001Torch, dict[str, Any]]:
+    """Seed-hunting wrapper for multi-seed sweeps: fits at ``seed``, and if
+    ``stall_check`` raises :class:`TrainingStalledError`, retries at
+    ``seed + 1``, ``seed + 2``, ... up to ``max_retries`` additional
+    attempts, so a dead seed costs only the (cheap, ``stall_check``-bounded)
+    stalled attempt instead of silently consuming a sweep slot with no
+    result. Every attempt (stalled or not) is logged in the returned
+    metadata's ``"seed_attempts"``; the winning attempt's actual seed is
+    ``metadata["seed_used"]`` (which may differ from the requested ``seed``
+    -- callers that need the exact seed fitted should read this, not assume
+    the one they passed). Raises :class:`AllSeedsStalledError` if every
+    attempt through ``seed + max_retries`` stalls. ``**kwargs`` forwards to
+    :func:`fit_torch` unchanged (``init``, ``grad_clip_norm``,
+    ``warmup_epochs``, ``epochs``, etc.)."""
+    attempts: list[dict[str, float]] = []
+    for offset in range(max_retries + 1):
+        trial_seed = seed + offset
+        try:
+            model, metadata = fit_torch(
+                me, opp, value, validation, l2, seed=trial_seed, stall_check=stall_check, **kwargs,
+            )
+        except TrainingStalledError as e:
+            attempts.append({"seed": trial_seed, "epoch": e.epoch, "pearson": e.pearson})
+            continue
+        metadata["seed_used"] = trial_seed
+        metadata["seed_attempts"] = attempts
+        return model, metadata
+    raise AllSeedsStalledError(attempts)

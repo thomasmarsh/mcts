@@ -9,6 +9,7 @@ no self-play, no real training run. Mirrors ``test_ntuple.py``/
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from othello_eval.convnet import (
     BLOCKS,
@@ -26,8 +27,10 @@ from othello_eval.convnet import (
     fit_k,
     initial_weights,
     initial_weights_k,
+    kaiming_weights_k,
     me_opp_planes,
     n_weights_for,
+    orthogonal_weights_k,
     predict,
     predict_k,
     read_weights,
@@ -468,3 +471,93 @@ def test_literal_forward_is_deterministic_and_bounded() -> None:
     assert np.array_equal(value_a, value_b)
     assert np.array_equal(policy_a, policy_b)
     assert np.all(np.abs(value_a) <= 1.0)
+
+
+def test_kaiming_weights_k_is_deterministic_and_matches_n_weights_for() -> None:
+    a = kaiming_weights_k(seed=1, blocks=4, tied=True, channels=16, value_hidden=32)
+    b = kaiming_weights_k(seed=1, blocks=4, tied=True, channels=16, value_hidden=32)
+    assert np.array_equal(a, b)
+    assert a.shape == (n_weights_for(4, True, 16, 32),)
+    assert a.dtype == np.float32
+
+
+def test_kaiming_weights_k_scales_each_weight_tensor_by_its_own_fan_in() -> None:
+    """The defect this exists to fix: ``initial_weights_k`` uses one fixed
+    std for every tensor regardless of layer size. Kaiming must not -- a
+    wide/deep tensor's empirical std should track ``sqrt(2 / fan_in)``, not
+    match a narrow tensor's std. Checked across a large weight sample
+    (many parameters at once, not a single draw) so the empirical std is a
+    tight estimate."""
+    blocks, tied, channels, value_hidden = 4, False, 24, 64
+    # Many independent draws, each unpacked into its own tensor list, so the
+    # empirical std of each tensor position is a tight estimate.
+    per_seed_tensors = [
+        _unpack_k(
+            kaiming_weights_k(
+                seed=s, blocks=blocks, tied=tied, channels=channels, value_hidden=value_hidden
+            ),
+            blocks,
+            tied,
+            channels,
+            value_hidden,
+        )
+        for s in range(200)
+    ]
+    # stem: fan_in = 2*3*3 = 18. A block conv: fan_in = 24*3*3 = 216 -- a
+    # much larger fan_in, so a much smaller expected std.
+    stem_std = np.std(np.stack([t[0] for t in per_seed_tensors]))
+    block_conv_std = np.std(np.stack([t[2] for t in per_seed_tensors]))
+    assert stem_std == pytest.approx(np.sqrt(2.0 / 18.0), rel=0.1)
+    assert block_conv_std == pytest.approx(np.sqrt(2.0 / 216.0), rel=0.1)
+    assert stem_std > block_conv_std * 2  # sanity: fan-in-aware, not fixed
+
+
+def test_kaiming_weights_k_biases_are_zero_not_fixed_point_zero_five() -> None:
+    """Kaiming pairs with zero-initialized biases -- deliberately not
+    ``initial_weights_k``'s fixed 0.05."""
+    weights = kaiming_weights_k(seed=0, blocks=2, tied=False, channels=16, value_hidden=32)
+    parameters = _unpack_k(weights, 2, False, 16, 32)
+    for tensor in parameters[1::2]:
+        assert np.all(tensor == 0.0)
+
+
+def test_orthogonal_weights_k_is_deterministic_and_matches_n_weights_for() -> None:
+    a = orthogonal_weights_k(seed=2, blocks=3, tied=False, channels=24, value_hidden=64)
+    b = orthogonal_weights_k(seed=2, blocks=3, tied=False, channels=24, value_hidden=64)
+    assert np.array_equal(a, b)
+    assert a.shape == (n_weights_for(3, False, 24, 64),)
+
+
+def test_orthogonal_weights_k_block_conv_tensor_is_exactly_orthogonal() -> None:
+    """The defining property: a block conv weight, reshaped to its
+    ``(out_channels, in_channels*kh*kw)`` matrix, has orthonormal rows
+    scaled by ``gain`` -- ``W @ W.T == gain**2 * I``."""
+    channels = 16
+    weights = orthogonal_weights_k(
+        seed=3, blocks=2, tied=False, channels=channels, value_hidden=32, gain=1.0
+    )
+    parameters = _unpack_k(weights, 2, False, channels, 32)
+    block_conv = parameters[2]  # (channels, channels, 3, 3): rows < cols
+    flat = block_conv.reshape(channels, -1)
+    gram = flat @ flat.T
+    assert np.allclose(gram, np.eye(channels), atol=1e-4)
+
+
+def test_orthogonal_weights_k_tall_dense_tensor_is_exactly_orthogonal() -> None:
+    """The other branch of the rows-vs-cols construction: a "tall" tensor
+    (fan-out 1, e.g. the value head's final dense layer) has its single row
+    (== column, here) unit-norm after the transpose trick."""
+    weights = orthogonal_weights_k(
+        seed=4, blocks=2, tied=False, channels=16, value_hidden=32, gain=1.0
+    )
+    parameters = _unpack_k(weights, 2, False, 16, 32)
+    value_dense2 = parameters[14]  # (value_hidden,): a 32x1 dense weight, squeezed
+    assert value_dense2.shape == (32,)
+    assert np.linalg.norm(value_dense2) == pytest.approx(1.0, abs=1e-4)
+
+
+def test_orthogonal_weights_k_biases_are_zero() -> None:
+    weights = orthogonal_weights_k(seed=0, blocks=2, tied=False, channels=16, value_hidden=32)
+    parameters = _unpack_k(weights, 2, False, 16, 32)
+    for tensor in parameters[1::2]:
+        assert np.all(tensor == 0.0)
