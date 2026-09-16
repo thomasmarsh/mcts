@@ -27,6 +27,7 @@ from othello_eval.convnet import (
 
 from az_train.convnet_othello_torch import (
     OTCNN001Torch,
+    TrainingStalledError,
     _cosine_lr,  # pyright: ignore[reportPrivateUsage]
     fit_torch,
 )
@@ -281,3 +282,47 @@ def test_fit_torch_reduces_held_out_mse_on_a_tiny_synthetic_fit() -> None:
     final_mse = metadata["final_validation_metrics"]["value_mse"]
     assert final_mse < first_epoch_mse
     assert metadata["optimizer_steps"] == 40 * ((split + 63) // 64)
+
+
+def _tiny_synthetic_split() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray, np.ndarray]
+]:
+    rng = np.random.default_rng(11)
+    n = 256
+    me = (rng.random((n, 64)) > 0.6).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.6).astype(np.float32) * (1.0 - me)
+    value = np.tanh((me.sum(axis=1) - opp.sum(axis=1)) / 8.0).astype(np.float64)
+    split = n * 3 // 4
+    train_slice, val_slice = slice(0, split), slice(split, n)
+    return (
+        me[train_slice], opp[train_slice], value[train_slice],
+        (me[val_slice], opp[val_slice], value[val_slice]),
+    )
+
+
+def test_stall_check_raises_when_pearson_never_escapes_threshold() -> None:
+    """A dead-init run sits at ~0 pearson for the entire fit. An unreachable
+    threshold (2.0, pearson is bounded in [-1, 1]) simulates that -- the fit
+    must stop at the checked epoch instead of running to completion."""
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    with pytest.raises(TrainingStalledError) as exc_info:
+        fit_torch(
+            me_tr, opp_tr, value_tr, validation,
+            l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
+            report_every=0, stall_check=(2, 2.0),
+        )
+    assert exc_info.value.epoch == 2
+
+
+def test_stall_check_does_not_raise_once_check_epoch_is_never_reached() -> None:
+    """A ``stall_check`` epoch beyond the fit's total ``epochs`` is never
+    reached, so it must never raise regardless of how training actually
+    goes -- the check is otherwise a no-op, matching every pre-existing
+    caller's behavior with ``stall_check=None``."""
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    _model, metadata = fit_torch(
+        me_tr, opp_tr, value_tr, validation,
+        l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
+        report_every=0, stall_check=(1000, 0.05),
+    )
+    assert len(metadata["validation_epoch_trace"]) == 40

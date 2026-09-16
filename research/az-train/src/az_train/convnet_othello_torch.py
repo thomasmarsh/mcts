@@ -278,6 +278,27 @@ def _cosine_lr(epoch: int, epochs: int, base_lr: float, *, decay: bool) -> float
     return base_lr * 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
+class TrainingStalledError(RuntimeError):
+    """Raised by :func:`fit_torch` when ``stall_check`` is set and validation
+    pearson hasn't escaped noise by the checked epoch. Some seeded inits
+    leave a network dead for its entire run -- pearson pinned at ~0.0 from
+    the first validation onward, regardless of how many further epochs run
+    -- a property of that particular (seed, architecture) combination that
+    both this trainer and the numpy hand-rolled one reproduce identically
+    from the same seeded init, not a bug specific to either. Lets a caller
+    doing multi-seed sweeps bail out well before the remaining epochs (which
+    only re-confirm the same stall) instead of always paying the full fit
+    cost."""
+
+    def __init__(self, epoch: int, pearson: float, threshold: float) -> None:
+        super().__init__(
+            f"training stalled: epoch {epoch} val pearson {pearson:.4f} "
+            f"still below {threshold:.4f}"
+        )
+        self.epoch = epoch
+        self.pearson = pearson
+
+
 def fit_torch(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
@@ -285,6 +306,7 @@ def fit_torch(
     validate_every: int = 1, report_every: int = 0, device: str = "cpu",
     blocks: int = BLOCKS, tied: bool = False, channels: int = CHANNELS,
     value_hidden: int = VALUE_HIDDEN, lr_decay: bool = True,
+    stall_check: tuple[int, float] | None = None,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
     """``othello_eval.convnet.fit_k``'s Adam loop, over ``torch.autograd``
     instead of a hand-derived gradient. Value-only (no policy target) --
@@ -306,6 +328,13 @@ def fit_torch(
     for ``load_from_flat`` or ``write_weights``) report it explicitly
     alongside the pre-existing final-epoch ``train_metrics``/
     ``final_validation_metrics`` -- report both, never just one.
+
+    ``stall_check``, if given, is an ``(epoch, min_abs_pearson)`` pair:
+    once training reaches that epoch, if ``abs(value_pearson)`` from the
+    most recent validation is still below ``min_abs_pearson``, raises
+    :class:`TrainingStalledError` immediately rather than running the
+    remaining epochs to confirm what's already apparent. Off by default
+    (``None``) -- existing callers see no behavior change.
     """
     if not len(me):
         raise ValueError("CNN fitting requires non-empty rows")
@@ -348,6 +377,10 @@ def fit_torch(
             val_prediction, _ = model.predict(vm, vo)
             metrics = _value_metrics(val_prediction, vv)
             validation_epoch_trace.append(metrics)
+            if stall_check is not None:
+                stall_epoch, min_abs_pearson = stall_check
+                if epoch >= stall_epoch and abs(metrics["value_pearson"]) < min_abs_pearson:
+                    raise TrainingStalledError(epoch, metrics["value_pearson"], min_abs_pearson)
             if metrics["value_mse"] < best_val_mse:
                 best_val_mse = metrics["value_mse"]
                 best_epoch = epoch
