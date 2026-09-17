@@ -43,7 +43,17 @@
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
 # L2, VALIDATION_FRACTION, DEVICE, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
-# EDAX_LEVEL, REPLAY_WINDOW, START.
+# EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR.
+#
+# EVALUATOR: which `CnnValueNet` forward-pass backend self-play uses --
+# `cpu` (default, always available) or `mlx` (GPU-backed via
+# `games/othello/src/convnet/mlx.rs::MlxCnnValueNet`, ~4.5-5.4x faster
+# wall-clock on this machine's real self-play call pattern, byte-identical
+# output to the CPU path on the same seed). Requires building
+# `game-othello` with `--features mlx`, which this script only turns on
+# when `EVALUATOR=mlx` -- Homebrew's `mlx`/`mlx-c` must be installed. Only
+# self-play uses this knob; training and gating are untouched and always
+# run on the CPU path.
 #
 # REPLAY_WINDOW: number of most recent generations' shards to train on each
 # generation (default 0 = unlimited/cumulative, every shard from gen0 on,
@@ -78,10 +88,13 @@ EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
 EDAX_LEVEL=${EDAX_LEVEL:-3}
 REPLAY_WINDOW=${REPLAY_WINDOW:-0}
 START=${START:-0}
+EVALUATOR=${EVALUATOR:-cpu}
 
 mkdir -p "$RUN_DIR/shards"
 
-cargo build --release -p game-othello --bin game-othello --example gumbel_gate
+feature_args=()
+if [ "$EVALUATOR" = "mlx" ]; then feature_args=(--features mlx); fi
+cargo build --release -p game-othello --bin game-othello --example gumbel_gate "${feature_args[@]}"
 
 BIN="$ROOT/target/release/game-othello"
 GATE="$ROOT/target/release/examples/gumbel_gate"
@@ -109,6 +122,7 @@ for g in $(seq "$START" $((GENS - 1))); do
 
   echo "=== generation $g: self-play ($GAMES games, $SIMS sims) @ $(date) ==="
   "$BIN" dump --label gumbel --head cnn --cnn-weights "$RUN_DIR/gen$g.cnn.bin" \
+    --evaluator "$EVALUATOR" \
     --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
     --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
     --forced-opening-plies "$FORCED_OPENING_PLIES"

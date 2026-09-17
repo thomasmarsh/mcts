@@ -86,6 +86,9 @@ use mcts_tune::presets::PresetTable;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
+use mcts::algorithms::mcts::policy::PolicyLogits;
+use mcts::evaluator::Evaluator;
+
 use crate::convnet::CnnValueNet;
 use crate::ntuple::{NTupleEval, NTupleModel, NTupleModelEval};
 use crate::policy::NTuplePolicyNet;
@@ -307,6 +310,11 @@ struct Config {
     /// `--label gumbel --head cnn` only: a single `OTCNN001`-layout
     /// checkpoint file (`CnnValueNet::load`). Absent == the all-zero CNN.
     cnn_weights: Option<PathBuf>,
+    /// `--label gumbel --head cnn` only: which `CnnValueNet` forward-pass
+    /// backend runs self-play -- `cpu` (default, always available) or `mlx`
+    /// (GPU-backed via `crate::convnet::mlx::MlxCnnValueNet`, requires
+    /// building with `--features mlx`). Ignored for `--head ntuple`.
+    evaluator: String,
     /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
     gumbel_sims: u32,
     gumbel_max_considered: usize,
@@ -346,6 +354,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut weights_dir = None;
     let mut head = "ntuple".to_string();
     let mut cnn_weights = None;
+    let mut evaluator = "cpu".to_string();
     let mut gumbel_sims = 32u32;
     let mut gumbel_max_considered = 8usize;
     let mut temp_moves = 6u8;
@@ -383,6 +392,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
             "--weights-dir" => weights_dir = Some(PathBuf::from(val())),
             "--head" => head = val(),
             "--cnn-weights" => cnn_weights = Some(PathBuf::from(val())),
+            "--evaluator" => evaluator = val(),
             "--sims" => gumbel_sims = val().parse().expect("--sims must be an integer"),
             "--max-considered" => {
                 gumbel_max_considered = val().parse().expect("--max-considered must be an integer")
@@ -400,7 +410,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                      [--presets <path>] [--manifest <path>] [--harvest-config <path>] \
                      [--ntuple-iters N] [--ntuple-depth N] \
                      [--model <model.toml>] [--weights-dir <dir>] [--head ntuple|cnn] \
-                     [--cnn-weights <path>] [--sims N] \
+                     [--cnn-weights <path>] [--evaluator cpu|mlx] [--sims N] \
                      [--max-considered N] [--temp-moves N] [--forced-opening-plies N]\n\
                      \n\
                      --engine ntuple: self-play guided by $OTHELLO_NTUPLE_WEIGHTS instead of \
@@ -414,7 +424,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                      (model.toml + weights.bin + weights.meta.json + policy.bin + \
                      policy.meta.json); absent, self-play uses the all-zero generation-0 net \
                      over --model's geometry. --head cnn's --cnn-weights points at a single \
-                     OTCNN001-layout checkpoint file; absent, self-play uses the all-zero CNN."
+                     OTCNN001-layout checkpoint file; absent, self-play uses the all-zero CNN. \
+                     --head cnn's --evaluator picks the forward-pass backend: cpu (default) \
+                     or mlx (GPU-backed, requires building game-othello with --features mlx)."
                 );
                 std::process::exit(0);
             }
@@ -440,6 +452,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     assert!(
         matches!(head.as_str(), "ntuple" | "cnn"),
         "unknown --head mode: {head}"
+    );
+    assert!(
+        matches!(evaluator.as_str(), "cpu" | "mlx"),
+        "unknown --evaluator: {evaluator} (want cpu | mlx)"
     );
     assert!(gumbel_sims >= 1, "--sims must be positive");
     assert!(
@@ -467,6 +483,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
         weights_dir,
         head,
         cnn_weights,
+        evaluator,
         gumbel_sims,
         gumbel_max_considered,
         temp_moves,
@@ -704,10 +721,42 @@ fn play_one_gumbel_game(
         .collect()
 }
 
+/// Play `cfg.games` Gumbel self-play games through [`CnnGumbelPlayer`] with
+/// `net` as its value+policy container, pushing a [`RecordV2`] per
+/// non-terminal position. Generic over the evaluator so the identical game
+/// loop drives both the CPU (`CnnValueNet`) and MLX
+/// (`crate::convnet::mlx::MlxCnnValueNet`) backends -- only the per-leaf
+/// forward pass differs between them.
+fn run_cnn_gumbel_games<E>(net: E, cfg: &Config, gcfg: GumbelConfig, out: &mut Vec<RecordV2>)
+where
+    E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static,
+{
+    for g in 0..cfg.games {
+        let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
+        let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, game_seed);
+        out.extend(play_one_gumbel_game(
+            |s| player.choose(s),
+            g,
+            game_seed,
+            cfg,
+        ));
+        if (g + 1) % 25 == 0 || g + 1 == cfg.games {
+            eprintln!(
+                "  played {}/{} gumbel games ({} records) [cnn/{}]",
+                g + 1,
+                cfg.games,
+                out.len(),
+                cfg.evaluator
+            );
+        }
+    }
+}
+
 /// Play `cfg.games` Gumbel self-play games, pushing a [`RecordV2`] with the
 /// completed-Q improved policy as its policy tail for every non-terminal
 /// position, using either the n-tuple heads (`--head ntuple`, default) or
-/// the joint CNN value+policy container (`--head cnn`).
+/// the joint CNN value+policy container (`--head cnn`, backend picked by
+/// `cfg.evaluator`).
 fn dump_gumbel_games(cfg: &Config, out: &mut Vec<RecordV2>) {
     let gcfg = GumbelConfig {
         sims: cfg.gumbel_sims,
@@ -716,28 +765,34 @@ fn dump_gumbel_games(cfg: &Config, out: &mut Vec<RecordV2>) {
     };
 
     if cfg.head == "cnn" {
-        let net = match &cfg.cnn_weights {
-            Some(p) => CnnValueNet::load(p)
-                .unwrap_or_else(|e| panic!("cannot load CNN weights {}: {e}", p.display())),
-            None => CnnValueNet::default(),
-        };
-        for g in 0..cfg.games {
-            let game_seed = cfg.seed.wrapping_add(g).wrapping_add(1);
-            let mut player = CnnGumbelPlayer::new(net.clone(), gcfg, game_seed);
-            out.extend(play_one_gumbel_game(
-                |s| player.choose(s),
-                g,
-                game_seed,
-                cfg,
-            ));
-            if (g + 1) % 25 == 0 || g + 1 == cfg.games {
-                eprintln!(
-                    "  played {}/{} gumbel games ({} records) [cnn]",
-                    g + 1,
-                    cfg.games,
-                    out.len()
-                );
+        match cfg.evaluator.as_str() {
+            "cpu" => {
+                let net = match &cfg.cnn_weights {
+                    Some(p) => CnnValueNet::load(p)
+                        .unwrap_or_else(|e| panic!("cannot load CNN weights {}: {e}", p.display())),
+                    None => CnnValueNet::default(),
+                };
+                run_cnn_gumbel_games(net, cfg, gcfg, out);
             }
+            "mlx" => {
+                #[cfg(feature = "mlx")]
+                {
+                    let net = match &cfg.cnn_weights {
+                        Some(p) => crate::convnet::mlx::MlxCnnValueNet::load(p).unwrap_or_else(|e| {
+                            panic!("cannot load CNN weights {}: {e}", p.display())
+                        }),
+                        None => crate::convnet::mlx::MlxCnnValueNet::default(),
+                    };
+                    run_cnn_gumbel_games(net, cfg, gcfg, out);
+                }
+                #[cfg(not(feature = "mlx"))]
+                {
+                    panic!(
+                        "--evaluator mlx requires building game-othello with --features mlx"
+                    );
+                }
+            }
+            other => panic!("unknown --evaluator: {other}"),
         }
         return;
     }
@@ -1345,6 +1400,7 @@ mod tests {
             weights_dir: None,
             head: "ntuple".to_string(),
             cnn_weights: None,
+            evaluator: "cpu".to_string(),
             gumbel_sims: 8,
             gumbel_max_considered: 4,
             temp_moves: 6,

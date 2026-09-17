@@ -26,13 +26,14 @@
 
 use mcts::algorithms::mcts::gumbel::{gumbel_search_with_root_value, GumbelConfig, GumbelOutcome};
 use mcts::algorithms::mcts::node::QInit;
+use mcts::algorithms::mcts::policy::PolicyLogits;
 use mcts::algorithms::mcts::profile::Mcts;
 use mcts::algorithms::mcts::select::GumbelCompletedQ;
 use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
+use mcts::evaluator::{Evaluator, EVAL_MAGNITUDE_LIMIT};
 
-use crate::convnet::CnnValueNet;
 use crate::ntuple::NTupleModelEval;
 use crate::policy::NTuplePolicyNet;
 use crate::{Move, Othello, State};
@@ -102,20 +103,23 @@ impl Search for GumbelPlayer {
     }
 }
 
-/// Gumbel player backed by the compact joint value-and-policy convolutional
-/// container (`CnnValueNet`), the Othello analogue of Connect Four's
-/// `CnnGumbelPlayer`. The shared container supplies both the `Evaluator`
-/// and `PolicyLogits` contracts without seeding policy logits as child
-/// values, exactly as `GumbelPlayer` above does for the n-tuple heads.
-pub struct CnnGumbelPlayer {
-    search: TreeSearch<Othello, Mcts<GumbelCompletedQ, EvaluatedCutoff<Othello, CnnValueNet>>>,
-    net: CnnValueNet,
+/// Gumbel player backed by a joint value-and-policy container implementing
+/// both `Evaluator<Othello>` and `PolicyLogits<Othello>` -- the Othello
+/// analogue of Connect Four's `CnnGumbelPlayer`. Generic over the evaluator
+/// so the same search wiring works with `crate::convnet::CnnValueNet` (CPU)
+/// or `crate::convnet::mlx::MlxCnnValueNet` (GPU, behind the `mlx` feature)
+/// without duplicating this struct per backend. The shared container
+/// supplies both contracts without seeding policy logits as child values,
+/// exactly as `GumbelPlayer` above does for the n-tuple heads.
+pub struct CnnGumbelPlayer<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static> {
+    search: TreeSearch<Othello, Mcts<GumbelCompletedQ, EvaluatedCutoff<Othello, E>>>,
+    net: E,
     cfg: GumbelConfig,
     name: String,
 }
 
-impl CnnGumbelPlayer {
-    pub fn new(net: CnnValueNet, cfg: GumbelConfig, seed: u64) -> Self {
+impl<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static> CnnGumbelPlayer<E> {
+    pub fn new(net: E, cfg: GumbelConfig, seed: u64) -> Self {
         let search = TreeSearch::default().config(
             SearchConfig::default()
                 .expand_threshold(1)
@@ -136,11 +140,12 @@ impl CnnGumbelPlayer {
 
     /// The full Gumbel outcome, including its completed-Q policy target.
     pub fn choose(&mut self, state: &State) -> GumbelOutcome<Move> {
-        gumbel_search_with_root_value(&mut self.search, state, &self.cfg, self.net.value(state) as f64)
+        let root_value = self.net.evaluate(state) as f64 / EVAL_MAGNITUDE_LIMIT as f64;
+        gumbel_search_with_root_value(&mut self.search, state, &self.cfg, root_value)
     }
 }
 
-impl Search for CnnGumbelPlayer {
+impl<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static> Search for CnnGumbelPlayer<E> {
     type G = Othello;
 
     fn friendly_name(&self) -> String {
@@ -159,6 +164,7 @@ impl Search for CnnGumbelPlayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convnet::CnnValueNet;
     use crate::ntuple::ModelGeometry;
     use crate::{Player, BB};
     use mcts::game::Game;
@@ -332,7 +338,7 @@ mod tests {
     /// in a slow graded run. `CnnValueNet`'s own value/policy correctness
     /// (D4 equivariance, cross-language fixtures) is already covered in
     /// `convnet.rs`; these tests are about the search seam, not the network.
-    fn cnn_player_with(cfg: GumbelConfig, seed: u64) -> CnnGumbelPlayer {
+    fn cnn_player_with(cfg: GumbelConfig, seed: u64) -> CnnGumbelPlayer<CnnValueNet> {
         CnnGumbelPlayer::new(CnnValueNet::default(), cfg, seed)
     }
 
