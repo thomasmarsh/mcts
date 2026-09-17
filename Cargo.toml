@@ -40,6 +40,7 @@ resolver = "2"
 members = [
     "crates/bitboard",
     "crates/pyramid",
+    "crates/mlx-sys",
     "crates/mcts",
     "crates/mcts-bench",
     "crates/mcts-tune",

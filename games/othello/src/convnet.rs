@@ -33,6 +33,13 @@ use crate::ntuple::D4;
 use crate::policy::INV;
 use crate::{Move, Othello, Player, State};
 
+/// GPU-backed (MLX) reimplementation of this module's forward pass, gated
+/// behind the `mlx` Cargo feature -- see `mlx.rs`'s module docs for the
+/// layout conversions it does against this module's private weight-offset
+/// constants and `input`/`trunk`-shaped architecture.
+#[cfg(feature = "mlx")]
+pub mod mlx;
+
 const BOARD: usize = 8;
 const CHANNELS: usize = 16;
 const BLOCKS: usize = 4;

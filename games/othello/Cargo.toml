@@ -22,10 +22,22 @@ serde_json = "1"
 rand = "0.8"
 toml = "0.8"
 sha2 = "0.10"
+mlx-sys = { path = "../../crates/mlx-sys", optional = true }
 
 [dev-dependencies]
 rand = "0.8"
 mcts-bench = { path = "../../crates/mcts-bench", default-features = false }
+
+[[example]]
+name = "mlx_selfplay_bench"
+required-features = ["mlx"]
+
+[features]
+# GPU-backed `CnnValueNet` forward pass via `mlx-sys` (Homebrew mlx-c/mlx,
+# see `crates/mlx-sys/build.rs`), off by default so the ordinary CPU-only
+# build has zero new dependency weight -- see
+# `local/work/plan/llm-jepa/mlx-selfplay-spike.md` for why this exists.
+mlx = ["dep:mlx-sys"]
 
 [lints]
 workspace = true

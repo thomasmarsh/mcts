@@ -1,0 +1,14 @@
+[package]
+name = "mlx-sys"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "mlx_sys"
+
+[build-dependencies]
+bindgen = "0.72"
+
+[lints]
+workspace = true
