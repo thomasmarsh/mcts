@@ -512,6 +512,7 @@ def _fan_in(tensor: np.ndarray) -> int:
 
 def kaiming_weights_k(
     seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+    bias: float = 0.0,
 ) -> np.ndarray:
     """Kaiming/He-normal alternative to :func:`initial_weights_k`: unlike
     that function's single fixed 0.03 standard deviation applied to every
@@ -521,12 +522,17 @@ def kaiming_weights_k(
     regardless of a layer's width or the stack's depth, unlike a fixed std
     applied uniformly to every tensor (whose fit to a ReLU stack's actual
     signal propagation only holds for one particular width/depth
-    combination and drifts arbitrarily far from that for any other). Biases
-    are zero-initialized -- the standard Kaiming pairing -- not
-    ``initial_weights_k``'s fixed 0.05; a second, deliberate deviation from
-    that function, not silently conflated with the init-scale change. A
-    wholly separate function: ``initial_weights_k`` and every existing
-    caller of it are untouched."""
+    combination and drifts arbitrarily far from that for any other).
+    ``bias`` (default ``0.0``, the standard Kaiming pairing) sets every
+    bias tensor to that fixed value -- exposed so a caller can isolate the
+    weight-scaling change from the bias-init change (e.g. ``bias=0.05`` to
+    match ``initial_weights_k``'s own bias constant while keeping fan-in
+    scaling), which the default reproduces neither silently nor by
+    accident: it stays a second, deliberate deviation from
+    ``initial_weights_k``, not conflated with the init-scale change unless a
+    caller explicitly asks for that combination. A wholly separate
+    function: ``initial_weights_k`` and every existing caller of it are
+    untouched."""
     rng = np.random.default_rng(seed)
     weights = np.zeros(n_weights_for(blocks, tied, channels, value_hidden), dtype=np.float32)
     parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
@@ -535,7 +541,7 @@ def kaiming_weights_k(
         std = math.sqrt(2.0 / _fan_in(tensor))
         tensor[...] = rng.standard_normal(tensor.shape).astype(np.float32) * std
     for index in range(1, len(parameters), 2):
-        parameters[index].fill(0.0)
+        parameters[index].fill(bias)
     return weights
 
 
@@ -565,7 +571,7 @@ def _orthogonal(rng: np.random.Generator, shape: tuple[int, ...], gain: float) -
 
 def orthogonal_weights_k(
     seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
-    gain: float = math.sqrt(2.0),
+    gain: float = math.sqrt(2.0), bias: float = 0.0,
 ) -> np.ndarray:
     """Orthogonal alternative to :func:`initial_weights_k`/
     :func:`kaiming_weights_k`: every weight tensor's rows (or columns, for a
@@ -578,9 +584,11 @@ def orthogonal_weights_k(
     is ``sqrt(2)``, the standard ReLU
     correction (Saxe et al.'s original construction targets a linear/tanh
     network; ReLU halves the signal on average, so the same ``sqrt(2)``
-    correction Kaiming uses applies here too). Biases zero-initialized, same
-    pairing as :func:`kaiming_weights_k`. A wholly separate function --
-    ``initial_weights_k`` is untouched."""
+    correction Kaiming uses applies here too). ``bias`` (default ``0.0``,
+    same pairing as :func:`kaiming_weights_k`) sets every bias tensor to
+    that fixed value -- see :func:`kaiming_weights_k`'s own ``bias``
+    parameter for why this is exposed rather than hardcoded. A wholly
+    separate function -- ``initial_weights_k`` is untouched."""
     rng = np.random.default_rng(seed)
     weights = np.zeros(n_weights_for(blocks, tied, channels, value_hidden), dtype=np.float32)
     parameters = _unpack_k(weights, blocks, tied, channels, value_hidden)
@@ -588,8 +596,28 @@ def orthogonal_weights_k(
         tensor = parameters[index]
         tensor[...] = _orthogonal(rng, tensor.shape, gain)
     for index in range(1, len(parameters), 2):
-        parameters[index].fill(0.0)
+        parameters[index].fill(bias)
     return weights
+
+
+def kaiming_bias05_weights_k(
+    seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> np.ndarray:
+    """:func:`kaiming_weights_k` with ``bias=0.05`` -- isolates the
+    fan-in-scaled weight std from the zero-bias pairing by keeping
+    ``initial_weights_k``'s own bias constant instead. Same 5-positional-arg
+    signature as every other ``*_weights_k`` initializer so it plugs into
+    ``az_train.convnet_othello_torch.INIT_FUNCTIONS`` unchanged."""
+    return kaiming_weights_k(seed, blocks, tied, channels, value_hidden, bias=0.05)
+
+
+def orthogonal_bias05_weights_k(
+    seed: int, blocks: int, tied: bool, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> np.ndarray:
+    """:func:`orthogonal_weights_k` with ``bias=0.05`` -- isolates exact
+    orthogonality from the zero-bias pairing, same reasoning as
+    :func:`kaiming_bias05_weights_k`."""
+    return orthogonal_weights_k(seed, blocks, tied, channels, value_hidden, bias=0.05)
 
 
 def _predict_literal_k(

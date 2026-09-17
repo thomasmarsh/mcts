@@ -27,9 +27,11 @@ from othello_eval.convnet import (
     fit_k,
     initial_weights,
     initial_weights_k,
+    kaiming_bias05_weights_k,
     kaiming_weights_k,
     me_opp_planes,
     n_weights_for,
+    orthogonal_bias05_weights_k,
     orthogonal_weights_k,
     predict,
     predict_k,
@@ -561,3 +563,28 @@ def test_orthogonal_weights_k_biases_are_zero() -> None:
     parameters = _unpack_k(weights, 2, False, 16, 32)
     for tensor in parameters[1::2]:
         assert np.all(tensor == 0.0)
+
+
+def test_kaiming_bias05_weights_k_matches_kaiming_weights_except_bias() -> None:
+    """Isolates the fan-in-scaled weight std from the zero-bias pairing:
+    identical weight tensors to ``kaiming_weights_k`` at the same seed, but
+    every bias fixed at 0.05 instead of 0.0."""
+    plain = kaiming_weights_k(seed=5, blocks=2, tied=False, channels=16, value_hidden=32)
+    bias05 = kaiming_bias05_weights_k(seed=5, blocks=2, tied=False, channels=16, value_hidden=32)
+    plain_params = _unpack_k(plain, 2, False, 16, 32)
+    bias05_params = _unpack_k(bias05, 2, False, 16, 32)
+    for w_plain, w_bias05 in zip(plain_params[0::2], bias05_params[0::2], strict=True):
+        assert np.array_equal(w_plain, w_bias05)
+    for tensor in bias05_params[1::2]:
+        assert np.all(tensor == 0.05)
+
+
+def test_orthogonal_bias05_weights_k_matches_orthogonal_weights_except_bias() -> None:
+    plain = orthogonal_weights_k(seed=6, blocks=2, tied=False, channels=16, value_hidden=32)
+    bias05 = orthogonal_bias05_weights_k(seed=6, blocks=2, tied=False, channels=16, value_hidden=32)
+    plain_params = _unpack_k(plain, 2, False, 16, 32)
+    bias05_params = _unpack_k(bias05, 2, False, 16, 32)
+    for w_plain, w_bias05 in zip(plain_params[0::2], bias05_params[0::2], strict=True):
+        assert np.array_equal(w_plain, w_bias05)
+    for tensor in bias05_params[1::2]:
+        assert np.all(tensor == 0.05)

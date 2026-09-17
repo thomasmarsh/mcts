@@ -85,8 +85,10 @@ from othello_eval.convnet import (
     VALUE_HIDDEN,
     _pearson,  # pyright: ignore[reportPrivateUsage]
     initial_weights_k,
+    kaiming_bias05_weights_k,
     kaiming_weights_k,
     n_weights_for,
+    orthogonal_bias05_weights_k,
     orthogonal_weights_k,
 )
 from torch import nn
@@ -98,11 +100,17 @@ from torch import nn
 #: alternatives that scale (or exactly orthogonalize) each weight tensor by
 #: its own fan-in instead of using one fixed std for every tensor regardless
 #: of layer size, each its own function in ``othello_eval.convnet`` --
-#: ``initial_weights_k`` itself is untouched.
+#: ``initial_weights_k`` itself is untouched. ``"kaiming_bias05"``/
+#: ``"orthogonal_bias05"`` isolate each scheme's weight-scaling change from
+#: its zero-bias pairing by keeping ``initial_weights_k``'s own 0.05 bias
+#: constant instead (`local/work/plan/llm-jepa/init-stability.md`'s Session
+#: 1/2 follow-up).
 INIT_FUNCTIONS: dict[str, Any] = {
     "fixed_normal": initial_weights_k,
     "kaiming": kaiming_weights_k,
     "orthogonal": orthogonal_weights_k,
+    "kaiming_bias05": kaiming_bias05_weights_k,
+    "orthogonal_bias05": orthogonal_bias05_weights_k,
 }
 
 
