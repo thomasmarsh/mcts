@@ -180,20 +180,36 @@ class OTCNN001Torch(nn.Module):
         return value, policy
 
     @torch.no_grad()
-    def predict(self, me: np.ndarray, opp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def predict(
+        self, me: np.ndarray, opp: np.ndarray, *, chunk_size: int = 16_384
+    ) -> tuple[np.ndarray, np.ndarray]:
         """D4-averaged value and 64-column policy logits from ``(N, 64)``
         numpy occupancy arrays -- matches ``othello_eval.convnet.predict``'s
-        symmetry loop and ``INV`` back-permutation exactly."""
+        symmetry loop and ``INV`` back-permutation exactly.
+
+        Chunks the forward pass over ``chunk_size`` rows at a time rather
+        than running all ``N`` rows through the conv stack in one shot --
+        at full-corpus scale (N ~800k) a single unbatched pass overflows
+        MPS's memory limit (``fit_torch``'s own final train-metrics call
+        is exactly this shape: the whole training set, not a minibatch,
+        run through ``predict`` once). Chunking bounds peak memory
+        regardless of ``N`` without changing the returned values --
+        each row's D4-averaged prediction is independent of every other
+        row's."""
         device = next(self.parameters()).device
-        value_total = np.zeros(me.shape[0], dtype=np.float64)
-        policy_total = np.zeros((me.shape[0], SQUARES), dtype=np.float64)
+        n = me.shape[0]
+        value_total = np.zeros(n, dtype=np.float64)
+        policy_total = np.zeros((n, SQUARES), dtype=np.float64)
         for sym in range(8):
             cols = D4[sym]
-            me_t = torch.as_tensor(me[:, cols], dtype=torch.float32, device=device)
-            opp_t = torch.as_tensor(opp[:, cols], dtype=torch.float32, device=device)
-            v, logits = self.forward_literal(me_t, opp_t)
-            value_total += v.cpu().numpy().astype(np.float64)
-            policy_total += logits.cpu().numpy()[:, INV[sym]].astype(np.float64)
+            inv = INV[sym]
+            for start in range(0, n, chunk_size):
+                end = min(start + chunk_size, n)
+                me_t = torch.as_tensor(me[start:end, cols], dtype=torch.float32, device=device)
+                opp_t = torch.as_tensor(opp[start:end, cols], dtype=torch.float32, device=device)
+                v, logits = self.forward_literal(me_t, opp_t)
+                value_total[start:end] += v.cpu().numpy().astype(np.float64)
+                policy_total[start:end] += logits.cpu().numpy()[:, inv].astype(np.float64)
         return (value_total / 8.0).astype(np.float32), (policy_total / 8.0).astype(np.float32)
 
     def load_from_flat(self, weights: np.ndarray) -> None:

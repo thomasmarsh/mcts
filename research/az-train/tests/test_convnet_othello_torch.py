@@ -60,6 +60,29 @@ def test_predict_matches_numpy_on_a_random_batch() -> None:
     assert np.allclose(torch_policy, numpy_policy, atol=1e-5)
 
 
+def test_predict_chunking_does_not_change_the_result() -> None:
+    """``predict``'s internal chunking (bounds peak memory for a large N by
+    running the forward pass in pieces instead of all rows at once) must be
+    purely a memory-shape change -- each row's D4-averaged prediction is
+    independent of every other row's, so a tiny chunk size must produce the
+    same output as one big chunk (within float32 tolerance -- different
+    batch sizes hit different BLAS/conv op orderings, so this is not
+    bit-exact)."""
+    weights = initial_weights(seed=4)
+    rng = np.random.default_rng(5)
+    n = 37
+    me = (rng.random((n, 64)) > 0.7).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
+
+    model = OTCNN001Torch()
+    model.load_from_flat(weights)
+    whole_value, whole_policy = model.predict(me, opp, chunk_size=10_000)
+    chunked_value, chunked_policy = model.predict(me, opp, chunk_size=5)
+
+    assert np.allclose(whole_value, chunked_value, atol=1e-5)
+    assert np.allclose(whole_policy, chunked_policy, atol=1e-5)
+
+
 def test_value_matches_the_cross_language_reference_fixture() -> None:
     """Same weights formula and state as ``othello_eval.convnet``'s
     ``test_value_matches_the_rust_reference_fixture`` and
