@@ -8,18 +8,24 @@
 #   RUN_DIR=local/output/az/othello-cnn/run0 bash research/az-train/coordinator_othello_cnn.sh
 #
 # Per generation: Gumbel self-play (gen k weights, `--head cnn`) -> az-train-
-# othello-cnn fit (value + policy, both against the self-play outcome/
-# completed-Q label) -> gumbel_gate --head cnn vs gen0 and vs gen(k-1), with
-# an Edax yardstick line folded into the same gate run -> one merged JSON
-# metrics line appended to log.jsonl. Every generation checkpoints its
-# shard, weights, gate output, and metrics line before the next starts, so
-# an interrupt resumes with START set to the first unfinished generation.
+# othello-cnn fit (PyTorch Adam, value MSE + masked policy cross-entropy
+# against the self-play outcome/completed-Q label, cosine LR decay, best-
+# validation-checkpoint selection -- `az_train.convnet_othello_torch.
+# fit_torch`) -> gumbel_gate --head cnn vs gen0 and vs gen(k-1), with an
+# Edax yardstick line folded into the same gate run -> one merged JSON
+# metrics line appended to log.jsonl, plus a per-epoch JSONL sidecar
+# (gen<N>.epochs.jsonl) written incrementally during that generation's fit.
+# Every generation checkpoints its shard, weights, gate output, and metrics
+# line before the next starts, so an interrupt resumes with START set to
+# the first unfinished generation.
 #
 # Checkpoint format: unlike the n-tuple head's checkpoint *directory*
 # (`model.toml` geometry-as-data + `weights.bin` + `policy.bin`), the CNN's
 # architecture is fixed code (`OTCNN001`), so each generation is a single
 # `gen<N>.cnn.bin` file (`games/othello/src/convnet.rs::CnnValueNet::load`'s
-# exact byte layout) plus a `gen<N>.cnn.bin.meta.json` sidecar.
+# exact byte layout) plus a `gen<N>.cnn.bin.meta.json` sidecar. `az-train-
+# othello-cnn` always writes the fit's best-validation-checkpoint weights
+# (not the final epoch's) to this file.
 #
 # The gate call and its stdout->JSON merge mirror coordinator_othello.sh's
 # own n-tuple gate wiring exactly (same `gumbel_gate` binary, same
@@ -29,9 +35,14 @@
 # single `.meta.json` sidecar merged in place of the n-tuple's separate
 # weights/policy meta files.
 #
+# Progress while this is running: `tail -f "$RUN_DIR/log.jsonl"` for one
+# line per completed generation (wall clock, positions, value/policy
+# metrics, both gate results), or `tail -f "$RUN_DIR/gen<N>.epochs.jsonl"`
+# for that generation's own live per-epoch validation trace while it fits.
+#
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
-# L2, VALIDATION_FRACTION, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
+# L2, VALIDATION_FRACTION, DEVICE, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
 # EDAX_LEVEL, REPLAY_WINDOW, START.
 #
 # REPLAY_WINDOW: number of most recent generations' shards to train on each
@@ -55,11 +66,12 @@ SIMS=${SIMS:-32}
 MAX_CONSIDERED=${MAX_CONSIDERED:-8}
 TEMP_MOVES=${TEMP_MOVES:-12}
 FORCED_OPENING_PLIES=${FORCED_OPENING_PLIES:-6}
-EPOCHS=${EPOCHS:-24}
+EPOCHS=${EPOCHS:-120}
 BATCH_SIZE=${BATCH_SIZE:-4096}
 LR=${LR:-2e-3}
 L2=${L2:-1e-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.1}
+DEVICE=${DEVICE:-}
 GATE_GAMES=${GATE_GAMES:-100}
 EDAX_BINARY=${EDAX_BINARY:-games/othello/edax/vendor/bin/mEdax-native}
 EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
@@ -116,10 +128,13 @@ for g in $(seq "$START" $((GENS - 1))); do
   for s in $(seq "$window_start" "$g"); do parts="$parts${parts:+,}$RUN_DIR/shards/gen$s.bin"; done
 
   echo "=== generation $g -> $((g + 1)): train @ $(date) ==="
+  device_arg=()
+  if [ -n "$DEVICE" ]; then device_arg=(--device "$DEVICE"); fi
   uv run --project research/az-train az-train-othello-cnn \
     --positions "$parts" --out "$RUN_DIR/gen$((g + 1)).cnn.bin" \
     --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --learning-rate "$LR" --l2 "$L2" \
-    --validation-fraction "$VALIDATION_FRACTION" --split-seed "$g"
+    --validation-fraction "$VALIDATION_FRACTION" --split-seed "$g" \
+    --epoch-log "$RUN_DIR/gen$((g + 1)).epochs.jsonl" "${device_arg[@]}"
 
   echo "=== generation $((g + 1)): gates ($GATE_GAMES games) @ $(date) ==="
   # Gates are diagnostic, not a hard stop -- a FAIL must not abort the loop,

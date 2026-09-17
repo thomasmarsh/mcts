@@ -282,7 +282,7 @@ def test_fit_k_reduces_validation_mse_below_a_constant_baseline() -> None:
 
 def test_weight_count_matches_the_documented_layout() -> None:
     stem = 16 * 2 * 3 * 3 + 16
-    blocks = 2 * 2 * (16 * 16 * 3 * 3 + 16)
+    blocks = BLOCKS * 2 * (16 * 16 * 3 * 3 + 16)
     value = 16 + 1 + 64 * 32 + 32 + 32 + 1
     policy = 16 + 1 + 64 * 64 + 64
     assert N_WEIGHTS == stem + blocks + value + policy
@@ -434,7 +434,7 @@ def test_value_matches_the_rust_reference_fixture() -> None:
     me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
     opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
     value, _policy = predict(weights, me, opp)
-    assert abs(float(value[0]) - 0.0042488095) < 1e-6
+    assert abs(float(value[0]) - 0.011578532867133617) < 1e-6
 
 
 def test_policy_matches_the_rust_reference_fixture() -> None:
@@ -452,14 +452,14 @@ def test_policy_matches_the_rust_reference_fixture() -> None:
     opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
     _value, policy = predict(weights, me, opp)
     expected = [
-        0.009362561628222466,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.009362561628222466,
+        0.01916549541056156,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549541056156,
     ]
     for actual, want in zip(policy[0, :8], expected, strict=True):
         assert abs(float(actual) - want) < 1e-6, (actual, want)

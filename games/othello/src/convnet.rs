@@ -1,7 +1,7 @@
 //! Compact, versioned Othello convolutional value+policy inference.
 //!
 //! `OTCNN001` (version 2) is a two-plane 8x8 network with a 16-channel stem,
-//! two residual blocks, and separate value and policy heads sharing that
+//! four residual blocks, and separate value and policy heads sharing that
 //! trunk -- the direct 8x8 generalization of Connect Four's `C4CNN001`
 //! (`games/connect4/src/convnet.rs`), which also shares one trunk between
 //! both heads. Version 1 was value-only; see
@@ -35,7 +35,7 @@ use crate::{Move, Othello, Player, State};
 
 const BOARD: usize = 8;
 const CHANNELS: usize = 16;
-const BLOCKS: usize = 2;
+const BLOCKS: usize = 4;
 const VALUE_HIDDEN: usize = 32;
 const POLICY_OUTPUTS: usize = 64;
 const MAGIC: &[u8; 8] = b"OTCNN001";
@@ -324,7 +324,7 @@ mod tests {
         let net = CnnValueNet::from_weights(weights);
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = net.value(&s);
-        assert!((got - 0.004_248_809_5).abs() < 1e-6, "{got}");
+        assert!((got - 0.011_578_533).abs() < 1e-6, "{got}");
     }
 
     #[test]
@@ -359,14 +359,14 @@ mod tests {
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = net.all_policy_logits(&s);
         let expected = [
-            0.009_362_561_628_222_466,
-            0.009_362_562_559_545_04,
-            0.009_362_562_559_545_04,
-            0.009_362_562_559_545_04,
-            0.009_362_562_559_545_04,
-            0.009_362_562_559_545_04,
-            0.009_362_562_559_545_04,
-            0.009_362_561_628_222_466,
+            0.019_165_495_410_561_56,
+            0.019_165_497_273_206_71,
+            0.019_165_497_273_206_71,
+            0.019_165_497_273_206_71,
+            0.019_165_497_273_206_71,
+            0.019_165_497_273_206_71,
+            0.019_165_497_273_206_71,
+            0.019_165_495_410_561_56,
         ];
         for (actual, expected) in got.iter().take(8).zip(expected) {
             assert!((actual - expected).abs() < 1e-5, "{actual} vs {expected}");

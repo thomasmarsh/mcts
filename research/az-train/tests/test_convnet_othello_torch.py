@@ -15,6 +15,7 @@ import torch
 from othello_eval.convnet import (
     BLOCKS,
     CHANNELS,
+    COLUMNS,
     N_WEIGHTS,
     VALUE_HIDDEN,
     _literal_loss_gradient_k,  # pyright: ignore[reportPrivateUsage]
@@ -101,7 +102,7 @@ def test_value_matches_the_cross_language_reference_fixture() -> None:
     model = OTCNN001Torch()
     model.load_from_flat(weights)
     value, _policy = model.predict(me, opp)
-    assert abs(float(value[0]) - 0.0042488095) < 1e-6
+    assert abs(float(value[0]) - 0.011578532867133617) < 1e-6
 
 
 def test_policy_matches_the_cross_language_reference_fixture() -> None:
@@ -119,14 +120,14 @@ def test_policy_matches_the_cross_language_reference_fixture() -> None:
     model.load_from_flat(weights)
     _value, policy = model.predict(me, opp)
     expected = [
-        0.009362561628222466,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.00936256255954504,
-        0.009362561628222466,
+        0.01916549541056156,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549727320671,
+        0.01916549541056156,
     ]
     for actual, want in zip(policy[0, :8], expected, strict=True):
         assert abs(float(actual) - want) < 1e-6, (actual, want)
@@ -479,3 +480,78 @@ def test_fit_torch_with_retry_raises_after_every_attempt_stalls(
             seed=5, max_retries=2,
         )
     assert [a["seed"] for a in exc_info.value.attempts] == [5, 6, 7]
+
+
+def _rng_batch(seed: int, n: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    me = (rng.random((n, 64)) > 0.7).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
+    value = rng.uniform(-1.0, 1.0, size=n).astype(np.float32)
+    return me, opp, value
+
+
+def _two_square_targets(me: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Same learnable-signal fixture as ``othello_eval.convnet``'s test
+    suite's own ``_two_square_targets``: squares 0/1 are the only legal
+    columns, target mass sits on square 0 iff ``me``'s square 0 is
+    occupied, else square 1."""
+    n = me.shape[0]
+    target = np.zeros((n, COLUMNS), dtype=np.float64)
+    legal = np.zeros((n, COLUMNS), dtype=bool)
+    legal[:, 0] = True
+    legal[:, 1] = True
+    choose_zero = me[:, 0] > 0.5
+    target[choose_zero, 0] = 1.0
+    target[~choose_zero, 1] = 1.0
+    return target, legal
+
+
+def test_fit_torch_with_policy_reduces_policy_cross_entropy_below_uniform() -> None:
+    """The torch-autograd counterpart of ``othello_eval.convnet``'s
+    ``test_fit_with_policy_reduces_policy_cross_entropy_below_uniform`` --
+    proves :func:`_policy_loss_torch` actually trains the policy head, not
+    just that it's wired up and shaped correctly."""
+    me, opp, value = _rng_batch(seed=20, n=300)
+    policy, legal = _two_square_targets(me)
+    val_me, val_opp, val_value = _rng_batch(seed=22, n=60)
+    val_policy, val_legal = _two_square_targets(val_me)
+    _model, metadata = fit_torch(
+        me, opp, value, (val_me, val_opp, val_value),
+        seed=0, epochs=30, batch_size=32, learning_rate=2e-3,
+        policy=policy, legal=legal,
+        validation_policy=val_policy, validation_legal=val_legal,
+    )
+    final_metrics = metadata["final_validation_metrics"]
+    uniform_ce = float(np.mean(np.log(val_legal.sum(axis=1))))
+    assert final_metrics["masked_policy_cross_entropy"] < uniform_ce
+
+
+def test_fit_torch_without_policy_omits_policy_metrics() -> None:
+    """Value-only calls (the pre-existing default) report no
+    ``masked_policy_cross_entropy`` key -- confirms the addition is
+    opt-in and doesn't change value-only callers' metadata shape."""
+    me, opp, value = _rng_batch(seed=1, n=20)
+    val_me, val_opp, val_value = _rng_batch(seed=2, n=8)
+    _model, metadata = fit_torch(
+        me, opp, value, (val_me, val_opp, val_value), seed=0, epochs=2, batch_size=8,
+    )
+    assert "masked_policy_cross_entropy" not in metadata["final_validation_metrics"]
+
+
+def test_fit_torch_epoch_log_path_writes_one_line_per_validation_epoch(tmp_path: object) -> None:
+    from pathlib import Path
+
+    me, opp, value = _rng_batch(seed=3, n=20)
+    val_me, val_opp, val_value = _rng_batch(seed=4, n=8)
+    log_path = Path(str(tmp_path)) / "epochs.jsonl"
+    fit_torch(
+        me, opp, value, (val_me, val_opp, val_value), seed=0, epochs=4, batch_size=8,
+        validate_every=1, epoch_log_path=str(log_path),
+    )
+    lines = log_path.read_text().splitlines()
+    assert len(lines) == 4
+    import json
+
+    first = json.loads(lines[0])
+    assert first["epoch"] == 1
+    assert "value_mse" in first and "lr" in first and "elapsed_seconds" in first

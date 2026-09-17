@@ -68,8 +68,11 @@ batch, must match ``fit_k``'s own hand-derived-gradient step exactly:
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -80,9 +83,12 @@ from othello_eval.convnet import (
     CHANNELS,
     D4,
     INV,
+    MAGIC,
     POLICY_OUTPUTS,
     SQUARES,
     VALUE_HIDDEN,
+    VERSION,
+    _masked_policy_cross_entropy,  # pyright: ignore[reportPrivateUsage]
     _pearson,  # pyright: ignore[reportPrivateUsage]
     initial_weights_k,
     kaiming_bias05_weights_k,
@@ -90,8 +96,12 @@ from othello_eval.convnet import (
     n_weights_for,
     orthogonal_bias05_weights_k,
     orthogonal_weights_k,
+    write_weights,
 )
 from torch import nn
+
+from az_train import policy_othello
+from az_train.records_othello import Positions, concat, load_positions, me_opp_bits, split_by_game
 
 #: Selectable initializers for :func:`fit_torch`'s ``init`` parameter.
 #: ``"fixed_normal"`` is ``initial_weights_k`` -- the existing
@@ -289,9 +299,17 @@ class OTCNN001Torch(nn.Module):
         return flat
 
 
-def _value_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, float]:
-    """Value-only analogue of ``othello_eval.convnet.validation_metrics_k``
-    (``fit_torch`` trains the value head alone, with no policy target)."""
+def _metrics(
+    prediction: np.ndarray, target: np.ndarray,
+    policy_logits64: np.ndarray | None = None,
+    policy_target: np.ndarray | None = None, policy_legal: np.ndarray | None = None,
+) -> dict[str, float]:
+    """Value metrics (mirroring ``othello_eval.convnet.validation_metrics_k``),
+    plus ``masked_policy_cross_entropy`` when a policy target/legal mask is
+    given -- same ``policy_logits64``/``policy_target``/``policy_legal``
+    shapes and ``_with_pass``/``_masked_policy_cross_entropy`` formula
+    ``othello_eval.convnet.validation_metrics`` uses, so a torch fit's
+    reported policy metric is directly comparable to a numpy ``fit_k`` fit's."""
     nonzero = target != 0.0
     metrics = {
         "value_mse": float(np.mean((prediction - target) ** 2)),
@@ -302,7 +320,29 @@ def _value_metrics(prediction: np.ndarray, target: np.ndarray) -> dict[str, floa
         if np.any(nonzero)
         else 0.0,
     }
+    if policy_logits64 is not None and policy_target is not None and policy_legal is not None:
+        metrics["masked_policy_cross_entropy"] = _masked_policy_cross_entropy(
+            policy_logits64, policy_target, policy_legal
+        )
     return {name: m if np.isfinite(m) else 0.0 for name, m in metrics.items()}
+
+
+def _policy_loss_torch(
+    logits64: torch.Tensor, target: torch.Tensor, legal: torch.Tensor
+) -> torch.Tensor:
+    """Masked legal-column (65 = 64 squares + PASS) cross entropy, literal
+    orientation only -- the torch-autograd counterpart of
+    ``othello_eval.convnet._literal_loss_gradient``'s policy-loss term
+    (same ``_with_pass``-then-masked-softmax formula, so a torch and numpy
+    fit at the same weights compute the identical loss value). ``target``/
+    ``legal`` are ``(N, 65)`` (PASS is column 64)."""
+    pass_col = logits64.mean(dim=1, keepdim=True)
+    logits65 = torch.cat([logits64, pass_col], dim=1)
+    masked = torch.where(legal, logits65, torch.full_like(logits65, float("-inf")))
+    shifted = masked - masked.max(dim=1, keepdim=True).values
+    probability = torch.exp(shifted) * legal
+    probability = probability / probability.sum(dim=1, keepdim=True)
+    return -(target * torch.log(probability.clamp_min(1e-30))).sum(dim=1).mean()
 
 
 def _cosine_lr(epoch: int, epochs: int, base_lr: float, *, decay: bool) -> float:
@@ -366,11 +406,24 @@ def fit_torch(
     stall_check: tuple[int, float] | None = None,
     init: str = "fixed_normal", grad_clip_norm: float | None = None,
     warmup_epochs: int = 0,
+    policy: np.ndarray | None = None, legal: np.ndarray | None = None,
+    validation_policy: np.ndarray | None = None, validation_legal: np.ndarray | None = None,
+    epoch_log_path: str | None = None,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
     """``othello_eval.convnet.fit_k``'s Adam loop, over ``torch.autograd``
-    instead of a hand-derived gradient. Value-only (no policy target) --
-    an optimizer/engine swap, not a policy-head port. See the module
-    docstring for the L2/``weight_decay`` equivalence this relies on.
+    instead of a hand-derived gradient. See the module docstring for the
+    L2/``weight_decay`` equivalence this relies on.
+
+    ``policy``/``legal`` (each ``(N, 65)``, PASS as column 64, matching
+    ``az_train.policy_othello.targets``'s output) add a masked
+    cross-entropy policy-head loss on top of the value MSE, mirroring
+    ``fit_k``'s own ``value_loss + policy_loss + l2 * reg`` formula exactly
+    (:func:`_policy_loss_torch`). Left at their default ``None``, the fit
+    stays value-only -- the original behavior, unchanged. ``validation_
+    policy``/``validation_legal`` supply the same target/mask shape for
+    validation-set ``masked_policy_cross_entropy`` reporting; both pairs
+    must be given together or not at all.
+
     Initial weights come from ``initial_weights_k`` (the numpy trainer's own
     seeded initializer), not torch's default
     init, so a torch fit and a numpy fit at the same seed start from
@@ -404,9 +457,22 @@ def fit_torch(
     see :func:`_lr_schedule`. All three are independent training-stability
     levers, each its own opt-in parameter so they can be gated individually
     or in combination.
+
+    ``epoch_log_path``, if given, appends one JSON line per validation
+    epoch (the same dict :func:`_metrics` returns, plus ``epoch``/``lr``/
+    ``elapsed_seconds``) to that file as training proceeds, flushed
+    immediately -- so a caller watching a long unattended fit can tail real
+    per-epoch progress rather than waiting for the final ``report.json``.
+    Off by default (``None``) -- existing callers see no behavior change.
     """
     if not len(me):
         raise ValueError("CNN fitting requires non-empty rows")
+    if (policy is None) != (legal is None):
+        raise ValueError("policy and legal must be given together or not at all")
+    if (validation_policy is None) != (validation_legal is None):
+        raise ValueError(
+            "validation_policy and validation_legal must be given together or not at all"
+        )
     torch_device = torch.device(device)
     model = OTCNN001Torch(blocks, tied, channels, value_hidden).to(torch_device)
     model.load_from_flat(INIT_FUNCTIONS[init](seed, blocks, tied, channels, value_hidden))
@@ -417,7 +483,13 @@ def fit_torch(
     me_t = torch.as_tensor(me, dtype=torch.float32, device=torch_device)
     opp_t = torch.as_tensor(opp, dtype=torch.float32, device=torch_device)
     value_t = torch.as_tensor(value, dtype=torch.float32, device=torch_device)
+    policy_t = None
+    legal_t = None
+    if policy is not None and legal is not None:
+        policy_t = torch.as_tensor(policy, dtype=torch.float32, device=torch_device)
+        legal_t = torch.as_tensor(legal, dtype=torch.bool, device=torch_device)
 
+    log_file = open(epoch_log_path, "a") if epoch_log_path is not None else None  # noqa: SIM115
     rng = np.random.default_rng(seed)
     started = time.perf_counter()
     vm, vo, vv = validation
@@ -438,17 +510,21 @@ def fit_torch(
             batch = order[start : start + batch_size]
             idx = torch.as_tensor(batch, dtype=torch.long, device=torch_device)
             optimizer.zero_grad()
-            prediction, _ = model.forward_literal(me_t[idx], opp_t[idx])
+            prediction, policy_logits64 = model.forward_literal(me_t[idx], opp_t[idx])
             reg = sum((p * p).sum() for p in weight_params)
             loss = torch.mean((prediction - value_t[idx]) ** 2) + l2 * reg
+            if policy_t is not None and legal_t is not None:
+                loss = loss + _policy_loss_torch(policy_logits64, policy_t[idx], legal_t[idx])
             loss.backward()
             if grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             optimizer.step()
             step += 1
         if epoch % validate_every == 0 or epoch == epochs:
-            val_prediction, _ = model.predict(vm, vo)
-            metrics = _value_metrics(val_prediction, vv)
+            val_prediction, val_policy64 = model.predict(vm, vo)
+            metrics = _metrics(
+                val_prediction, vv, val_policy64, validation_policy, validation_legal
+            )
             validation_epoch_trace.append(metrics)
             if stall_check is not None:
                 stall_epoch, min_abs_pearson = stall_check
@@ -458,25 +534,36 @@ def fit_torch(
                 best_val_mse = metrics["value_mse"]
                 best_epoch = epoch
                 best_flat = model.to_flat()
+            elapsed = time.perf_counter() - started
+            if log_file is not None:
+                line = {"epoch": epoch, "lr": epoch_lr, "elapsed_seconds": elapsed, **metrics}
+                log_file.write(json.dumps(line) + "\n")
+                log_file.flush()
             if report_every and (epoch % report_every == 0 or epoch == epochs):
                 m = validation_epoch_trace[-1]
-                elapsed = time.perf_counter() - started
+                policy_part = (
+                    f"  policy ce {m['masked_policy_cross_entropy']:.4f}"
+                    if "masked_policy_cross_entropy" in m
+                    else ""
+                )
                 print(
                     f"  epoch {epoch:4d}  lr {epoch_lr:.2e}  val mse {m['value_mse']:.4f}  "
                     f"pearson {m['value_pearson']:.4f}  sign-acc {m['value_sign_agreement']:.4f}"
-                    f"  ({elapsed:.1f}s)",
+                    f"{policy_part}  ({elapsed:.1f}s)",
                     flush=True,
                 )
-    train_prediction, _ = model.predict(me, opp)
+    if log_file is not None:
+        log_file.close()
+    train_prediction, train_policy64 = model.predict(me, opp)
     if best_flat is None:
         best_flat = model.to_flat()
         best_epoch = epochs
     best_model = OTCNN001Torch(blocks, tied, channels, value_hidden).to(torch_device)
     best_model.load_from_flat(best_flat)
-    best_train_prediction, _ = best_model.predict(me, opp)
-    best_val_prediction, _ = best_model.predict(vm, vo)
+    best_train_prediction, best_train_policy64 = best_model.predict(me, opp)
+    best_val_prediction, best_val_policy64 = best_model.predict(vm, vo)
     metadata: dict[str, Any] = {
-        "optimizer": "torch_adam_value_mse",
+        "optimizer": "torch_adam_value_mse" if policy is None else "torch_adam_value_policy",
         "optimizer_seed": seed, "optimizer_batch_size": batch_size, "optimizer_epochs": epochs,
         "optimizer_learning_rate": learning_rate, "optimizer_l2": l2, "optimizer_steps": step,
         "optimizer_lr_decay": lr_decay, "optimizer_init": init,
@@ -485,12 +572,16 @@ def fit_torch(
         "blocks": blocks, "tied": tied, "channels": channels, "value_hidden": value_hidden,
         "n_weights": int(n_weights_for(blocks, tied, channels, value_hidden)),
         "fit_wall_seconds": time.perf_counter() - started,
-        "train_metrics": _value_metrics(train_prediction, value),
+        "train_metrics": _metrics(train_prediction, value, train_policy64, policy, legal),
         "validation_epoch_trace": validation_epoch_trace,
         "final_validation_metrics": validation_epoch_trace[-1],
         "best_checkpoint_epoch": best_epoch,
-        "best_checkpoint_train_metrics": _value_metrics(best_train_prediction, value),
-        "best_checkpoint_validation_metrics": _value_metrics(best_val_prediction, vv),
+        "best_checkpoint_train_metrics": _metrics(
+            best_train_prediction, value, best_train_policy64, policy, legal
+        ),
+        "best_checkpoint_validation_metrics": _metrics(
+            best_val_prediction, vv, best_val_policy64, validation_policy, validation_legal
+        ),
         "best_checkpoint_weights": best_flat,
     }
     return model, metadata
@@ -543,3 +634,150 @@ def fit_torch_with_retry(
         metadata["seed_attempts"] = attempts
         return model, metadata
     raise AllSeedsStalledError(attempts)
+
+
+def me_opp_planes(pos: Positions) -> tuple[np.ndarray, np.ndarray]:
+    """``(N, 64)`` float32 0/1 occupancy planes from a decoded ``Positions``
+    -- the ``RecordV2``-sourced analogue of ``othello_eval.convnet.
+    me_opp_planes`` (which reads a structured v1-record array instead),
+    same as ``az_train.convnet_othello.me_opp_planes``."""
+    me_bits, opp_bits = me_opp_bits(pos)
+    squares = np.arange(SQUARES, dtype=np.uint64)
+    me = ((me_bits[:, None] >> squares[None, :]) & np.uint64(1)).astype(np.float32)
+    opp = ((opp_bits[:, None] >> squares[None, :]) & np.uint64(1)).astype(np.float32)
+    return me, opp
+
+
+def train_cli(argv: list[str] | None = None) -> None:
+    """``az-train-othello-cnn`` (torch): fit one Gumbel self-play
+    generation's OTCNN001 value+policy head under :func:`fit_torch_with_
+    retry` -- the self-play-loop training entrypoint, in place of
+    ``az_train.convnet_othello.train_cli``'s numpy/value-only fit (kept,
+    importable under ``az-train-othello-cnn-numpy``, but no longer this
+    package's console-script default). Same ``RecordV2``-reading/
+    checkpoint-writing shape as that numpy CLI: reads
+    completed-Q policy targets from every position via ``policy_othello.
+    targets``, writes the exact ``OTCNN001`` byte layout ``othello_eval.
+    convnet.write_weights`` and ``games/othello/src/convnet.rs::
+    CnnValueNet::load`` already agree on (now the ``k4_distinct``/4-block
+    geometry -- both sides' ``BLOCKS`` constant carries that as their
+    shared default, so no explicit geometry flag is needed here).
+
+        az-train-othello-cnn --positions gen0.bin,gen1.bin \\
+            --out local/output/az/othello-cnn/run0/gen2.bin \\
+            --epoch-log local/output/az/othello-cnn/run0/gen2.epochs.jsonl
+
+    ``--device`` defaults to ``mps`` when available (``torch.backends.mps.
+    is_available()``), else ``cpu``.
+    """
+    ap = argparse.ArgumentParser(prog="az-train-othello-cnn")
+    ap.add_argument("--positions", required=True, help="comma-separated RecordV2 dump .bin files")
+    ap.add_argument("--out", required=True, help="output OTCNN001 checkpoint file")
+    ap.add_argument("--validation-fraction", type=float, default=0.1)
+    ap.add_argument("--split-seed", type=int, default=0)
+    ap.add_argument("--epochs", type=int, default=120)
+    ap.add_argument("--batch-size", type=int, default=4096)
+    ap.add_argument("--learning-rate", type=float, default=2e-3)
+    ap.add_argument("--l2", type=float, default=1e-4)
+    ap.add_argument("--validate-every", type=int, default=1)
+    ap.add_argument("--report-every", type=int, default=1)
+    ap.add_argument(
+        "--device", default=None, help="torch device (default: mps if available, else cpu)"
+    )
+    ap.add_argument(
+        "--epoch-log", default=None, help="path to append one JSON line per validation epoch"
+    )
+    ap.add_argument("--max-retries", type=int, default=5, help="seed retries past a stalled init")
+    ap.add_argument("--stall-check-epoch", type=int, default=20)
+    ap.add_argument("--stall-check-min-pearson", type=float, default=0.05)
+    args = ap.parse_args(argv)
+
+    device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
+
+    paths = [p.strip() for p in args.positions.split(",") if p.strip()]
+    parts: list[Positions] = [load_positions(p) for p in paths]
+    pos = concat(parts)
+    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
+
+    train, validation, train_games, validation_games = split_by_game(
+        pos, args.validation_fraction, args.split_seed
+    )
+
+    has_train_targets = all(entries for entries in train.policy)
+    has_validation_targets = all(entries for entries in validation.policy)
+    if not (has_train_targets and has_validation_targets):
+        raise ValueError(
+            "az-train-othello-cnn requires a completed-Q policy target on every "
+            "position -- every record must come from `dump --label gumbel`"
+        )
+
+    train_me, train_opp = me_opp_planes(train)
+    va_me, va_opp = me_opp_planes(validation)
+    train_policy, train_legal = policy_othello.targets(train.policy)
+    va_policy, va_legal = policy_othello.targets(validation.policy)
+
+    print(
+        f"=== OTCNN001 (k4_distinct) fit: {len(train)} train / {len(validation)} validation "
+        f"positions, device={device} ===",
+        flush=True,
+    )
+    _model, metadata = fit_torch_with_retry(
+        train_me, train_opp, train.value.astype(np.float64),
+        (va_me, va_opp, validation.value.astype(np.float64)),
+        l2=args.l2,
+        seed=args.split_seed,
+        max_retries=args.max_retries,
+        stall_check=(args.stall_check_epoch, args.stall_check_min_pearson),
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        learning_rate=args.learning_rate,
+        validate_every=args.validate_every,
+        report_every=args.report_every,
+        device=device,
+        policy=train_policy,
+        legal=train_legal,
+        validation_policy=va_policy,
+        validation_legal=va_legal,
+        epoch_log_path=args.epoch_log,
+    )
+    final = metadata["final_validation_metrics"]
+    print(
+        f"  final: value mse {final['value_mse']:.4f} pearson {final['value_pearson']:.4f} "
+        f"sign-acc {final['value_sign_agreement']:.4f} policy ce "
+        f"{final.get('masked_policy_cross_entropy', float('nan')):.4f}",
+        flush=True,
+    )
+    best = metadata["best_checkpoint_validation_metrics"]
+    print(
+        f"  best (epoch {metadata['best_checkpoint_epoch']}): "
+        f"value mse {best['value_mse']:.4f} pearson {best['value_pearson']:.4f} "
+        f"sign-acc {best['value_sign_agreement']:.4f} "
+        f"policy ce {best.get('masked_policy_cross_entropy', float('nan')):.4f}",
+        flush=True,
+    )
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_weights(str(out), np.asarray(metadata["best_checkpoint_weights"], dtype=np.float32))
+
+    meta = {
+        "model": MAGIC.decode(), "version": VERSION, "n_weights": metadata["n_weights"],
+        "train": {
+            "positions": int(len(pos)), "train_games": train_games,
+            "validation_games": validation_games, "sources": paths,
+            "epochs": args.epochs, "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate, "l2": args.l2, "device": device,
+            "seed_used": metadata["seed_used"], "seed_attempts": metadata["seed_attempts"],
+        },
+        "metrics": {k: v for k, v in metadata.items() if k != "best_checkpoint_weights"},
+    }
+    out.with_suffix(out.suffix + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+    print(
+        f"wrote {out} ({metadata['n_weights']} weights, "
+        f"best epoch {metadata['best_checkpoint_epoch']}) + {out.name}.meta.json",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    train_cli()

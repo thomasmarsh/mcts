@@ -4,7 +4,7 @@
 """Versioned compact Othello convolutional value+policy network.
 
 ``OTCNN001`` (version 2) stores a concrete two-plane 8x8 model: a 3x3 stem
-with 16 channels, two 16-channel residual blocks, then separate value and
+with 16 channels, four 16-channel residual blocks, then separate value and
 policy heads sharing that trunk -- the direct 8x8 generalization of Connect
 Four's ``C4CNN001`` (``research/az-train/src/az_train/convnet_c4.py`` /
 ``games/connect4/src/convnet.rs``), which also shares one trunk between both
@@ -52,7 +52,7 @@ from othello_eval.policy import INV
 
 BOARD = 8
 CHANNELS = 16
-BLOCKS = 2
+BLOCKS = 4
 VALUE_HIDDEN = 32
 POLICY_OUTPUTS = 64
 SQUARES = 64

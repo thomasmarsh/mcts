@@ -12,7 +12,8 @@ dependencies = [
 [project.scripts]
 az-train = "az_train.train:train_cli"
 az-train-othello = "az_train.train_othello:train_cli"
-az-train-othello-cnn = "az_train.convnet_othello:train_cli"
+az-train-othello-cnn = "az_train.convnet_othello_torch:train_cli"
+az-train-othello-cnn-numpy = "az_train.convnet_othello:train_cli"
 
 [tool.uv.sources]
 othello-eval = { path = "../othello-eval" }
