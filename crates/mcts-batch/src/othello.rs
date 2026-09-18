@@ -16,6 +16,7 @@
 //! this machine has, rather than the one core a purely sequential
 //! evaluation loop would use.
 
+use game_othello::convnet::mlx::MlxCnnValueNet;
 use game_othello::{Move, Othello, State};
 use mcts::algorithms::mcts::policy::PolicyLogits;
 use mcts::evaluator::{Evaluator, EVAL_MAGNITUDE_LIMIT};
@@ -129,6 +130,104 @@ impl<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Sync> EnvOracle<Sta
             // `State::apply` always advances `turn`, PASS included, so the
             // mover switches on every transition -- no intermediate reward
             // in Othello either.
+            rewards: vec![0.0; states.len()],
+            player_switched: vec![true; states.len()],
+        }
+    }
+}
+
+/// Evaluate a whole batch of states with one GPU call each for value and
+/// policy (`game_othello::convnet::mlx::evaluate_batch`), rather than
+/// `OthelloOracle<E>`'s `rayon`-across-CPU-threads `map_init` -- routing
+/// GPU work through 8 CPU threads each opening their own MLX stream would
+/// just serialize on the same physical GPU (see `convnet::mlx`'s own
+/// thread-local-stream docs), so this oracle stays single-threaded on the
+/// CPU side and lets the one stacked MLX call cover the whole batch.
+fn evaluate_batch_mlx(net: &MlxCnnValueNet, states: &[State]) -> (Vec<bool>, Vec<bool>, Vec<f32>, Vec<f32>) {
+    let n = states.len();
+    let mut terminal = vec![false; n];
+    let mut valid_actions = vec![false; n * NUM_ACTIONS];
+    let mut policy_prior = vec![0.0f32; n * NUM_ACTIONS];
+    let mut value_prior = vec![0.0f32; n];
+
+    let mut live: Vec<usize> = Vec::with_capacity(n);
+    let mut actions_per_state: Vec<Vec<Move>> = Vec::new();
+    for (i, s) in states.iter().enumerate() {
+        if Othello::is_terminal(s) {
+            terminal[i] = true;
+            value_prior[i] = terminal_value(s);
+            continue;
+        }
+        live.push(i);
+        let mut actions = Vec::new();
+        Othello::generate_actions(s, &mut actions);
+        actions_per_state.push(actions);
+    }
+
+    let live_states: Vec<State> = live.iter().map(|&i| states[i]).collect();
+    let (values, policies) = game_othello::convnet::mlx::evaluate_batch(net.inner(), &live_states);
+
+    for (row, &i) in live.iter().enumerate() {
+        value_prior[i] = values[row];
+        let all = &policies[row];
+        // Same PASS-as-mean-of-the-64-square-logits convention as
+        // `CnnValueNet`/`MlxCnnValueNet`'s own `PolicyLogits::logits`
+        // (`all` here has no dedicated PASS slot -- it's the raw 64
+        // per-square logits `all_policy_logits`/`evaluate_batch` return).
+        let logit_of = |mv: Move| {
+            if mv == Move::PASS { all.iter().sum::<f64>() / all.len() as f64 } else { all[mv.0 as usize] }
+        };
+        // Softmax over legal-action logits only, same as `evaluate_state`'s
+        // CPU convention -- storing raw logits here would leave the
+        // (common, all-zero-weight test/throughput) case where every legal
+        // logit is exactly 0.0 with a literal all-zero prior, which
+        // `search::validate_prior` then treats as "no signal" and masks
+        // out entirely instead of falling back to a uniform distribution.
+        let actions = &actions_per_state[row];
+        let max = actions.iter().map(|&mv| logit_of(mv)).fold(f64::NEG_INFINITY, f64::max);
+        let exp: Vec<f64> = actions.iter().map(|&mv| (logit_of(mv) - max).exp()).collect();
+        let sum: f64 = exp.iter().sum();
+        for (k, &mv) in actions.iter().enumerate() {
+            let aid = mv.0 as usize;
+            valid_actions[i * NUM_ACTIONS + aid] = true;
+            policy_prior[i * NUM_ACTIONS + aid] = (exp[k] / sum) as f32;
+        }
+    }
+    (terminal, valid_actions, policy_prior, value_prior)
+}
+
+/// The GPU-backed [`EnvOracle`] for Othello: same shape as [`OthelloOracle`]
+/// but wired to [`MlxCnnValueNet`] through the batched `convnet::mlx::
+/// evaluate_batch` entry point instead of the generic `Evaluator`/
+/// `PolicyLogits` traits' one-state-at-a-time contract, so a whole
+/// simulation round's live batch becomes one GPU call instead of one call
+/// per state spread across CPU threads.
+pub struct MlxOthelloOracle {
+    net: MlxCnnValueNet,
+}
+
+impl MlxOthelloOracle {
+    pub fn new(net: MlxCnnValueNet) -> Self {
+        MlxOthelloOracle { net }
+    }
+}
+
+impl EnvOracle<State> for MlxOthelloOracle {
+    fn num_actions(&self) -> usize {
+        NUM_ACTIONS
+    }
+
+    fn init(&self, envs: &[State]) -> StepOutput<State> {
+        let (terminal, valid_actions, policy_prior, value_prior) = evaluate_batch_mlx(&self.net, envs);
+        StepOutput { states: envs.to_vec(), terminal, valid_actions, policy_prior, value_prior }
+    }
+
+    fn transition(&self, states: &[State], actions: &[u16]) -> TransitionOutput<State> {
+        let out_states: Vec<State> =
+            states.iter().zip(actions).map(|(s, &aid)| Othello::apply(*s, &Move(aid as u8))).collect();
+        let (terminal, valid_actions, policy_prior, value_prior) = evaluate_batch_mlx(&self.net, &out_states);
+        TransitionOutput {
+            step: StepOutput { states: out_states, terminal, valid_actions, policy_prior, value_prior },
             rewards: vec![0.0; states.len()],
             player_switched: vec![true; states.len()],
         }

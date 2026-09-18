@@ -204,7 +204,6 @@ fn chw_to_nhwc(chw: &[f32; 2 * BOARD * BOARD]) -> [f32; 2 * BOARD * BOARD] {
 /// in the CPU path but batched here (see the module docs' "Batching"
 /// section for why this doesn't change the result).
 fn trunk(net: &CnnValueNet, state: &State, s: mlx_stream) -> MlxArray {
-    let w = net.weights();
     let mut input = vec![0.0f32; (ORIENTATIONS as usize) * 2 * BOARD * BOARD];
     for sym in 0..8usize {
         let chw = CnnValueNet::input(state, sym);
@@ -212,7 +211,35 @@ fn trunk(net: &CnnValueNet, state: &State, s: mlx_stream) -> MlxArray {
         input[sym * 2 * BOARD * BOARD..(sym + 1) * 2 * BOARD * BOARD].copy_from_slice(&nhwc);
     }
     let x = from_data(&input, &[ORIENTATIONS, BOARD as i32, BOARD as i32, 2]);
+    trunk_rows(net, x, s)
+}
 
+/// Same trunk as [`trunk`], stacking every state's 8 D4 orientations into
+/// one `(states.len() * 8, 8, 8, CHANNELS)` MLX array -- the batched
+/// counterpart [`evaluate_batch`] needs so a whole live self-play batch
+/// shares a single GPU forward pass instead of one call per state.
+fn trunk_batch(net: &CnnValueNet, states: &[State], s: mlx_stream) -> MlxArray {
+    let n = states.len();
+    let mut input = vec![0.0f32; n * (ORIENTATIONS as usize) * 2 * BOARD * BOARD];
+    for (i, state) in states.iter().enumerate() {
+        for sym in 0..8usize {
+            let chw = CnnValueNet::input(state, sym);
+            let nhwc = chw_to_nhwc(&chw);
+            let row = i * 8 + sym;
+            input[row * 2 * BOARD * BOARD..(row + 1) * 2 * BOARD * BOARD].copy_from_slice(&nhwc);
+        }
+    }
+    let x = from_data(&input, &[(n as i32) * ORIENTATIONS, BOARD as i32, BOARD as i32, 2]);
+    trunk_rows(net, x, s)
+}
+
+/// The stem+residual-block compute shared by [`trunk`] and [`trunk_batch`],
+/// taking the already-stacked NHWC input so it is agnostic to how many
+/// orientation rows the caller stacked into it (`conv2d`/`relu`/`add` all
+/// operate on the leading batch dimension unchanged regardless of its
+/// size).
+fn trunk_rows(net: &CnnValueNet, x: MlxArray, s: mlx_stream) -> MlxArray {
+    let w = net.weights();
     let mut at = 0usize;
     let stem_w = &w[at..at + CHANNELS * 2 * 9];
     let stem_b = &w[at + CHANNELS * 2 * 9..at + CHANNELS * 2 * 9 + CHANNELS];
@@ -243,8 +270,15 @@ fn trunk(net: &CnnValueNet, state: &State, s: mlx_stream) -> MlxArray {
 /// shared first step of both heads (`super::raw_value`/`super::raw_policy`'s
 /// `*_features` computation).
 fn channel_reduce(h: MlxArray, conv_w: &[f32], bias: f32, s: mlx_stream) -> MlxArray {
+    channel_reduce_rows(h, conv_w, bias, ORIENTATIONS, s)
+}
+
+/// [`channel_reduce`] generalized to `rows` orientation rows (`states.len()
+/// * 8` in the batched path, rather than always exactly 8) -- see
+/// [`trunk_rows`] for why this is safe to parameterize.
+fn channel_reduce_rows(h: MlxArray, conv_w: &[f32], bias: f32, rows: i32, s: mlx_stream) -> MlxArray {
     let mut flat_h = unsafe { mlx_array_new() };
-    let shape = [ORIENTATIONS * (BOARD * BOARD) as i32, CHANNELS as i32];
+    let shape = [rows * (BOARD * BOARD) as i32, CHANNELS as i32];
     unsafe {
         check(mlx_reshape(&mut flat_h, h.0, shape.as_ptr(), 2, s), "reshape (flatten trunk)");
     }
@@ -254,7 +288,7 @@ fn channel_reduce(h: MlxArray, conv_w: &[f32], bias: f32, s: mlx_stream) -> MlxA
     let reduced = relu(reduced, s);
 
     let mut out = unsafe { mlx_array_new() };
-    let shape2 = [ORIENTATIONS, (BOARD * BOARD) as i32];
+    let shape2 = [rows, (BOARD * BOARD) as i32];
     unsafe {
         check(mlx_reshape(&mut out, reduced.0, shape2.as_ptr(), 2, s), "reshape (per-orientation features)");
     }
@@ -352,6 +386,86 @@ pub fn all_policy_logits(net: &CnnValueNet, state: &State) -> [f64; POLICY_OUTPU
     out
 }
 
+/// Batched GPU forward pass: value and policy for a whole slice of states
+/// in one MLX call each, sharing a single stacked trunk between both heads
+/// *and* across every state -- unlike [`value`]/[`all_policy_logits`],
+/// which each recompute the trunk independently and only ever see one
+/// state. This is the entry point `mcts_batch::othello::MlxOthelloOracle`
+/// uses: it already hands a whole simulation round's live batch to one
+/// oracle call, so routing that straight into one GPU call (instead of
+/// spreading per-state GPU calls across CPU threads, which would just
+/// serialize on the same physical GPU) is what actually cashes in
+/// `mcts-gpu.md`'s batching premise for the GPU evaluator.
+pub fn evaluate_batch(net: &CnnValueNet, states: &[State]) -> (Vec<f32>, Vec<[f64; POLICY_OUTPUTS]>) {
+    if states.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let s = stream();
+    let w = net.weights();
+    let n = states.len();
+    let rows = (n as i32) * ORIENTATIONS;
+
+    let h = trunk_batch(net, states, s);
+    let h_for_policy = h.clone();
+
+    let mut at = CNN_WEIGHTS - super::VALUE_HEAD_WEIGHTS - super::POLICY_HEAD_WEIGHTS;
+    let value_conv = &w[at..at + CHANNELS];
+    let value_bias = w[at + CHANNELS];
+    at += CHANNELS + 1;
+    let features = channel_reduce_rows(h, value_conv, value_bias, rows, s);
+
+    let w1 = &w[at..at + BOARD * BOARD * VALUE_HIDDEN];
+    let b1 = &w[at + BOARD * BOARD * VALUE_HIDDEN..at + BOARD * BOARD * VALUE_HIDDEN + VALUE_HIDDEN];
+    at += BOARD * BOARD * VALUE_HIDDEN + VALUE_HIDDEN;
+    let hidden = relu(dense(features, w1, b1, BOARD * BOARD, VALUE_HIDDEN, s), s);
+
+    let w2 = &w[at..at + VALUE_HIDDEN];
+    let b2 = &w[at + VALUE_HIDDEN..at + VALUE_HIDDEN + 1];
+    at += VALUE_HIDDEN + 1;
+    let out = dense(hidden, w2, b2, VALUE_HIDDEN, 1, s);
+    let mut tanh_out = unsafe { mlx_array_new() };
+    unsafe {
+        check(mlx_tanh(&mut tanh_out, out.0, s), "tanh");
+    }
+    drop(out);
+    debug_assert_eq!(at, CNN_WEIGHTS - super::POLICY_HEAD_WEIGHTS);
+
+    let per_orientation = eval_to_vec(MlxArray(tanh_out), rows as usize);
+    let values: Vec<f32> =
+        (0..n).map(|i| per_orientation[i * 8..(i + 1) * 8].iter().sum::<f32>() / ORIENTATIONS as f32).collect();
+
+    let mut at2 = CNN_WEIGHTS - super::POLICY_HEAD_WEIGHTS;
+    let policy_conv = &w[at2..at2 + CHANNELS];
+    let policy_bias = w[at2 + CHANNELS];
+    at2 += CHANNELS + 1;
+    let pfeatures = channel_reduce_rows(h_for_policy, policy_conv, policy_bias, rows, s);
+
+    let policy_w = &w[at2..at2 + BOARD * BOARD * POLICY_OUTPUTS];
+    let policy_b = &w[at2 + BOARD * BOARD * POLICY_OUTPUTS..at2 + BOARD * BOARD * POLICY_OUTPUTS + POLICY_OUTPUTS];
+    at2 += BOARD * BOARD * POLICY_OUTPUTS + POLICY_OUTPUTS;
+    let logits = dense(pfeatures, policy_w, policy_b, BOARD * BOARD, POLICY_OUTPUTS, s);
+    debug_assert_eq!(at2, CNN_WEIGHTS);
+
+    let raw = eval_to_vec(logits, rows as usize * POLICY_OUTPUTS);
+    let policies: Vec<[f64; POLICY_OUTPUTS]> = (0..n)
+        .map(|i| {
+            let mut out = [0.0f64; POLICY_OUTPUTS];
+            for sym in 0..8usize {
+                let base = (i * 8 + sym) * POLICY_OUTPUTS;
+                for real_sq in 0..POLICY_OUTPUTS {
+                    out[real_sq] += raw[base + INV[sym][real_sq] as usize] as f64;
+                }
+            }
+            for v in out.iter_mut() {
+                *v /= 8.0;
+            }
+            out
+        })
+        .collect();
+
+    (values, policies)
+}
+
 /// GPU-backed drop-in for `CnnValueNet` as a self-play evaluator: same
 /// `Evaluator<Othello>`/`PolicyLogits<Othello>` contract as
 /// `super::CnnValueNet` (see `crate::selfplay::CnnGumbelPlayer`, which
@@ -372,6 +486,14 @@ impl MlxCnnValueNet {
 
     pub fn load(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
         Ok(Self(CnnValueNet::load(path)?))
+    }
+
+    /// The wrapped weights, for callers (e.g. `mcts_batch::othello::
+    /// MlxOthelloOracle`) that need to hand this net's weights to a
+    /// free function like [`evaluate_batch`] rather than a single-state
+    /// trait method.
+    pub fn inner(&self) -> &CnnValueNet {
+        &self.0
     }
 }
 
@@ -472,5 +594,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// [`evaluate_batch`] must agree with the per-state [`value`]/
+    /// [`all_policy_logits`] path it's meant to replace at real batch
+    /// sizes -- a batch of one has to match exactly (same trunk math, just
+    /// stacked differently), and a mixed batch of several distinct states
+    /// must not let one state's rows leak into another's D4 average.
+    #[test]
+    fn batched_matches_per_state_calls() {
+        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0013).sin() * 0.1).collect();
+        let net = CnnValueNet::from_weights(weights);
+        let states = [
+            state(1u64 << 27 | 1 << 28 | 1 << 35, 1u64 << 26 | 1 << 34 | 1 << 36, Player::Black),
+            state((1u64 << 0) | (1 << 9) | (1 << 20), (1u64 << 27) | (1 << 36) | (1 << 45), Player::White),
+            state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black),
+        ];
+
+        let (batch_values, batch_policies) = evaluate_batch(&net, &states);
+        assert_eq!(batch_values.len(), states.len());
+        assert_eq!(batch_policies.len(), states.len());
+
+        for (i, s) in states.iter().enumerate() {
+            let want_value = value(&net, s);
+            assert!((batch_values[i] - want_value).abs() < 1e-4, "value[{i}]: batch {} vs per-state {want_value}", batch_values[i]);
+
+            let want_policy = all_policy_logits(&net, s);
+            for sq in 0..POLICY_OUTPUTS {
+                assert!(
+                    (batch_policies[i][sq] - want_policy[sq]).abs() < 1e-4,
+                    "policy[{i}][{sq}]: batch {} vs per-state {}",
+                    batch_policies[i][sq],
+                    want_policy[sq]
+                );
+            }
+        }
+
+        // A batch of one is the degenerate case `trunk_batch`/
+        // `channel_reduce_rows` must also handle correctly.
+        let (one_value, one_policy) = evaluate_batch(&net, &states[..1]);
+        assert!((one_value[0] - batch_values[0]).abs() < 1e-6);
+        assert_eq!(one_policy[0], batch_policies[0]);
+
+        // An empty batch must not panic (`mcts_batch::search::eval_batch`
+        // calls the oracle with zero non-terminal entries whenever every
+        // live game's frontier is already terminal this round).
+        let (empty_values, empty_policies) = evaluate_batch(&net, &[]);
+        assert!(empty_values.is_empty());
+        assert!(empty_policies.is_empty());
     }
 }

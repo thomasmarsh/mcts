@@ -7,9 +7,9 @@
 //!   cargo run --release -p mcts-batch --example time_one_ply [games] [sims]
 use std::time::Instant;
 
-use game_othello::convnet::CnnValueNet;
+use game_othello::convnet::mlx::MlxCnnValueNet;
 use game_othello::State;
-use mcts_batch::othello::OthelloOracle;
+use mcts_batch::othello::MlxOthelloOracle;
 use mcts_batch::{gumbel_explore, Config};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -19,7 +19,7 @@ fn main() {
     let games: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(128);
     let sims: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(16);
 
-    let oracle = OthelloOracle::new(CnnValueNet::default());
+    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default());
     let cfg = Config { num_simulations: sims as usize, num_considered_actions: 8, ..Config::default() };
     let mut rng = SmallRng::seed_from_u64(1);
     let envs = vec![State::default(); games];
