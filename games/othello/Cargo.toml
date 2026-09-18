@@ -34,9 +34,13 @@ required-features = ["mlx"]
 
 [features]
 # GPU-backed `CnnValueNet` forward pass via `mlx-sys` (Homebrew mlx-c/mlx,
-# see `crates/mlx-sys/build.rs`), off by default so the ordinary CPU-only
-# build has zero new dependency weight -- see
-# `local/work/plan/llm-jepa/mlx-selfplay-spike.md` for why this exists.
+# see `crates/mlx-sys/build.rs`). On by default: this backend is faster than
+# the CPU path on every measured self-play/gate workload with no output
+# difference (byte-identical on the same seed), so a plain `cargo build`
+# gets GPU-backed inference for `--head cnn` without an opt-in flag.
+# Building on a machine without Homebrew's `mlx`/`mlx-c` installed needs
+# `--no-default-features` (CPU-only, always available).
+default = ["mlx"]
 mlx = ["dep:mlx-sys"]
 
 [lints]

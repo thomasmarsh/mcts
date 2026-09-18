@@ -12,19 +12,23 @@
 //! ```text
 //! cargo run --release -p game-othello --example gumbel_gate -- \
 //!     <baseline> <candidate> [games] [sims] [--head ntuple|cnn] \
-//!     [--edax-binary PATH] [--edax-data-dir DIR] [--edax-level N]
+//!     [--evaluator cpu|mlx] [--edax-binary PATH] [--edax-data-dir DIR] [--edax-level N]
 //! ```
 //!
 //! `--head ntuple` (default) treats `baseline`/`candidate` as `research/
 //! az-train`-shaped checkpoint directories (`model.toml` + `weights.bin` +
 //! `weights.meta.json` + `policy.bin` + `policy.meta.json`) and plays with
 //! [`GumbelPlayer`]. `--head cnn` treats them as single `OTCNN001`-layout
-//! checkpoint files (`CnnValueNet::load`) and plays with [`CnnGumbelPlayer`].
-//! Both players implement the same `mcts::algorithms::Search` trait
-//! `mcts::util::battle_royale` is already generic over, so no engine change
-//! was needed to support a second head here -- only `score_share`/`load_*`/
-//! `main` becoming head-dispatching. Three checks, run identically for
-//! either head:
+//! checkpoint files and plays with [`CnnGumbelPlayer`], whose per-leaf
+//! forward-pass backend is picked by `--evaluator`: `mlx`
+//! (`crate::convnet::mlx::MlxCnnValueNet::load`, GPU-backed, default, on by
+//! default in the `mlx` Cargo feature) or `cpu` (`CnnValueNet::load`,
+//! opt-in fallback for a `--no-default-features` build without Homebrew's
+//! `mlx`/`mlx-c`) -- ignored for `--head ntuple`. Both players implement the same
+//! `mcts::algorithms::Search` trait `mcts::util::battle_royale` is already
+//! generic over, so no engine change was needed to support a second head
+//! here -- only `score_share`/`load_*`/`main` becoming head-dispatching.
+//! Three checks, run identically for either head or evaluator backend:
 //!
 //!  1. **Head to head.** `games` alternating-colour games, candidate vs
 //!     baseline, both playing the Gumbel self-play search. PASS requires the
@@ -45,7 +49,9 @@
 use std::path::{Path, PathBuf};
 
 use mcts::algorithms::mcts::gumbel::GumbelConfig;
+use mcts::algorithms::mcts::policy::PolicyLogits;
 use mcts::algorithms::Search;
+use mcts::evaluator::Evaluator;
 use mcts::util::battle_royale;
 
 use game_othello::convnet::CnnValueNet;
@@ -165,6 +171,28 @@ fn load_cnn_file(path: &Path) -> CnnValueNet {
         .unwrap_or_else(|e| panic!("cannot load OTCNN001 checkpoint {}: {e}", path.display()))
 }
 
+/// The `--head cnn` gate, generic over the per-leaf forward-pass backend so
+/// the identical head-to-head/rollout-anchor/Edax checks run unchanged
+/// against either `CnnValueNet` (CPU) or `crate::convnet::mlx::MlxCnnValueNet`
+/// (GPU-backed) -- the same evaluator-genericization `CnnGumbelPlayer<E>`
+/// already uses for self-play, applied here to gating instead.
+fn run_cnn_head<E>(baseline_net: E, candidate_net: E, cfg: GumbelConfig, games: usize, edax: Option<(String, String, u32)>) -> bool
+where
+    E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static,
+{
+    let make_candidate = {
+        let net = candidate_net.clone();
+        move || CnnGumbelPlayer::new(net.clone(), cfg, 7)
+    };
+    let make_baseline_opponent = {
+        let net = baseline_net.clone();
+        move |seed| CnnGumbelPlayer::new(net.clone(), cfg, seed)
+    };
+    let make_anchor_opponent = move |seed| CnnGumbelPlayer::new(E::default(), cfg, seed);
+
+    run_checks(make_candidate, make_baseline_opponent, make_anchor_opponent, games, edax)
+}
+
 fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a String> {
     args.windows(2).find(|w| w[0] == flag).map(|w| &w[1])
 }
@@ -174,7 +202,7 @@ fn main() {
     if args.len() < 3 {
         eprintln!(
             "usage: gumbel_gate <baseline> <candidate> [games] [sims] [--head ntuple|cnn] \
-             [--edax-binary PATH] [--edax-data-dir DIR] [--edax-level N]"
+             [--evaluator cpu|mlx] [--edax-binary PATH] [--edax-data-dir DIR] [--edax-level N]"
         );
         std::process::exit(1);
     }
@@ -186,6 +214,15 @@ fn main() {
     assert!(
         matches!(head, "ntuple" | "cnn"),
         "unknown --head mode: {head}"
+    );
+    // Which per-leaf forward-pass backend `--head cnn` plays with -- `mlx`
+    // (default, GPU-backed, on by default in the `mlx` Cargo feature) or
+    // `cpu` (opt-in fallback for a `--no-default-features` build without
+    // Homebrew's `mlx`/`mlx-c`). Ignored for `--head ntuple`.
+    let evaluator = arg_value(&args, "--evaluator").map_or("mlx", |s| s.as_str());
+    assert!(
+        matches!(evaluator, "cpu" | "mlx"),
+        "unknown --evaluator: {evaluator} (want cpu | mlx)"
     );
     let cfg = GumbelConfig {
         sims,
@@ -223,22 +260,28 @@ fn main() {
 
             run_checks(make_candidate, make_baseline_opponent, make_anchor_opponent, games, edax)
         }
-        "cnn" => {
-            let baseline_net = load_cnn_file(&baseline_path);
-            let candidate_net = load_cnn_file(&candidate_path);
-
-            let make_candidate = {
-                let net = candidate_net.clone();
-                move || CnnGumbelPlayer::new(net.clone(), cfg, 7)
-            };
-            let make_baseline_opponent = {
-                let net = baseline_net.clone();
-                move |seed| CnnGumbelPlayer::new(net.clone(), cfg, seed)
-            };
-            let make_anchor_opponent = move |seed| CnnGumbelPlayer::new(CnnValueNet::default(), cfg, seed);
-
-            run_checks(make_candidate, make_baseline_opponent, make_anchor_opponent, games, edax)
-        }
+        "cnn" => match evaluator {
+            "cpu" => {
+                let baseline_net = load_cnn_file(&baseline_path);
+                let candidate_net = load_cnn_file(&candidate_path);
+                run_cnn_head(baseline_net, candidate_net, cfg, games, edax)
+            }
+            "mlx" => {
+                #[cfg(feature = "mlx")]
+                {
+                    let baseline_net = game_othello::convnet::mlx::MlxCnnValueNet::load(&baseline_path)
+                        .unwrap_or_else(|e| panic!("cannot load OTCNN001 checkpoint {}: {e}", baseline_path.display()));
+                    let candidate_net = game_othello::convnet::mlx::MlxCnnValueNet::load(&candidate_path)
+                        .unwrap_or_else(|e| panic!("cannot load OTCNN001 checkpoint {}: {e}", candidate_path.display()));
+                    run_cnn_head(baseline_net, candidate_net, cfg, games, edax)
+                }
+                #[cfg(not(feature = "mlx"))]
+                {
+                    panic!("--evaluator mlx requires building game-othello with --features mlx");
+                }
+            }
+            other => unreachable!("--evaluator validated above, got {other}"),
+        },
         other => unreachable!("--head validated above, got {other}"),
     };
 

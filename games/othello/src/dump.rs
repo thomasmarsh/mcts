@@ -311,9 +311,10 @@ struct Config {
     /// checkpoint file (`CnnValueNet::load`). Absent == the all-zero CNN.
     cnn_weights: Option<PathBuf>,
     /// `--label gumbel --head cnn` only: which `CnnValueNet` forward-pass
-    /// backend runs self-play -- `cpu` (default, always available) or `mlx`
-    /// (GPU-backed via `crate::convnet::mlx::MlxCnnValueNet`, requires
-    /// building with `--features mlx`). Ignored for `--head ntuple`.
+    /// backend runs self-play -- `mlx` (default, GPU-backed via
+    /// `crate::convnet::mlx::MlxCnnValueNet`, on by default in the `mlx`
+    /// Cargo feature) or `cpu` (opt-in fallback for a `--no-default-features`
+    /// build without Homebrew's `mlx`/`mlx-c`). Ignored for `--head ntuple`.
     evaluator: String,
     /// `--label gumbel` only: Gumbel simulation budget and root candidate cap.
     gumbel_sims: u32,
@@ -354,7 +355,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
     let mut weights_dir = None;
     let mut head = "ntuple".to_string();
     let mut cnn_weights = None;
-    let mut evaluator = "cpu".to_string();
+    let mut evaluator = "mlx".to_string();
     let mut gumbel_sims = 32u32;
     let mut gumbel_max_considered = 8usize;
     let mut temp_moves = 6u8;
@@ -425,8 +426,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Config {
                      policy.meta.json); absent, self-play uses the all-zero generation-0 net \
                      over --model's geometry. --head cnn's --cnn-weights points at a single \
                      OTCNN001-layout checkpoint file; absent, self-play uses the all-zero CNN. \
-                     --head cnn's --evaluator picks the forward-pass backend: cpu (default) \
-                     or mlx (GPU-backed, requires building game-othello with --features mlx)."
+                     --head cnn's --evaluator picks the forward-pass backend: mlx (GPU-backed, \
+                     default, on by default in the mlx Cargo feature) or cpu (opt-in fallback, \
+                     for a --no-default-features build without Homebrew mlx/mlx-c)."
                 );
                 std::process::exit(0);
             }

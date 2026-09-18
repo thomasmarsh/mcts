@@ -45,15 +45,15 @@
 # L2, VALIDATION_FRACTION, DEVICE, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
 # EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR.
 #
-# EVALUATOR: which `CnnValueNet` forward-pass backend self-play uses --
-# `cpu` (default, always available) or `mlx` (GPU-backed via
+# EVALUATOR: which `CnnValueNet` forward-pass backend self-play and gating
+# use -- `mlx` (default, GPU-backed via
 # `games/othello/src/convnet/mlx.rs::MlxCnnValueNet`, ~4.5-5.4x faster
 # wall-clock on this machine's real self-play call pattern, byte-identical
-# output to the CPU path on the same seed). Requires building
-# `game-othello` with `--features mlx`, which this script only turns on
-# when `EVALUATOR=mlx` -- Homebrew's `mlx`/`mlx-c` must be installed. Only
-# self-play uses this knob; training and gating are untouched and always
-# run on the CPU path.
+# output to the CPU path on the same seed) or `cpu` (opt-in fallback, for a
+# machine without Homebrew's `mlx`/`mlx-c` installed). The `mlx` Cargo
+# feature is on by default, so this script only adds `--no-default-features`
+# to its build when `EVALUATOR=cpu`. Training always runs on the CPU
+# (PyTorch/MPS side, untouched by this knob).
 #
 # REPLAY_WINDOW: number of most recent generations' shards to train on each
 # generation (default 0 = unlimited/cumulative, every shard from gen0 on,
@@ -88,13 +88,13 @@ EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
 EDAX_LEVEL=${EDAX_LEVEL:-3}
 REPLAY_WINDOW=${REPLAY_WINDOW:-0}
 START=${START:-0}
-EVALUATOR=${EVALUATOR:-cpu}
+EVALUATOR=${EVALUATOR:-mlx}
 
 mkdir -p "$RUN_DIR/shards"
 
 feature_args=()
-if [ "$EVALUATOR" = "mlx" ]; then feature_args=(--features mlx); fi
-cargo build --release -p game-othello --bin game-othello --example gumbel_gate "${feature_args[@]}"
+if [ "$EVALUATOR" = "cpu" ]; then feature_args=(--no-default-features); fi
+cargo build --release -p game-othello --bin game-othello --example gumbel_gate "${feature_args[@]+"${feature_args[@]}"}"
 
 BIN="$ROOT/target/release/game-othello"
 GATE="$ROOT/target/release/examples/gumbel_gate"
@@ -148,18 +148,19 @@ for g in $(seq "$START" $((GENS - 1))); do
     --positions "$parts" --out "$RUN_DIR/gen$((g + 1)).cnn.bin" \
     --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --learning-rate "$LR" --l2 "$L2" \
     --validation-fraction "$VALIDATION_FRACTION" --split-seed "$g" \
-    --epoch-log "$RUN_DIR/gen$((g + 1)).epochs.jsonl" "${device_arg[@]}"
+    --epoch-log "$RUN_DIR/gen$((g + 1)).epochs.jsonl" "${device_arg[@]+"${device_arg[@]}"}"
 
   echo "=== generation $((g + 1)): gates ($GATE_GAMES games) @ $(date) ==="
   # Gates are diagnostic, not a hard stop -- a FAIL must not abort the loop,
   # same rationale as coordinator_othello.sh.
   set +e
   "$GATE" "$RUN_DIR/gen0.cnn.bin" "$RUN_DIR/gen$((g + 1)).cnn.bin" "$GATE_GAMES" "$SIMS" \
-    --head cnn --edax-binary "$EDAX_BINARY" --edax-data-dir "$EDAX_DATA_DIR" --edax-level "$EDAX_LEVEL" \
+    --head cnn --evaluator "$EVALUATOR" \
+    --edax-binary "$EDAX_BINARY" --edax-data-dir "$EDAX_DATA_DIR" --edax-level "$EDAX_LEVEL" \
     | tee "$RUN_DIR/gen$((g + 1)).gate-vs-gen0.txt"
   prev_gate_arg=""
   if [ "$g" -ge 1 ]; then
-    "$GATE" "$RUN_DIR/gen$g.cnn.bin" "$RUN_DIR/gen$((g + 1)).cnn.bin" "$GATE_GAMES" "$SIMS" --head cnn \
+    "$GATE" "$RUN_DIR/gen$g.cnn.bin" "$RUN_DIR/gen$((g + 1)).cnn.bin" "$GATE_GAMES" "$SIMS" --head cnn --evaluator "$EVALUATOR" \
       | tee "$RUN_DIR/gen$((g + 1)).gate-vs-prev.txt"
     prev_gate_arg="$RUN_DIR/gen$((g + 1)).gate-vs-prev.txt"
   fi
