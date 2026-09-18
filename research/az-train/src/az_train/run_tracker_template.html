@@ -1,0 +1,475 @@
+<title>Othello Run Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  color-scheme: light;
+  --bg: #f1f4ef;
+  --surface: #fafbf8;
+  --ink: #15211a;
+  --muted: #55645a;
+  --faint: #86938a;
+  --grid: #dce3dd;
+  --rule: #ccd6ce;
+  --gen1: #2a78d6;
+  --gen2: #eb6834;
+  --good: #17724a;
+  --good-bg: #dcefe4;
+  --warn: #8f5a00;
+  --warn-bg: #f6e8c8;
+  --bad: #b3312a;
+  --bad-bg: #f6dcd8;
+  --mute-bg: #e4e9e5;
+  --info: #1d5fb0;
+  --info-bg: #dbe8f8;
+  --felt: #1f5d3f;
+  --font-body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Instrument Serif", Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f1712;
+    --surface: #151f19;
+    --ink: #e5ece7;
+    --muted: #a2b0a7;
+    --faint: #72817a;
+    --grid: #25322a;
+    --rule: #2f3e35;
+    --gen1: #3987e5;
+    --gen2: #d95926;
+    --good: #58c990;
+    --good-bg: #17352a;
+    --warn: #e2ac47;
+    --warn-bg: #3a2f14;
+    --bad: #f0796b;
+    --bad-bg: #3d1f1c;
+    --mute-bg: #212d26;
+    --info: #6fa8f0;
+    --info-bg: #182a44;
+    --felt: #2f8a5e;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f1712;
+  --surface: #151f19;
+  --ink: #e5ece7;
+  --muted: #a2b0a7;
+  --faint: #72817a;
+  --grid: #25322a;
+  --rule: #2f3e35;
+  --gen1: #3987e5;
+  --gen2: #d95926;
+  --good: #58c990;
+  --good-bg: #17352a;
+  --warn: #e2ac47;
+  --warn-bg: #3a2f14;
+  --bad: #f0796b;
+  --bad-bg: #3d1f1c;
+  --mute-bg: #212d26;
+  --info: #6fa8f0;
+  --info-bg: #182a44;
+  --felt: #2f8a5e;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 16px; padding-block: 28px 56px; display: flex; flex-direction: column; gap: 36px; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 400; margin: 0; text-wrap: balance; }
+h1 { font-size: 40px; line-height: 1.05; letter-spacing: -0.01em; }
+h2 { font-size: 28px; line-height: 1.1; }
+h3 { font-size: 20px; }
+p { margin: 0; }
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.eyebrow { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+
+header { display: flex; flex-direction: column; gap: 14px; }
+.titleRow { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.discs { display: inline-flex; }
+.discs i { width: 22px; height: 22px; border-radius: 50%; display: block; border: 1.5px solid var(--ink); }
+.discs i:first-child { background: var(--ink); }
+.discs i:last-child { background: var(--surface); margin-left: -7px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; color: var(--muted); font-size: 13px; }
+.meta .mono { color: var(--ink); font-size: 12.5px; }
+.now { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding-block: 12px; border-block: 1px solid var(--rule); }
+.now b { font-weight: 600; }
+
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.good { color: var(--good); background: var(--good-bg); }
+.pill.warn { color: var(--warn); background: var(--warn-bg); }
+.pill.bad { color: var(--bad); background: var(--bad-bg); }
+.pill.mute { color: var(--muted); background: var(--mute-bg); }
+.pill.info { color: var(--info); background: var(--info-bg); }
+
+section { display: flex; flex-direction: column; gap: 16px; }
+.lede { max-width: 68ch; color: var(--muted); }
+
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; }
+.gateTable td:first-child { color: var(--muted); width: 30%; }
+.gateTable td small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+.gen { display: flex; flex-direction: column; gap: 18px; padding-top: 22px; border-top: 2px solid var(--ink); }
+.genHead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 14px; }
+.genHead .swatch { width: 14px; height: 14px; border-radius: 3px; align-self: center; }
+.timeline { display: flex; gap: 2px; }
+.seg { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.bar { height: 12px; border-radius: 3px; }
+.bar.done { background: var(--ink); }
+.bar.running { background: repeating-linear-gradient(45deg, var(--ink) 0 4px, transparent 4px 8px); outline: 1px solid var(--ink); outline-offset: -1px; }
+.bar.pending { border: 1px dashed var(--faint); }
+.seg .lab { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg .lab b { color: var(--ink); font-weight: 600; }
+
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 28px; }
+.chart { display: flex; flex-direction: column; gap: 4px; min-width: 0; position: relative; }
+.chartHead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.chartHead .t { font-weight: 600; }
+.chartHead .hint { font-size: 12px; color: var(--muted); }
+.chartHead .last { font-size: 12px; color: var(--muted); }
+.chart svg { width: 100%; height: auto; display: block; overflow: visible; touch-action: pan-y; }
+.chart text { fill: var(--muted); font-family: var(--font-mono); font-size: 10px; }
+.chart .gridline { stroke: var(--grid); stroke-width: 1; }
+.chart .axis { stroke: var(--rule); stroke-width: 1; }
+.chart .bestline { stroke: var(--ink); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart .bestlab { fill: var(--ink); font-weight: 500; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font-family: var(--font-mono); font-size: 11.5px; padding: 5px 8px; border-radius: 6px; white-space: nowrap; transform: translate(-50%, -100%); z-index: 2; }
+.tip[hidden] { display: none; }
+
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px 32px; }
+.fact { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.attempts { display: flex; flex-wrap: wrap; gap: 6px; }
+.attempt { font-family: var(--font-mono); font-size: 11.5px; padding: 3px 8px; border-radius: 6px; background: var(--bad-bg); color: var(--bad); }
+.attempt.live { background: var(--good-bg); color: var(--good); }
+.notes { margin: 0; padding-left: 18px; color: var(--muted); display: flex; flex-direction: column; gap: 4px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+details summary:focus-visible { outline: 2px solid var(--gen1); outline-offset: 3px; }
+details table { margin-top: 10px; font-size: 12.5px; }
+
+@media (max-width: 720px) {
+  h1 { font-size: 32px; }
+  .charts { grid-template-columns: minmax(0, 1fr); }
+  .seg .lab { white-space: normal; }
+}
+</style>
+
+<div class="wrap" id="app"></div>
+
+<script>
+const DATA = /*__RUN_DATA__*/null;
+
+const $ = (tag, attrs, ...kids) => {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k === "html") el.innerHTML = v;
+    else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+  return el;
+};
+const NS = "http://www.w3.org/2000/svg";
+const s = (tag, attrs) => {
+  const el = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+  return el;
+};
+
+const fmtDur = (sec) => {
+  if (sec == null) return "n/a";
+  if (sec < 60) return sec.toFixed(1) + " s";
+  const m = Math.floor(sec / 60), r = Math.round(sec % 60);
+  if (m < 60) return m + "m " + String(r).padStart(2, "0") + "s";
+  return Math.floor(m / 60) + "h " + String(m % 60).padStart(2, "0") + "m";
+};
+const pct = (x, digits = 1) => (x == null ? "n/a" : (x * 100).toFixed(digits) + "%");
+const num = (x, d = 3) => (x == null ? "n/a" : x.toFixed(d));
+const clock = (iso) => iso.slice(11, 19);
+
+const GLYPH = { good: "✓", bad: "✕", warn: "▲", mute: "○", info: "●" };
+const pill = (kind, text) => $("span", { class: "pill " + kind }, GLYPH[kind] + " " + text);
+
+const GEN_COLORS = ["var(--gen1)", "var(--gen2)"];
+const genColor = (n) => GEN_COLORS[(n - 1) % GEN_COLORS.length];
+
+const METRICS = [
+  { key: "value_pearson", title: "Value pearson", hint: "higher is better", digits: 3 },
+  { key: "value_mse", title: "Value MSE", hint: "lower is better", digits: 3 },
+  { key: "masked_policy_cross_entropy", title: "Policy cross-entropy", hint: "lower is better", digits: 3 },
+  { key: "value_sign_agreement", title: "Value sign accuracy", hint: "higher is better", digits: 3 },
+];
+
+function niceTicks(lo, hi, count) {
+  const span = hi - lo || 1;
+  const raw = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((c) => c >= raw) || 10 * mag;
+  const first = Math.ceil(lo / step - 1e-9) * step;
+  const ticks = [];
+  for (let v = first; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(10));
+  return ticks;
+}
+
+function lineChart(gen, metric) {
+  const rows = gen.epochs;
+  const W = 420, H = 196, L = 46, R = 14, T = 18, B = 26;
+  const xMax = Math.max(gen.epochs_configured, rows.length ? rows[rows.length - 1].epoch : 1);
+  const vals = rows.map((r) => r[metric.key]);
+  let lo = vals.length ? Math.min(...vals) : 0, hi = vals.length ? Math.max(...vals) : 1;
+  const pad = (hi - lo) * 0.12 || 0.05;
+  lo -= pad; hi += pad;
+  const x = (e) => L + ((e - 1) / Math.max(1, xMax - 1)) * (W - L - R);
+  const y = (v) => T + (1 - (v - lo) / (hi - lo)) * (H - T - B);
+
+  const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": `${metric.title} by epoch, generation ${gen.generation}` });
+  for (const t of niceTicks(lo, hi, 4)) {
+    svg.append(s("line", { class: "gridline", x1: L, x2: W - R, y1: y(t), y2: y(t) }));
+    const lab = s("text", { x: L - 6, y: y(t) + 3.5, "text-anchor": "end" });
+    lab.textContent = +t.toFixed(3);
+    svg.append(lab);
+  }
+  svg.append(s("line", { class: "axis", x1: L, x2: W - R, y1: H - B, y2: H - B }));
+  const xt = [1];
+  for (let e = 5; e <= xMax; e += 5) xt.push(e);
+  for (const e of xt) {
+    const lab = s("text", { x: x(e), y: H - B + 15, "text-anchor": "middle" });
+    lab.textContent = e;
+    svg.append(lab);
+  }
+  const xl = s("text", { x: W - R, y: H - 2, "text-anchor": "end" });
+  xl.textContent = "epoch";
+  svg.append(xl);
+
+  if (!rows.length) {
+    const t = s("text", { x: (L + W - R) / 2, y: (T + H - B) / 2, "text-anchor": "middle" });
+    t.textContent = gen.state === "pending" ? "not started" : "no epochs logged yet";
+    svg.append(t);
+    return { svg, x, y, rows };
+  }
+  const color = genColor(gen.generation);
+  if (gen.best_epoch != null) {
+    svg.append(s("line", { class: "bestline", x1: x(gen.best_epoch), x2: x(gen.best_epoch), y1: T - 4, y2: H - B }));
+    const bl = s("text", { class: "bestlab", x: x(gen.best_epoch) + (gen.best_epoch > xMax * 0.8 ? -4 : 4), y: T - 6, "text-anchor": gen.best_epoch > xMax * 0.8 ? "end" : "start" });
+    bl.textContent = "best epoch " + gen.best_epoch;
+    svg.append(bl);
+  }
+  const d = rows.map((r, i) => (i ? "L" : "M") + x(r.epoch).toFixed(1) + " " + y(r[metric.key]).toFixed(1)).join(" ");
+  svg.append(s("path", { d, fill: "none", stroke: color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  const last = rows[rows.length - 1];
+  svg.append(s("circle", { cx: x(last.epoch), cy: y(last[metric.key]), r: 4, fill: color, stroke: "var(--surface)", "stroke-width": 2 }));
+  if (gen.best_epoch != null) {
+    const b = rows.find((r) => r.epoch === gen.best_epoch);
+    svg.append(s("circle", { cx: x(b.epoch), cy: y(b[metric.key]), r: 5, fill: "var(--surface)", stroke: "var(--ink)", "stroke-width": 2 }));
+  }
+  return { svg, x, y, rows };
+}
+
+function chartBlock(gen, metric) {
+  const { svg, x, y, rows } = lineChart(gen, metric);
+  const last = rows[rows.length - 1];
+  const head = $("div", { class: "chartHead" },
+    $("span", {}, $("span", { class: "t" }, metric.title), " ", $("span", { class: "hint" }, metric.hint)),
+    $("span", { class: "last mono" }, last ? `epoch ${last.epoch}: ${num(last[metric.key], metric.digits)}` : ""));
+  const tip = $("div", { class: "tip", hidden: "" });
+  const box = $("div", { class: "chart" }, head, svg, tip);
+  const cross = s("line", { class: "axis", y1: 14, y2: 170, x1: -10, x2: -10 });
+  svg.append(cross);
+  const move = (ev) => {
+    if (!rows.length) return;
+    const r = svg.getBoundingClientRect();
+    const vx = ((ev.clientX - r.left) / r.width) * 420;
+    let nearest = rows[0];
+    for (const row of rows) if (Math.abs(x(row.epoch) - vx) < Math.abs(x(nearest.epoch) - vx)) nearest = row;
+    cross.setAttribute("x1", x(nearest.epoch)); cross.setAttribute("x2", x(nearest.epoch));
+    tip.hidden = false;
+    tip.textContent = `epoch ${nearest.epoch}${nearest.epoch === gen.best_epoch ? " (best)" : ""}: ${num(nearest[metric.key], 4)}`;
+    tip.style.left = (x(nearest.epoch) / 420) * r.width + "px";
+    tip.style.top = (y(nearest[metric.key]) / 196) * r.height + head.offsetHeight - 8 + "px";
+  };
+  svg.addEventListener("pointermove", move);
+  svg.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("x1", -10); cross.setAttribute("x2", -10); });
+  return box;
+}
+
+const PHASES = [["selfplay", "Self-play"], ["fit", "Fit"], ["gates", "Gates"]];
+function timeline(gen) {
+  const known = PHASES.map(([k]) => gen.phases[k].seconds).filter((v) => v != null);
+  const total = known.reduce((a, b) => a + b, 0) || 1;
+  const wrap = $("div", { class: "timeline" });
+  for (const [k, label] of PHASES) {
+    const p = gen.phases[k];
+    const weight = Math.max(p.seconds || 0, total * 0.12);
+    const text = p.state === "pending" ? "pending" : p.state === "running" ? "running " + fmtDur(p.seconds) : fmtDur(p.seconds);
+    wrap.append($("div", { class: "seg", style: `flex: ${weight} 1 0` },
+      $("div", { class: "bar " + p.state }),
+      $("div", { class: "lab" }, $("b", {}, label), " ", text)));
+  }
+  return wrap;
+}
+
+function attemptsBlock(gen) {
+  const fit = gen.fit;
+  if (!fit) return $("p", { class: "muted" }, "Pending: seed attempts and retry cost are written when the fit finishes.");
+  const chips = fit.seed_attempts.map((a) =>
+    $("span", { class: "attempt" }, `seed ${a.seed} stalled at step ${a.step}, |r| ${Math.abs(a.pearson).toFixed(2)}, ${a.wall_seconds.toFixed(1)} s`));
+  chips.push($("span", { class: "attempt live" }, `seed ${fit.seed_used} live`));
+  return $("div", { class: "fact" },
+    $("div", { class: "attempts" }, chips),
+    $("p", { class: "muted" }, `${fit.stalled_attempts} stalled, then seed ${fit.seed_used}. Retries cost ${fmtDur(fit.retry_wall_seconds)} against a ${fmtDur(fit.fit_wall_seconds)} winning fit: `,
+      $("b", { class: "mono" }, pct(fit.retry_fraction_of_fit)), " of the fit wall-clock, ",
+      $("b", { class: "mono" }, pct(fit.retry_fraction_of_generation, 2)), " of the generation."));
+}
+
+function checkpointBlock(gen) {
+  const fit = gen.fit, rows = gen.epochs;
+  const lines = [];
+  if (fit) {
+    const c = fit.checkpoint_metrics;
+    lines.push(`Saved checkpoint is epoch ${fit.checkpoint_epoch} of ${fit.epochs_configured}: value MSE ${num(c.value_mse)}, pearson ${num(c.value_pearson)}, sign accuracy ${num(c.value_sign_agreement)}, policy CE ${num(c.masked_policy_cross_entropy)}.`);
+    lines.push(`Trained on ${fit.positions.toLocaleString()} positions from ${fit.sources} shard${fit.sources === 1 ? "" : "s"} (${fit.train_games} train games, ${fit.validation_games} validation games), batch ${fit.batch_size}, lr ${fit.learning_rate}.`);
+  } else if (gen.best_epoch != null) {
+    lines.push(`Best epoch so far: ${gen.best_epoch} (value MSE ${num(gen.best_metrics.value_mse)}). The saved checkpoint is confirmed when the fit finishes.`);
+  }
+  if (rows.length && gen.best_epoch != null) {
+    const last = rows[rows.length - 1];
+    if (last.epoch > gen.best_epoch && last.value_mse > gen.best_metrics.value_mse * 1.02) {
+      lines.push(`After the best epoch, validation MSE rose from ${num(gen.best_metrics.value_mse)} to ${num(last.value_mse)} by epoch ${last.epoch}: the fit is overfitting.`);
+    }
+  }
+  return lines.length ? $("div", { class: "fact" }, lines.map((l) => $("p", { class: "muted" }, l))) : null;
+}
+
+function gateRows(label, leg, games) {
+  if (!leg) return [$("tr", {}, $("td", {}, label), $("td", { colspan: 4 }, $("span", { class: "muted" }, "not started")))];
+  const rows = [];
+  const c = leg.checks;
+  const verdict = (v) => pill(v === "PASS" ? "good" : "bad", v);
+  const h2h = (name, r) => r
+    ? $("tr", {}, $("td", {}, label, $("small", {}, name)), $("td", { class: "mono" }, `${r.wins}-${r.draws}-${r.losses}`), $("td", { class: "mono num" }, num(r.score_share)), $("td", { class: "mono num" }, num(r.wilson_lower_bound)), $("td", {}, verdict(r.verdict)))
+    : $("tr", {}, $("td", {}, label, $("small", {}, name)), $("td", { colspan: 4 }, pill("mute", leg.finished ? "not reported" : "running")));
+  rows.push(h2h("head to head", c.h2h));
+  rows.push(h2h("rollout anchor", c.rollout_anchor));
+  if (c.edax_yardstick) {
+    const e = c.edax_yardstick;
+    rows.push($("tr", {}, $("td", {}, label, $("small", {}, `Edax level ${e.level} yardstick`)), $("td", { class: "mono" }, `${e.wins}-${e.draws}-${e.losses}`), $("td", { class: "mono num" }, num(e.win_rate)), $("td", { class: "mono num" }, `${num(e.ci_low)} to ${num(e.ci_high)}`), $("td", {}, pill("mute", "yardstick"))));
+  }
+  return rows;
+}
+
+function gateBlock(gen) {
+  const games = [gen.gate_vs_gen0, gen.gate_vs_prev].filter(Boolean).flatMap((l) => Object.values(l.checks)).map((r) => r.games).filter(Boolean);
+  const body = [...gateRows("vs generation 0", gen.gate_vs_gen0)];
+  if (gen.generation >= 2) body.push(...gateRows(`vs generation ${gen.generation - 1}`, gen.gate_vs_prev));
+  const table = $("table", {}, $("thead", {}, $("tr", {}, $("th", {}, "Gate"), $("th", {}, "W-D-L"), $("th", { class: "num" }, "Score / win rate"), $("th", { class: "num" }, "Wilson LB / CI"), $("th", {}, "Verdict"))), $("tbody", {}, body));
+  const small = games.length && Math.max(...games) < 50;
+  return $("div", { class: "fact" },
+    $("div", { class: "scroll" }, table),
+    small ? $("p", { class: "muted" }, `Each check is ${Math.max(...games)} games: a smoke-level sample. A perfect score still has a wide Wilson interval, so read PASS or FAIL as a plumbing check, not as strength.`) : null);
+}
+
+function epochTable(gen) {
+  if (!gen.epochs.length) return null;
+  const head = $("tr", {}, ["epoch", "value MSE", "pearson", "sign acc", "policy CE", "lr", "elapsed"].map((h, i) => $("th", { class: i ? "num" : "" }, h)));
+  const body = gen.epochs.map((r) => $("tr", {}, [
+    r.epoch + (r.epoch === gen.best_epoch ? " (best)" : ""), num(r.value_mse, 4), num(r.value_pearson, 4), num(r.value_sign_agreement, 4),
+    num(r.masked_policy_cross_entropy, 4), String(r.lr), fmtDur(r.elapsed_seconds),
+  ].map((v, i) => $("td", { class: i ? "mono num" : "mono" }, v))));
+  return $("details", {}, $("summary", {}, "Epoch table"), $("div", { class: "scroll" }, $("table", {}, $("thead", {}, head), $("tbody", {}, body))));
+}
+
+const STATE_LABEL = { pending: ["mute", "Not started"], selfplay: ["info", "Self-play running"], fit: ["info", "Fit running"], gates: ["info", "Gates running"], done: ["good", "Complete"] };
+
+function genSection(gen) {
+  const [kind, text] = STATE_LABEL[gen.state];
+  const head = $("div", { class: "genHead" },
+    $("span", { class: "swatch", style: "background:" + genColor(gen.generation) }),
+    $("h2", {}, "Generation " + gen.generation),
+    pill(kind, text),
+    gen.wall_seconds != null ? $("span", { class: "muted mono" }, fmtDur(gen.wall_seconds) + " wall-clock") : null);
+  const parts = [head, timeline(gen), $("div", { class: "charts" }, METRICS.map((m) => chartBlock(gen, m)))];
+  const facts = [attemptsBlock(gen), checkpointBlock(gen)].filter(Boolean);
+  parts.push($("div", { class: "facts" }, facts));
+  if (gen.phases.fit.state !== "pending" || gen.gate_vs_gen0) parts.push(gateBlock(gen));
+  const et = epochTable(gen);
+  if (et) parts.push(et);
+  if (gen.missing.length) parts.push($("div", { class: "fact" }, $("span", { class: "eyebrow" }, "Not available yet"), $("ul", { class: "notes" }, gen.missing.map((m) => $("li", {}, m)))));
+  return $("section", { class: "gen", id: "gen" + gen.generation }, parts);
+}
+
+function cell(kind, text, sub) {
+  return $("td", {}, kind ? pill(kind, text) : text, sub ? $("small", {}, sub) : null);
+}
+
+function gateSummary(gens) {
+  const rows = [
+    ["Live network at the end of the fit", (g) => g.live_network == null ? cell("mute", "Pending", "known when the fit finishes")
+      : g.live_network ? cell("good", "Live", `saved epoch ${g.fit.checkpoint_epoch}, pearson ${num(g.fit.checkpoint_metrics.value_pearson, 2)}`)
+      : cell("bad", "Dead", `pearson ${num(g.fit.checkpoint_metrics.value_pearson, 2)}`)],
+    ["Seed attempts", (g) => g.fit ? cell(null, `${g.fit.stalled_attempts + 1} (${g.fit.stalled_attempts} stalled)`, `seed ${g.fit.seed_used} kept`) : cell("mute", "Pending")],
+    ["Retry cost, share of fit wall-clock", (g) => g.fit ? cell(null, pct(g.fit.retry_fraction_of_fit), `${fmtDur(g.fit.retry_wall_seconds)} of ${fmtDur(g.fit.retry_wall_seconds + g.fit.fit_wall_seconds)}`) : cell("mute", "Pending")],
+    ["Retry cost, share of generation", (g) => g.fit && g.fit.retry_fraction_of_generation != null ? cell(null, pct(g.fit.retry_fraction_of_generation, 2), `of ${fmtDur(g.wall_seconds)}`) : cell("mute", "Pending", "needs the finished generation")],
+    ["Late death (live at the first epoch, dead after)", (g) => !g.epochs.length ? cell("mute", "No data yet")
+      : g.late_death ? cell("bad", "Occurred", `dead at epochs ${g.dead_epochs.slice(0, 6).join(", ")}`) : cell("good", "None seen", `${g.epochs.length} epochs checked`)],
+    ["All seeds stalled", (g) => DATA.all_seeds_stalled ? cell("bad", "Occurred") : g.fit ? cell("good", "No") : cell("mute", "Not yet known")],
+    ["Generation wall-clock vs 1.5 h estimate", (g) => g.wall_seconds != null ? cell(null, fmtDur(g.wall_seconds), `${(g.wall_vs_estimate).toFixed(2)}x of ${fmtDur(DATA.estimate_generation_seconds)}`) : cell("mute", "Pending", g.state === "pending" ? "" : "elapsed so far: " + fmtDur(PHASES.reduce((a, [k]) => a + (g.phases[k].seconds || 0), 0)))],
+    ["Gate vs generation 0, head to head", (g) => { const r = g.gate_vs_gen0 && g.gate_vs_gen0.checks.h2h; return r ? cell(r.verdict === "PASS" ? "good" : "bad", `${r.wins}-${r.draws}-${r.losses} ${r.verdict}`, `over ${r.games} games`) : cell("mute", "Pending"); }],
+  ];
+  const head = $("tr", {}, $("th", {}, "Step 3 check"), gens.map((g) => $("th", {}, "Generation " + g.generation)));
+  const body = rows.map(([label, f]) => $("tr", {}, $("td", {}, label), gens.map((g) => f(g))));
+  return $("div", { class: "scroll" }, $("table", { class: "gateTable" }, $("thead", {}, head), $("tbody", {}, body)));
+}
+
+function memoryBlock() {
+  const m = DATA.memory;
+  if (!m.samples) return $("p", { class: "muted" }, "No memory samples yet.");
+  const margin = m.min_available_mb - m.floor_mb;
+  return $("div", { class: "fact" },
+    $("p", { class: "muted" }, "The watchdog kills the run if system-available memory falls under ", $("b", { class: "mono" }, m.floor_mb + " MB"),
+      ". Lowest seen so far: ", $("b", { class: "mono" }, m.min_available_mb + " MB"), ` at ${m.min_available_at} (${margin} MB above the floor); latest ${m.last_available_mb} MB at ${m.last_sample_at}. `,
+      "Process RSS is not shown because GPU (MPS and MLX) memory does not count in it."),
+    m.killed ? $("p", {}, pill("bad", "Watchdog killed the run"), " ", m.kill_lines.join(" ")) : null);
+}
+
+function render() {
+  const app = document.getElementById("app");
+  const cfg = DATA.config;
+  const fit = (DATA.generations.find((g) => g.fit) || {}).fit;
+  const statusKind = DATA.status === "running" ? "info" : DATA.status === "finished" ? "good" : "bad";
+  const cur = DATA.current;
+  const curGen = cur && DATA.generations.find((g) => g.generation === cur.generation);
+  const phaseLabel = { selfplay: "self-play", fit: "fit", gates: "gates" };
+
+  const header = $("header", {},
+    $("div", { class: "titleRow" }, $("span", { class: "discs", "aria-hidden": "true" }, $("i"), $("i")), $("h1", {}, "Othello CNN run")),
+    $("div", { class: "meta" },
+      $("span", {}, "C128 / B6, OTCNN001"),
+      fit ? $("span", {}, "batch ", $("span", { class: "mono" }, fit.batch_size), ", lr ", $("span", { class: "mono" }, fit.learning_rate)) : null,
+      cfg.games ? $("span", {}, $("span", { class: "mono" }, cfg.games), " games x ", $("span", { class: "mono" }, cfg.sims), " sims per generation, ", cfg.engine, " engine") : null,
+      $("span", {}, $("span", { class: "mono" }, cfg.epochs), " epochs per fit", cfg.gate_games ? [", ", $("span", { class: "mono" }, cfg.gate_games), " gate games"] : null),
+      $("span", { class: "mono" }, DATA.run_dir)),
+    $("div", { class: "now" }, pill(statusKind, DATA.status),
+      cur ? $("span", {}, "Now: ", $("b", {}, `generation ${cur.generation}, ${phaseLabel[cur.phase]}`), ` for ${fmtDur(curGen.phases[cur.phase].seconds)}`) : null,
+      $("span", { class: "muted" }, `Snapshot at ${clock(DATA.snapshot)}. The page updates when it is republished, it is not live.`)));
+
+  const gens = DATA.generations;
+  const gate = $("section", {}, $("div", {}, $("span", { class: "eyebrow" }, "Step 3 gate"), $("h2", {}, "Does every generation end with a live network?")),
+    $("p", { class: "lede" }, "Two consecutive generations at the production geometry. Dead seeds are cut at optimizer step 64 and retried, so the question is whether retries stay cheap and whether any net dies after passing that check."),
+    gens.length ? gateSummary(gens) : $("p", { class: "muted" }, "No generation has started."));
+
+  const mem = $("section", {}, $("span", { class: "eyebrow" }, "Memory"), memoryBlock());
+  app.append(header, gate, ...gens.map(genSection), mem);
+}
+render();
+</script>

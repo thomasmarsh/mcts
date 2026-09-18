@@ -36,6 +36,7 @@ from az_train.convnet_othello_torch import (
 )
 from az_train.convnet_othello_torch import (
     INIT_FUNCTIONS,
+    PREDICT_CHUNK_ROWS,
     AllSeedsStalledError,
     OTCNN001Torch,
     StallCheck,
@@ -103,6 +104,30 @@ def test_predict_chunking_does_not_change_the_result() -> None:
 
     assert np.allclose(whole_value, chunked_value, atol=1e-5)
     assert np.allclose(whole_policy, chunked_policy, atol=1e-5)
+
+
+def test_predict_never_stacks_more_than_the_default_chunk_into_one_forward_call() -> None:
+    """The end-of-fit metrics pass runs the whole training set through ``predict``;
+    an unbounded chunk exhausts MPS memory at production geometry."""
+    rng = np.random.default_rng(6)
+    n = PREDICT_CHUNK_ROWS * 2 + 7
+    me = (rng.random((n, 64)) > 0.7).astype(np.float32)
+    opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
+
+    model = _reference_model()
+    model.load_from_flat(initial_weights(seed=4))
+    batch_sizes: list[int] = []
+    forward = model.forward_literal
+
+    def recording_forward(me_t: torch.Tensor, opp_t: torch.Tensor):  # noqa: ANN202
+        batch_sizes.append(me_t.shape[0])
+        return forward(me_t, opp_t)
+
+    model.forward_literal = recording_forward  # type: ignore[method-assign]
+    model.predict(me, opp)
+
+    assert max(batch_sizes) == PREDICT_CHUNK_ROWS
+    assert sum(batch_sizes) == 8 * n
 
 
 def _splitmix_weights(n: int, amplitude: float) -> np.ndarray:

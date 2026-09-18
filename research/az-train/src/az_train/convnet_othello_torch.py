@@ -114,6 +114,13 @@ from az_train.records_othello import Positions, concat, load_positions, me_opp_b
 BLOCKS = 6
 CHANNELS = 128
 
+#: Rows per forward call in :meth:`OTCNN001Torch.predict`. At C128/B6 one row's
+#: activations are ~33KB per tensor per layer, so a 16k-row chunk needed >1GB of
+#: transient MPS memory (invisible to RSS) and the end-of-fit metrics pass over the
+#: whole training set tripped the memory watchdog on an 8GB machine. 1024 rows
+#: keeps that pass under ~100MB at no measurable throughput cost.
+PREDICT_CHUNK_ROWS = 1024
+
 #: Selectable initializers for :func:`fit_torch`'s ``init`` parameter.
 #: ``"fixed_normal"`` is ``initial_weights_k`` -- the existing
 #: fixed-0.03-std/0.05-bias initializer, kept as the default so no existing
@@ -202,7 +209,7 @@ class OTCNN001Torch(nn.Module):
 
     @torch.no_grad()
     def predict(
-        self, me: np.ndarray, opp: np.ndarray, *, chunk_size: int = 16_384
+        self, me: np.ndarray, opp: np.ndarray, *, chunk_size: int = PREDICT_CHUNK_ROWS
     ) -> tuple[np.ndarray, np.ndarray]:
         """D4-averaged value and 64-column policy logits from ``(N, 64)``
         numpy occupancy arrays -- matches ``othello_eval.convnet.predict``'s
