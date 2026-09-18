@@ -135,6 +135,18 @@ pub(crate) fn target_policy<Env: Clone>(cfg: &Config, tree: &Tree<Env>, bid: usi
         .collect()
 }
 
+/// The completed-Q improved-policy target at a node, softmax-normalized --
+/// this crate's analogue of the per-node engine's own `mcts::algorithms::
+/// mcts::gumbel::improved_policy` (same log-prior-plus-completed-Q shape,
+/// via [`target_policy`]/[`qcoeff`], just parameterized by this crate's own
+/// `Config` instead of `GumbelConfig`). An illegal action's `policy_prior`
+/// is `0.0` (see [`validate_prior`]), so its `target_policy` score is `-inf`
+/// and it softmaxes to exactly `0.0` here -- callers don't need a separate
+/// legality mask.
+pub fn improved_policy<Env: Clone>(cfg: &Config, tree: &Tree<Env>, bid: usize, nid: i32) -> Vec<f32> {
+    softmax(&target_policy(cfg, tree, bid, nid))
+}
+
 /// Pick the action whose realized visit share most lags its target-policy
 /// share -- the same deterministic rule Sequential Halving falls back to
 /// once past the root (and the only rule `explore`, without Gumbel, ever

@@ -15,9 +15,10 @@ pub mod gumbel;
 pub mod oracle;
 pub mod othello;
 pub mod search;
+pub mod selfplay;
 pub mod tree;
 
 pub use gumbel::gumbel_explore;
 pub use oracle::{EnvOracle, StepOutput, TransitionOutput};
-pub use search::{explore, Config};
+pub use search::{explore, improved_policy, Config};
 pub use tree::Tree;
