@@ -37,10 +37,38 @@ struct GumbelRow {
 }
 
 /// One still-live game's accumulated rows plus its current position.
+/// `game_index` is the game's fixed identity (0..`games`) -- unlike its
+/// position in `live`/the batch id `gumbel_explore` assigns each round,
+/// which shifts as other games finish, `game_index` never changes, so
+/// [`forced_move`]'s per-game determinism holds across the whole game.
 struct LiveGame {
     state: State,
     rows: Vec<GumbelRow>,
     ply: u8,
+    game_index: u64,
+}
+
+/// A deterministic per-game, per-ply opening move for the first
+/// `forced_plies` plies of a game, for wide, uniform coverage of Othello's
+/// (small) opening tree across a self-play run -- the same mechanism and
+/// hash `game_othello::dump`'s own private `forced_move` uses (duplicated
+/// rather than shared, since that function isn't public); a stale copy here
+/// would only ever mean this driver's forced openings drift from the
+/// per-node engine's, not a hidden coupling bug. Search still runs and a
+/// policy target is still recorded at every forced position -- only the
+/// move actually played is overridden.
+fn forced_move(state: &State, game_index: u64, ply: u32, forced_plies: u32) -> Option<Move> {
+    if ply >= forced_plies {
+        return None;
+    }
+    let mut actions = Vec::new();
+    Othello::generate_actions(state, &mut actions);
+    if actions.len() <= 1 {
+        return None;
+    }
+    let h = (game_index ^ (ply as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    Some(actions[(h as usize) % actions.len()])
 }
 
 /// Sample one move from a `(aid -> probability)` distribution over all
@@ -88,7 +116,10 @@ fn argmax_completed_q(qs: &[f32]) -> usize {
 /// [`RecordV2`] per non-terminal position across every game.
 ///
 /// Move selection matches `games/othello/src/dump.rs`'s per-node convention:
-/// for the first `temp_moves` plies of a game, the move is sampled from the
+/// for the first `forced_opening_plies` plies, [`forced_move`] overrides the
+/// search entirely with a deterministic per-game opening choice (search
+/// still runs and a policy target is still recorded); otherwise, for the
+/// first `temp_moves` plies of a game, the move is sampled from the
 /// completed-Q improved-policy distribution ([`improved_policy`]); after
 /// that, the move is the argmax of `completed_qvalues`
 /// ([`argmax_completed_q`], matching this crate's own established
@@ -103,13 +134,14 @@ pub fn dump_gumbel_games_batched(
     games: u64,
     seed: u64,
     temp_moves: u8,
+    forced_opening_plies: u32,
 ) -> Vec<RecordV2> {
     let oracle = MlxOthelloOracle::new(net, chunk_size);
     let mut gumbel_rng = SmallRng::seed_from_u64(seed);
     let mut move_rng = SmallRng::seed_from_u64(seed ^ 0x9E37_79B9_7F4A_7C15);
 
     let mut live: Vec<LiveGame> = (0..games)
-        .map(|_| LiveGame { state: State::default(), rows: Vec::new(), ply: 0 })
+        .map(|game_index| LiveGame { state: State::default(), rows: Vec::new(), ply: 0, game_index })
         .collect();
     let mut out: Vec<RecordV2> = Vec::new();
 
@@ -126,7 +158,10 @@ pub fn dump_gumbel_games_batched(
                 .collect();
 
             let head = record_for(&g.state, None);
-            let aid = if g.ply < temp_moves {
+            let forced = forced_move(&g.state, g.game_index, g.ply as u32, forced_opening_plies);
+            let aid = if let Some(forced) = forced {
+                forced.0 as usize
+            } else if g.ply < temp_moves {
                 sample_policy(&policy, &mut move_rng)
             } else {
                 argmax_completed_q(&tree.completed_qvalues(bid, tree.root()))
@@ -155,4 +190,31 @@ pub fn dump_gumbel_games_batched(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{forced_move, Othello, State};
+    use mcts::game::Game;
+
+    #[test]
+    fn forced_move_disabled_past_forced_plies() {
+        let state = State::default();
+        assert_eq!(forced_move(&state, 0, 3, 3), None);
+        assert_eq!(forced_move(&state, 0, 10, 3), None);
+    }
+
+    #[test]
+    fn forced_move_is_deterministic_per_game_and_ply() {
+        let state = State::default();
+        for g in 0..20u64 {
+            for ply in 0..3u32 {
+                let a = forced_move(&state, g, ply, 3).expect("opening has real choices");
+                let mut actions = Vec::new();
+                Othello::generate_actions(&state, &mut actions);
+                assert!(actions.contains(&a));
+                assert_eq!(forced_move(&state, g, ply, 3), Some(a));
+            }
+        }
+    }
 }

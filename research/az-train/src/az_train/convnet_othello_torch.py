@@ -15,9 +15,11 @@ pass.
 ``blocks``/``tied``/``channels``/``value_hidden`` exactly the way
 ``othello_eval.convnet``'s own ``_unpack_k``/``predict_k``/``fit_k`` family
 generalizes the fixed-``OTCNN001`` functions -- the default arguments
-(``BLOCKS``, ``tied=False``, ``CHANNELS``, ``VALUE_HIDDEN``) reproduce
-``OTCNN001`` exactly, so a caller that never passes these keeps the original
-fixed geometry. :func:`fit_torch` also tracks a best-validation-checkpoint
+(``BLOCKS``, ``tied=False``, ``CHANNELS``, ``VALUE_HIDDEN``) are the
+production geometry ``games/othello/src/convnet.rs`` loads, so a caller that
+never passes these gets a checkpoint the Rust side accepts (the numpy
+reference module's own small geometry has to be requested explicitly).
+:func:`fit_torch` also tracks a best-validation-checkpoint
 snapshot and applies a cosine learning-rate decay over the back half of
 training by default, not as opt-in flags a caller must remember to pass.
 
@@ -78,9 +80,7 @@ from typing import Any
 import numpy as np
 import torch
 from othello_eval.convnet import (
-    BLOCKS,
     BOARD,
-    CHANNELS,
     D4,
     INV,
     MAGIC,
@@ -102,6 +102,16 @@ from torch import nn
 
 from az_train import policy_othello
 from az_train.records_othello import Positions, concat, load_positions, me_opp_bits, split_by_game
+
+#: Production geometry: what ``OTCNN001Torch``/:func:`fit_torch` build by
+#: default, and what ``games/othello/src/convnet.rs``'s compiled-in
+#: ``CHANNELS``/``BLOCKS`` load -- ``CnnValueNet::load`` rejects any other
+#: geometry's checkpoint by header, so these two constants and that file's
+#: must change together. ``othello_eval.convnet``'s own ``CHANNELS``/
+#: ``BLOCKS`` are the numpy reference module's small fixed geometry (cheap
+#: enough for its test suite) and are deliberately *not* this default.
+BLOCKS = 6
+CHANNELS = 128
 
 #: Selectable initializers for :func:`fit_torch`'s ``init`` parameter.
 #: ``"fixed_normal"`` is ``initial_weights_k`` -- the existing
@@ -144,7 +154,7 @@ class OTCNN001Torch(nn.Module):
     ``64->value_hidden`` -> dense ``value_hidden->1`` -> tanh) and a policy
     head (1x1 conv -> dense ``64->POLICY_OUTPUTS``) sharing the trunk. The
     defaults (``BLOCKS``, ``tied=False``, ``CHANNELS``, ``VALUE_HIDDEN``)
-    reproduce ``OTCNN001`` exactly. ``predict`` reproduces
+    are the production ``OTCNN001`` geometry. ``predict`` reproduces
     ``othello_eval.convnet.predict_k``'s D4-orientation-averaging wrapper and
     PASS-as-mean-of-64-logits convention (the mean is left to the caller,
     exactly as ``predict_k`` does -- see its docstring)."""
@@ -659,9 +669,9 @@ def train_cli(argv: list[str] | None = None) -> None:
     completed-Q policy targets from every position via ``policy_othello.
     targets``, writes the exact ``OTCNN001`` byte layout ``othello_eval.
     convnet.write_weights`` and ``games/othello/src/convnet.rs::
-    CnnValueNet::load`` already agree on (now the ``k4_distinct``/4-block
-    geometry -- both sides' ``BLOCKS`` constant carries that as their
-    shared default, so no explicit geometry flag is needed here).
+    CnnValueNet::load`` already agree on, at the production geometry (this
+    module's ``BLOCKS``/``CHANNELS``, which that Rust file must match --
+    no explicit geometry flag is needed here).
 
         az-train-othello-cnn --positions gen0.bin,gen1.bin \\
             --out local/output/az/othello-cnn/run0/gen2.bin \\
@@ -676,8 +686,8 @@ def train_cli(argv: list[str] | None = None) -> None:
     ap.add_argument("--validation-fraction", type=float, default=0.1)
     ap.add_argument("--split-seed", type=int, default=0)
     ap.add_argument("--epochs", type=int, default=120)
-    ap.add_argument("--batch-size", type=int, default=4096)
-    ap.add_argument("--learning-rate", type=float, default=2e-3)
+    ap.add_argument("--batch-size", type=int, default=32)
+    ap.add_argument("--learning-rate", type=float, default=1e-3)
     ap.add_argument("--l2", type=float, default=1e-4)
     ap.add_argument("--validate-every", type=int, default=1)
     ap.add_argument("--report-every", type=int, default=1)
@@ -717,11 +727,11 @@ def train_cli(argv: list[str] | None = None) -> None:
     va_policy, va_legal = policy_othello.targets(validation.policy)
 
     print(
-        f"=== OTCNN001 (k4_distinct) fit: {len(train)} train / {len(validation)} validation "
+        f"=== OTCNN001 (blocks={BLOCKS}, channels={CHANNELS}) fit: {len(train)} train / {len(validation)} validation "
         f"positions, device={device} ===",
         flush=True,
     )
-    _model, metadata = fit_torch_with_retry(
+    model, metadata = fit_torch_with_retry(
         train_me, train_opp, train.value.astype(np.float64),
         (va_me, va_opp, validation.value.astype(np.float64)),
         l2=args.l2,
@@ -758,7 +768,10 @@ def train_cli(argv: list[str] | None = None) -> None:
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    write_weights(str(out), np.asarray(metadata["best_checkpoint_weights"], dtype=np.float32))
+    write_weights(
+        str(out), np.asarray(metadata["best_checkpoint_weights"], dtype=np.float32),
+        blocks=model.n_blocks, channels=model.channels, value_hidden=model.value_hidden,
+    )
 
     meta = {
         "model": MAGIC.decode(), "version": VERSION, "n_weights": metadata["n_weights"],

@@ -1,8 +1,9 @@
 //! Compact, versioned Othello convolutional value+policy inference.
 //!
-//! `OTCNN001` (version 2) is a two-plane 8x8 network with a 16-channel stem,
-//! four residual blocks, and separate value and policy heads sharing that
-//! trunk -- the direct 8x8 generalization of Connect Four's `C4CNN001`
+//! `OTCNN001` (version 2) is a two-plane 8x8 network with a `CHANNELS`-wide
+//! stem, `BLOCKS` residual blocks, and separate value and policy heads
+//! sharing that trunk -- the direct 8x8 generalization of Connect Four's
+//! `C4CNN001`
 //! (`games/connect4/src/convnet.rs`), which also shares one trunk between
 //! both heads. Version 1 was value-only; see
 //! `research/othello-eval/src/othello_eval/convnet.py`'s module doc for why
@@ -41,8 +42,8 @@ use crate::{Move, Othello, Player, State};
 pub mod mlx;
 
 const BOARD: usize = 8;
-const CHANNELS: usize = 16;
-const BLOCKS: usize = 4;
+const CHANNELS: usize = 128;
+const BLOCKS: usize = 6;
 const VALUE_HIDDEN: usize = 32;
 const POLICY_OUTPUTS: usize = 64;
 const MAGIC: &[u8; 8] = b"OTCNN001";
@@ -263,6 +264,28 @@ impl PolicyLogits<Othello> for CnnValueNet {
     }
 }
 
+/// Deterministic pseudo-random weights (splitmix64, uniform in
+/// `[-amplitude, amplitude]`) for the tests here and in `mlx.rs`. The Python
+/// tests (`othello-eval/tests/test_convnet.py`,
+/// `az-train/tests/test_convnet_othello_torch.py`) implement the identical
+/// generator, so a pinned fixture value means the same thing on both sides.
+/// An `amplitude` near 0.07 keeps a production-geometry net's activations
+/// near unit gain; larger values blow up through the residual stack and
+/// leave nothing meaningful to compare.
+#[cfg(test)]
+pub(crate) fn splitmix_weights(amplitude: f64) -> Vec<f32> {
+    (1..=CNN_WEIGHTS as u64)
+        .map(|i| {
+            let mut z = i.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            let u = (z >> 11) as f64 / (1u64 << 53) as f64;
+            ((u * 2.0 - 1.0) * amplitude) as f32
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,10 +328,24 @@ mod tests {
         out
     }
 
+    /// D4-averaged value and first eight policy logits of `splitmix_weights(0.07)`
+    /// on `state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Black)`,
+    /// computed by `othello_eval.convnet.predict_k` at this file's geometry.
+    pub(crate) const REFERENCE_VALUE: f32 = 0.036_056_604;
+    pub(crate) const REFERENCE_POLICY_HEAD: [f64; 8] = [
+        0.008_687_069_639_563_56,
+        0.001_992_151_839_658_618,
+        -0.023_758_566_007_018_09,
+        0.001_324_896_002_188_325,
+        0.004_524_925_723_671_913,
+        -0.027_064_848_691_225_05,
+        0.004_268_915_392_458_439,
+        0.011_740_943_416_953_087,
+    ];
+
     #[test]
     fn value_is_d4_equivariant() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0007).sin()).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let black = (1u64 << 0) | (1 << 9) | (1 << 20);
         let white = (1u64 << 27) | (1 << 36) | (1 << 45);
         let base = state(black, white, Player::Black);
@@ -327,17 +364,15 @@ mod tests {
     /// passing its own tests.
     #[test]
     fn value_matches_python_reference_fixture() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| ((i as f64 - CNN_WEIGHTS as f64 / 2.0) * 1e-6) as f32).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = net.value(&s);
-        assert!((got - 0.011_578_533).abs() < 1e-6, "{got}");
+        assert!((got - REFERENCE_VALUE).abs() < 1e-5, "{got}");
     }
 
     #[test]
     fn policy_is_d4_equivariant() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0007).sin()).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let black = (1u64 << 0) | (1 << 9) | (1 << 20);
         let white = (1u64 << 27) | (1 << 36) | (1 << 45);
         let base = state(black, white, Player::Black);
@@ -361,29 +396,36 @@ mod tests {
     /// independently passing its own tests.
     #[test]
     fn policy_matches_python_reference_fixture() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| ((i as f64 - CNN_WEIGHTS as f64 / 2.0) * 1e-6) as f32).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = net.all_policy_logits(&s);
-        let expected = [
-            0.019_165_495_410_561_56,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_495_410_561_56,
-        ];
-        for (actual, expected) in got.iter().take(8).zip(expected) {
+        for (actual, expected) in got.iter().take(8).zip(REFERENCE_POLICY_HEAD) {
             assert!((actual - expected).abs() < 1e-5, "{actual} vs {expected}");
         }
     }
 
+    /// A checkpoint written at a different geometry (here the previous
+    /// 16-channel/4-block net's, valid header and all) must be refused
+    /// loudly, not misread as this geometry's weights.
+    #[test]
+    fn load_rejects_a_checkpoint_from_a_different_geometry() {
+        let (old_channels, old_blocks) = (16u32, 4u32);
+        let old_weights = 25_171u32;
+        let mut bytes = Vec::from(*MAGIC);
+        for n in [VERSION, BOARD as u32, BOARD as u32, 2, old_channels, old_blocks, VALUE_HIDDEN as u32, POLICY_OUTPUTS as u32, old_weights] {
+            bytes.extend(n.to_le_bytes());
+        }
+        bytes.extend(std::iter::repeat_n(0u8, old_weights as usize * 4));
+        let path = std::env::temp_dir().join(format!("otcnn001-stale-geometry-{}.bin", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let err = CnnValueNet::load(&path).expect_err("a stale-geometry checkpoint must not load");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
     #[test]
     fn pass_logit_is_the_mean_square_logit() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0011).cos()).collect();
-        let mut net = CnnValueNet::from_weights(weights);
+        let mut net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let s = state(1 << 0, 1 << 9, Player::Black);
         let all = net.all_policy_logits(&s);
         let want = all.iter().sum::<f64>() / POLICY_OUTPUTS as f64;

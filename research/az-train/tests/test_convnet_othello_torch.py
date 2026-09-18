@@ -9,6 +9,8 @@ on.
 
 from __future__ import annotations
 
+from functools import partial
+
 import numpy as np
 import pytest
 import torch
@@ -33,14 +35,32 @@ from az_train.convnet_othello_torch import (
     TrainingStalledError,
     _cosine_lr,  # pyright: ignore[reportPrivateUsage]
     _lr_schedule,  # pyright: ignore[reportPrivateUsage]
-    fit_torch,
-    fit_torch_with_retry,
 )
+from az_train.convnet_othello_torch import (
+    BLOCKS as PRODUCTION_BLOCKS,
+)
+from az_train.convnet_othello_torch import (
+    CHANNELS as PRODUCTION_CHANNELS,
+)
+from az_train.convnet_othello_torch import fit_torch as _fit_torch_production
+from az_train.convnet_othello_torch import fit_torch_with_retry as _fit_torch_with_retry_production
+
+# The trainer's defaults are the production geometry (a 1.78M-weight net);
+# these tests exercise the trainer's mechanics and its parity with the numpy
+# reference module, which are geometry-independent, so they run at that
+# module's small reference geometry to stay fast. Only the cross-language
+# fixtures and the default-geometry checks below use the production one.
+fit_torch = partial(_fit_torch_production, blocks=BLOCKS, channels=CHANNELS)
+fit_torch_with_retry = partial(_fit_torch_with_retry_production, blocks=BLOCKS, channels=CHANNELS)
+
+
+def _reference_model() -> OTCNN001Torch:
+    return OTCNN001Torch(BLOCKS, False, CHANNELS, VALUE_HIDDEN)
 
 
 def test_flat_round_trips_through_load_and_to_flat() -> None:
     weights = initial_weights(seed=1)
-    model = OTCNN001Torch()
+    model = _reference_model()
     model.load_from_flat(weights)
     assert np.array_equal(model.to_flat(), weights)
 
@@ -52,7 +72,7 @@ def test_predict_matches_numpy_on_a_random_batch() -> None:
     me = (rng.random((n, 64)) > 0.7).astype(np.float32)
     opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
 
-    model = OTCNN001Torch()
+    model = _reference_model()
     model.load_from_flat(weights)
     torch_value, torch_policy = model.predict(me, opp)
     numpy_value, numpy_policy = predict(weights, me, opp)
@@ -75,7 +95,7 @@ def test_predict_chunking_does_not_change_the_result() -> None:
     me = (rng.random((n, 64)) > 0.7).astype(np.float32)
     opp = (rng.random((n, 64)) > 0.7).astype(np.float32) * (1.0 - me)
 
-    model = OTCNN001Torch()
+    model = _reference_model()
     model.load_from_flat(weights)
     whole_value, whole_policy = model.predict(me, opp, chunk_size=10_000)
     chunked_value, chunked_policy = model.predict(me, opp, chunk_size=5)
@@ -84,53 +104,68 @@ def test_predict_chunking_does_not_change_the_result() -> None:
     assert np.allclose(whole_policy, chunked_policy, atol=1e-5)
 
 
-def test_value_matches_the_cross_language_reference_fixture() -> None:
-    """Same weights formula and state as ``othello_eval.convnet``'s
-    ``test_value_matches_the_rust_reference_fixture`` and
-    ``games/othello/src/convnet.rs``'s ``value_matches_python_reference_
-    fixture``. Loading the exact pinned weight vector into
-    ``OTCNN001Torch`` and matching this value transitively proves torch ==
-    numpy == Rust without a third hand-written fixture."""
-    weights = np.array(
-        [(i - N_WEIGHTS / 2) * 1e-6 for i in range(N_WEIGHTS)], dtype=np.float32
-    )
+def _splitmix_weights(n: int, amplitude: float) -> np.ndarray:
+    """The identical splitmix64 generator ``games/othello/src/convnet.rs``'s
+    ``splitmix_weights`` and ``othello_eval``'s ``test_convnet.py`` use."""
+    i = np.arange(1, n + 1, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        z = i * np.uint64(0x9E3779B97F4A7C15)
+        z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        z = z ^ (z >> np.uint64(31))
+    u = (z >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    return ((u * 2.0 - 1.0) * amplitude).astype(np.float32)
+
+
+def _production_fixture_prediction() -> tuple[np.ndarray, np.ndarray]:
+    model = OTCNN001Torch()
+    model.load_from_flat(_splitmix_weights(n_weights_for(model.n_blocks, False, model.channels), 0.07))
     black = (1 << 0) | (1 << 2) | (1 << 8)
     white = (1 << 1) | (1 << 7)
     me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
     opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
+    return model.predict(me, opp)
 
+
+def test_default_geometry_is_the_rust_production_geometry() -> None:
+    """``games/othello/src/convnet.rs``'s ``CHANNELS``/``BLOCKS`` and this
+    trainer's defaults must move together: ``CnnValueNet::load`` rejects a
+    checkpoint of any other geometry, so a mismatch here means every
+    checkpoint the trainer writes is unloadable. 1_779_971 is that file's
+    ``CNN_WEIGHTS``."""
     model = OTCNN001Torch()
-    model.load_from_flat(weights)
-    value, _policy = model.predict(me, opp)
-    assert abs(float(value[0]) - 0.011578532867133617) < 1e-6
+    assert (model.n_blocks, model.channels) == (6, 128)
+    assert (PRODUCTION_BLOCKS, PRODUCTION_CHANNELS) == (6, 128)
+    assert n_weights_for(model.n_blocks, False, model.channels, model.value_hidden) == 1_779_971
+
+
+def test_value_matches_the_cross_language_reference_fixture() -> None:
+    """Same weights and state as ``othello_eval.convnet``'s
+    ``test_value_matches_the_rust_reference_fixture`` and
+    ``games/othello/src/convnet.rs``'s ``value_matches_python_reference_
+    fixture``, run at the production geometry through this module's torch
+    model: matching this value transitively proves torch == numpy == Rust
+    without a third hand-written fixture."""
+    value, _policy = _production_fixture_prediction()
+    assert abs(float(value[0]) - 0.036056604236364365) < 1e-5
 
 
 def test_policy_matches_the_cross_language_reference_fixture() -> None:
     """Same weights/state as ``othello_eval.convnet``'s
     ``test_policy_matches_the_rust_reference_fixture``."""
-    weights = np.array(
-        [(i - N_WEIGHTS / 2) * 1e-6 for i in range(N_WEIGHTS)], dtype=np.float32
-    )
-    black = (1 << 0) | (1 << 2) | (1 << 8)
-    white = (1 << 1) | (1 << 7)
-    me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
-    opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
-
-    model = OTCNN001Torch()
-    model.load_from_flat(weights)
-    _value, policy = model.predict(me, opp)
+    _value, policy = _production_fixture_prediction()
     expected = [
-        0.01916549541056156,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549541056156,
+        0.00868706963956356,
+        0.001992151839658618,
+        -0.02375856600701809,
+        0.001324896002188325,
+        0.004524925723671913,
+        -0.027064848691225052,
+        0.004268915392458439,
+        0.011740943416953087,
     ]
     for actual, want in zip(policy[0, :8], expected, strict=True):
-        assert abs(float(actual) - want) < 1e-6, (actual, want)
+        assert abs(float(actual) - want) < 1e-5, (actual, want)
 
 
 def test_one_adam_step_matches_numpy_with_weight_decay_equal_to_2l2() -> None:
@@ -166,7 +201,7 @@ def test_one_adam_step_matches_numpy_with_weight_decay_equal_to_2l2() -> None:
 
     # torch: one Adam step over autograd, same init, same batch, L2 folded
     # into the loss exactly as fit_torch does.
-    model = OTCNN001Torch()
+    model = _reference_model()
     model.load_from_flat(init)
     weight_params = [p for name, p in model.named_parameters() if not name.endswith(".bias")]
     optimizer = torch.optim.Adam(
@@ -197,7 +232,7 @@ def test_weight_decay_alone_would_have_missed_the_untouched_policy_head() -> Non
     regress back in silently."""
     l2 = 1e-2
     init = initial_weights_k(0, BLOCKS, False, CHANNELS, VALUE_HIDDEN)
-    model = OTCNN001Torch()
+    model = _reference_model()
     model.load_from_flat(init)
     before = model.policy_dense.weight.detach().clone()
 

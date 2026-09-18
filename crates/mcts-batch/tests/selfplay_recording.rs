@@ -51,7 +51,8 @@ fn black_perspective(r: &RecordV2) -> f32 {
 fn batched_gumbel_records_round_trip_and_satisfy_shard_invariants() {
     let games = 4u64;
     let cfg = Config { num_simulations: 12, num_considered_actions: 4, ..Config::default() };
-    let records = dump_gumbel_games_batched(MlxCnnValueNet::default(), &cfg, /* chunk_size */ 16, games, 42, 4);
+    let records =
+        dump_gumbel_games_batched(MlxCnnValueNet::default(), &cfg, /* chunk_size */ 16, games, 42, 4, 0);
 
     assert!(!records.is_empty(), "a real game always produces at least one non-terminal position");
 

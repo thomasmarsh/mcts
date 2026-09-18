@@ -8,6 +8,8 @@ no self-play, no real training run. Mirrors ``test_ntuple.py``/
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -420,49 +422,77 @@ def test_me_opp_planes_matches_direct_bit_unpacking() -> None:
     assert me[1, 1] == 1.0 and opp[1, 0] == 1.0
 
 
-def test_value_matches_the_rust_reference_fixture() -> None:
-    """Same weights formula, geometry and state as
-    ``games/othello/src/convnet.rs``'s ``value_matches_python_reference_
-    fixture`` -- pins that the Rust hot path and this numpy trainer agree
-    on the D4-averaged value, not just each independently passing its own
-    tests."""
-    weights = np.array(
-        [(i - N_WEIGHTS / 2) * 1e-6 for i in range(N_WEIGHTS)], dtype=np.float32
-    )
+#: Production geometry ``games/othello/src/convnet.rs`` is compiled with;
+#: the cross-language fixtures below run at it (this module's own default
+#: geometry is the small numpy reference one).
+RUST_BLOCKS, RUST_CHANNELS = 6, 128
+
+
+def splitmix_weights(n: int, amplitude: float) -> np.ndarray:
+    """Deterministic pseudo-random weights, uniform in ``[-amplitude,
+    amplitude]`` -- the identical splitmix64 generator ``games/othello/src/
+    convnet.rs``'s ``splitmix_weights`` uses, so a pinned fixture value
+    means the same thing on both sides."""
+    i = np.arange(1, n + 1, dtype=np.uint64)
+    with np.errstate(over="ignore"):
+        z = i * np.uint64(0x9E3779B97F4A7C15)
+        z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        z = z ^ (z >> np.uint64(31))
+    u = (z >> np.uint64(11)).astype(np.float64) / float(1 << 53)
+    return ((u * 2.0 - 1.0) * amplitude).astype(np.float32)
+
+
+def _rust_fixture_prediction() -> tuple[np.ndarray, np.ndarray]:
+    n = n_weights_for(RUST_BLOCKS, tied=False, channels=RUST_CHANNELS)
+    weights = splitmix_weights(n, 0.07)
     black = (1 << 0) | (1 << 2) | (1 << 8)
     white = (1 << 1) | (1 << 7)
     me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
     opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
-    value, _policy = predict(weights, me, opp)
-    assert abs(float(value[0]) - 0.011578532867133617) < 1e-6
+    return predict_k(weights, me, opp, RUST_BLOCKS, False, channels=RUST_CHANNELS)
+
+
+def test_value_matches_the_rust_reference_fixture() -> None:
+    """Same weights and state as ``games/othello/src/convnet.rs``'s
+    ``value_matches_python_reference_fixture`` -- pins that the Rust hot
+    path and this numpy trainer agree on the D4-averaged value, not just
+    each independently passing its own tests."""
+    value, _policy = _rust_fixture_prediction()
+    assert abs(float(value[0]) - 0.036056604236364365) < 1e-6
 
 
 def test_policy_matches_the_rust_reference_fixture() -> None:
-    """Same weights formula, geometry and state as
-    ``games/othello/src/convnet.rs``'s ``policy_matches_python_reference_
-    fixture`` -- pins that the Rust hot path and this numpy trainer agree
-    on the D4-averaged policy logits, not just each independently passing
-    its own tests."""
-    weights = np.array(
-        [(i - N_WEIGHTS / 2) * 1e-6 for i in range(N_WEIGHTS)], dtype=np.float32
-    )
-    black = (1 << 0) | (1 << 2) | (1 << 8)
-    white = (1 << 1) | (1 << 7)
-    me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
-    opp = np.array([[(white >> j) & 1 for j in range(64)]], dtype=np.float32)
-    _value, policy = predict(weights, me, opp)
+    """Same weights and state as ``games/othello/src/convnet.rs``'s
+    ``policy_matches_python_reference_fixture`` -- pins that the Rust hot
+    path and this numpy trainer agree on the D4-averaged policy logits, not
+    just each independently passing its own tests."""
+    _value, policy = _rust_fixture_prediction()
     expected = [
-        0.01916549541056156,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549727320671,
-        0.01916549541056156,
+        0.00868706963956356,
+        0.001992151839658618,
+        -0.02375856600701809,
+        0.001324896002188325,
+        0.004524925723671913,
+        -0.027064848691225052,
+        0.004268915392458439,
+        0.011740943416953087,
     ]
     for actual, want in zip(policy[0, :8], expected, strict=True):
         assert abs(float(actual) - want) < 1e-6, (actual, want)
+
+
+def test_checkpoint_round_trips_at_a_non_default_geometry(tmp_path: Path) -> None:
+    """``write_weights``/``read_weights`` carry the geometry in the header:
+    a non-default geometry round-trips when named, and is refused (not
+    misread) when read back as the module's default geometry."""
+    blocks, channels = 2, 8
+    weights = splitmix_weights(n_weights_for(blocks, tied=False, channels=channels), 0.05)
+    path = str(tmp_path / "small.bin")
+    write_weights(path, weights, blocks=blocks, channels=channels)
+    assert np.array_equal(read_weights(path, blocks=blocks, channels=channels), weights)
+    with pytest.raises(ValueError, match="unsupported OTCNN001 layout"):
+        read_weights(path)
 
 
 def test_literal_forward_is_deterministic_and_bounded() -> None:

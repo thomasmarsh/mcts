@@ -605,6 +605,8 @@ impl PolicyLogits<Othello> for MlxCnnValueNet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::convnet::tests::{REFERENCE_POLICY_HEAD, REFERENCE_VALUE};
+    use crate::convnet::splitmix_weights;
     use crate::{Player, BB};
 
     fn state(black: u64, white: u64, turn: Player) -> State {
@@ -616,32 +618,20 @@ mod tests {
     /// passes must agree, not just each independently pass their own tests.
     #[test]
     fn value_matches_cpu_reference_fixture() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| ((i as f64 - CNN_WEIGHTS as f64 / 2.0) * 1e-6) as f32).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = value(&net, &s);
-        assert!((got - 0.011_578_533).abs() < 1e-5, "{got}");
+        assert!((got - REFERENCE_VALUE).abs() < 1e-4, "{got}");
     }
 
     /// Same weight formula, geometry and state as `convnet.rs`'s
     /// `policy_matches_python_reference_fixture`.
     #[test]
     fn policy_matches_cpu_reference_fixture() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| ((i as f64 - CNN_WEIGHTS as f64 / 2.0) * 1e-6) as f32).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let s = state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black);
         let got = all_policy_logits(&net, &s);
-        let expected = [
-            0.019_165_495_410_561_56,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_497_273_206_71,
-            0.019_165_495_410_561_56,
-        ];
-        for (actual, expected) in got.iter().take(8).zip(expected) {
+        for (actual, expected) in got.iter().take(8).zip(REFERENCE_POLICY_HEAD) {
             assert!((actual - expected).abs() < 1e-4, "{actual} vs {expected}");
         }
     }
@@ -652,8 +642,7 @@ mod tests {
     /// can't hide.
     #[test]
     fn matches_cpu_on_random_weights_and_states() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0013).sin() * 0.1).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let boards = [
             (1u64 << 27 | 1 << 28 | 1 << 35, 1u64 << 26 | 1 << 34 | 1 << 36),
             ((1u64 << 0) | (1 << 9) | (1 << 20), (1u64 << 27) | (1 << 36) | (1 << 45)),
@@ -686,8 +675,7 @@ mod tests {
     /// must not let one state's rows leak into another's D4 average.
     #[test]
     fn batched_matches_per_state_calls() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0013).sin() * 0.1).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let states = [
             state(1u64 << 27 | 1 << 28 | 1 << 35, 1u64 << 26 | 1 << 34 | 1 << 36, Player::Black),
             state((1u64 << 0) | (1 << 9) | (1 << 20), (1u64 << 27) | (1 << 36) | (1 << 45), Player::White),
@@ -733,8 +721,7 @@ mod tests {
     /// another's D4 average or drop/reorder any state.
     #[test]
     fn chunked_matches_unchunked() {
-        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0013).sin() * 0.1).collect();
-        let net = CnnValueNet::from_weights(weights);
+        let net = CnnValueNet::from_weights(splitmix_weights(0.07));
         let states: Vec<State> = (0..7)
             .map(|i| {
                 let shift = (i * 3) % 40;

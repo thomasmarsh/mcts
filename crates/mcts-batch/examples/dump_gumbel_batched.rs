@@ -14,7 +14,7 @@
 //!
 //!   cargo run --release -p mcts-batch --example dump_gumbel_batched -- \
 //!     --out shard.bin [--games N] [--seed N] [--sims N] [--max-considered N] \
-//!     [--temp-moves N] [--chunk-size N] [--cnn-weights <path>]
+//!     [--temp-moves N] [--forced-opening-plies N] [--chunk-size N] [--cnn-weights <path>]
 
 use game_othello::convnet::mlx::MlxCnnValueNet;
 use mcts_batch::selfplay::dump_gumbel_games_batched;
@@ -30,6 +30,7 @@ fn main() {
     let mut sims = 32u32;
     let mut max_considered = 8usize;
     let mut temp_moves = 6u8;
+    let mut forced_opening_plies = 0u32;
     let mut chunk_size = 128usize;
     let mut cnn_weights: Option<PathBuf> = None;
 
@@ -45,12 +46,16 @@ fn main() {
                 max_considered = val().parse().expect("--max-considered must be an integer")
             }
             "--temp-moves" => temp_moves = val().parse().expect("--temp-moves must be an integer"),
+            "--forced-opening-plies" => {
+                forced_opening_plies = val().parse().expect("--forced-opening-plies must be an integer")
+            }
             "--chunk-size" => chunk_size = val().parse().expect("--chunk-size must be an integer"),
             "--cnn-weights" => cnn_weights = Some(PathBuf::from(val())),
             "-h" | "--help" => {
                 eprintln!(
                     "usage: dump_gumbel_batched --out <path> [--games N] [--seed N] [--sims N] \
-                     [--max-considered N] [--temp-moves N] [--chunk-size N] [--cnn-weights <path>]"
+                     [--max-considered N] [--temp-moves N] [--forced-opening-plies N] \
+                     [--chunk-size N] [--cnn-weights <path>]"
                 );
                 std::process::exit(0);
             }
@@ -72,10 +77,12 @@ fn main() {
 
     eprintln!(
         "batched gumbel self-play: games={games} sims={sims} max_considered={max_considered} \
-         temp_moves={temp_moves} chunk_size={chunk_size} cnn_weights={:?}",
+         temp_moves={temp_moves} forced_opening_plies={forced_opening_plies} chunk_size={chunk_size} \
+         cnn_weights={:?}",
         cnn_weights
     );
-    let records = dump_gumbel_games_batched(net, &cfg, chunk_size, games, seed, temp_moves);
+    let records =
+        dump_gumbel_games_batched(net, &cfg, chunk_size, games, seed, temp_moves, forced_opening_plies);
 
     let mut buf = Vec::new();
     for r in &records {

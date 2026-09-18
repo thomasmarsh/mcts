@@ -856,23 +856,35 @@ def fit_k(
     return weights, metadata
 
 
-def write_weights(path: str, weights: np.ndarray) -> None:
+def write_weights(
+    path: str, weights: np.ndarray, *, blocks: int = BLOCKS, channels: int = CHANNELS,
+    value_hidden: int = VALUE_HIDDEN,
+) -> None:
+    """Write an ``OTCNN001`` checkpoint. The byte layout carries its own
+    geometry in the header (which ``games/othello/src/convnet.rs::
+    CnnValueNet::load`` checks against its compiled-in geometry), so this
+    takes the geometry the weights were fitted at; the defaults are this
+    module's own reference geometry."""
     weights = np.asarray(weights, dtype="<f4")
-    _unpack(weights)
+    n_weights = n_weights_for(blocks, False, channels, value_hidden)
+    _unpack_k(weights, blocks, False, channels, value_hidden)
     Path(path).write_bytes(
-        HEADER.pack(MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, POLICY_OUTPUTS, N_WEIGHTS)
+        HEADER.pack(MAGIC, VERSION, BOARD, BOARD, 2, channels, blocks, value_hidden, POLICY_OUTPUTS, n_weights)
         + weights.tobytes()
     )
 
 
-def read_weights(path: str) -> np.ndarray:
+def read_weights(
+    path: str, *, blocks: int = BLOCKS, channels: int = CHANNELS, value_hidden: int = VALUE_HIDDEN,
+) -> np.ndarray:
     raw = Path(path).read_bytes()
     if len(raw) < HEADER.size:
         raise ValueError(f"{path}: missing OTCNN001 header")
+    n_weights = n_weights_for(blocks, False, channels, value_hidden)
     header = HEADER.unpack(raw[: HEADER.size])
-    expected = (MAGIC, VERSION, BOARD, BOARD, 2, CHANNELS, BLOCKS, VALUE_HIDDEN, POLICY_OUTPUTS, N_WEIGHTS)
-    if header != expected or len(raw) != HEADER.size + N_WEIGHTS * 4:
+    expected = (MAGIC, VERSION, BOARD, BOARD, 2, channels, blocks, value_hidden, POLICY_OUTPUTS, n_weights)
+    if header != expected or len(raw) != HEADER.size + n_weights * 4:
         raise ValueError(f"{path}: unsupported OTCNN001 layout")
     weights = np.frombuffer(raw[HEADER.size :], dtype="<f4").copy()
-    _unpack(weights)
+    _unpack_k(weights, blocks, False, channels, value_hidden)
     return weights

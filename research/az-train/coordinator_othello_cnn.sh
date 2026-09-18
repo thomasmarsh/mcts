@@ -43,7 +43,24 @@
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
 # L2, VALIDATION_FRACTION, DEVICE, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
-# EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR.
+# EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR, SELFPLAY_ENGINE, CHUNK_SIZE.
+#
+# SELFPLAY_ENGINE: which self-play driver writes each generation's shard --
+# `batched` (default: `crates/mcts-batch`'s `dump_gumbel_batched`, every live
+# game advanced one ply per batched GPU call) or `per-node` (`game-othello
+# dump --label gumbel --head cnn`, one game at a time, one leaf per
+# network call -- the only engine that can run with `EVALUATOR=cpu`, and
+# orders of magnitude slower at the production C128/B6 geometry). Both write
+# the identical RecordV2 shard format, so training and gating don't care
+# which one ran.
+#
+# CHUNK_SIZE: `batched` engine only -- the most states one MLX forward call
+# may stack (`game_othello::convnet::mlx::evaluate_batch`'s `chunk_size`). A
+# memory-safety bound, not a tuning knob: at C128/B6 one call's transient
+# working set scales linearly with its batch (~7GB at 200 states), so it
+# must stay well under this machine's RAM. Set it per machine and geometry;
+# the default (64) is the value measured safe on the 8GB development M1
+# (peak ~2.3GB at GAMES=800).
 #
 # EVALUATOR: which `CnnValueNet` forward-pass backend self-play and gating
 # use -- `mlx` (default, GPU-backed via
@@ -54,6 +71,17 @@
 # feature is on by default, so this script only adds `--no-default-features`
 # to its build when `EVALUATOR=cpu`. Training always runs on the CPU
 # (PyTorch/MPS side, untouched by this knob).
+#
+# BATCH_SIZE: training minibatch size, default 32 -- the smallest value in
+# the AlphaZero hyper-parameter sweep (Wang et al. 2019, arXiv 1903.08129,
+# swept 32/64/96), which gave the highest playing strength (Elo) fastest;
+# much larger batches (the original AlphaZero paper's 4096) over-smooth the
+# gradient. Small batches also keep the MPS training footprint small.
+#
+# LR: default 1e-3, the sweep's best learning rate for both loss and Elo. At
+# BATCH_SIZE=32 the previous 2e-3 collapsed the C128/B6 net to a constant
+# output within the first epoch on every seed tried (7 of 7), where 1e-3
+# survived about half of them.
 #
 # REPLAY_WINDOW: number of most recent generations' shards to train on each
 # generation (default 0 = unlimited/cumulative, every shard from gen0 on,
@@ -77,8 +105,8 @@ MAX_CONSIDERED=${MAX_CONSIDERED:-8}
 TEMP_MOVES=${TEMP_MOVES:-12}
 FORCED_OPENING_PLIES=${FORCED_OPENING_PLIES:-6}
 EPOCHS=${EPOCHS:-120}
-BATCH_SIZE=${BATCH_SIZE:-4096}
-LR=${LR:-2e-3}
+BATCH_SIZE=${BATCH_SIZE:-32}
+LR=${LR:-1e-3}
 L2=${L2:-1e-4}
 VALIDATION_FRACTION=${VALIDATION_FRACTION:-0.1}
 DEVICE=${DEVICE:-}
@@ -89,17 +117,33 @@ EDAX_LEVEL=${EDAX_LEVEL:-3}
 REPLAY_WINDOW=${REPLAY_WINDOW:-0}
 START=${START:-0}
 EVALUATOR=${EVALUATOR:-mlx}
+SELFPLAY_ENGINE=${SELFPLAY_ENGINE:-batched}
+CHUNK_SIZE=${CHUNK_SIZE:-64}
+
+case "$SELFPLAY_ENGINE" in
+  batched | per-node) ;;
+  *) echo "SELFPLAY_ENGINE must be 'batched' or 'per-node', got '$SELFPLAY_ENGINE'" >&2; exit 2 ;;
+esac
+if [ "$SELFPLAY_ENGINE" = "batched" ] && [ "$EVALUATOR" = "cpu" ]; then
+  echo "SELFPLAY_ENGINE=batched needs the MLX evaluator; use SELFPLAY_ENGINE=per-node with EVALUATOR=cpu" >&2
+  exit 2
+fi
 
 mkdir -p "$RUN_DIR/shards"
 
 feature_args=()
 if [ "$EVALUATOR" = "cpu" ]; then feature_args=(--no-default-features); fi
 cargo build --release -p game-othello --bin game-othello --example gumbel_gate "${feature_args[@]+"${feature_args[@]}"}"
+if [ "$SELFPLAY_ENGINE" = "batched" ]; then
+  cargo build --release -p mcts-batch --example dump_gumbel_batched
+fi
 
 BIN="$ROOT/target/release/game-othello"
 GATE="$ROOT/target/release/examples/gumbel_gate"
+BATCHED_DUMP="$ROOT/target/release/examples/dump_gumbel_batched"
 
-# Generation-0 checkpoint: the all-zero OTCNN001 net, written as a real,
+# Generation-0 checkpoint: the all-zero OTCNN001 net (production geometry,
+# `az_train.convnet_othello_torch`'s BLOCKS/CHANNELS), written as a real,
 # loadable file (matching coordinator_othello.sh's own "gen0 is a real
 # checkpoint, not a special-cased no-weights self-play path" convention) so
 # every generation's self-play call takes the same `--cnn-weights` flag.
@@ -108,11 +152,16 @@ if [ ! -f "$RUN_DIR/gen0.cnn.bin" ]; then
   uv run --project research/az-train python - "$RUN_DIR/gen0.cnn.bin" <<'PY'
 import sys
 import numpy as np
-from othello_eval import convnet
+from othello_eval.convnet import VALUE_HIDDEN, n_weights_for, write_weights
+
+from az_train.convnet_othello_torch import BLOCKS, CHANNELS
 
 out = sys.argv[1]
-convnet.write_weights(out, np.zeros(convnet.N_WEIGHTS, dtype=np.float32))
-print(f"wrote {out} ({convnet.N_WEIGHTS} weights)")
+n_weights = n_weights_for(BLOCKS, False, CHANNELS, VALUE_HIDDEN)
+write_weights(
+    out, np.zeros(n_weights, dtype=np.float32), blocks=BLOCKS, channels=CHANNELS, value_hidden=VALUE_HIDDEN
+)
+print(f"wrote {out} ({n_weights} weights, blocks={BLOCKS}, channels={CHANNELS})")
 PY
 fi
 
@@ -120,12 +169,19 @@ for g in $(seq "$START" $((GENS - 1))); do
   gen_start=$(date +%s)
   seed=$((1000 + g * 100000))
 
-  echo "=== generation $g: self-play ($GAMES games, $SIMS sims) @ $(date) ==="
-  "$BIN" dump --label gumbel --head cnn --cnn-weights "$RUN_DIR/gen$g.cnn.bin" \
-    --evaluator "$EVALUATOR" \
-    --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
-    --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
-    --forced-opening-plies "$FORCED_OPENING_PLIES"
+  echo "=== generation $g: self-play ($GAMES games, $SIMS sims, engine=$SELFPLAY_ENGINE) @ $(date) ==="
+  if [ "$SELFPLAY_ENGINE" = "batched" ]; then
+    "$BATCHED_DUMP" --cnn-weights "$RUN_DIR/gen$g.cnn.bin" --chunk-size "$CHUNK_SIZE" \
+      --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
+      --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
+      --forced-opening-plies "$FORCED_OPENING_PLIES"
+  else
+    "$BIN" dump --label gumbel --head cnn --cnn-weights "$RUN_DIR/gen$g.cnn.bin" \
+      --evaluator "$EVALUATOR" \
+      --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
+      --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
+      --forced-opening-plies "$FORCED_OPENING_PLIES"
+  fi
 
   # Replay window: default (REPLAY_WINDOW=0) is every generation's shards,
   # always including the diverse generation-0 (zero-net) data -- same

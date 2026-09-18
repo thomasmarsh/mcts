@@ -14,19 +14,31 @@
 # unchanged and override the defaults below; only RUN_DIR gets a default
 # that includes a timestamp so repeated launches don't collide.
 #
-# GAMES/SIMS/GATE_GAMES default lower here than coordinator_othello_cnn.sh's
-# own bare defaults (800/32/100): self-play is single-threaded, one board
-# position evaluated per `CnnValueNet` call with no batching, and a live
-# measurement on this machine at the current (4-residual-block) geometry
-# put self-play throughput around 24s/game at 32 sims -- 800 games alone
-# would run past 5 hours before training or gating even start. The values
-# below (measurement-scaled, not independently re-measured at these exact
-# settings) target a single generation finishing in about an hour, so a
-# several-hour unattended run covers a handful of generations rather than
-# stalling on generation 0. Check `$RUN_DIR/log.jsonl` after generation 0
-# completes -- its `wall_seconds` is the real number -- and adjust GENS
-# (via a resumed relaunch, see below) if it differs a lot from this
-# estimate.
+# The defaults below (GAMES/SIMS/GENS/EPOCHS/REPLAY_WINDOW/GATE_GAMES) favor
+# many small generations over a few heavy ones: more self-play iterations
+# with frequent, cheap updates beat a bigger inner training loop. Sized from
+# measurements at the production C128/B6 geometry on the 8GB development M1:
+#   - batched self-play: ~6.5 s/game (64 games measured in 7 min through
+#     this coordinator; an 800-game pass measured the same) -> GAMES=200 is
+#     ~22 min.
+#   - training at BATCH_SIZE=32: ~34 ms/step, ~1.05 ms per position per
+#     epoch; a generation holds ~61 positions per game, so at the
+#     REPLAY_WINDOW=8 cap (~98k positions) 30 epochs is ~50 min per fit
+#     attempt. A stalled (dead-seed) attempt is cut off after 20 epochs
+#     (~35 min at the cap); at C128/B6/batch 32 roughly half of seeds
+#     die, so expect one or two of those per generation.
+#   - gates use the per-node engine: ~24 s per game (head-to-head, rollout
+#     anchor and Edax each play GATE_GAMES) -> GATE_GAMES=10 is ~12 min for
+#     the vs-gen0 gate and ~8 min for the vs-previous one.
+# That is roughly 1.5h per generation at the window cap before retries,
+# ~30h for GENS=20. Check `$RUN_DIR/log.jsonl` after generation 0 -- its
+# `wall_seconds` is the real number -- and adjust.
+#
+# CHUNK_SIZE (MLX batch cap per forward call) is deliberately not defaulted
+# here: coordinator_othello_cnn.sh's own default (64) needs ~2.3GB of
+# headroom at C128/B6; lower it (e.g. CHUNK_SIZE=16, ~0.6GB) if the machine
+# has less free memory. Run large jobs under research/az-train/
+# watch_and_run.sh.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -38,9 +50,11 @@ export DEVICE=${DEVICE:-mps}
 export EDAX_BINARY=${EDAX_BINARY:-games/othello/edax/vendor/bin/mEdax-native}
 export EDAX_DATA_DIR=${EDAX_DATA_DIR:-games/othello/edax/vendor/data}
 export GAMES=${GAMES:-200}
-export SIMS=${SIMS:-16}
-export GATE_GAMES=${GATE_GAMES:-40}
-export GENS=${GENS:-6}
+export SIMS=${SIMS:-32}
+export GATE_GAMES=${GATE_GAMES:-10}
+export GENS=${GENS:-20}
+export EPOCHS=${EPOCHS:-30}
+export REPLAY_WINDOW=${REPLAY_WINDOW:-8}
 
 mkdir -p "$RUN_DIR"
 
