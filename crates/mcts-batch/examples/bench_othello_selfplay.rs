@@ -91,11 +91,18 @@ fn play_games_batched(games: usize, sims: u32) -> (usize, f64) {
         let ply_start = Instant::now();
         let tree = gumbel_explore(&cfg, &oracle, &live, &mut rng);
         ply_num += 1;
+        if std::env::var("CLEAR_MLX_CACHE_EACH_PLY").is_ok() {
+            game_othello::convnet::mlx::clear_cache();
+        }
+        let (active, cache, peak) = game_othello::convnet::mlx::memory_stats();
         eprintln!(
-            "ply {ply_num}: live={} gumbel_explore={:.1}ms cumulative={:.1}s",
+            "ply {ply_num}: live={} gumbel_explore={:.1}ms cumulative={:.1}s mlx_active={:.1}MB mlx_cache={:.1}MB mlx_peak={:.1}MB",
             live.len(),
             ply_start.elapsed().as_secs_f64() * 1000.0,
-            start.elapsed().as_secs_f64()
+            start.elapsed().as_secs_f64(),
+            active as f64 / 1e6,
+            cache as f64 / 1e6,
+            peak as f64 / 1e6,
         );
         let mut next_live = Vec::with_capacity(live.len());
         let mut next_idx = Vec::with_capacity(orig_idx.len());

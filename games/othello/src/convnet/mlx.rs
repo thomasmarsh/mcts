@@ -397,6 +397,19 @@ pub fn all_policy_logits(net: &CnnValueNet, state: &State) -> [f64; POLICY_OUTPU
 /// serialize on the same physical GPU) is what actually cashes in
 /// `mcts-gpu.md`'s batching premise for the GPU evaluator.
 pub fn evaluate_batch(net: &CnnValueNet, states: &[State]) -> (Vec<f32>, Vec<[f64; POLICY_OUTPUTS]>) {
+    // A self-play caller's live-batch size shrinks by a different amount
+    // every call as games finish, so this function rarely sees the same
+    // `states.len()` twice in a row -- and `mlx-c`'s allocator keeps a
+    // permanent, never-shrinking cache entry per distinct shape it has ever
+    // been asked to allocate (confirmed via `mlx_get_cache_memory`/
+    // `mlx_clear_cache`, not just inferred from process-level memory), sized
+    // proportional to `states.len() * CHANNELS`. At a wide enough net a
+    // single shape's cache entry can be gigabytes, so accumulating even a
+    // handful of distinct shapes over a run exhausts memory outright. This
+    // guard clears that cache on every return path (measured: no wall-clock
+    // cost on a workload that keeps reusing the same shape, since there's
+    // nothing to clear when the shape hasn't changed).
+    let _clear_cache_on_return = ClearCacheOnDrop;
     if states.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -464,6 +477,53 @@ pub fn evaluate_batch(net: &CnnValueNet, states: &[State]) -> (Vec<f32>, Vec<[f6
         .collect();
 
     (values, policies)
+}
+
+/// Snapshot of `mlx-c`'s own memory accounting (`active`: bytes backing
+/// currently-live arrays; `cache`: bytes the allocator is holding onto but
+/// isn't backing anything live right now -- freed buffers kept around for
+/// reuse rather than returned to the OS; `peak`: the high-water mark of
+/// `active` since the last [`reset_peak_memory`]). Diagnostic only, not used
+/// by any production call path -- exists to distinguish "GPU memory is
+/// genuinely in use" from "the allocator's cache is holding stale buffers"
+/// when investigating memory growth from the Rust side, since neither is
+/// visible in a process's own RSS.
+pub fn memory_stats() -> (usize, usize, usize) {
+    unsafe {
+        let mut active = 0usize;
+        let mut cache = 0usize;
+        let mut peak = 0usize;
+        check(mlx_get_active_memory(&mut active), "get_active_memory");
+        check(mlx_get_cache_memory(&mut cache), "get_cache_memory");
+        check(mlx_get_peak_memory(&mut peak), "get_peak_memory");
+        (active, cache, peak)
+    }
+}
+
+/// Drops every buffer `mlx-c`'s allocator is holding in its reuse cache
+/// (see [`memory_stats`]'s `cache` field) without touching any array that's
+/// still live. Called automatically by [`ClearCacheOnDrop`]; exposed on its
+/// own too for diagnostics (e.g. `mcts-batch`'s `mlx_shape_churn_probe`
+/// example) that want to clear on a different cadence than one call.
+pub fn clear_cache() {
+    unsafe {
+        check(mlx_clear_cache(), "clear_cache");
+    }
+}
+
+/// RAII guard that calls [`clear_cache`] when dropped, so a function that
+/// builds a shape-varying computation graph (like [`evaluate_batch`]) clears
+/// the allocator's resulting cache entry on every return path -- including
+/// an early return -- without every call site needing to remember to do it
+/// itself. See [`evaluate_batch`]'s own docs for why this specific function
+/// needs it (varying batch shapes) while [`value`]/[`all_policy_logits`]
+/// don't (always the same fixed 8-orientation shape).
+struct ClearCacheOnDrop;
+
+impl Drop for ClearCacheOnDrop {
+    fn drop(&mut self) {
+        clear_cache();
+    }
 }
 
 /// GPU-backed drop-in for `CnnValueNet` as a self-play evaluator: same
