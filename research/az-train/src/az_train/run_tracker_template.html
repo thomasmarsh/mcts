@@ -130,6 +130,7 @@ td.num, th.num { text-align: right; }
 .bar.done { background: var(--ink); }
 .bar.running { background: repeating-linear-gradient(45deg, var(--ink) 0 4px, transparent 4px 8px); outline: 1px solid var(--ink); outline-offset: -1px; }
 .bar.pending { border: 1px dashed var(--faint); }
+.bar.reused { background: var(--faint); }
 .seg .lab { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg .lab b { color: var(--ink); font-weight: 600; }
 
@@ -311,7 +312,8 @@ function timeline(gen) {
   for (const [k, label] of PHASES) {
     const p = gen.phases[k];
     const weight = Math.max(p.seconds || 0, total * 0.12);
-    const text = p.state === "pending" ? "pending" : p.state === "running" ? "running " + fmtDur(p.seconds) : fmtDur(p.seconds);
+    const text = p.state === "pending" ? "pending" : p.state === "running" ? "running " + fmtDur(p.seconds)
+      : p.state === "reused" ? "reused, " + fmtDur(p.original_seconds) + " originally" : fmtDur(p.seconds);
     wrap.append($("div", { class: "seg", style: `flex: ${weight} 1 0` },
       $("div", { class: "bar " + p.state }),
       $("div", { class: "lab" }, $("b", {}, label), " ", text)));
@@ -423,7 +425,7 @@ function gateSummary(gens) {
     ["Late death (live at the first epoch, dead after)", (g) => !g.epochs.length ? cell("mute", "No data yet")
       : g.late_death ? cell("bad", "Occurred", `dead at epochs ${g.dead_epochs.slice(0, 6).join(", ")}`) : cell("good", "None seen", `${g.epochs.length} epochs checked`)],
     ["All seeds stalled", (g) => DATA.all_seeds_stalled ? cell("bad", "Occurred") : g.fit ? cell("good", "No") : cell("mute", "Not yet known")],
-    ["Generation wall-clock vs 1.5 h estimate", (g) => g.wall_seconds != null ? cell(null, fmtDur(g.wall_seconds), `${(g.wall_vs_estimate).toFixed(2)}x of ${fmtDur(DATA.estimate_generation_seconds)}`) : cell("mute", "Pending", g.state === "pending" ? "" : "elapsed so far: " + fmtDur(PHASES.reduce((a, [k]) => a + (g.phases[k].seconds || 0), 0)))],
+    ["Generation wall-clock vs 1.5 h estimate", (g) => g.wall_seconds != null ? cell(null, fmtDur(g.wall_seconds_incl_reused_selfplay), `${(g.wall_vs_estimate).toFixed(2)}x of ${fmtDur(DATA.estimate_generation_seconds)}` + (g.phases.selfplay.state === "reused" ? `, includes ${fmtDur(g.phases.selfplay.original_seconds)} of self-play reused from the earlier run` : "")) : cell("mute", "Pending", g.state === "pending" ? "" : "elapsed so far: " + fmtDur(PHASES.reduce((a, [k]) => a + (g.phases[k].seconds || 0), 0)))],
     ["Gate vs generation 0, head to head", (g) => { const r = g.gate_vs_gen0 && g.gate_vs_gen0.checks.h2h; return r ? cell(r.verdict === "PASS" ? "good" : "bad", `${r.wins}-${r.draws}-${r.losses} ${r.verdict}`, `over ${r.games} games`) : cell("mute", "Pending"); }],
   ];
   const head = $("tr", {}, $("th", {}, "Step 3 check"), gens.map((g) => $("th", {}, "Generation " + g.generation)));
@@ -439,7 +441,8 @@ function memoryBlock() {
     $("p", { class: "muted" }, "The watchdog kills the run if system-available memory falls under ", $("b", { class: "mono" }, m.floor_mb + " MB"),
       ". Lowest seen so far: ", $("b", { class: "mono" }, m.min_available_mb + " MB"), ` at ${m.min_available_at} (${margin} MB above the floor); latest ${m.last_available_mb} MB at ${m.last_sample_at}. `,
       "Process RSS is not shown because GPU (MPS and MLX) memory does not count in it."),
-    m.killed ? $("p", {}, pill("bad", "Watchdog killed the run"), " ", m.kill_lines.join(" ")) : null);
+    m.killed ? $("p", {}, pill("bad", "Watchdog killed the run"), " ", m.kill_lines.join(" ")) : null,
+    DATA.earlier_kills.length ? $("p", { class: "muted" }, "Earlier attempt killed by the watchdog: ", $("span", { class: "mono" }, DATA.earlier_kills.join(" "))) : null);
 }
 
 function render() {

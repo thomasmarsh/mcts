@@ -203,6 +203,58 @@ def test_watchdog_kill_and_finished_run_set_the_status(tmp_path: Path) -> None:
     assert build_run_data(clean, NOW)["status"] == "finished"
 
 
+def test_a_reused_shard_keeps_its_original_selfplay_time_and_supersedes_the_killed_fit(
+    tmp_path: Path,
+) -> None:
+    run = make_run(tmp_path)
+    with (run / "launch.log").open("a") as f:
+        f.write(
+            "=== generation 1 -> 2: train @ Fri Sep 18 11:02:00 EDT 2026 ===\n"
+            "=== generation 1: self-play reused (complete shard from an earlier run, 200 games, "
+            "32 sims) @ Fri Sep 18 11:05:00 EDT 2026 ===\n"
+        )
+    g2 = build_run_data(run, NOW)["generations"][1]
+    assert g2["phases"]["selfplay"] == {
+        "state": "reused",
+        "seconds": 0.0,
+        "original_seconds": 22 * 60,
+        "started": "2026-09-18T11:05:00",
+    }
+    assert g2["phases"]["fit"]["state"] == "running"
+    assert g2["state"] == "fit"
+
+
+def test_wall_clock_adds_back_the_reused_selfplay(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "launch.log").write_text(
+        "=== generation 0: self-play (200 games, 32 sims, engine=batched) "
+        "@ Fri Sep 18 10:00:00 EDT 2026 ===\n"
+        "=== generation 0 -> 1: train @ Fri Sep 18 10:18:00 EDT 2026 ===\n"
+        "=== generation 0: self-play reused (complete shard from an earlier run, 200 games, "
+        "32 sims) @ Fri Sep 18 11:00:00 EDT 2026 ===\n"
+        "=== generation 0 -> 1: train @ Fri Sep 18 11:00:05 EDT 2026 ===\n"
+        "=== generation 1: gates (10 games) @ Fri Sep 18 11:07:00 EDT 2026 ===\n"
+    )
+    write_jsonl(run / "log.jsonl", [{"generation": 1, "wall_seconds": 1200.0}])
+    g1 = build_run_data(run, NOW)["generations"][0]
+    assert g1["phases"]["selfplay"]["original_seconds"] == 18 * 60
+    assert g1["phases"]["fit"]["seconds"] == 7 * 60 - 5
+    assert g1["wall_seconds"] == 1200.0
+    assert g1["wall_seconds_incl_reused_selfplay"] == 1200.0 + 18 * 60
+    assert g1["wall_vs_estimate"] == (1200.0 + 18 * 60) / 5400.0
+
+
+def test_earlier_watchdog_kills_are_listed_but_do_not_mark_the_run_killed(tmp_path: Path) -> None:
+    run = make_run(tmp_path)
+    (run / "watch.killed-1.log").write_text(
+        "10:00:04 WATCHDOG: available 800MB < floor 900MB -- killing process group 5\n"
+    )
+    data = build_run_data(run, NOW)
+    assert data["status"] == "running"
+    assert len(data["earlier_kills"]) == 1
+
+
 def test_a_half_written_epoch_line_is_ignored(tmp_path: Path) -> None:
     run = make_run(tmp_path)
     with (run / "gen2.epochs.jsonl").open("a") as f:

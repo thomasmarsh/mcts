@@ -17,7 +17,10 @@
 # (gen<N>.epochs.jsonl) written incrementally during that generation's fit.
 # Every generation checkpoints its shard, weights, gate output, and metrics
 # line before the next starts, so an interrupt resumes with START set to
-# the first unfinished generation.
+# the first unfinished generation. If that generation's self-play had already
+# finished (its shard has a matching `.complete` marker: same size, settings,
+# seed and generating weights) it is reused and the run goes straight to the
+# fit; a shard from a run killed mid-write has no marker and is played again.
 #
 # Checkpoint format: unlike the n-tuple head's checkpoint *directory*
 # (`model.toml` geometry-as-data + `weights.bin` + `policy.bin`), the CNN's
@@ -178,22 +181,44 @@ print(f"wrote {out} ({n_weights} weights, blocks={BLOCKS}, channels={CHANNELS})"
 PY
 fi
 
+# A shard is reusable on resume only if a marker written right after its
+# self-play finished still describes it: same byte size, the same self-play
+# settings and seed, and the same generating weights. A run killed mid-write
+# leaves no marker (or a size mismatch), so it self-plays again; a run killed
+# after self-play (e.g. during the fit) skips straight to training. CHUNK_SIZE
+# is left out on purpose: chunking is bit-exact.
+shard_key() {
+  echo "$(wc -c < "$1" | tr -d ' ') $GAMES $SIMS $3 $SELFPLAY_ENGINE $MAX_CONSIDERED $TEMP_MOVES" \
+    "$FORCED_OPENING_PLIES $(shasum -a 256 "$2" | cut -d' ' -f1)"
+}
+
+shard_is_complete() {
+  [ -f "$1" ] && [ -f "$1.complete" ] && [ "$(shard_key "$1" "$2" "$3")" = "$(cat "$1.complete")" ]
+}
+
 for g in $(seq "$START" $((GENS - 1))); do
   gen_start=$(date +%s)
   seed=$((1000 + g * 100000))
 
-  echo "=== generation $g: self-play ($GAMES games, $SIMS sims, engine=$SELFPLAY_ENGINE) @ $(date) ==="
-  if [ "$SELFPLAY_ENGINE" = "batched" ]; then
-    "$BATCHED_DUMP" --cnn-weights "$RUN_DIR/gen$g.cnn.bin" --chunk-size "$CHUNK_SIZE" \
-      --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
-      --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
-      --forced-opening-plies "$FORCED_OPENING_PLIES"
+  shard="$RUN_DIR/shards/gen$g.bin"
+  if shard_is_complete "$shard" "$RUN_DIR/gen$g.cnn.bin" "$seed"; then
+    echo "=== generation $g: self-play reused (complete shard from an earlier run, $GAMES games, $SIMS sims) @ $(date) ==="
   else
-    "$BIN" dump --label gumbel --head cnn --cnn-weights "$RUN_DIR/gen$g.cnn.bin" \
-      --evaluator "$EVALUATOR" \
-      --out "$RUN_DIR/shards/gen$g.bin" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
-      --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
-      --forced-opening-plies "$FORCED_OPENING_PLIES"
+    echo "=== generation $g: self-play ($GAMES games, $SIMS sims, engine=$SELFPLAY_ENGINE) @ $(date) ==="
+    rm -f "$shard.complete"
+    if [ "$SELFPLAY_ENGINE" = "batched" ]; then
+      "$BATCHED_DUMP" --cnn-weights "$RUN_DIR/gen$g.cnn.bin" --chunk-size "$CHUNK_SIZE" \
+        --out "$shard" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
+        --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
+        --forced-opening-plies "$FORCED_OPENING_PLIES"
+    else
+      "$BIN" dump --label gumbel --head cnn --cnn-weights "$RUN_DIR/gen$g.cnn.bin" \
+        --evaluator "$EVALUATOR" \
+        --out "$shard" --games "$GAMES" --seed "$seed" --sims "$SIMS" \
+        --max-considered "$MAX_CONSIDERED" --temp-moves "$TEMP_MOVES" \
+        --forced-opening-plies "$FORCED_OPENING_PLIES"
+    fi
+    shard_key "$shard" "$RUN_DIR/gen$g.cnn.bin" "$seed" > "$shard.complete"
   fi
 
   # Replay window: default (REPLAY_WINDOW=0) is every generation's shards,

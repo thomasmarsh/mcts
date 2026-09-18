@@ -43,6 +43,7 @@ _SELFPLAY_RE = re.compile(
     r"engine=(?P<engine>[\w-]+)\)$"
 )
 _TRAIN_RE = re.compile(r"^generation (?P<g>\d+) -> (?P<n>\d+): train$")
+_REUSED_RE = re.compile(r"^generation (?P<g>\d+): self-play reused \(")
 _GATES_RE = re.compile(r"^generation (?P<n>\d+): gates \((?P<games>\d+) games\)$")
 _WATCH_RE = re.compile(
     r"^(?P<t>\d\d:\d\d:\d\d) available_mb=(?P<avail>\d+) group_rss_mb=(?P<rss>\d+)"
@@ -58,6 +59,7 @@ def parse_launch_log(text: str) -> dict[str, Any]:
     produced generation (self-play of generation g produces generation g + 1), the
     ``done`` banner, and the run configuration the banners carry."""
     selfplay: dict[int, datetime] = {}
+    reused: dict[int, float] = {}
     train: dict[int, datetime] = {}
     gates: dict[int, datetime] = {}
     done: datetime | None = None
@@ -67,8 +69,19 @@ def parse_launch_log(text: str) -> dict[str, Any]:
         what = m["what"]
         if what == "done":
             done = when
+        elif ru := _REUSED_RE.match(what):
+            n = int(ru["g"]) + 1
+            # Self-play the earlier (killed) run already finished: its banner and the
+            # train banner that followed it give the original duration.
+            reused[n] = _seconds(selfplay.get(n), train.get(n)) or 0.0
+            selfplay[n] = when
+            train.pop(n, None)
+            gates.pop(n, None)
         elif sp := _SELFPLAY_RE.match(what):
             selfplay[int(sp["g"]) + 1] = when
+            train.pop(int(sp["g"]) + 1, None)
+            gates.pop(int(sp["g"]) + 1, None)
+            reused.pop(int(sp["g"]) + 1, None)
             config.update(games=int(sp["games"]), sims=int(sp["sims"]), engine=sp["engine"])
         elif tr := _TRAIN_RE.match(what):
             train[int(tr["n"])] = when
@@ -77,6 +90,7 @@ def parse_launch_log(text: str) -> dict[str, Any]:
             config["gate_games"] = int(ga["games"])
     return {
         "selfplay": selfplay,
+        "reused": reused,
         "train": train,
         "gates": gates,
         "done": done,
@@ -177,6 +191,7 @@ def _generation(
     if sp_start is not None and wall is not None:
         gen_end = datetime.fromtimestamp(sp_start.timestamp() + wall)
 
+    original_selfplay = banners["reused"].get(n)
     bounds = [
         ("selfplay", sp_start, tr_start),
         ("fit", tr_start, ga_start),
@@ -200,6 +215,22 @@ def _generation(
                 "seconds": _seconds(start, end),
                 "started": start.isoformat(),
             }
+    if original_selfplay is not None:
+        phases["selfplay"] = {
+            "state": "reused",
+            "seconds": 0.0,
+            "original_seconds": original_selfplay,
+            "started": sp_start.isoformat() if sp_start else None,
+        }
+        if tr_start is None and sp_start is not None and not finished_run:
+            phases["fit"] = {
+                "state": "running",
+                "seconds": _seconds(sp_start, now),
+                "started": sp_start.isoformat(),
+            }
+            running = "fit"
+        elif running == "selfplay":
+            running = None
     state = "done" if log_line else (running or "pending")
 
     rows, segments = last_fit_attempt(read_jsonl(run_dir / f"gen{n}.epochs.jsonl"))
@@ -265,7 +296,12 @@ def _generation(
         "state": state,
         "phases": phases,
         "wall_seconds": wall,
-        "wall_vs_estimate": wall / ESTIMATE_GENERATION_SECONDS if wall else None,
+        "wall_seconds_incl_reused_selfplay": None
+        if wall is None
+        else wall + (original_selfplay or 0.0),
+        "wall_vs_estimate": (wall + (original_selfplay or 0.0)) / ESTIMATE_GENERATION_SECONDS
+        if wall
+        else None,
         "epochs": rows,
         "epochs_configured": config_epochs,
         "epoch_log_segments": segments,
@@ -329,6 +365,12 @@ def build_run_data(
         "all_seeds_stalled": banners["all_seeds_stalled"],
         "seconds_since_last_write": None if newest is None else max(0.0, now.timestamp() - newest),
         "memory": watch,
+        "earlier_kills": [
+            line
+            for path in sorted(run_dir.glob("watch.killed-*.log"))
+            for line in path.read_text().splitlines()
+            if "WATCHDOG" in line
+        ],
         "generations": generations,
     }
 
