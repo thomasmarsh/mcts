@@ -136,14 +136,19 @@ impl<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Sync> EnvOracle<Sta
     }
 }
 
-/// Evaluate a whole batch of states with one GPU call each for value and
-/// policy (`game_othello::convnet::mlx::evaluate_batch`), rather than
+/// Evaluate a whole batch of states with MLX calls of at most `chunk_size`
+/// states each (`game_othello::convnet::mlx::evaluate_batch`), rather than
 /// `OthelloOracle<E>`'s `rayon`-across-CPU-threads `map_init` -- routing
 /// GPU work through 8 CPU threads each opening their own MLX stream would
 /// just serialize on the same physical GPU (see `convnet::mlx`'s own
 /// thread-local-stream docs), so this oracle stays single-threaded on the
-/// CPU side and lets the one stacked MLX call cover the whole batch.
-fn evaluate_batch_mlx(net: &MlxCnnValueNet, states: &[State]) -> (Vec<bool>, Vec<bool>, Vec<f32>, Vec<f32>) {
+/// CPU side. `chunk_size` bounds a single MLX call's transient working set,
+/// which scales with `states.len() * CHANNELS` steeply enough that handing
+/// the whole live batch to one call can exceed a real machine's memory long
+/// before the net itself looks unreasonably large (measured: a 128-channel/
+/// 6-block net's single-call peak went from ~1.8GB at 50 states to ~7.1GB
+/// at 200 on an 8GB machine).
+fn evaluate_batch_mlx(net: &MlxCnnValueNet, states: &[State], chunk_size: usize) -> (Vec<bool>, Vec<bool>, Vec<f32>, Vec<f32>) {
     let n = states.len();
     let mut terminal = vec![false; n];
     let mut valid_actions = vec![false; n * NUM_ACTIONS];
@@ -165,7 +170,7 @@ fn evaluate_batch_mlx(net: &MlxCnnValueNet, states: &[State]) -> (Vec<bool>, Vec
     }
 
     let live_states: Vec<State> = live.iter().map(|&i| states[i]).collect();
-    let (values, policies) = game_othello::convnet::mlx::evaluate_batch(net.inner(), &live_states);
+    let (values, policies) = game_othello::convnet::mlx::evaluate_batch(net.inner(), &live_states, chunk_size);
 
     for (row, &i) in live.iter().enumerate() {
         value_prior[i] = values[row];
@@ -200,15 +205,24 @@ fn evaluate_batch_mlx(net: &MlxCnnValueNet, states: &[State]) -> (Vec<bool>, Vec
 /// but wired to [`MlxCnnValueNet`] through the batched `convnet::mlx::
 /// evaluate_batch` entry point instead of the generic `Evaluator`/
 /// `PolicyLogits` traits' one-state-at-a-time contract, so a whole
-/// simulation round's live batch becomes one GPU call instead of one call
-/// per state spread across CPU threads.
+/// simulation round's live batch becomes a handful of GPU calls (bounded by
+/// `chunk_size`, see [`evaluate_batch_mlx`]) instead of one call per state
+/// spread across CPU threads.
 pub struct MlxOthelloOracle {
     net: MlxCnnValueNet,
+    chunk_size: usize,
 }
 
 impl MlxOthelloOracle {
-    pub fn new(net: MlxCnnValueNet) -> Self {
-        MlxOthelloOracle { net }
+    /// `chunk_size` bounds a single MLX call's live batch -- pick it small
+    /// enough that `chunk_size` states at this net's geometry fit
+    /// comfortably in the running machine's memory (see [`evaluate_batch_mlx`]'s
+    /// own docs for measured examples); a too-large value leaves the same
+    /// out-of-memory risk this parameter exists to bound, while a
+    /// too-small one pays more, smaller GPU calls than necessary.
+    pub fn new(net: MlxCnnValueNet, chunk_size: usize) -> Self {
+        assert!(chunk_size > 0, "chunk_size must be positive");
+        MlxOthelloOracle { net, chunk_size }
     }
 }
 
@@ -218,14 +232,15 @@ impl EnvOracle<State> for MlxOthelloOracle {
     }
 
     fn init(&self, envs: &[State]) -> StepOutput<State> {
-        let (terminal, valid_actions, policy_prior, value_prior) = evaluate_batch_mlx(&self.net, envs);
+        let (terminal, valid_actions, policy_prior, value_prior) = evaluate_batch_mlx(&self.net, envs, self.chunk_size);
         StepOutput { states: envs.to_vec(), terminal, valid_actions, policy_prior, value_prior }
     }
 
     fn transition(&self, states: &[State], actions: &[u16]) -> TransitionOutput<State> {
         let out_states: Vec<State> =
             states.iter().zip(actions).map(|(s, &aid)| Othello::apply(*s, &Move(aid as u8))).collect();
-        let (terminal, valid_actions, policy_prior, value_prior) = evaluate_batch_mlx(&self.net, &out_states);
+        let (terminal, valid_actions, policy_prior, value_prior) =
+            evaluate_batch_mlx(&self.net, &out_states, self.chunk_size);
         TransitionOutput {
             step: StepOutput { states: out_states, terminal, valid_actions, policy_prior, value_prior },
             rewards: vec![0.0; states.len()],

@@ -65,7 +65,7 @@ fn gumbel_explore_runs_to_completion_on_the_real_starting_position() {
 /// backend is doing the batching.
 #[test]
 fn mlx_oracle_handles_multiple_games_in_one_batch() {
-    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default());
+    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default(), 8);
     let cfg = Config { num_simulations: 16, ..Config::default() };
     let tree = explore(&cfg, &oracle, &[State::default(), State::default(), State::default()]);
     assert_eq!(tree.batch_size(), 3);
@@ -83,10 +83,40 @@ fn mlx_oracle_handles_multiple_games_in_one_batch() {
 /// tree, not just the never-terminal opening position the other tests use.
 #[test]
 fn mlx_oracle_reaches_and_scores_terminal_positions() {
-    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default());
+    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default(), 8);
     let cfg = Config { num_simulations: 60, num_considered_actions: 4, ..Config::default() };
     let mut rng = SmallRng::seed_from_u64(3);
     let tree = gumbel_explore(&cfg, &oracle, &[State::default()], &mut rng);
     let qs = tree.completed_qvalues(0, tree.root());
     assert!(qs.iter().any(|q| q.is_finite()));
+}
+
+/// `chunk_size` bounds a single MLX call's live batch (see
+/// `MlxOthelloOracle::new`'s own docs), splitting each oracle call into
+/// several GPU calls whenever the live/frontier batch exceeds it -- this
+/// must be invisible to the result. A `chunk_size` smaller than the batch
+/// forces `evaluate_batch_mlx` to filter terminal states and index back
+/// into its output per chunk rather than once for the whole batch, so this
+/// exercises that bookkeeping specifically, not just `evaluate_batch`'s own
+/// (already separately tested) chunking arithmetic.
+#[test]
+fn mlx_oracle_chunking_does_not_change_the_result() {
+    let states = [State::default(); 5];
+    let cfg = Config { num_simulations: 20, num_considered_actions: 4, ..Config::default() };
+
+    let unchunked = MlxOthelloOracle::new(MlxCnnValueNet::default(), 100);
+    let mut rng_a = SmallRng::seed_from_u64(7);
+    let tree_a = gumbel_explore(&cfg, &unchunked, &states, &mut rng_a);
+
+    let chunked = MlxOthelloOracle::new(MlxCnnValueNet::default(), 2);
+    let mut rng_b = SmallRng::seed_from_u64(7);
+    let tree_b = gumbel_explore(&cfg, &chunked, &states, &mut rng_b);
+
+    for bid in 0..states.len() {
+        assert_eq!(
+            tree_a.completed_qvalues(bid, tree_a.root()),
+            tree_b.completed_qvalues(bid, tree_b.root()),
+            "bid={bid}"
+        );
+    }
 }

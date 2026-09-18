@@ -18,8 +18,9 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let games: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(128);
     let sims: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(16);
+    let chunk_size: usize = std::env::var("MLX_CHUNK_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
 
-    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default());
+    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default(), chunk_size);
     let cfg = Config { num_simulations: sims as usize, num_considered_actions: 8, ..Config::default() };
     let mut rng = SmallRng::seed_from_u64(1);
     let envs = vec![State::default(); games];

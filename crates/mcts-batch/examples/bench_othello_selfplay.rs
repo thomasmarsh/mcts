@@ -76,8 +76,8 @@ fn play_games_per_node(games: usize, sims: u32) -> (usize, f64) {
 /// This crate's batched engine: every still-live game advances one ply per
 /// `gumbel_explore` call, so that one call's oracle batching covers the
 /// whole live set at once instead of one leaf at a time.
-fn play_games_batched(games: usize, sims: u32) -> (usize, f64) {
-    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default());
+fn play_games_batched(games: usize, sims: u32, chunk_size: usize) -> (usize, f64) {
+    let oracle = MlxOthelloOracle::new(MlxCnnValueNet::default(), chunk_size);
     let cfg = Config { num_simulations: sims as usize, num_considered_actions: 8, ..Config::default() };
     let mut rng = SmallRng::seed_from_u64(1000);
 
@@ -140,8 +140,17 @@ fn main() {
     // compare its own ms/ply against a per-node number from a prior run at
     // the same `sims` (ms/ply is a per-move rate, independent of `games`).
     let skip_per_node = args.next().as_deref() == Some("--skip-per-node");
+    // A single unchunked MLX call's transient working set scales with
+    // `live_batch_size * CHANNELS` steeply enough that a wide net's whole
+    // `games` count can exceed a real machine's memory in one call -- see
+    // `game_othello::convnet::mlx::evaluate_batch`'s own docs. 128 is a
+    // conservative default that measured safely across every geometry this
+    // tool has been run against so far; override for a specific net/machine.
+    let chunk_size: usize = std::env::var("MLX_CHUNK_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(128);
 
-    println!("running {games} games at {sims} sims/move (all-zero weights, GPU/MLX evaluator both sides)...");
+    println!(
+        "running {games} games at {sims} sims/move, chunk_size={chunk_size} (all-zero weights, GPU/MLX evaluator both sides)..."
+    );
 
     let pn = if skip_per_node {
         None
@@ -155,7 +164,7 @@ fn main() {
         Some((pn_plies, pn_wall))
     };
 
-    let (b_plies, b_wall) = play_games_batched(games, sims);
+    let (b_plies, b_wall) = play_games_batched(games, sims, chunk_size);
     println!(
         "batched:   {b_plies} plies in {b_wall:.3}s -- {:.1} ms/ply, {:.2} games/sec",
         b_wall * 1000.0 / b_plies as f64,

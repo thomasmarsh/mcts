@@ -4,6 +4,11 @@
 //! sizes, to isolate whether MLX's memory growth is caused by shape churn
 //! itself rather than anything in `mcts-batch`'s search/tree code.
 //!
+//! `evaluate_batch`'s own cache-clearing guard fires automatically every
+//! call now, so this probe's only remaining lever is `chunk_size` (env
+//! `MLX_CHUNK_SIZE`, default: no chunking) -- useful for finding a safe
+//! chunk size at a given geometry by watching `mlx_peak` per call.
+//!
 //!   cargo run --release -p mcts-batch --example mlx_shape_churn_probe -- fixed <n> <calls>
 //!   cargo run --release -p mcts-batch --example mlx_shape_churn_probe -- churn <max_n> <calls>
 
@@ -48,6 +53,8 @@ fn main() {
 
     let net = game_othello::convnet::CnnValueNet::default();
     let mut rng = SmallRng::seed_from_u64(42);
+    let chunk_size: usize =
+        std::env::var("MLX_CHUNK_SIZE").ok().and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
 
     match mode.as_str() {
         "fixed" => {
@@ -55,23 +62,19 @@ fn main() {
             // flat for as long as the shape doesn't change.
             let states: Vec<State> = (0..n_arg).map(|_| random_state(&mut rng, 20)).collect();
             for call in 1..=calls {
-                let _ = game_othello::convnet::mlx::evaluate_batch(&net, &states);
+                let _ = game_othello::convnet::mlx::evaluate_batch(&net, &states, chunk_size);
                 report(call, n_arg);
             }
         }
         "churn" => {
             // A distinct, never-repeated batch size every call -- isolates
             // whether shape churn ALONE (no tree search, no self-play loop)
-            // reproduces the growth this session's instrumented self-play
-            // run showed only at the point a new shape first appeared.
-            let clear_each_call = std::env::var("CLEAR_MLX_CACHE_EACH_CALL").is_ok();
+            // reproduces memory growth this crate's search/tree code never
+            // touches.
             for call in 1..=calls {
                 let n = 1 + (call * 7919) % n_arg; // pseudo-random distinct-ish sizes, no repeats needed
                 let states: Vec<State> = (0..n).map(|_| random_state(&mut rng, 20)).collect();
-                let _ = game_othello::convnet::mlx::evaluate_batch(&net, &states);
-                if clear_each_call {
-                    game_othello::convnet::mlx::clear_cache();
-                }
+                let _ = game_othello::convnet::mlx::evaluate_batch(&net, &states, chunk_size);
                 report(call, n);
             }
         }

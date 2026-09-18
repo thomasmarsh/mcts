@@ -386,17 +386,40 @@ pub fn all_policy_logits(net: &CnnValueNet, state: &State) -> [f64; POLICY_OUTPU
     out
 }
 
-/// Batched GPU forward pass: value and policy for a whole slice of states
-/// in one MLX call each, sharing a single stacked trunk between both heads
-/// *and* across every state -- unlike [`value`]/[`all_policy_logits`],
-/// which each recompute the trunk independently and only ever see one
-/// state. This is the entry point `mcts_batch::othello::MlxOthelloOracle`
-/// uses: it already hands a whole simulation round's live batch to one
-/// oracle call, so routing that straight into one GPU call (instead of
-/// spreading per-state GPU calls across CPU threads, which would just
-/// serialize on the same physical GPU) is what actually cashes in
-/// `mcts-gpu.md`'s batching premise for the GPU evaluator.
-pub fn evaluate_batch(net: &CnnValueNet, states: &[State]) -> (Vec<f32>, Vec<[f64; POLICY_OUTPUTS]>) {
+/// Batched GPU forward pass: value and policy for a whole slice of states,
+/// stacked into MLX calls of at most `chunk_size` states each (sharing a
+/// single stacked trunk between both heads *and* across every state within
+/// a chunk -- unlike [`value`]/[`all_policy_logits`], which each recompute
+/// the trunk independently and only ever see one state). This is the entry
+/// point `mcts_batch::othello::MlxOthelloOracle` uses: it hands a whole
+/// simulation round's live batch here, so `chunk_size` is what bounds a
+/// single MLX call's transient working set regardless of how large that
+/// live batch gets -- a single unchunked call's peak memory scales
+/// with `states.len() * CHANNELS` steeply enough (measured: ~1.8GB at 50
+/// states, ~7.1GB at 200, at a 128-channel/6-block geometry) that an
+/// unbounded `chunk_size` can exceed a real machine's memory long before
+/// `CHANNELS`/`BLOCKS` themselves look large. The caller picks `chunk_size`
+/// because the safe bound depends on both the net's geometry and the
+/// machine running it, not on anything this function can infer.
+pub fn evaluate_batch(net: &CnnValueNet, states: &[State], chunk_size: usize) -> (Vec<f32>, Vec<[f64; POLICY_OUTPUTS]>) {
+    assert!(chunk_size > 0, "chunk_size must be positive");
+    if states.len() <= chunk_size {
+        return evaluate_batch_one_call(net, states);
+    }
+    let mut values = Vec::with_capacity(states.len());
+    let mut policies = Vec::with_capacity(states.len());
+    for chunk in states.chunks(chunk_size) {
+        let (v, p) = evaluate_batch_one_call(net, chunk);
+        values.extend(v);
+        policies.extend(p);
+    }
+    (values, policies)
+}
+
+/// One MLX call's worth of [`evaluate_batch`] -- see that function's docs
+/// for why callers must never hand this an unbounded `states.len()`
+/// directly.
+fn evaluate_batch_one_call(net: &CnnValueNet, states: &[State]) -> (Vec<f32>, Vec<[f64; POLICY_OUTPUTS]>) {
     // A self-play caller's live-batch size shrinks by a different amount
     // every call as games finish, so this function rarely sees the same
     // `states.len()` twice in a row -- and `mlx-c`'s allocator keeps a
@@ -671,7 +694,7 @@ mod tests {
             state((1 << 0) | (1 << 2) | (1 << 8), 1 << 1 | (1 << 7), Player::Black),
         ];
 
-        let (batch_values, batch_policies) = evaluate_batch(&net, &states);
+        let (batch_values, batch_policies) = evaluate_batch(&net, &states, states.len());
         assert_eq!(batch_values.len(), states.len());
         assert_eq!(batch_policies.len(), states.len());
 
@@ -692,15 +715,38 @@ mod tests {
 
         // A batch of one is the degenerate case `trunk_batch`/
         // `channel_reduce_rows` must also handle correctly.
-        let (one_value, one_policy) = evaluate_batch(&net, &states[..1]);
+        let (one_value, one_policy) = evaluate_batch(&net, &states[..1], 1);
         assert!((one_value[0] - batch_values[0]).abs() < 1e-6);
         assert_eq!(one_policy[0], batch_policies[0]);
 
         // An empty batch must not panic (`mcts_batch::search::eval_batch`
         // calls the oracle with zero non-terminal entries whenever every
         // live game's frontier is already terminal this round).
-        let (empty_values, empty_policies) = evaluate_batch(&net, &[]);
+        let (empty_values, empty_policies) = evaluate_batch(&net, &[], 8);
         assert!(empty_values.is_empty());
         assert!(empty_policies.is_empty());
+    }
+
+    /// Chunking must not change the result: a `chunk_size` smaller than the
+    /// batch (forcing multiple MLX calls, concatenated) must agree with one
+    /// unchunked call exactly, and must not let one chunk's rows leak into
+    /// another's D4 average or drop/reorder any state.
+    #[test]
+    fn chunked_matches_unchunked() {
+        let weights: Vec<f32> = (0..CNN_WEIGHTS).map(|i| (i as f32 * 0.0013).sin() * 0.1).collect();
+        let net = CnnValueNet::from_weights(weights);
+        let states: Vec<State> = (0..7)
+            .map(|i| {
+                let shift = (i * 3) % 40;
+                state(1u64 << shift | 1 << (shift + 1) | 1 << (shift + 9), 1u64 << (shift + 2), Player::Black)
+            })
+            .collect();
+
+        let (unchunked_values, unchunked_policies) = evaluate_batch(&net, &states, states.len());
+        for chunk_size in [1, 2, 3, states.len() - 1] {
+            let (values, policies) = evaluate_batch(&net, &states, chunk_size);
+            assert_eq!(values, unchunked_values, "chunk_size={chunk_size}");
+            assert_eq!(policies, unchunked_policies, "chunk_size={chunk_size}");
+        }
     }
 }
