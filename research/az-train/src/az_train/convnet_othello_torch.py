@@ -74,8 +74,9 @@ import argparse
 import json
 import math
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import torch
@@ -385,24 +386,32 @@ def _lr_schedule(
     return _cosine_lr(epoch, epochs, base_lr, decay=decay)
 
 
-class TrainingStalledError(RuntimeError):
-    """Raised by :func:`fit_torch` when ``stall_check`` is set and validation
-    pearson hasn't escaped noise by the checked epoch. Some seeded inits
-    leave a network dead for its entire run -- pearson pinned at ~0.0 from
-    the first validation onward, regardless of how many further epochs run
-    -- a property of that particular (seed, architecture) combination that
-    both this trainer and the numpy hand-rolled one reproduce identically
-    from the same seeded init, not a bug specific to either. Lets a caller
-    doing multi-seed sweeps bail out well before the remaining epochs (which
-    only re-confirm the same stall) instead of always paying the full fit
-    cost."""
+class StallCheck(NamedTuple):
+    """Dead-network check for :func:`fit_torch`: once ``step`` optimizer steps
+    have run, the value pearson on a fixed validation probe must have
+    reached ``min_abs_pearson`` (absolute value), else the fit is abandoned.
+    Counted in optimizer steps rather than epochs because a dead network is
+    dead within its first few updates, so the right check point does not
+    scale with the shard's size."""
 
-    def __init__(self, epoch: int, pearson: float, threshold: float) -> None:
+    step: int
+    min_abs_pearson: float
+
+
+class TrainingStalledError(RuntimeError):
+    """Raised by :func:`fit_torch` when its :class:`StallCheck` fails. Some
+    seeded inits leave a network dead for its entire run -- constant value
+    output, pearson pinned at exactly 0.0 from the first probe onward,
+    regardless of how many further epochs run -- a property of that
+    particular (seed, architecture, learning rate) combination. Lets a caller
+    bail out after a handful of steps instead of paying the full fit cost."""
+
+    def __init__(self, step: int, pearson: float, threshold: float) -> None:
         super().__init__(
-            f"training stalled: epoch {epoch} val pearson {pearson:.4f} "
+            f"training stalled: step {step} val pearson {pearson:.4f} "
             f"still below {threshold:.4f}"
         )
-        self.epoch = epoch
+        self.step = step
         self.pearson = pearson
 
 
@@ -413,12 +422,13 @@ def fit_torch(
     validate_every: int = 1, report_every: int = 0, device: str = "cpu",
     blocks: int = BLOCKS, tied: bool = False, channels: int = CHANNELS,
     value_hidden: int = VALUE_HIDDEN, lr_decay: bool = True,
-    stall_check: tuple[int, float] | None = None,
+    stall_check: StallCheck | None = None,
     init: str = "fixed_normal", grad_clip_norm: float | None = None,
     warmup_epochs: int = 0,
     policy: np.ndarray | None = None, legal: np.ndarray | None = None,
     validation_policy: np.ndarray | None = None, validation_legal: np.ndarray | None = None,
     epoch_log_path: str | None = None,
+    trace_steps: Sequence[int] = (), probe_size: int = 1024,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
     """``othello_eval.convnet.fit_k``'s Adam loop, over ``torch.autograd``
     instead of a hand-derived gradient. See the module docstring for the
@@ -451,12 +461,15 @@ def fit_torch(
     alongside the pre-existing final-epoch ``train_metrics``/
     ``final_validation_metrics`` -- report both, never just one.
 
-    ``stall_check``, if given, is an ``(epoch, min_abs_pearson)`` pair:
-    once training reaches that epoch, if ``abs(value_pearson)`` from the
-    most recent validation is still below ``min_abs_pearson``, raises
-    :class:`TrainingStalledError` immediately rather than running the
-    remaining epochs to confirm what's already apparent. Off by default
-    (``None``) -- existing callers see no behavior change.
+    ``stall_check``, if given, is a :class:`StallCheck`: right after that
+    optimizer step, the value pearson on a fixed ``probe_size``-position
+    random subset of the validation set (one un-averaged forward pass, so a
+    probe costs milliseconds) must have reached ``min_abs_pearson`` in
+    absolute value, else :class:`TrainingStalledError` is raised at once.
+    Off by default (``None``). ``trace_steps`` lists extra optimizer steps at
+    which to run the same probe and record ``{"step", "value_pearson",
+    "value_mse", "value_std"}`` into ``metadata["step_trace"]`` (the raw
+    material for choosing a ``StallCheck``); it never affects training.
 
     ``init`` selects the initializer from :data:`INIT_FUNCTIONS` (default
     ``"fixed_normal"`` == ``initial_weights_k``, so existing callers are
@@ -501,6 +514,16 @@ def fit_torch(
 
     log_file = open(epoch_log_path, "a") if epoch_log_path is not None else None  # noqa: SIM115
     rng = np.random.default_rng(seed)
+    probe_steps = set(trace_steps)
+    if stall_check is not None:
+        probe_steps.add(stall_check.step)
+    probe_rows = np.random.default_rng(0).permutation(len(validation[0]))[:probe_size]
+    probe_me, probe_opp = (
+        torch.as_tensor(validation[i][probe_rows], dtype=torch.float32, device=torch_device)
+        for i in (0, 1)
+    )
+    probe_value = np.asarray(validation[2][probe_rows], dtype=np.float64)
+    step_trace: list[dict[str, float]] = []
     started = time.perf_counter()
     vm, vo, vv = validation
     validation_epoch_trace: list[dict[str, float]] = []
@@ -530,16 +553,28 @@ def fit_torch(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_norm)
             optimizer.step()
             step += 1
+            if step in probe_steps:
+                with torch.no_grad():
+                    probe_output = model.forward_literal(probe_me, probe_opp)[0]
+                    probe_prediction = probe_output.cpu().numpy().astype(np.float64)
+                probe_pearson = _pearson(probe_prediction, probe_value)
+                if step in trace_steps:
+                    step_trace.append({
+                        "step": step, "value_pearson": probe_pearson,
+                        "value_mse": float(np.mean((probe_prediction - probe_value) ** 2)),
+                        "value_std": float(np.std(probe_prediction)),
+                    })
+                if (
+                    stall_check is not None and step == stall_check.step
+                    and abs(probe_pearson) < stall_check.min_abs_pearson
+                ):
+                    raise TrainingStalledError(step, probe_pearson, stall_check.min_abs_pearson)
         if epoch % validate_every == 0 or epoch == epochs:
             val_prediction, val_policy64 = model.predict(vm, vo)
             metrics = _metrics(
                 val_prediction, vv, val_policy64, validation_policy, validation_legal
             )
             validation_epoch_trace.append(metrics)
-            if stall_check is not None:
-                stall_epoch, min_abs_pearson = stall_check
-                if epoch >= stall_epoch and abs(metrics["value_pearson"]) < min_abs_pearson:
-                    raise TrainingStalledError(epoch, metrics["value_pearson"], min_abs_pearson)
             if metrics["value_mse"] < best_val_mse:
                 best_val_mse = metrics["value_mse"]
                 best_epoch = epoch
@@ -584,6 +619,7 @@ def fit_torch(
         "fit_wall_seconds": time.perf_counter() - started,
         "train_metrics": _metrics(train_prediction, value, train_policy64, policy, legal),
         "validation_epoch_trace": validation_epoch_trace,
+        "step_trace": step_trace,
         "final_validation_metrics": validation_epoch_trace[-1],
         "best_checkpoint_epoch": best_epoch,
         "best_checkpoint_train_metrics": _metrics(
@@ -597,14 +633,28 @@ def fit_torch(
     return model, metadata
 
 
+#: Derived from 32 seeds' probe traces at C128/B6, batch 32, lr 1e-3 (`az-train-
+#: othello-dead-seeds`): a dead net can look alive for its first ~16 steps
+#: (pearson up to 0.7) but is pinned at exactly 0.0 by step 24 and never
+#: recovers, while every live seed is at >= 0.6 from step 12 on. Step 64 keeps
+#: a margin past the last observed death step at a cost of ~64 optimizer
+#: steps per dead attempt; 0.05 sits far below any live trace and far above
+#: the dead net's exact 0.0.
+DEFAULT_STALL_CHECK = StallCheck(step=64, min_abs_pearson=0.05)
+
+
+#: Measured dead rate at C128/B6, batch 32, lr 1e-3 is ~62% (79 of 128 seeds),
+#: so 6 attempts all dying is a ~5% event per fit; a dead attempt costs only
+#: ~3.5s, so 21 attempts (0.62**21 ~ 4e-5) are effectively free insurance.
+DEFAULT_MAX_RETRIES = 20
+
+
 class AllSeedsStalledError(RuntimeError):
     """Raised by :func:`fit_torch_with_retry` when every seed it tried,
-    ``seed`` through ``seed + max_retries``, stalled -- vanishingly unlikely
-    at the dead-rates this plan family measures (even a raw ~1-in-4 rate
-    makes 6 consecutive stalls a ~1-in-4096 event), so in practice this
-    signals something worse than ordinary seed-to-seed bad luck (a
-    misconfigured hypothesis, a bad data split) worth surfacing loudly
-    rather than silently exhausting retries."""
+    ``seed`` through ``seed + max_retries``, stalled. At :data:`DEFAULT_MAX_RETRIES`
+    and the measured dead rate that is a ~1-in-25000 event, so it signals
+    something worse than seed-to-seed bad luck (a changed learning rate or
+    geometry, a bad data split) worth surfacing loudly."""
 
     def __init__(self, attempts: list[dict[str, float]]) -> None:
         super().__init__(f"all {len(attempts)} seed attempts stalled: {attempts}")
@@ -614,34 +664,39 @@ class AllSeedsStalledError(RuntimeError):
 def fit_torch_with_retry(
     me: np.ndarray, opp: np.ndarray, value: np.ndarray,
     validation: tuple[np.ndarray, np.ndarray, np.ndarray], l2: float = 1e-4,
-    *, seed: int = 0, max_retries: int = 5, stall_check: tuple[int, float] = (20, 0.05),
+    *, seed: int = 0, max_retries: int = DEFAULT_MAX_RETRIES,
+    stall_check: StallCheck = DEFAULT_STALL_CHECK,
     **kwargs: Any,
 ) -> tuple[OTCNN001Torch, dict[str, Any]]:
-    """Seed-hunting wrapper for multi-seed sweeps: fits at ``seed``, and if
-    ``stall_check`` raises :class:`TrainingStalledError`, retries at
-    ``seed + 1``, ``seed + 2``, ... up to ``max_retries`` additional
-    attempts, so a dead seed costs only the (cheap, ``stall_check``-bounded)
-    stalled attempt instead of silently consuming a sweep slot with no
-    result. Every attempt (stalled or not) is logged in the returned
-    metadata's ``"seed_attempts"``; the winning attempt's actual seed is
-    ``metadata["seed_used"]`` (which may differ from the requested ``seed``
-    -- callers that need the exact seed fitted should read this, not assume
-    the one they passed). Raises :class:`AllSeedsStalledError` if every
-    attempt through ``seed + max_retries`` stalls. ``**kwargs`` forwards to
-    :func:`fit_torch` unchanged (``init``, ``grad_clip_norm``,
-    ``warmup_epochs``, ``epochs``, etc.)."""
+    """Seed-hunting wrapper: fits at ``seed``, and if ``stall_check`` raises
+    :class:`TrainingStalledError`, retries at ``seed + 1``, ``seed + 2``, ...
+    up to ``max_retries`` additional attempts, so a dead seed costs only the
+    few steps ``stall_check`` takes to notice it instead of a full fit.
+    Every stalled attempt is logged in the returned metadata's
+    ``"seed_attempts"`` (seed, step, pearson, wall seconds), their total wall
+    time is ``metadata["retry_wall_seconds"]``; the winning attempt's actual
+    seed is ``metadata["seed_used"]`` (which may differ from the requested
+    ``seed`` -- callers that need the exact seed fitted should read this).
+    Raises :class:`AllSeedsStalledError` if every attempt through ``seed +
+    max_retries`` stalls. ``**kwargs`` forwards to :func:`fit_torch` unchanged
+    (``init``, ``grad_clip_norm``, ``warmup_epochs``, ``epochs``, etc.)."""
     attempts: list[dict[str, float]] = []
     for offset in range(max_retries + 1):
         trial_seed = seed + offset
+        attempt_started = time.perf_counter()
         try:
             model, metadata = fit_torch(
                 me, opp, value, validation, l2, seed=trial_seed, stall_check=stall_check, **kwargs,
             )
         except TrainingStalledError as e:
-            attempts.append({"seed": trial_seed, "epoch": e.epoch, "pearson": e.pearson})
+            attempts.append({
+                "seed": trial_seed, "step": e.step, "pearson": e.pearson,
+                "wall_seconds": time.perf_counter() - attempt_started,
+            })
             continue
         metadata["seed_used"] = trial_seed
         metadata["seed_attempts"] = attempts
+        metadata["retry_wall_seconds"] = sum(a["wall_seconds"] for a in attempts)
         return model, metadata
     raise AllSeedsStalledError(attempts)
 
@@ -656,6 +711,52 @@ def me_opp_planes(pos: Positions) -> tuple[np.ndarray, np.ndarray]:
     me = ((me_bits[:, None] >> squares[None, :]) & np.uint64(1)).astype(np.float32)
     opp = ((opp_bits[:, None] >> squares[None, :]) & np.uint64(1)).astype(np.float32)
     return me, opp
+
+
+class FitData(NamedTuple):
+    """Everything :func:`fit_torch` needs from a set of ``RecordV2`` shards:
+    the game-level train/validation split, occupancy planes, and the
+    completed-Q policy targets with legal masks."""
+
+    all_positions: Positions
+    train: Positions
+    validation: Positions
+    train_games: int
+    validation_games: int
+    train_me: np.ndarray
+    train_opp: np.ndarray
+    va_me: np.ndarray
+    va_opp: np.ndarray
+    train_policy: np.ndarray
+    train_legal: np.ndarray
+    va_policy: np.ndarray
+    va_legal: np.ndarray
+
+
+def prepare_fit_data(paths: list[str], validation_fraction: float, split_seed: int) -> FitData:
+    """Load and concatenate ``paths``, split by game, and build the arrays
+    :func:`fit_torch` consumes. Requires a completed-Q policy target on every
+    position (every record must come from ``dump --label gumbel``)."""
+    pos = concat([load_positions(p) for p in paths])
+    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
+    train, validation, train_games, validation_games = split_by_game(
+        pos, validation_fraction, split_seed
+    )
+    has_train_targets = all(entries for entries in train.policy)
+    has_validation_targets = all(entries for entries in validation.policy)
+    if not (has_train_targets and has_validation_targets):
+        raise ValueError(
+            "az-train-othello-cnn requires a completed-Q policy target on every "
+            "position -- every record must come from `dump --label gumbel`"
+        )
+    train_me, train_opp = me_opp_planes(train)
+    va_me, va_opp = me_opp_planes(validation)
+    train_policy, train_legal = policy_othello.targets(train.policy)
+    va_policy, va_legal = policy_othello.targets(validation.policy)
+    return FitData(
+        pos, train, validation, train_games, validation_games, train_me, train_opp, va_me, va_opp,
+        train_policy, train_legal, va_policy, va_legal,
+    )
 
 
 def train_cli(argv: list[str] | None = None) -> None:
@@ -697,38 +798,33 @@ def train_cli(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--epoch-log", default=None, help="path to append one JSON line per validation epoch"
     )
-    ap.add_argument("--max-retries", type=int, default=5, help="seed retries past a stalled init")
-    ap.add_argument("--stall-check-epoch", type=int, default=20)
-    ap.add_argument("--stall-check-min-pearson", type=float, default=0.05)
+    ap.add_argument(
+        "--max-retries", type=int, default=DEFAULT_MAX_RETRIES,
+        help="seed retries past a stalled init",
+    )
+    ap.add_argument(
+        "--stall-check-step", type=int, default=DEFAULT_STALL_CHECK.step,
+        help="optimizer step at which a fit whose validation-probe |pearson| is still below "
+        "--stall-check-min-pearson is abandoned as a dead seed and retried",
+    )
+    ap.add_argument(
+        "--stall-check-min-pearson", type=float, default=DEFAULT_STALL_CHECK.min_abs_pearson,
+    )
     args = ap.parse_args(argv)
 
     device = args.device or ("mps" if torch.backends.mps.is_available() else "cpu")
 
     paths = [p.strip() for p in args.positions.split(",") if p.strip()]
-    parts: list[Positions] = [load_positions(p) for p in paths]
-    pos = concat(parts)
-    print(f"loaded {len(pos)} positions from {len(paths)} file(s)", flush=True)
-
-    train, validation, train_games, validation_games = split_by_game(
-        pos, args.validation_fraction, args.split_seed
-    )
-
-    has_train_targets = all(entries for entries in train.policy)
-    has_validation_targets = all(entries for entries in validation.policy)
-    if not (has_train_targets and has_validation_targets):
-        raise ValueError(
-            "az-train-othello-cnn requires a completed-Q policy target on every "
-            "position -- every record must come from `dump --label gumbel`"
-        )
-
-    train_me, train_opp = me_opp_planes(train)
-    va_me, va_opp = me_opp_planes(validation)
-    train_policy, train_legal = policy_othello.targets(train.policy)
-    va_policy, va_legal = policy_othello.targets(validation.policy)
+    data = prepare_fit_data(paths, args.validation_fraction, args.split_seed)
+    pos, train, validation = data.all_positions, data.train, data.validation
+    train_games, validation_games = data.train_games, data.validation_games
+    train_me, train_opp, va_me, va_opp = data.train_me, data.train_opp, data.va_me, data.va_opp
+    train_policy, train_legal = data.train_policy, data.train_legal
+    va_policy, va_legal = data.va_policy, data.va_legal
 
     print(
-        f"=== OTCNN001 (blocks={BLOCKS}, channels={CHANNELS}) fit: {len(train)} train / {len(validation)} validation "
-        f"positions, device={device} ===",
+        f"=== OTCNN001 (blocks={BLOCKS}, channels={CHANNELS}) fit: {len(train)} train / "
+        f"{len(validation)} validation positions, device={device} ===",
         flush=True,
     )
     model, metadata = fit_torch_with_retry(
@@ -737,7 +833,7 @@ def train_cli(argv: list[str] | None = None) -> None:
         l2=args.l2,
         seed=args.split_seed,
         max_retries=args.max_retries,
-        stall_check=(args.stall_check_epoch, args.stall_check_min_pearson),
+        stall_check=StallCheck(args.stall_check_step, args.stall_check_min_pearson),
         batch_size=args.batch_size,
         epochs=args.epochs,
         learning_rate=args.learning_rate,

@@ -18,7 +18,6 @@ from othello_eval.convnet import (
     BLOCKS,
     CHANNELS,
     COLUMNS,
-    N_WEIGHTS,
     VALUE_HIDDEN,
     _literal_loss_gradient_k,  # pyright: ignore[reportPrivateUsage]
     initial_weights,
@@ -30,17 +29,19 @@ from othello_eval.convnet import (
 )
 
 from az_train.convnet_othello_torch import (
-    AllSeedsStalledError,
-    OTCNN001Torch,
-    TrainingStalledError,
-    _cosine_lr,  # pyright: ignore[reportPrivateUsage]
-    _lr_schedule,  # pyright: ignore[reportPrivateUsage]
-)
-from az_train.convnet_othello_torch import (
     BLOCKS as PRODUCTION_BLOCKS,
 )
 from az_train.convnet_othello_torch import (
     CHANNELS as PRODUCTION_CHANNELS,
+)
+from az_train.convnet_othello_torch import (
+    INIT_FUNCTIONS,
+    AllSeedsStalledError,
+    OTCNN001Torch,
+    StallCheck,
+    TrainingStalledError,
+    _cosine_lr,  # pyright: ignore[reportPrivateUsage]
+    _lr_schedule,  # pyright: ignore[reportPrivateUsage]
 )
 from az_train.convnet_othello_torch import fit_torch as _fit_torch_production
 from az_train.convnet_othello_torch import fit_torch_with_retry as _fit_torch_with_retry_production
@@ -119,7 +120,8 @@ def _splitmix_weights(n: int, amplitude: float) -> np.ndarray:
 
 def _production_fixture_prediction() -> tuple[np.ndarray, np.ndarray]:
     model = OTCNN001Torch()
-    model.load_from_flat(_splitmix_weights(n_weights_for(model.n_blocks, False, model.channels), 0.07))
+    n = n_weights_for(model.n_blocks, False, model.channels)
+    model.load_from_flat(_splitmix_weights(n, 0.07))
     black = (1 << 0) | (1 << 2) | (1 << 8)
     white = (1 << 1) | (1 << 7)
     me = np.array([[(black >> j) & 1 for j in range(64)]], dtype=np.float32)
@@ -363,30 +365,60 @@ def _tiny_synthetic_split() -> tuple[
     )
 
 
-def test_stall_check_raises_when_pearson_never_escapes_threshold() -> None:
-    """A dead-init run sits at ~0 pearson for the entire fit. An unreachable
-    threshold (2.0, pearson is bounded in [-1, 1]) simulates that -- the fit
-    must stop at the checked epoch instead of running to completion."""
+def test_stall_check_raises_at_its_step_when_pearson_never_escapes_threshold() -> None:
+    """An unreachable threshold (2.0, pearson is bounded in [-1, 1]) must
+    stop the fit at exactly the checked optimizer step, mid-epoch, instead of
+    running to completion."""
     me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    steps_per_epoch = -(-len(me_tr) // 64)
+    check_step = steps_per_epoch // 2
+    assert 0 < check_step < steps_per_epoch
     with pytest.raises(TrainingStalledError) as exc_info:
         fit_torch(
             me_tr, opp_tr, value_tr, validation,
             l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
-            report_every=0, stall_check=(2, 2.0),
+            report_every=0, stall_check=StallCheck(check_step, 2.0),
         )
-    assert exc_info.value.epoch == 2
+    assert exc_info.value.step == check_step
 
 
-def test_stall_check_does_not_raise_once_check_epoch_is_never_reached() -> None:
-    """A ``stall_check`` epoch beyond the fit's total ``epochs`` is never
-    reached, so it must never raise regardless of how training actually
-    goes -- the check is otherwise a no-op, matching every pre-existing
-    caller's behavior with ``stall_check=None``."""
+def test_stall_check_catches_a_reproduced_dead_seed_within_its_step_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production failure signature: every weight and bias zero gives a
+    constant network whose value pearson is exactly 0.0 and which never
+    recovers (all-zero conv weights kill every ReLU path, so no gradient
+    reaches the trunk). The check must fire at its configured step, not after
+    the fit's epochs, while an identical fit from a live init passes it."""
+    def zero_init(_seed: int, blocks: int, tied: bool, channels: int, hidden: int) -> np.ndarray:
+        return np.zeros(n_weights_for(blocks, tied, channels, hidden), dtype=np.float32)
+
+    monkeypatch.setitem(INIT_FUNCTIONS, "dead", zero_init)
+    me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
+    check = StallCheck(step=8, min_abs_pearson=0.05)
+    with pytest.raises(TrainingStalledError) as exc_info:
+        fit_torch(
+            me_tr, opp_tr, value_tr, validation, l2=1e-4, seed=0, batch_size=64, epochs=40,
+            learning_rate=5e-3, report_every=0, init="dead", stall_check=check,
+            trace_steps=(1, 4),
+        )
+    assert exc_info.value.step == 8
+    assert exc_info.value.pearson == 0.0
+
+    _model, metadata = fit_torch(
+        me_tr, opp_tr, value_tr, validation, l2=1e-4, seed=0, batch_size=64, epochs=3,
+        learning_rate=5e-3, report_every=0, stall_check=StallCheck(8, 0.0), trace_steps=(1, 4),
+    )
+    assert [t["step"] for t in metadata["step_trace"]] == [1, 4]
+
+
+def test_stall_check_step_beyond_the_fit_is_never_reached() -> None:
+    """A ``stall_check`` step beyond the fit's total steps never fires."""
     me_tr, opp_tr, value_tr, validation = _tiny_synthetic_split()
     _model, metadata = fit_torch(
         me_tr, opp_tr, value_tr, validation,
         l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
-        report_every=0, stall_check=(1000, 0.05),
+        report_every=0, stall_check=StallCheck(10**9, 0.05),
     )
     assert len(metadata["validation_epoch_trace"]) == 40
 
@@ -465,7 +497,7 @@ def test_fit_torch_with_retry_succeeds_on_first_seed_when_nothing_stalls() -> No
     _model, metadata = fit_torch_with_retry(
         me_tr, opp_tr, value_tr, validation,
         l2=1e-4, seed=0, batch_size=64, epochs=40, learning_rate=5e-3,
-        report_every=0, stall_check=(1000, 0.05),
+        report_every=0, stall_check=StallCheck(10**9, 0.05),
     )
     assert metadata["seed_used"] == 0
     assert metadata["seed_attempts"] == []
@@ -482,7 +514,7 @@ def test_fit_torch_with_retry_retries_past_a_stalled_seed(monkeypatch: pytest.Mo
     ) -> tuple[str, dict[str, object]]:
         calls.append(seed)
         if seed == 0:
-            raise TrainingStalledError(20, 0.0, 0.05)
+            raise TrainingStalledError(64, 0.0, 0.05)
         return "model", {"seed": seed}
 
     monkeypatch.setattr(cot, "fit_torch", fake_fit_torch)
@@ -494,7 +526,9 @@ def test_fit_torch_with_retry_retries_past_a_stalled_seed(monkeypatch: pytest.Mo
     assert calls == [0, 1]
     assert model == "model"
     assert metadata["seed_used"] == 1
-    assert metadata["seed_attempts"] == [{"seed": 0, "epoch": 20, "pearson": 0.0}]
+    (attempt,) = metadata["seed_attempts"]
+    assert (attempt["seed"], attempt["step"], attempt["pearson"]) == (0, 64, 0.0)
+    assert metadata["retry_wall_seconds"] == attempt["wall_seconds"] >= 0.0
 
 
 def test_fit_torch_with_retry_raises_after_every_attempt_stalls(
@@ -505,7 +539,7 @@ def test_fit_torch_with_retry_raises_after_every_attempt_stalls(
     def always_stall(
         *_args: object, seed: int = 0, **_kwargs: object,
     ) -> tuple[str, dict[str, object]]:
-        raise TrainingStalledError(20, 0.0, 0.05)
+        raise TrainingStalledError(64, 0.0, 0.05)
 
     monkeypatch.setattr(cot, "fit_torch", always_stall)
     with pytest.raises(AllSeedsStalledError) as exc_info:

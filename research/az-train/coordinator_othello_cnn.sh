@@ -43,7 +43,8 @@
 # Env knobs: RUN_DIR, GAMES (self-play games/gen), GENS, SIMS,
 # MAX_CONSIDERED, TEMP_MOVES, FORCED_OPENING_PLIES, EPOCHS, BATCH_SIZE, LR,
 # L2, VALIDATION_FRACTION, DEVICE, GATE_GAMES, EDAX_BINARY, EDAX_DATA_DIR,
-# EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR, SELFPLAY_ENGINE, CHUNK_SIZE.
+# EDAX_LEVEL, REPLAY_WINDOW, START, EVALUATOR, SELFPLAY_ENGINE, CHUNK_SIZE,
+# MAX_RETRIES, STALL_CHECK_STEP, STALL_CHECK_MIN_PEARSON.
 #
 # SELFPLAY_ENGINE: which self-play driver writes each generation's shard --
 # `batched` (default: `crates/mcts-batch`'s `dump_gumbel_batched`, every live
@@ -83,6 +84,15 @@
 # output within the first epoch on every seed tried (7 of 7), where 1e-3
 # survived about half of them.
 #
+# MAX_RETRIES / STALL_CHECK_STEP / STALL_CHECK_MIN_PEARSON: dead-seed handling
+# for the fit (`az_train.convnet_othello_torch.fit_torch_with_retry`). At
+# batch 32 many seeded C128/B6 inits are dead (constant output, validation
+# pearson exactly 0) from the first updates; once STALL_CHECK_STEP optimizer
+# steps have run, a fit whose validation-probe |pearson| is still below
+# STALL_CHECK_MIN_PEARSON is abandoned and retried at the next seed, up to
+# MAX_RETRIES times. Unset, each keeps `az-train-othello-cnn`'s own default
+# (the single source of truth for the derived values).
+#
 # REPLAY_WINDOW: number of most recent generations' shards to train on each
 # generation (default 0 = unlimited/cumulative, every shard from gen0 on,
 # the original behaviour). When set to N > 0, generation g trains only on
@@ -119,6 +129,9 @@ START=${START:-0}
 EVALUATOR=${EVALUATOR:-mlx}
 SELFPLAY_ENGINE=${SELFPLAY_ENGINE:-batched}
 CHUNK_SIZE=${CHUNK_SIZE:-64}
+MAX_RETRIES=${MAX_RETRIES:-}
+STALL_CHECK_STEP=${STALL_CHECK_STEP:-}
+STALL_CHECK_MIN_PEARSON=${STALL_CHECK_MIN_PEARSON:-}
 
 case "$SELFPLAY_ENGINE" in
   batched | per-node) ;;
@@ -200,11 +213,16 @@ for g in $(seq "$START" $((GENS - 1))); do
   echo "=== generation $g -> $((g + 1)): train @ $(date) ==="
   device_arg=()
   if [ -n "$DEVICE" ]; then device_arg=(--device "$DEVICE"); fi
+  retry_args=()
+  if [ -n "$MAX_RETRIES" ]; then retry_args+=(--max-retries "$MAX_RETRIES"); fi
+  if [ -n "$STALL_CHECK_STEP" ]; then retry_args+=(--stall-check-step "$STALL_CHECK_STEP"); fi
+  if [ -n "$STALL_CHECK_MIN_PEARSON" ]; then retry_args+=(--stall-check-min-pearson "$STALL_CHECK_MIN_PEARSON"); fi
   uv run --project research/az-train az-train-othello-cnn \
     --positions "$parts" --out "$RUN_DIR/gen$((g + 1)).cnn.bin" \
     --epochs "$EPOCHS" --batch-size "$BATCH_SIZE" --learning-rate "$LR" --l2 "$L2" \
     --validation-fraction "$VALIDATION_FRACTION" --split-seed "$g" \
-    --epoch-log "$RUN_DIR/gen$((g + 1)).epochs.jsonl" "${device_arg[@]+"${device_arg[@]}"}"
+    --epoch-log "$RUN_DIR/gen$((g + 1)).epochs.jsonl" "${device_arg[@]+"${device_arg[@]}"}" \
+    "${retry_args[@]+"${retry_args[@]}"}"
 
   echo "=== generation $((g + 1)): gates ($GATE_GAMES games) @ $(date) ==="
   # Gates are diagnostic, not a hard stop -- a FAIL must not abort the loop,
@@ -240,6 +258,10 @@ line = {
     "train_games": meta["train"]["train_games"],
     "validation_games": meta["train"]["validation_games"],
     "final_validation_metrics": meta["metrics"]["final_validation_metrics"],
+    "seed_used": meta["train"]["seed_used"],
+    "stalled_attempts": len(meta["train"]["seed_attempts"]),
+    "retry_wall_seconds": round(meta["metrics"]["retry_wall_seconds"], 1),
+    "fit_wall_seconds": round(meta["metrics"]["fit_wall_seconds"], 1),
     "gate_vs_gen0": parse_gate_output(open(gate_vs_gen0_path).read()),
     "gate_vs_prev": parse_gate_output(open(gate_vs_prev_path).read()) if gate_vs_prev_path else None,
 }
