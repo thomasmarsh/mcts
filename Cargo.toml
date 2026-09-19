@@ -124,6 +124,12 @@ default-members = [
 [profile.dev]
 debug = 1
 
+# The 128x6 CnnValueNet forward pass costs ~47s per call unoptimized, which made
+# `cargo test --lib -p game-othello` run for many minutes (and get killed by the
+# memory watchdog); optimized it is about a second.
+[profile.test.package.game-othello]
+opt-level = 3
+
 [profile.profiling]
 inherits = "release"
 debug = true

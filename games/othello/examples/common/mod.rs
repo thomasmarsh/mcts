@@ -182,10 +182,15 @@ impl Search for EdaxPlayer {
 /// A uniform-random legal opening: `OPENING_PLIES` real (non-pass) moves
 /// from the standard start, retried if a line ends early.
 pub fn random_opening(rng: &mut SmallRng) -> State {
+    random_opening_plies(rng, OPENING_PLIES)
+}
+
+/// [`random_opening`] with a caller-chosen ply count.
+pub fn random_opening_plies(rng: &mut SmallRng, plies: usize) -> State {
     'outer: loop {
         let mut state = State::default();
         let mut actions = Vec::new();
-        for _ in 0..OPENING_PLIES {
+        for _ in 0..plies {
             if Othello::is_terminal(&state) {
                 continue 'outer;
             }
@@ -270,6 +275,46 @@ where
             tally.draws,
             tally.losses
         );
+    }
+    tally
+}
+
+/// Like [`play_series`], but each pair of games shares one `plies`-ply
+/// opening with the seats swapped (`games / 2` openings), the design the
+/// slice-0b Python harness uses so a lopsided opening cancels within a pair.
+pub fn play_series_paired<H, F>(
+    hero: &mut H,
+    foe: &mut F,
+    games: u32,
+    plies: usize,
+    seed: u64,
+    label: &str,
+) -> Tally
+where
+    H: Search<G = Othello>,
+    F: Search<G = Othello>,
+{
+    let mut tally = Tally::default();
+    for g in 0..games {
+        let hero_is_s1 = g % 2 == 0;
+        let mut rng = SmallRng::seed_from_u64(seed.wrapping_add((g / 2) as u64));
+        let opening = random_opening_plies(&mut rng, plies);
+        let br = if hero_is_s1 {
+            play_from(opening, hero, foe)
+        } else {
+            play_from(opening, foe, hero)
+        };
+        record_game(&mut tally, hero_is_s1, br);
+        if (g + 1) % 20 == 0 || g + 1 == games {
+            eprintln!(
+                "  {label} game {}/{}: W-D-L {}-{}-{}",
+                g + 1,
+                games,
+                tally.wins,
+                tally.draws,
+                tally.losses
+            );
+        }
     }
     tally
 }

@@ -33,6 +33,7 @@ use mcts::algorithms::mcts::simulate::EvaluatedCutoff;
 use mcts::algorithms::mcts::{SearchConfig, TreeSearch};
 use mcts::algorithms::Search;
 use mcts::evaluator::{Evaluator, EVAL_MAGNITUDE_LIMIT};
+use mcts::game::Game;
 
 use crate::ntuple::NTupleModelEval;
 use crate::policy::NTuplePolicyNet;
@@ -161,13 +162,53 @@ impl<E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static> 
     }
 }
 
+/// No-search player: the highest-logit legal move under a [`PolicyLogits`]
+/// provider, ties to the earliest action. The raw-policy counterpart of
+/// [`CnnGumbelPlayer`] so a gate can report searched and unsearched strength
+/// from one binary.
+pub struct RawPolicyPlayer<P: PolicyLogits<Othello>> {
+    policy: P,
+    name: String,
+}
+
+impl<P: PolicyLogits<Othello>> RawPolicyPlayer<P> {
+    pub fn new(policy: P) -> Self {
+        Self {
+            policy,
+            name: "raw-policy".to_string(),
+        }
+    }
+}
+
+impl<P: PolicyLogits<Othello>> Search for RawPolicyPlayer<P> {
+    type G = Othello;
+
+    fn friendly_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn set_friendly_name(&mut self, name: &str) {
+        self.name = name.to_string();
+    }
+
+    fn choose_action(&mut self, state: &State) -> Move {
+        let mut actions = Vec::new();
+        Othello::generate_actions(state, &mut actions);
+        if actions == [Move::PASS] {
+            return Move::PASS;
+        }
+        let logits = self.policy.logits(state, &actions);
+        let best = (1..actions.len()).fold(0, |best, i| if logits[i] > logits[best] { i } else { best });
+        actions[best]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::convnet::CnnValueNet;
     use crate::ntuple::ModelGeometry;
     use crate::{Player, BB};
-    use mcts::game::Game;
 
     fn tiny_geom() -> ModelGeometry {
         let bytes = std::fs::read(
@@ -358,5 +399,43 @@ mod tests {
             let action = cnn_player_with(wide_cfg(), seed).choose_action(&s);
             assert_eq!(action, Move::PASS);
         }
+    }
+
+    /// Logits that rank squares by index, so the raw player must pick the
+    /// highest-indexed legal square rather than whatever comes first.
+    #[derive(Clone)]
+    struct ByIndex;
+
+    impl PolicyLogits<Othello> for ByIndex {
+        fn logits(&mut self, _state: &State, actions: &[Move]) -> Vec<f64> {
+            actions.iter().map(|a| a.0 as f64).collect()
+        }
+    }
+
+    #[test]
+    fn raw_policy_player_plays_the_argmax_legal_move() {
+        let state = State::default();
+        let mut actions = Vec::new();
+        Othello::generate_actions(&state, &mut actions);
+        let expected = *actions.iter().max_by_key(|a| a.0).unwrap();
+        let mut player = RawPolicyPlayer::new(ByIndex);
+        assert_eq!(player.choose_action(&state), expected);
+    }
+
+    #[test]
+    fn raw_policy_player_passes_only_when_forced() {
+        // Black to move with no discs of its own adjacent to any white line: only PASS is legal.
+        let state = State {
+            black: BB::from_index(0),
+            white: BB::from_index(63),
+            turn: Player::Black,
+            last_pass: false,
+            hashes: [0u64; 8],
+        };
+        let mut actions = Vec::new();
+        Othello::generate_actions(&state, &mut actions);
+        assert_eq!(actions, [Move::PASS]);
+        let mut player = RawPolicyPlayer::new(ByIndex);
+        assert_eq!(player.choose_action(&state), Move::PASS);
     }
 }
