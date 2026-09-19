@@ -11,40 +11,69 @@
 //! cargo run --release --example edax_match -p game-othello -- [CONFIG] [MODE]
 //! ```
 //!
-//! `CONFIG` defaults to `games/othello/edax/match.toml`. `MODE` is one of:
+//! `CONFIG` defaults to `games/othello/edax/match.toml`; any key can be
+//! overridden with `--set key=value` (e.g. `--set our_preset=\"medium\"`
+//! `--set levels=[1,2,3]`). `MODE` is one of:
 //!
 //! - `ladder` -- Run A: validate the ladder is monotone (Edax L vs L+2).
-//! - `place`  -- Run B: place `our_preset` on the ladder (default).
+//! - `place`  -- Run B: place `our_preset` on the ladder (default). Balanced
+//!   openings from `openings` (see `gen_xot_openings`), every opening played
+//!   from both seats, Wilson 95% interval, seconds and nodes per move.
 //! - `both`   -- ladder then place.
 //!
 //! Build Edax first with `games/othello/edax/build-edax.sh`. This is a
-//! background job: per-game progress goes to stderr. The match-play
-//! scaffolding (openings, series driver, Edax subprocess, reporting) lives
-//! in `examples/common/mod.rs`, shared with `ntuple_match`.
+//! background job: progress goes to stderr and, with `out` set, one JSONL row
+//! per game and per level is appended as it finishes. The match-play
+//! scaffolding (openings, gate driver, Edax subprocess, reporting) lives in
+//! `examples/common/mod.rs`, shared with `ntuple_match` and `gumbel_gate`;
+//! `common::run_edax_gate` is the engine-builder hook, so gating another
+//! agent means giving it a `make(seed)` closure, not a new driver.
 
 use std::path::Path;
 
 mod common;
-use common::{build_preset_engine, play_series, report_row, EdaxPlayer, Tally};
+use common::{
+    build_preset_engine, load_toml_config, play_series, report_row, run_edax_gate, EdaxPlayer,
+    GateConfig, Tally,
+};
 
 #[derive(serde::Deserialize)]
 struct Config {
-    edax_binary: String,
-    edax_data_dir: String,
     our_preset: String,
-    levels: Vec<u32>,
-    games_per_level: u32,
-    seed: u64,
+    #[serde(flatten)]
+    gate: GateConfig,
+}
+
+/// A preset's `max_iterations` (its per-move search budget) from presets.json.
+fn preset_iterations(presets_path: &Path, preset: &str) -> Option<u64> {
+    let table: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(presets_path).ok()?).ok()?;
+    table
+        .as_array()?
+        .iter()
+        .find(|p| p["id"] == preset)?
+        .get("max_iterations")?
+        .as_u64()
 }
 
 /// Run A: deeper Edax must beat shallower with a CI excluding 0.5.
 fn run_ladder(cfg: &Config) {
     println!("== Run A: ladder monotonicity (Edax L vs L+2) ==");
-    let n = cfg.games_per_level.max(30);
+    let n = cfg.gate.games_per_level.max(30);
     let mut ok = true;
     for l in [1u32, 3, 5, 7] {
-        let mut deep = EdaxPlayer::spawn(&cfg.edax_binary, &cfg.edax_data_dir, l + 2);
-        let mut shallow = EdaxPlayer::spawn(&cfg.edax_binary, &cfg.edax_data_dir, l);
+        let mut deep = EdaxPlayer::spawn_with_threads(
+            &cfg.gate.edax_binary,
+            &cfg.gate.edax_data_dir,
+            l + 2,
+            cfg.gate.edax_threads,
+        );
+        let mut shallow = EdaxPlayer::spawn_with_threads(
+            &cfg.gate.edax_binary,
+            &cfg.gate.edax_data_dir,
+            l,
+            cfg.gate.edax_threads,
+        );
         let label = format!("L{} v L{}", l + 2, l);
         let seed = 0xA000 ^ ((l as u64) << 8);
         let t = play_series(&mut deep, &mut shallow, n, seed, &label);
@@ -72,19 +101,12 @@ fn run_ladder(cfg: &Config) {
 /// Run B: place `our_preset` on the ladder.
 fn run_place(cfg: &Config) {
     println!("== Run B: {} vs Edax ==", cfg.our_preset);
-    let n = cfg.games_per_level;
     let presets = Path::new("games/othello/presets.json");
-    let mut rows: Vec<(u32, Tally)> = Vec::new();
-    for &l in &cfg.levels {
-        let mut ours =
-            build_preset_engine(presets, &cfg.our_preset, cfg.seed.wrapping_add(l as u64));
-        let mut edax = EdaxPlayer::spawn(&cfg.edax_binary, &cfg.edax_data_dir, l);
-        let label = format!("{} v L{l}", cfg.our_preset);
-        let seed = cfg.seed.wrapping_add((l as u64) << 8);
-        let t = play_series(&mut ours, &mut edax, n, seed, &label);
-        report_row(&format!("vs edax-L{l}"), &t);
-        rows.push((l, t));
-    }
+    let budget = preset_iterations(presets, &cfg.our_preset);
+    let rows = run_edax_gate(&cfg.gate, &cfg.our_preset, budget, |seed| {
+        build_preset_engine(presets, &cfg.our_preset, seed)
+    });
+    let rows: Vec<(u32, Tally)> = rows.into_iter().map(|r| (r.level, r.tally)).collect();
 
     // N = highest level where our CI lower bound is still >= 0.5.
     let mut n_clear = None;
@@ -118,22 +140,40 @@ fn run_place(cfg: &Config) {
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let cfg_path = args
-        .next()
-        .filter(|a| !a.starts_with("--") && a != "ladder" && a != "place" && a != "both")
+    let positional: Vec<String> = {
+        let mut out = Vec::new();
+        let mut it = std::env::args().skip(1);
+        while let Some(a) = it.next() {
+            if a == "--set" {
+                it.next();
+            } else {
+                out.push(a);
+            }
+        }
+        out
+    };
+    let is_mode = |a: &str| matches!(a, "ladder" | "place" | "both");
+    let cfg_path = positional
+        .first()
+        .filter(|a| !is_mode(a))
+        .cloned()
         .unwrap_or_else(|| "games/othello/edax/match.toml".to_string());
-    let mode = args.next().unwrap_or_else(|| "place".to_string());
+    let mode = positional
+        .iter()
+        .find(|a| is_mode(a))
+        .cloned()
+        .unwrap_or_else(|| "place".to_string());
 
-    let cfg: Config = toml::from_str(
-        &std::fs::read_to_string(&cfg_path)
-            .unwrap_or_else(|e| panic!("cannot read {cfg_path}: {e}")),
-    )
-    .expect("config must parse");
+    let all_args: Vec<String> = std::env::args().skip(1).collect();
+    let cfg: Config = load_toml_config(&cfg_path, &all_args);
 
     println!(
         "edax={}  preset={}  levels={:?}  games/level={}  seed={}",
-        cfg.edax_binary, cfg.our_preset, cfg.levels, cfg.games_per_level, cfg.seed
+        cfg.gate.edax_binary,
+        cfg.our_preset,
+        cfg.gate.levels,
+        cfg.gate.games_per_level,
+        cfg.gate.seed
     );
 
     match mode.as_str() {

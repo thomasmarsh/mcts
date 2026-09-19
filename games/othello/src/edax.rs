@@ -33,7 +33,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::{Move, Player, State};
+use mcts::game::Game;
+
+use crate::{Move, Othello, Player, State};
 
 /// Encode `state` as an Edax `setboard` argument: 64 square characters
 /// followed by a space and the side-to-move token.
@@ -240,6 +242,35 @@ impl EdaxEval {
     /// all, `eval` retries once at a shallow level and then falls back to a
     /// neutral score rather than aborting a multi-hour label run.
     pub fn eval(&mut self, state: &State, level: u32) -> EdaxScore {
+        let (me, them) = match state.turn {
+            Player::Black => (state.black, state.white),
+            Player::White => (state.white, state.black),
+        };
+        if crate::generate_moves(me, them).bits() == 0 {
+            // Edax prints nothing at all for a forced pass (its answer only
+            // appears when the next command arrives), so never ask it. A pass
+            // changes nothing but the mover, so the value is the opponent's,
+            // negated.
+            self.calls += 1;
+            if crate::generate_moves(them, me).bits() == 0 {
+                return EdaxScore {
+                    score: terminal_disc_diff(state) as f32,
+                    exact: true,
+                    nodes: 0,
+                };
+            }
+            let s = self.eval(
+                &State {
+                    turn: state.turn.next(),
+                    ..*state
+                },
+                level,
+            );
+            return EdaxScore {
+                score: -s.score,
+                ..s
+            };
+        }
         match self.eval_once(state, level) {
             Some(s) => s,
             None => match self.eval_once(state, 4) {
@@ -274,6 +305,11 @@ impl EdaxEval {
         let empties = 64 - (state.black.bits() | state.white.bits()).count_ones();
         let mut last: Option<(f32, u32, bool, u64)> = None;
         let mut played = false;
+        // Set when Edax's chosen move ends the game: it then prints a trailing
+        // `*** Game Over ***` after `Edax plays`, which must be consumed here or
+        // the next call reads it as its own answer and every score after is
+        // shifted by one position.
+        let mut game_over_follows = false;
         let started = Instant::now();
         loop {
             let remaining = self.timeout.saturating_sub(started.elapsed());
@@ -302,8 +338,11 @@ impl EdaxEval {
             if let Some(p) = parse_score_line(t) {
                 last = Some(p);
             }
-            if t.starts_with("Edax plays") {
+            if let Some(rest) = t.strip_prefix("Edax plays") {
                 played = true;
+                if let Some(mv) = edax_move_to_index(rest).filter(|m| *m != Move::PASS) {
+                    game_over_follows = neither_side_can_move(&Othello::apply(*state, &mv));
+                }
             }
             // Stop once we have the score, or -- for an "obvious move" Edax
             // resolves without a search table -- once it returns to its `>`
@@ -311,6 +350,20 @@ impl EdaxEval {
             // a table.
             if played && (last.is_some() || t == ">") {
                 break;
+            }
+        }
+        if game_over_follows {
+            loop {
+                let remaining = self.timeout.saturating_sub(started.elapsed());
+                match self.lines.recv_timeout(remaining) {
+                    Ok(line) if line.contains("*** Game Over ***") => break,
+                    Ok(_) => {}
+                    Err(_) => {
+                        self.timeouts += 1;
+                        self.restart();
+                        return None;
+                    }
+                }
             }
         }
         let (score, depth, selective, nodes) = last?;
@@ -346,6 +399,14 @@ impl EdaxEval {
         self.stdin.flush().unwrap();
     }
 
+    /// Forget everything Edax has cached (`new` resets the game and clears its
+    /// hash tables), so the next `eval` is a pure function of its position and
+    /// level rather than of which positions this process searched before.
+    pub fn clear_hash(&mut self) {
+        writeln!(self.stdin, "new").unwrap();
+        self.stdin.flush().unwrap();
+    }
+
     /// Number of `eval` calls so far.
     pub fn calls(&self) -> u64 {
         self.calls
@@ -374,6 +435,14 @@ impl Drop for EdaxEval {
     }
 }
 
+/// Whether the game is over the way Edax counts it: neither side has a legal
+/// move. (`Othello::is_terminal` waits for a recorded pass, so it lags by one
+/// ply.)
+fn neither_side_can_move(state: &State) -> bool {
+    crate::generate_moves(state.black, state.white).bits() == 0
+        && crate::generate_moves(state.white, state.black).bits() == 0
+}
+
 /// Disc difference from the side-to-move perspective, counting empties as
 /// lost by the trailing side (Edax's own final-score convention).
 pub(crate) fn terminal_disc_diff(state: &State) -> i32 {
@@ -394,7 +463,7 @@ pub(crate) fn terminal_disc_diff(state: &State) -> i32 {
 
 /// Parse one Edax search-result line into `(score, depth, selective, nodes)`.
 /// Returns `None` for the header, the rule, and every non-result line.
-fn parse_score_line(line: &str) -> Option<(f32, u32, bool, u64)> {
+pub fn parse_score_line(line: &str) -> Option<(f32, u32, bool, u64)> {
     let mut it = line.split_whitespace();
     let depth_tok = it.next()?;
     let digits: String = depth_tok
@@ -592,6 +661,30 @@ mod tests {
             "same board, white to move: {}",
             from_white.score
         );
+    }
+
+    /// A move that ends the game makes Edax print `*** Game Over ***` after
+    /// `Edax plays`; a driver that stops reading at `Edax plays` then misreads
+    /// that line as the next position's answer and every later score is off by
+    /// one. Black to move can wipe white out with b5 here.
+    #[test]
+    #[ignore = "shells out to the vendored Edax binary"]
+    fn a_game_ending_move_does_not_desynchronise_the_next_eval() {
+        const BIN: &str = "edax/vendor/bin/mEdax-native";
+        const DATA: &str = "edax/vendor/data";
+        if !Path::new(BIN).exists() {
+            eprintln!("skip: no Edax binary");
+            return;
+        }
+        let wipeout = crate::openings::parse_sequence("f5f6d3e3f3f4f7c5").unwrap();
+        let other = crate::openings::parse_sequence("e6d6c4d3c5f6d2d1").unwrap();
+        let mut e = EdaxEval::spawn(BIN, DATA, 16, Duration::from_secs(60));
+        let alone = e.eval(&other, 16).score;
+        let mut e = EdaxEval::spawn(BIN, DATA, 16, Duration::from_secs(60));
+        assert_eq!(e.eval(&wipeout, 16).score, 64.0);
+        assert_eq!(e.eval(&other, 16).score, alone, "the wipeout desynchronised the stream");
+        assert_eq!(e.eval(&wipeout, 16).score, 64.0);
+        assert_eq!(e.timeouts(), 0);
     }
 
     /// A sub-millisecond ceiling forces every search to time out; `eval`

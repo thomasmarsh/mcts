@@ -39,14 +39,36 @@ Everything lands under `vendor/` (gitignored):
 line protocol. Invocation:
 
 ```
-mEdax-native -q -book-usage off -eval-file <dir>/data/eval.dat -level <N>
+mEdax-native -n 1 -book-usage off -eval-file <dir>/data/eval.dat -level <N>
 ```
 
-- `-q` silences the per-move board dump; the `Edax plays` line is still printed.
+- `-n 1` pins one search thread. Without it Edax takes every core
+  (`get_cpu_number()`), which makes its timing depend on what else is running
+  and steals CPU from the engine it is playing. `edax_threads` in `match.toml`.
+- No `-q`: the search-result line it would silence carries the node count the
+  gate reports per move (`EdaxPlayer::nodes`); the `Edax plays` line is what the
+  driver waits for either way.
 - `-book-usage off` — no opening book (a book would confound the fixed-level
   ladder). The binary still prints a harmless `New book …` line at startup and
   a `Cannot open file: data/book.dat` on exit; both go to stderr and are
   ignored.
+
+### What `-level N` means (audited against the pinned v4.6 source, `search.c`)
+
+For `N <= 10`: an alpha-beta search to depth `N` with no selectivity (the
+`selectivity 5 = 100%` row), and an **exact endgame solve once the number of
+empties is `<= 2N`** (level 5 solves the last 10 empties). That is the "Edax
+level N = depth-limited alpha-beta, no book" of the TD paper ("standard settings
+... vary only the Edax level") and OLIVAW ("E_k: depth of the alpha-beta search
+limited to k, no opening book"); the endgame solve is Edax's own level table,
+which both papers inherit by using the levels. `depth 8` reads `8`, not `8@..%`,
+in the search line. From level 11 up the midgame turns selective: level 16 is
+`16@73%` (probcut). `go` re-derives depth/selectivity from the level per move,
+so `-depth`/`-selectivity` on the command line cannot force a full-width search.
+
+Edax's hash table persists across `setboard` within one process (`new` clears
+it), so within a level's series the game order matters slightly; with `-n 1` a
+rerun in the same order reproduces the same moves.
 
 Per-move exchange:
 
@@ -118,3 +140,14 @@ anything else — never let `quit` (or the next `setboard`) sit in the pipe
 during a search. Piping a whole command script at once silently yields no
 move. `build-edax.sh`'s self-test spaces its writes with `sleep`s for the
 same reason; `edax_match.rs` instead reads each reply before its next write.
+
+Two more protocol facts the oracle (`EdaxEval`) depends on, both found the hard
+way:
+
+- A move that ends the game prints `Edax plays X` and *then*
+  `*** Game Over ***`. A driver that stops reading at `Edax plays` reads that
+  line as the next position's answer, and every later score is shifted by one.
+  `EdaxEval` now consumes it whenever the chosen move leaves neither side a move.
+- For a forced pass Edax prints **nothing** (its answer only appears when the
+  next command arrives). `EdaxEval` never asks: a pass is scored as the
+  opponent-to-move value, negated.

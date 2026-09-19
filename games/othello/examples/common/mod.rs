@@ -12,8 +12,10 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::time::Instant;
 
-use game_othello::edax::{edax_move_to_index, state_to_edax_board};
+use game_othello::edax::{edax_move_to_index, parse_score_line, state_to_edax_board};
+use game_othello::openings::{load_openings, select_openings};
 use game_othello::{Move, Othello, State};
 use mcts::algorithms::Search;
 use mcts::game::{Game, PlayerIndex};
@@ -75,16 +77,44 @@ pub fn build_preset_engine(presets_path: &Path, preset: &str, seed: u64) -> Boxe
 /// queued on its stdin, so [`EdaxPlayer::ask`] writes `setboard`+`go` and
 /// reads the `Edax plays` reply back before anything else is written --
 /// never queue a command (least of all `quit`) while a search is running.
+///
+/// Runs without `-q` so each `go` prints its search-result line, which is
+/// where the per-move node count comes from (see [`EdaxPlayer::nodes`]).
+/// Pinned to a fixed thread count (`-n`, default 1): Edax otherwise takes
+/// every core, which makes its timing depend on what else is running and
+/// steals CPU from the engine it is playing.
 pub struct EdaxPlayer {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     level: u32,
     name: String,
+    nodes: u64,
+    searches: u64,
 }
 
 impl EdaxPlayer {
+    /// A single-threaded Edax at `level`.
     pub fn spawn(binary: &str, data_dir: &str, level: u32) -> EdaxPlayer {
+        Self::spawn_with_threads(binary, data_dir, level, 1)
+    }
+
+    /// Total nodes Edax reported over all its searches so far.
+    pub fn nodes(&self) -> u64 {
+        self.nodes
+    }
+
+    /// Number of searches that reported a node count.
+    pub fn searches(&self) -> u64 {
+        self.searches
+    }
+
+    pub fn spawn_with_threads(
+        binary: &str,
+        data_dir: &str,
+        level: u32,
+        threads: u32,
+    ) -> EdaxPlayer {
         let eval_file = Path::new(data_dir).join("eval.dat");
         assert!(
             Path::new(binary).exists(),
@@ -96,7 +126,7 @@ impl EdaxPlayer {
             eval_file.display()
         );
         let mut child = Command::new(binary)
-            .args(["-q", "-book-usage", "off", "-eval-file"])
+            .args(["-n", &threads.to_string(), "-book-usage", "off", "-eval-file"])
             .arg(&eval_file)
             .args(["-level", &level.to_string()])
             .stdin(Stdio::piped())
@@ -112,6 +142,8 @@ impl EdaxPlayer {
             stdout,
             level,
             name: format!("edax-L{level}"),
+            nodes: 0,
+            searches: 0,
         };
         // `mode 3` keeps Edax in manual mode: no auto-play, no pondering.
         writeln!(p.stdin, "mode 3").unwrap();
@@ -127,11 +159,19 @@ impl EdaxPlayer {
         writeln!(self.stdin, "go").unwrap();
         self.stdin.flush().unwrap();
         let mut line = String::new();
+        let mut last_nodes = None;
         loop {
             line.clear();
             let n = self.stdout.read_line(&mut line).unwrap();
             assert!(n != 0, "edax closed its output mid-search");
+            if let Some((_, _, _, nodes)) = parse_score_line(line.trim()) {
+                last_nodes = Some(nodes);
+            }
             if let Some(rest) = line.trim().strip_prefix("Edax plays ") {
+                if let Some(nodes) = last_nodes {
+                    self.nodes += nodes;
+                    self.searches += 1;
+                }
                 let token = rest.trim();
                 return edax_move_to_index(token)
                     .unwrap_or_else(|| panic!("unparseable edax move {token:?}"));
@@ -279,46 +319,6 @@ where
     tally
 }
 
-/// Like [`play_series`], but each pair of games shares one `plies`-ply
-/// opening with the seats swapped (`games / 2` openings), the design the
-/// slice-0b Python harness uses so a lopsided opening cancels within a pair.
-pub fn play_series_paired<H, F>(
-    hero: &mut H,
-    foe: &mut F,
-    games: u32,
-    plies: usize,
-    seed: u64,
-    label: &str,
-) -> Tally
-where
-    H: Search<G = Othello>,
-    F: Search<G = Othello>,
-{
-    let mut tally = Tally::default();
-    for g in 0..games {
-        let hero_is_s1 = g % 2 == 0;
-        let mut rng = SmallRng::seed_from_u64(seed.wrapping_add((g / 2) as u64));
-        let opening = random_opening_plies(&mut rng, plies);
-        let br = if hero_is_s1 {
-            play_from(opening, hero, foe)
-        } else {
-            play_from(opening, foe, hero)
-        };
-        record_game(&mut tally, hero_is_s1, br);
-        if (g + 1) % 20 == 0 || g + 1 == games {
-            eprintln!(
-                "  {label} game {}/{}: W-D-L {}-{}-{}",
-                g + 1,
-                games,
-                tally.wins,
-                tally.draws,
-                tally.losses
-            );
-        }
-    }
-    tally
-}
-
 /// Print a one-line summary: W-D-L, win rate, and its Wilson 95% interval.
 pub fn report_row(label: &str, t: &Tally) {
     let (p, (lo, hi)) = t.win_rate_ci(1.96);
@@ -331,6 +331,338 @@ pub fn report_row(label: &str, t: &Tally) {
         p,
         lo,
         hi
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Timing
+// ---------------------------------------------------------------------------
+
+/// Wraps an engine to measure wall-clock seconds per real move (forced
+/// passes are free and not counted).
+pub struct Timed<S> {
+    pub inner: S,
+    pub moves: u64,
+    pub secs: f64,
+}
+
+impl<S> Timed<S> {
+    pub fn new(inner: S) -> Self {
+        Timed {
+            inner,
+            moves: 0,
+            secs: 0.0,
+        }
+    }
+
+    pub fn secs_per_move(&self) -> f64 {
+        if self.moves == 0 {
+            0.0
+        } else {
+            self.secs / self.moves as f64
+        }
+    }
+}
+
+impl<S: Search<G = Othello>> Search for Timed<S> {
+    type G = Othello;
+    fn friendly_name(&self) -> String {
+        self.inner.friendly_name()
+    }
+    fn set_friendly_name(&mut self, name: &str) {
+        self.inner.set_friendly_name(name)
+    }
+    fn choose_action(&mut self, state: &State) -> Move {
+        let started = Instant::now();
+        let mv = self.inner.choose_action(state);
+        if mv != Move::PASS {
+            self.moves += 1;
+            self.secs += started.elapsed().as_secs_f64();
+        }
+        mv
+    }
+    fn estimated_depth(&self) -> usize {
+        self.inner.estimated_depth()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+/// Read a TOML file into `T`, first applying any `--set key=value` overrides
+/// found in `args` (top-level keys only; the value is parsed as a TOML value,
+/// so `--set levels=[1,2]` and `--set out="x.jsonl"` work, and a bare word
+/// falls back to a string).
+pub fn load_toml_config<T: serde::de::DeserializeOwned>(path: &str, args: &[String]) -> T {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+    let mut table: toml::Table = text
+        .parse()
+        .unwrap_or_else(|e| panic!("{path} is not valid TOML: {e}"));
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--set" {
+            let kv = args
+                .get(i + 1)
+                .unwrap_or_else(|| panic!("--set needs key=value"));
+            let (k, v) = kv
+                .split_once('=')
+                .unwrap_or_else(|| panic!("--set expects key=value, got {kv:?}"));
+            let value = format!("v = {v}")
+                .parse::<toml::Table>()
+                .ok()
+                .and_then(|mut t| t.remove("v"))
+                .unwrap_or_else(|| toml::Value::String(v.to_string()));
+            table.insert(k.trim().to_string(), value);
+            i += 1;
+        }
+        i += 1;
+    }
+    toml::Value::Table(table)
+        .try_into()
+        .unwrap_or_else(|e| panic!("{path} (with --set overrides) does not fit the config: {e}"))
+}
+
+fn one() -> u32 {
+    1
+}
+fn six() -> usize {
+    6
+}
+
+/// Everything the Edax gate needs that is not the agent under test. Shared by
+/// `edax_match` (TOML) and `gumbel_gate --edax-only` (`--gate-config`).
+#[derive(serde::Deserialize, Clone, Debug)]
+pub struct GateConfig {
+    pub edax_binary: String,
+    pub edax_data_dir: String,
+    /// Edax search threads (`-n`). 1 keeps Edax reproducible and off our CPUs.
+    #[serde(default = "one")]
+    pub edax_threads: u32,
+    pub levels: Vec<u32>,
+    /// Games per level; each opening is played from both seats, so this is
+    /// twice the number of openings and must be even.
+    pub games_per_level: u32,
+    /// Seeds the opening subset (file mode) or the random openings.
+    pub seed: u64,
+    /// Balanced-opening file (`games/othello/openings/xot8.txt`). Absent or
+    /// empty (`--set openings=\"\"`) means random `opening_plies`-ply openings,
+    /// the pre-XOT protocol.
+    #[serde(default)]
+    pub openings: Option<String>,
+    #[serde(default = "six")]
+    pub opening_plies: usize,
+    /// JSONL file appended per game and per level as the gate runs.
+    #[serde(default)]
+    pub out: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Openings
+// ---------------------------------------------------------------------------
+
+/// Where a gate's opening positions come from. Pair `p` is the same opening
+/// for every level and every agent, so results are comparable across them.
+pub enum Openings {
+    /// `picks` indexes into `states`, a seeded subset of the balanced file.
+    File {
+        path: String,
+        states: Vec<State>,
+        picks: Vec<usize>,
+    },
+    /// Fresh seeded random `plies`-ply openings.
+    Random { plies: usize, seed: u64 },
+}
+
+impl Openings {
+    pub fn from_config(cfg: &GateConfig) -> Openings {
+        let pairs = (cfg.games_per_level / 2) as usize;
+        match cfg.openings.as_ref().filter(|p| !p.is_empty()) {
+            Some(path) => {
+                let loaded = load_openings(Path::new(path)).unwrap_or_else(|e| panic!("{e}"));
+                let lines: Vec<&str> = loaded.iter().map(|(l, _)| l.as_str()).collect();
+                let picks = select_openings(&lines, pairs, cfg.seed)
+                    .unwrap_or_else(|e| panic!("{path}: {e}"));
+                let states = loaded.into_iter().map(|(_, s)| s).collect();
+                Openings::File {
+                    path: path.clone(),
+                    states,
+                    picks,
+                }
+            }
+            None => Openings::Random {
+                plies: cfg.opening_plies,
+                seed: cfg.seed,
+            },
+        }
+    }
+
+    /// The opening for pair `p`, and its index in the file when there is one.
+    pub fn pair(&self, p: usize) -> (Option<usize>, State) {
+        match self {
+            Openings::File { states, picks, .. } => (Some(picks[p]), states[picks[p]]),
+            Openings::Random { plies, seed } => {
+                let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(p as u64));
+                (None, random_opening_plies(&mut rng, *plies))
+            }
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            Openings::File { path, states, .. } => format!("{path} ({} openings)", states.len()),
+            Openings::Random { plies, .. } => format!("random {plies}-ply"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Edax gate
+// ---------------------------------------------------------------------------
+
+/// One level's result for one agent.
+pub struct GateRow {
+    pub level: u32,
+    pub tally: Tally,
+    pub agent_secs_per_move: f64,
+    pub edax_secs_per_move: f64,
+    pub edax_nodes_per_move: f64,
+    pub secs: f64,
+}
+
+fn append_jsonl(path: &Option<String>, row: &serde_json::Value) {
+    if let Some(path) = path {
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap_or_else(|e| panic!("cannot open --out {path}: {e}"));
+        writeln!(f, "{row}").unwrap();
+    }
+}
+
+/// Place one agent on the Edax ladder under the balanced-opening protocol:
+/// per level, `games_per_level / 2` shared openings each played from both
+/// seats, a Wilson 95% interval on the score (draw = half), and the seconds
+/// per move both sides took plus Edax's measured nodes per move.
+///
+/// This is the engine-builder hook: `make(seed)` returns a fresh agent, and
+/// `agent_nodes_per_move` is that agent's nominal search budget per move
+/// (MCTS iterations, Gumbel sims, 1 for a raw net forward pass), or `None`
+/// when it has no such number. It is a budget, not a measurement - only
+/// Edax reports the nodes it actually searched. Any agent (search preset,
+/// released net raw, the TD agent later) is gated by giving it a `make`.
+pub fn run_edax_gate<S: Search<G = Othello>>(
+    cfg: &GateConfig,
+    label: &str,
+    agent_nodes_per_move: Option<u64>,
+    make: impl Fn(u64) -> S,
+) -> Vec<GateRow> {
+    assert!(
+        cfg.games_per_level.is_multiple_of(2) && cfg.games_per_level > 0,
+        "games_per_level must be a positive even number (each opening is played from both seats)"
+    );
+    let openings = Openings::from_config(cfg);
+    let pairs = (cfg.games_per_level / 2) as usize;
+    println!(
+        "gate {label}: levels {:?}, {} games/level over {pairs} openings ({}), edax -n {}, seed {}",
+        cfg.levels,
+        cfg.games_per_level,
+        openings.describe(),
+        cfg.edax_threads,
+        cfg.seed
+    );
+    let mut rows = Vec::new();
+    for &level in &cfg.levels {
+        let started = Instant::now();
+        let mut hero = Timed::new(make(cfg.seed.wrapping_add(level as u64)));
+        let mut edax = Timed::new(EdaxPlayer::spawn_with_threads(
+            &cfg.edax_binary,
+            &cfg.edax_data_dir,
+            level,
+            cfg.edax_threads,
+        ));
+        let mut tally = Tally::default();
+        for p in 0..pairs {
+            let (opening_idx, opening) = openings.pair(p);
+            for hero_first in [true, false] {
+                let (hero_secs0, edax_secs0) = (hero.secs, edax.secs);
+                let br = if hero_first {
+                    play_from(opening, &mut hero, &mut edax)
+                } else {
+                    play_from(opening, &mut edax, &mut hero)
+                };
+                let before = tally;
+                record_game(&mut tally, hero_first, br);
+                let result = if tally.wins > before.wins {
+                    "win"
+                } else if tally.losses > before.losses {
+                    "loss"
+                } else {
+                    "draw"
+                };
+                append_jsonl(
+                    &cfg.out,
+                    &serde_json::json!({
+                        "type": "game", "agent": label, "level": level, "pair": p,
+                        "opening": opening_idx, "hero_first": hero_first, "result": result,
+                        "agent_secs": hero.secs - hero_secs0, "edax_secs": edax.secs - edax_secs0,
+                    }),
+                );
+            }
+            if (p + 1) % 10 == 0 || p + 1 == pairs {
+                eprintln!(
+                    "  {label} v edax-L{level} {} games: W-D-L {}-{}-{}",
+                    2 * (p + 1),
+                    tally.wins,
+                    tally.draws,
+                    tally.losses
+                );
+            }
+        }
+        let row = GateRow {
+            level,
+            tally,
+            agent_secs_per_move: hero.secs_per_move(),
+            edax_secs_per_move: edax.secs_per_move(),
+            edax_nodes_per_move: edax.inner.nodes() as f64 / edax.inner.searches().max(1) as f64,
+            secs: started.elapsed().as_secs_f64(),
+        };
+        print_gate_row(label, &row, agent_nodes_per_move);
+        let (score, (lo, hi)) = tally.win_rate_ci(1.96);
+        append_jsonl(
+            &cfg.out,
+            &serde_json::json!({
+                "type": "level", "agent": label, "level": level, "games": tally.total(),
+                "w": tally.wins, "d": tally.draws, "l": tally.losses,
+                "score": score, "lo": lo, "hi": hi,
+                "openings": openings.describe(), "seed": cfg.seed, "edax_threads": cfg.edax_threads,
+                "agent_secs_per_move": row.agent_secs_per_move,
+                "agent_nodes_per_move_budget": agent_nodes_per_move,
+                "edax_secs_per_move": row.edax_secs_per_move,
+                "edax_nodes_per_move": row.edax_nodes_per_move, "secs": row.secs,
+            }),
+        );
+        rows.push(row);
+    }
+    rows
+}
+
+fn print_gate_row(label: &str, r: &GateRow, agent_nodes: Option<u64>) {
+    let (p, (lo, hi)) = r.tally.win_rate_ci(1.96);
+    let budget = agent_nodes.map_or("-".to_string(), |n| n.to_string());
+    println!(
+        "{label} L{:<2} games={:>3} W-D-L {}-{}-{}  score={p:.3} wilson95=[{lo:.3}, {hi:.3}]  \
+         agent {:.1} ms/move (budget {budget} nodes)  edax {:.1} ms/move {:.0} nodes/move",
+        r.level,
+        r.tally.total(),
+        r.tally.wins,
+        r.tally.draws,
+        r.tally.losses,
+        r.agent_secs_per_move * 1e3,
+        r.edax_secs_per_move * 1e3,
+        r.edax_nodes_per_move,
     );
 }
 
@@ -525,5 +857,58 @@ mod tests {
         let (p, _) = t.win_rate_ci(1.96);
         assert_eq!(t.draws, 10);
         assert!((p - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn timed_counts_real_moves_but_not_passes() {
+        struct Fixed(Move);
+        impl Search for Fixed {
+            type G = Othello;
+            fn friendly_name(&self) -> String {
+                "fixed".into()
+            }
+            fn set_friendly_name(&mut self, _: &str) {}
+            fn choose_action(&mut self, _: &State) -> Move {
+                self.0
+            }
+        }
+        let mut t = Timed::new(Fixed(Move(19)));
+        t.choose_action(&State::default());
+        t.choose_action(&State::default());
+        assert_eq!(t.moves, 2);
+        t.inner.0 = Move::PASS;
+        t.choose_action(&State::default());
+        assert_eq!(t.moves, 2, "a pass is not a move");
+    }
+
+    #[test]
+    fn set_overrides_replace_toml_keys_and_parse_values() {
+        #[derive(serde::Deserialize)]
+        struct C {
+            a: u32,
+            levels: Vec<u32>,
+            name: String,
+        }
+        let dir = std::env::temp_dir().join(format!("gate-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("c.toml");
+        std::fs::write(&path, "a = 1\nlevels = [1]\nname = \"x\"\n").unwrap();
+        let args: Vec<String> = ["--set", "a=7", "--set", "levels=[2,3]", "--set", "name=bare"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let c: C = load_toml_config(path.to_str().unwrap(), &args);
+        assert_eq!((c.a, c.levels, c.name.as_str()), (7, vec![2, 3], "bare"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn random_openings_are_pure_in_the_pair_index() {
+        let o = Openings::Random { plies: 6, seed: 1 };
+        let (_, a) = o.pair(3);
+        let (_, b) = o.pair(3);
+        assert_eq!((a.black, a.white), (b.black, b.white));
+        let (_, c) = o.pair(4);
+        assert_ne!((a.black, a.white), (c.black, c.white));
     }
 }

@@ -13,13 +13,19 @@
 //! cargo run --release -p game-othello --example gumbel_gate -- \
 //!     <baseline> <candidate> [games] [sims] [--head ntuple|cnn] \
 //!     [--evaluator cpu|mlx] [--edax-binary PATH] [--edax-data-dir DIR] [--edax-level N]
-//!     [--edax-only [--edax-levels 1,2,3] [--opening-plies N] [--out results.jsonl]]
+//!     [--edax-only [--gate-config PATH] [--set key=value]... [--edax-levels 1,2,3]
+//!                  [--opening-plies N] [--out results.jsonl]]
 //! ```
 //!
 //! `--edax-only` (with `--head cnn`) skips the head-to-head and rollout-anchor
-//! checks and just places `candidate` on the Edax ladder: `games` games per
-//! level over `games / 2` shared openings with seats swapped (the slice-0b
-//! Python harness's design), `--opening-plies` random plies each (default 6).
+//! checks and just places `candidate` on the Edax ladder through the shared
+//! `common::run_edax_gate`, the same driver `edax_match` uses: the settings
+//! (Edax binary, levels, games per level, balanced-opening file, seed, threads,
+//! JSONL `out`) come from `--gate-config` (default `games/othello/edax/match.toml`)
+//! with any key overridable by `--set key=value`; `games` (positional)
+//! overrides `games_per_level`, and each opening is played from both seats.
+//! `--opening-plies N` switches to the pre-XOT protocol (fresh random N-ply
+//! openings instead of the file), for comparing against older numbers.
 //! `sims` of `0` means no search at all: the candidate plays the argmax legal
 //! move of its raw policy logits ([`RawPolicyPlayer`]), so raw and searched
 //! ladders come from the same binary. `baseline` is ignored there (pass the
@@ -71,7 +77,7 @@ use game_othello::selfplay::{CnnGumbelPlayer, GumbelPlayer, RawPolicyPlayer};
 use game_othello::Othello;
 
 mod common;
-use common::{play_series, play_series_paired, report_row, EdaxPlayer};
+use common::{load_toml_config, play_series, report_row, run_edax_gate, EdaxPlayer, GateConfig};
 
 fn wilson_lower_bound(successes: f64, n: usize, z: f64) -> f64 {
     if n == 0 {
@@ -203,49 +209,18 @@ where
     run_checks(make_candidate, make_baseline_opponent, make_anchor_opponent, games, edax)
 }
 
-struct LadderOpts {
-    binary: String,
-    data_dir: String,
-    levels: Vec<u32>,
-    plies: usize,
-    out: Option<String>,
-    label: String,
-}
-
-/// Place a fresh `make()` player on each Edax level, appending one JSON line
-/// per level to `opts.out` when given.
-fn edax_ladder<S: Search<G = Othello>>(make: impl Fn() -> S, games: usize, opts: &LadderOpts) {
-    for &level in &opts.levels {
-        let started = std::time::Instant::now();
-        let mut candidate = make();
-        let mut edax = EdaxPlayer::spawn(&opts.binary, &opts.data_dir, level);
-        let label = format!("{} v edax-L{level}", opts.label);
-        let t = play_series_paired(&mut candidate, &mut edax, games as u32, opts.plies, 1, &label);
-        report_row(&format!("{} L{level}", opts.label), &t);
-        if let Some(path) = &opts.out {
-            let (score, (lo, hi)) = t.win_rate_ci(1.96);
-            let row = serde_json::json!({
-                "a": opts.label, "b": format!("edax-L{level}"), "games": games,
-                "opening_plies": opts.plies, "w": t.wins, "d": t.draws, "l": t.losses,
-                "score": score, "lo": lo, "hi": hi, "secs": started.elapsed().as_secs_f64(),
-            });
-            use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).expect("--out path");
-            writeln!(f, "{row}").unwrap();
-        }
-    }
-}
-
-/// `--edax-only` for the CNN head: `sims == 0` is the raw policy, otherwise a
-/// Gumbel search at that budget.
-fn run_cnn_edax_only<E>(net: E, sims: u32, cfg: GumbelConfig, games: usize, opts: LadderOpts)
+/// `--edax-only` for the CNN head: `sims == 0` is the raw policy (budget: one
+/// forward pass per move), otherwise a Gumbel search at that budget.
+fn run_cnn_edax_only<E>(net: E, sims: u32, cfg: GumbelConfig, gate: &GateConfig, label: &str)
 where
     E: Evaluator<Othello> + PolicyLogits<Othello> + Clone + Default + 'static,
 {
     if sims == 0 {
-        edax_ladder(move || RawPolicyPlayer::new(net.clone()), games, &opts);
+        run_edax_gate(gate, label, Some(1), move |_| RawPolicyPlayer::new(net.clone()));
     } else {
-        edax_ladder(move || CnnGumbelPlayer::new(net.clone(), cfg, 7), games, &opts);
+        run_edax_gate(gate, label, Some(sims as u64), move |_| {
+            CnnGumbelPlayer::new(net.clone(), cfg, 7)
+        });
     }
 }
 
@@ -296,35 +271,46 @@ fn main() {
 
     if args.iter().any(|a| a == "--edax-only") {
         assert_eq!(head, "cnn", "--edax-only is only implemented for --head cnn");
-        let levels = arg_value(&args, "--edax-levels").map_or(vec![1, 2, 3, 4, 5, 6], |s| {
-            s.split(',').map(|l| l.parse().expect("--edax-levels: comma-separated integers")).collect()
-        });
-        let opts = LadderOpts {
-            binary: arg_value(&args, "--edax-binary")
-                .cloned()
-                .unwrap_or_else(|| "games/othello/edax/vendor/bin/mEdax-native".to_string()),
-            data_dir: arg_value(&args, "--edax-data-dir")
-                .cloned()
-                .unwrap_or_else(|| "games/othello/edax/vendor/data".to_string()),
-            levels,
-            plies: arg_value(&args, "--opening-plies").map_or(6, |s| s.parse().expect("--opening-plies")),
-            out: arg_value(&args, "--out").cloned(),
-            label: format!(
-                "{}@{}",
-                candidate_path.parent().and_then(|p| p.file_name()).map_or("?".into(), |n| n.to_string_lossy().to_string())
-                    + "/"
-                    + &candidate_path.file_stem().map_or("?".into(), |n| n.to_string_lossy().to_string()),
-                if sims == 0 { "raw".to_string() } else { format!("s{sims}") }
-            ),
-        };
+        let gate_path = arg_value(&args, "--gate-config")
+            .map_or("games/othello/edax/match.toml", |s| s.as_str());
+        let mut gate: GateConfig = load_toml_config(gate_path, &args);
+        if let Some(g) = args.get(3).filter(|a| !a.starts_with("--")) {
+            gate.games_per_level = g.parse().expect("games");
+        }
+        if let Some(l) = arg_value(&args, "--edax-levels") {
+            gate.levels = l
+                .split(',')
+                .map(|l| l.parse().expect("--edax-levels: comma-separated integers"))
+                .collect();
+        }
+        if let Some(b) = arg_value(&args, "--edax-binary") {
+            gate.edax_binary = b.clone();
+        }
+        if let Some(d) = arg_value(&args, "--edax-data-dir") {
+            gate.edax_data_dir = d.clone();
+        }
+        if let Some(o) = arg_value(&args, "--out") {
+            gate.out = Some(o.clone());
+        }
+        if let Some(n) = arg_value(&args, "--opening-plies") {
+            gate.opening_plies = n.parse().expect("--opening-plies");
+            gate.openings = None;
+        }
+        let label = format!(
+            "{}@{}",
+            candidate_path.parent().and_then(|p| p.file_name()).map_or("?".into(), |n| n.to_string_lossy().to_string())
+                + "/"
+                + &candidate_path.file_stem().map_or("?".into(), |n| n.to_string_lossy().to_string()),
+            if sims == 0 { "raw".to_string() } else { format!("s{sims}") }
+        );
         match evaluator {
-            "cpu" => run_cnn_edax_only(load_cnn_file(&candidate_path), sims, cfg, games, opts),
+            "cpu" => run_cnn_edax_only(load_cnn_file(&candidate_path), sims, cfg, &gate, &label),
             "mlx" => {
                 #[cfg(feature = "mlx")]
                 {
                     let net = game_othello::convnet::mlx::MlxCnnValueNet::load(&candidate_path)
                         .unwrap_or_else(|e| panic!("cannot load OTCNN001 checkpoint {}: {e}", candidate_path.display()));
-                    run_cnn_edax_only(net, sims, cfg, games, opts)
+                    run_cnn_edax_only(net, sims, cfg, &gate, &label)
                 }
                 #[cfg(not(feature = "mlx"))]
                 {

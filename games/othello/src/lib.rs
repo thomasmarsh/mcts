@@ -17,6 +17,7 @@ pub mod dump;
 pub mod edax;
 pub mod harvest;
 pub mod ntuple;
+pub mod openings;
 pub mod policy;
 pub mod selfplay;
 

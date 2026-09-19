@@ -1,0 +1,23 @@
+# Configuration for `cargo run --release --example gen_xot_openings`.
+#
+# Generates games/othello/openings/xot8.txt: seeded random 8-ply lines, scored
+# by Edax, kept when within +-`tolerance` discs of even, deduped under the 8
+# board symmetries. Resumable: rerun with the same values to continue from the
+# progress log; change seed/plies/level/tolerance only with a new progress path.
+
+edax_binary   = "games/othello/edax/vendor/bin/mEdax-native"
+edax_data_dir = "games/othello/edax/vendor/data"
+
+level     = 16    # the OLIVAW paper judges balance at depth 16
+tolerance = 2.0   # discs, side-to-move perspective
+plies     = 8
+seed      = 20260919
+
+target  = 5000    # balanced positions to collect (checked per batch)
+workers = 4       # parallel single-threaded Edax processes
+batch   = 64      # samples per batch; the progress log is checkpointed per batch
+verify_sample = 300  # kept openings rescored in a fresh Edax before the file is written
+eval_timeout_s = 10   # normal level-16 searches take well under 1 s
+
+out      = "games/othello/openings/xot8.txt"
+progress = "local/output/openings/xot8.progress.jsonl"

@@ -15,8 +15,10 @@ Run with the ../selfplay uv environment, e.g.
 """
 
 import argparse
+import hashlib
 import json
 import math
+import re
 import struct
 import subprocess
 import sys
@@ -46,6 +48,8 @@ V_STEP = jax.jit(jax.vmap(ENV.step))
 V_INIT = jax.jit(jax.vmap(ENV.init))
 EDAX_BIN = REPO / "games/othello/edax/vendor/bin/mEdax-native"
 EDAX_DATA = REPO / "games/othello/edax/vendor/data"
+EDAX_THREADS = 1  # set by --edax-threads; Edax otherwise takes every core
+EDAX_RESULT_LINE = re.compile(r"^\s*\d+(?:@\d+%)?\s+[+-]\d+\s+\S+\s+(\d+)")
 
 
 def bucket(n):
@@ -161,8 +165,11 @@ class OursAgent(Agent):
 class EdaxAgent(Agent):
     def __init__(self, level):
         self.name = f"edax-L{level}"
+        self.nodes = 0
+        self.searches = 0
         self.proc = subprocess.Popen(
-            [str(EDAX_BIN), "-q", "-book-usage", "off", "-eval-file", str(EDAX_DATA / "eval.dat"), "-level", str(level)],
+            [str(EDAX_BIN), "-n", str(EDAX_THREADS), "-book-usage", "off", "-eval-file", str(EDAX_DATA / "eval.dat"),
+             "-level", str(level)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         self.proc.stdin.write("mode 3\n")
         self.proc.stdin.flush()
@@ -171,10 +178,17 @@ class EdaxAgent(Agent):
         board = "".join("X" if a else "O" if b else "-" for a, b in zip(me, opp)) + " X"
         self.proc.stdin.write(f"setboard {board}\ngo\n")
         self.proc.stdin.flush()
+        last_nodes = None
         while True:
             line = self.proc.stdout.readline()
             assert line, "edax closed its output"
+            m = EDAX_RESULT_LINE.match(line)
+            if m:
+                last_nodes = int(m.group(1))
             if line.strip().startswith("Edax plays "):
+                if last_nodes is not None:
+                    self.nodes += last_nodes
+                    self.searches += 1
                 tok = line.strip()[len("Edax plays "):].strip().lower()
                 if tok in ("pa", "pass"):
                     return PASS
@@ -227,10 +241,69 @@ def openings(n, plies, seed):
     return st
 
 
-def play(a, b, games, plies, seed):
+def square(tok):
+    return (int(tok[1]) - 1) * 8 + (ord(tok[0]) - ord("a"))
+
+
+def select_opening_lines(path, pairs, seed):
+    """The same seeded subset the Rust gate picks (`game_othello::openings::select_openings`):
+    lines ordered by sha256("{seed}:{line}"), first `pairs` taken."""
+    lines = [t for t in (l.strip() for l in Path(path).read_text().splitlines()) if t and not t.startswith("#")]
+    assert pairs <= len(lines), f"asked for {pairs} openings but {path} has {len(lines)}"
+    return [l for _, l in sorted((hashlib.sha256(f"{seed}:{l}".encode()).hexdigest(), l) for l in lines)[:pairs]]
+
+
+def file_openings(lines):
+    """A batched pgx state after replaying each opening line from the standard start."""
+    n = len(lines)
+    st = V_INIT(jax.random.split(jax.random.PRNGKey(0), n))
+    for ply in range(len(lines[0]) // 2):
+        act = np.array([square(l[2 * ply: 2 * ply + 2]) for l in lines])
+        mask = np.asarray(st.legal_action_mask)
+        assert mask[np.arange(n), act].all(), f"opening not legal under pgx at ply {ply + 1}: board mapping mismatch"
+        st = V_STEP(st, jnp.asarray(act))
+    return st
+
+
+def replay_np(line):
+    """Independent numpy replay of an opening line: (black, white) as 64-vectors, black moved first."""
+    b = np.zeros(64, int)
+    b[[28, 35]] = 1
+    b[[27, 36]] = -1
+    turn = 1
+    dirs = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    for i in range(0, len(line), 2):
+        sq = square(line[i: i + 2])
+        r, c = divmod(sq, 8)
+        assert b[sq] == 0
+        flips = []
+        for dr, dc in dirs:
+            run, rr, cc = [], r + dr, c + dc
+            while 0 <= rr < 8 and 0 <= cc < 8 and b[rr * 8 + cc] == -turn:
+                run.append(rr * 8 + cc)
+                rr, cc = rr + dr, cc + dc
+            if run and 0 <= rr < 8 and 0 <= cc < 8 and b[rr * 8 + cc] == turn:
+                flips += run
+        assert flips, f"{line}: illegal at {line[i:i + 2]} in the independent replay"
+        b[flips] = turn
+        b[sq] = turn
+        turn = -turn
+    return b == 1, b == -1
+
+
+def timed_act(agent, obs, mask):
+    """agent.act with per-agent wall-clock and real-move counts (forced passes are free)."""
+    t = time.perf_counter()
+    out = agent.act(obs, mask)
+    agent.secs = getattr(agent, "secs", 0.0) + time.perf_counter() - t
+    agent.moves = getattr(agent, "moves", 0) + int(mask[:, :64].any(axis=1).sum())
+    return out
+
+
+def play(a, b, games, plies, seed, opening_lines=None):
     """Agent `a` vs `b`, `games` games (pairs share an opening, seats swapped). Returns (W, D, L) for a."""
     assert games % 2 == 0
-    op = openings(games // 2, plies, seed)
+    op = file_openings(opening_lines) if opening_lines else openings(games // 2, plies, seed)
     st = jax.tree.map(lambda x: jnp.concatenate([x, x], 0), op)
     half = games // 2
     a_seat = np.concatenate([np.zeros(half, int), np.ones(half, int)])
@@ -245,7 +318,7 @@ def play(a, b, games, plies, seed):
         for agent, who in ((a, cur == a_seat), (b, cur != a_seat)):
             idx = np.flatnonzero(who & ~term)
             if len(idx):
-                act[idx] = agent.act(obs[idx], mask[idx])
+                act[idx] = timed_act(agent, obs[idx], mask[idx])
         assert all(mask[i, act[i]] for i in np.flatnonzero(~term)), "illegal action"
         new = V_STEP(st, jnp.asarray(act))
         keep = jnp.asarray(term)
@@ -282,6 +355,17 @@ def selftest():
         assert np.abs(got - ref).max() < 1e-3
 
 
+def selftest_openings(path):
+    """pgx's replay of the opening file equals an independent numpy replay, and all lines are legal."""
+    lines = select_opening_lines(path, 50, 1)
+    obs = np.asarray(file_openings(lines).observation)
+    for i, line in enumerate(lines):
+        black, white = replay_np(line)
+        me, opp = obs[i, ..., 0].reshape(64) > 0, obs[i, ..., 1].reshape(64) > 0
+        assert (me == black).all() and (opp == white).all(), f"{line}: pgx board differs from the independent replay"
+    print(f"{path}: {len(lines)} openings replay identically under pgx and the independent numpy replay")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("agents", nargs="*")
@@ -289,20 +373,37 @@ def main():
     ap.add_argument("--opening-plies", type=int, default=4)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--openings-file", default=None,
+                    help="balanced opening file (games/othello/openings/xot8.txt); overrides --opening-plies. "
+                         "Each opening is played from both seats, so games/2 openings are used")
+    ap.add_argument("--edax-threads", type=int, default=1, help="Edax -n; 1 keeps Edax reproducible")
     ap.add_argument("--out", default=None, help="append one JSON line per result here")
     args = ap.parse_args()
+    global EDAX_THREADS
+    EDAX_THREADS = args.edax_threads
     if args.selftest:
         selftest()
+        if args.openings_file:
+            selftest_openings(args.openings_file)
         return
+    lines = select_opening_lines(args.openings_file, args.games // 2, args.seed) if args.openings_file else None
     a_spec, foes = args.agents[0], args.agents[1:]
     a = parse_agent(a_spec)
     for spec in foes:
         b = parse_agent(spec)
         t0 = time.time()
-        w, d, l = play(a, b, args.games, args.opening_plies, args.seed)
+        w, d, l = play(a, b, args.games, args.opening_plies, args.seed, lines)
         p, lo, hi = wilson(w, d, l)
-        row = dict(a=a.name, b=b.name, games=args.games, opening_plies=args.opening_plies, seed=args.seed,
+        row = dict(a=a.name, b=b.name, games=args.games,
+                   opening_plies=None if lines else args.opening_plies, openings=args.openings_file,
+                   seed=args.seed, edax_threads=EDAX_THREADS,
                    w=w, d=d, l=l, score=p, lo=lo, hi=hi, secs=round(time.time() - t0, 1))
+        # Per-move cost. A batched net's seconds are amortized over the whole batch of games, not the
+        # latency of one move; Edax's nodes are its own search-line counts.
+        row["agent_secs_per_move"] = a.secs / max(a.moves, 1) if hasattr(a, "secs") else None
+        if isinstance(b, EdaxAgent):
+            row["edax_secs_per_move"] = b.secs / max(b.moves, 1)
+            row["edax_nodes_per_move"] = b.nodes / max(b.searches, 1)
         print(f"{a.name} vs {b.name}: W-D-L {w}-{d}-{l}  score {p:.3f} [{lo:.3f}, {hi:.3f}]  ({row['secs']}s)", flush=True)
         if args.out:
             with open(args.out, "a") as f:
