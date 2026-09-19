@@ -10,6 +10,7 @@ node_modules
 tools/tuner/.venv/
 research/othello-eval/.venv/
 research/az-train/.venv/
+research/ppo-train/.venv/
 # setuptools build metadata
 *.egg-info/
 research/*/build/

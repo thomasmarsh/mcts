@@ -1,0 +1,45 @@
+# Mirrors ../selfplay/scripts/run_sweep.sh (othello) and pgx4/train.py DEFAULT_CFG, on our OTCNN001-shaped net.
+
+[run]
+seed = 0
+iters = 8000
+device = "mps"        # mps | cuda | cpu | auto
+ckpt_every = 100      # full-state resume checkpoint plus a weights-only snapshot
+
+[net]
+arch = "bn"           # bn: BatchNorm variant of the OTCNN001 topology; none: norm-free OTCNN001Torch
+blocks = 6
+channels = 128
+value_hidden = 32
+
+[rollout]
+num_envs = 4096
+rollout_len = 32
+infer_chunk = 2048    # rows per no-grad forward call while acting
+
+[ppo]
+epochs = 3
+minibatches = 8       # 16,384 rows each at 4096 x 32
+micro_batch = 512     # rows per forward/backward; gradients accumulate to the full minibatch
+lr = 3.0e-4
+adam_eps = 1.0e-5
+gamma = 0.997
+gae_lambda = 0.95
+clip_eps = 0.2
+vf_coef = 0.5
+ent_coef = 0.01
+max_grad_norm = 0.5
+
+[reset]
+max_depth = 50        # random-play plies, depth ~ U[0, max_depth]
+pool = 8192           # positions re-sampled every iteration
+
+[opponent]
+pool_frac = 0.5       # fraction of envs whose opponent seat is a frozen snapshot
+ring_size = 12
+push_every = 100
+
+[eval]
+every = 1000          # greedy policy vs uniform random, both seats (also at iteration 1 and the last)
+games = 2048
+opening_plies = 0
