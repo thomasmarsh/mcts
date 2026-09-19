@@ -15,6 +15,7 @@ path = "src/main.rs"
 mcts = { path = "../../crates/mcts" }
 mcts-tune = { path = "../../crates/mcts-tune" }
 game-core = { path = "../game-core" }
+ntuple = { path = "../../crates/ntuple" }
 game-host = { path = "../../apps/game-host" }
 bitboard = { path = "../../crates/bitboard" }
 serde = { version = "1", features = ["derive"] }

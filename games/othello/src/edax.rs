@@ -292,13 +292,16 @@ impl EdaxEval {
     }
 
     fn eval_once(&mut self, state: &State, level: u32) -> Option<EdaxScore> {
-        if level != self.current_level {
-            writeln!(self.stdin, "level {level}").unwrap();
-            self.stdin.flush().unwrap();
-            self.current_level = level;
-        }
         let board = state_to_edax_board(state);
         writeln!(self.stdin, "setboard {board}").unwrap();
+        // `level` goes after `setboard`, never before: while the previous game
+        // is still over, Edax answers any command by redrawing the board and
+        // printing `*** Game Over ***` again, an unsolicited line that the
+        // next read would take as its own answer.
+        if level != self.current_level {
+            writeln!(self.stdin, "level {level}").unwrap();
+            self.current_level = level;
+        }
         writeln!(self.stdin, "go").unwrap();
         self.stdin.flush().unwrap();
 
@@ -684,6 +687,31 @@ mod tests {
         assert_eq!(e.eval(&wipeout, 16).score, 64.0);
         assert_eq!(e.eval(&other, 16).score, alone, "the wipeout desynchronised the stream");
         assert_eq!(e.eval(&wipeout, 16).score, 64.0);
+        assert_eq!(e.timeouts(), 0);
+    }
+
+    /// The same hazard with a level change: while the previous game is over,
+    /// a `level` command printed a second `*** Game Over ***`, which the next
+    /// eval read as its own answer (the exact pattern of a label run that
+    /// alternates a deep endgame solve with a shallow midgame search).
+    #[test]
+    #[ignore = "shells out to the vendored Edax binary"]
+    fn a_level_change_after_a_game_ending_move_does_not_desynchronise_the_stream() {
+        const BIN: &str = "edax/vendor/bin/mEdax-native";
+        const DATA: &str = "edax/vendor/data";
+        if !Path::new(BIN).exists() {
+            eprintln!("skip: no Edax binary");
+            return;
+        }
+        let wipeout = crate::openings::parse_sequence("f5f6d3e3f3f4f7c5").unwrap();
+        let other = crate::openings::parse_sequence("e6d6c4d3c5f6d2d1").unwrap();
+        let mut e = EdaxEval::spawn(BIN, DATA, 8, Duration::from_secs(60));
+        let alone = e.eval(&other, 8).score;
+        let mut e = EdaxEval::spawn(BIN, DATA, 8, Duration::from_secs(60));
+        assert_eq!(e.eval(&wipeout, 60).score, 64.0);
+        assert_eq!(e.eval(&other, 8).score, alone, "the level change desynchronised the stream");
+        assert_eq!(e.eval(&wipeout, 60).score, 64.0);
+        assert_eq!(e.eval(&other, 8).score, alone);
         assert_eq!(e.timeouts(), 0);
     }
 

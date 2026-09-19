@@ -1,0 +1,41 @@
+# Reference TD(lambda) n-tuple trainer settings for Othello, from Scheiermann and
+# Konen, "AlphaZero-Inspired Game Learning: Faster Training by Using MCTS Only at
+# Test Time" (arXiv 2204.13307), Sec. III-B and Table I: 200 random-walk 7-tuples,
+# alpha 0.2, lambda 0.5, epsilon 0.2 down to 0.1, 250,000 episodes, TCL on, no
+# search during training.
+#
+# Run:  cargo run --release --example td_train -p game-othello -- \
+#           --config games/othello/ntuple/td-ref.toml --set seed=1 --set out_dir=...
+# Any key can be overridden with `--set key=value`.
+
+seed = 1
+episodes = 250000
+
+# Geometry. The paper codes each Othello cell with 4 values (empty and reachable
+# is the fourth); 3 is our own empty / own / opponent coding. This is the one
+# knob to flip for the 3 vs 4 comparison.
+n_tuples = 200
+tuple_len = 7
+states_per_cell = 3
+
+# TD(lambda). alpha is the step in value space: the trainer divides it across
+# the weights a position selects (200 tuples x 8 orientations), so 0.2 moves a
+# state's value about 20% of the way toward its target.
+alpha = 0.2
+lambda = 0.5
+gamma = 1.0
+epsilon_start = 0.2
+epsilon_end = 0.1
+
+# Temporal coherence learning: per-weight rate |N_i| / A_i.
+tcl = true
+
+# Implementation details the paper does not specify.
+reset_traces_on_explore = true
+trace_cutoff = 0.001
+
+# Logging: a JSONL row and a checkpoint every log_every episodes; the periodic
+# evaluation plays eval_games games (half as each colour) per opponent.
+log_every = 5000
+eval_games = 200
+out_dir = "local/output/edax5/slice1/td-ref"

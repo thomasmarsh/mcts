@@ -1,0 +1,20 @@
+[package]
+name = "ntuple"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Game-agnostic n-tuple value networks trained by TD(lambda) with temporal coherence learning"
+
+[dependencies]
+mcts = { path = "../mcts" }
+rand = { version = "0.8.5", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+sha2 = "0.10"
+
+[dev-dependencies]
+game-ttt = { path = "../../games/ttt" }
+
+[lints]
+workspace = true
