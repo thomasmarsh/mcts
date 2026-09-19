@@ -42,6 +42,7 @@ members = [
     "crates/pyramid",
     "crates/mlx-sys",
     "crates/mcts-batch",
+    "crates/othello-env",
     "crates/mcts",
     "crates/mcts-bench",
     "crates/mcts-tune",

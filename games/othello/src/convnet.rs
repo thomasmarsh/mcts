@@ -124,7 +124,7 @@ impl CnnValueNet {
     /// "read the transformed location" convention `crate::ntuple`'s
     /// `feature_indices`/`crate::policy`'s sidecar use, so this and the
     /// linear models' D4 averaging agree on what orientation `sym` means.
-    fn input(state: &State, sym: usize) -> [f32; 2 * BOARD * BOARD] {
+    pub fn input(state: &State, sym: usize) -> [f32; 2 * BOARD * BOARD] {
         std::array::from_fn(|i| {
             let plane = i / (BOARD * BOARD);
             let j = i % (BOARD * BOARD);

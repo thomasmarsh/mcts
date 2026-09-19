@@ -1,0 +1,21 @@
+[package]
+name = "othello-env"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# `cdylib` is the artifact Python loads through ctypes; `rlib` lets the tests
+# and `examples/` link the same code.
+[lib]
+name = "othello_env"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Default features off: no MLX link, so this builds without LIBRARY_PATH.
+game-othello = { path = "../../games/othello", default-features = false }
+mcts = { path = "../mcts" }
+rand = { version = "0.8.5", features = ["small_rng"] }
+rayon = "1.8.1"
+
+[lints]
+workspace = true
