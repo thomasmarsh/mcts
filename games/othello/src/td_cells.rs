@@ -9,6 +9,7 @@
 
 use ntuple::CellFeatures;
 
+use crate::endgame::solve_wld;
 use crate::ntuple::D4;
 use crate::{generate_moves, Othello, Player, State};
 
@@ -67,6 +68,11 @@ impl CellFeatures for OthelloCells {
                 0
             };
         }
+    }
+
+    fn exact_value(&self, state: &State, max_empties: u32) -> Option<f32> {
+        let empties = 64 - (state.black.count_ones() + state.white.count_ones());
+        (empties <= max_empties).then(|| f32::from(solve_wld(state)))
     }
 }
 
@@ -203,6 +209,127 @@ mod tests {
         (if same { v } else { -v }, p)
     }
 
+    /// A seeded random-weight model on the 4-state adapter.
+    fn random_model(seed: u64) -> Arc<Model> {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let neighbors: Vec<Vec<usize>> = (0..64).map(|c| OthelloCells.neighbors(c)).collect();
+        let tuples = random_walk_tuples(&neighbors, 12, 5, &mut rng);
+        let geom = Geometry::from_tuples(4, tuples, &OthelloCells.orientations());
+        let w: Vec<f32> = (0..geom.n_weights()).map(|_| rng.gen_range(-0.5..0.5)).collect();
+        Arc::new(Model::from_weights(geom, w))
+    }
+
+    /// The move list of two search agents (one instance per side, so both
+    /// reuse their trees) playing on from a seeded random position with
+    /// `empties` cells left.
+    fn self_play_line(cfg: &PuctConfig, empties: u32, seed: u64) -> Vec<u8> {
+        let model = random_model(3);
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut s = State::default();
+        let mut actions = Vec::new();
+        while !Othello::is_terminal(&s) && 64 - (s.black.count_ones() + s.white.count_ones()) > empties {
+            actions.clear();
+            Othello::generate_actions(&s, &mut actions);
+            s = Othello::apply(s, &actions[rng.gen_range(0..actions.len())]);
+        }
+        let mut players = [
+            PuctPlayer::new(OthelloCells, model.clone(), cfg.clone()),
+            PuctPlayer::new(OthelloCells, model.clone(), cfg.clone()),
+        ];
+        let mut line = Vec::new();
+        while !Othello::is_terminal(&s) {
+            let a = players[Othello::player_to_move(&s).to_index()].choose_action(&s);
+            line.push(a.0);
+            s = Othello::apply(s, &a);
+        }
+        line
+    }
+
+    fn cfg(iterations: u32, empties_exact: u32) -> PuctConfig {
+        PuctConfig { iterations, c_puct: 1.0, prior_temperature: 1.0, empties_exact }
+    }
+
+    #[test]
+    fn with_the_exact_endgame_off_the_search_plays_the_moves_it_played_before_the_hook_existed() {
+        // Recorded from the search as it stood before `empties_exact` was added.
+        let golden: [(u32, u64, &[u8]); 3] = [
+            (24, 1, &[40, 16, 3, 33, 9, 49, 13, 15, 39, 48, 32, 30, 7, 46, 5, 57, 61, 62, 1, 0, 55, 54, 56, 64, 63]),
+            (20, 2, &[48, 49, 50, 38, 4, 57, 54, 58, 47, 31, 39, 7, 23, 55, 46, 62, 56, 5, 63, 11]),
+            (16, 3, &[17, 63, 15, 12, 47, 58, 60, 56, 3, 40, 19, 10, 1, 8, 0, 24]),
+        ];
+        for (empties, seed, line) in golden {
+            assert_eq!(self_play_line(&cfg(150, 0), empties, seed), line, "{empties} empties, seed {seed}");
+        }
+    }
+
+    #[test]
+    fn the_exact_endgame_search_is_deterministic() {
+        let on = cfg(150, 10);
+        for (empties, seed) in [(20, 2), (16, 3)] {
+            assert_eq!(self_play_line(&on, empties, seed), self_play_line(&on, empties, seed));
+        }
+    }
+
+    #[test]
+    fn exact_value_is_the_exhaustive_negamax_result_within_the_empties_limit_only() {
+        let mut rng = SmallRng::seed_from_u64(8);
+        let mut checked = 0;
+        while checked < 30 {
+            let mut s = State::default();
+            let mut actions = Vec::new();
+            let stop = 52 + (checked % 6) as u32;
+            while !Othello::is_terminal(&s) && s.black.count_ones() + s.white.count_ones() < stop {
+                actions.clear();
+                Othello::generate_actions(&s, &mut actions);
+                s = Othello::apply(s, &actions[rng.gen_range(0..actions.len())]);
+            }
+            if Othello::is_terminal(&s) {
+                continue;
+            }
+            let empties = 64 - (s.black.count_ones() + s.white.count_ones());
+            assert_eq!(OthelloCells.exact_value(&s, empties), Some(solve(&s).0), "{s}");
+            assert_eq!(OthelloCells.exact_value(&s, empties - 1), None);
+            checked += 1;
+        }
+    }
+
+    #[test]
+    fn exact_endgame_search_chooses_a_best_move_at_every_turn_of_a_full_endgame_with_tree_reuse() {
+        // A model that is confidently wrong would mislead an unsolved search;
+        // exact leaves must override it. Both sides keep their trees across
+        // moves, so rerooting onto solved nodes is exercised too.
+        let model = random_model(5);
+        let mut rng = SmallRng::seed_from_u64(31);
+        let (mut turns, mut with_passes) = (0, 0);
+        for _ in 0..6 {
+            let mut s = State::default();
+            let mut actions = Vec::new();
+            while !Othello::is_terminal(&s) && s.black.count_ones() + s.white.count_ones() < 55 {
+                actions.clear();
+                Othello::generate_actions(&s, &mut actions);
+                s = Othello::apply(s, &actions[rng.gen_range(0..actions.len())]);
+            }
+            let mut players = [
+                PuctPlayer::new(OthelloCells, model.clone(), cfg(200, 6)),
+                PuctPlayer::new(OthelloCells, model.clone(), cfg(200, 6)),
+            ];
+            while !Othello::is_terminal(&s) {
+                actions.clear();
+                Othello::generate_actions(&s, &mut actions);
+                let chosen = players[Othello::player_to_move(&s).to_index()].choose_action(&s);
+                if actions.len() > 1 {
+                    let (best, passes) = solve(&s);
+                    let (got, _) = solve_child(&s, &chosen);
+                    assert_eq!(got, best, "chose {chosen:?} worth {got}, best is {best}, in\n{s}");
+                    turns += 1;
+                    with_passes += passes as u32;
+                }
+                s = Othello::apply(s, &chosen);
+            }
+        }
+        assert!(turns > 20 && with_passes > 0, "{turns} turns, {with_passes} with passes");
+    }
+
     #[test]
     fn endgame_search_picks_an_exactly_best_move_through_passes_with_an_untrained_model() {
         // All-zero weights: every non-terminal value is 0, so only the exact
@@ -212,7 +339,7 @@ mod tests {
         let tuples = random_walk_tuples(&neighbors, 4, 4, &mut rng);
         let geom = Geometry::from_tuples(4, tuples, &OthelloCells.orientations());
         let model = Arc::new(Model::zeros(geom));
-        let cfg = PuctConfig { iterations: 3000, c_puct: 1.0, prior_temperature: 1.0 };
+        let cfg = PuctConfig { iterations: 3000, c_puct: 1.0, prior_temperature: 1.0, empties_exact: 0 };
 
         let (mut checked, mut with_passes) = (0, 0);
         while checked < 24 {

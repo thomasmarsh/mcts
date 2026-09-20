@@ -12,11 +12,14 @@ seed = 1
 episodes = 250000
 
 # Geometry. The paper codes each Othello cell with 4 values (empty and reachable
-# is the fourth); 3 is our own empty / own / opponent coding. This is the one
-# knob to flip for the 3 vs 4 comparison.
+# is the fourth); 3 is our own empty / own / opponent coding. 4 is the frozen
+# reference: it beat 3 at every Edax level on every seed pair (Slice 1), and the
+# reference agents local/output/edax5/slice1/td4-s{1..4} were trained with it
+# (seeds 1 to 4, all other keys as below). The 3-state arm is
+# `--set states_per_cell=3`.
 n_tuples = 200
 tuple_len = 7
-states_per_cell = 3
+states_per_cell = 4
 
 # TD(lambda). alpha is the step in value space: the trainer divides it across
 # the weights a position selects (200 tuples x 8 orientations), so 0.2 moves a

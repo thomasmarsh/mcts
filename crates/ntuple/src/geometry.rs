@@ -45,6 +45,14 @@ pub trait CellFeatures: Send + Sync {
     /// piece; with `states_per_cell == 4`, an empty cell the side to move can
     /// play on is 3 instead of 0. Every code is `< states_per_cell`.
     fn cell_codes(&self, state: &<Self::G as Game>::S, states_per_cell: usize, out: &mut [u8]);
+
+    /// The game-theoretic result of `state` for its player to move (+1 win, 0
+    /// draw, -1 loss) when the adapter can solve it exactly and `state` has at
+    /// most `max_empties` empty cells; `None` otherwise (the default: no
+    /// solver). The search uses it in place of the model's value.
+    fn exact_value(&self, _state: &<Self::G as Game>::S, _max_empties: u32) -> Option<f32> {
+        None
+    }
 }
 
 /// One tuple: an ordered list of cells.

@@ -46,6 +46,10 @@ pub struct PuctConfig {
     /// Softmax temperature over the 1-ply successor values (values live in
     /// (-1, 1)): `P = softmax(value / prior_temperature)`.
     pub prior_temperature: f32,
+    /// A node with at most this many empty cells is replaced by the game's exact
+    /// result (see `CellFeatures::exact_value`) the first time the search
+    /// reaches it. 0 switches the solver off. Priors are unaffected.
+    pub empties_exact: u32,
 }
 
 struct Node<S, A> {
@@ -53,6 +57,9 @@ struct Node<S, A> {
     /// Player to move at `state`.
     mover: usize,
     terminal: bool,
+    /// The exact result for `mover` when the node was solved on creation. A
+    /// solved node is a leaf: it has no actions and is never expanded.
+    solved: Option<f32>,
     actions: Vec<A>,
     /// Value of each successor from this node's mover's point of view.
     edge_values: Vec<f32>,
@@ -122,12 +129,21 @@ impl<F: CellFeatures> PuctPlayer<F> {
         }
     }
 
-    fn new_node(&mut self, state: State<F>, terminal: bool) -> u32 {
+    /// `solve` lets the node be replaced by its exact result when it is within
+    /// `empties_exact`; the search root is always expanded instead, since it
+    /// needs its actions.
+    fn new_node(&mut self, state: State<F>, terminal: bool, solve: bool) -> u32 {
         let mover = F::G::player_to_move(&state).to_index();
+        let solved = if solve && !terminal && self.cfg.empties_exact > 0 {
+            self.feats.exact_value(&state, self.cfg.empties_exact)
+        } else {
+            None
+        };
         let mut node = Node {
             state,
             mover,
             terminal,
+            solved,
             actions: Vec::new(),
             edge_values: Vec::new(),
             edge_terminal: Vec::new(),
@@ -137,7 +153,7 @@ impl<F: CellFeatures> PuctPlayer<F> {
             sums: Vec::new(),
             total: 0,
         };
-        if !terminal {
+        if !terminal && solved.is_none() {
             F::G::generate_actions(&node.state, &mut node.actions);
             assert!(!node.actions.is_empty(), "a non-terminal state must have an action");
             let spc = self.model.geometry().states_per_cell();
@@ -192,6 +208,9 @@ impl<F: CellFeatures> PuctPlayer<F> {
             if self.nodes[node].terminal {
                 break terminal_value::<F::G>(&self.nodes[node].state, self.nodes[node].mover);
             }
+            if let Some(v) = self.nodes[node].solved {
+                break v;
+            }
             let e = self.select(node);
             path.push((node, e));
             let child = self.nodes[node].children[e];
@@ -203,10 +222,14 @@ impl<F: CellFeatures> PuctPlayer<F> {
             let (edge_value, over) = (parent.edge_values[e], parent.edge_terminal[e]);
             let next = F::G::apply(parent.state.clone(), &parent.actions[e]);
             let parent_mover = parent.mover;
-            let id = self.new_node(next, over);
+            let id = self.new_node(next, over, true);
             self.nodes[node].children[e] = id;
-            let child_mover = self.nodes[id as usize].mover;
+            let child = &self.nodes[id as usize];
+            let (child_mover, solved) = (child.mover, child.solved);
             node = id as usize;
+            if let Some(v) = solved {
+                break v;
+            }
             break if child_mover == parent_mover { edge_value } else { -edge_value };
         };
 
@@ -234,7 +257,7 @@ impl<F: CellFeatures> PuctPlayer<F> {
         for depth in 0..=REUSE_DEPTH {
             let mut next = Vec::new();
             for &i in &frontier {
-                if &self.nodes[i].state == state {
+                if &self.nodes[i].state == state && !self.nodes[i].actions.is_empty() {
                     return Some(i);
                 }
                 if depth < REUSE_DEPTH {
@@ -291,7 +314,7 @@ impl<F: CellFeatures> PuctPlayer<F> {
             Some(i) => self.reroot(i),
             None => {
                 self.nodes.clear();
-                self.new_node(state.clone(), false);
+                self.new_node(state.clone(), false, false);
             }
         }
         let mut path = Vec::new();
@@ -387,7 +410,7 @@ mod tests {
         PuctPlayer::new(
             TttCells,
             model.clone(),
-            PuctConfig { iterations, c_puct: 1.0, prior_temperature: 1.0 },
+            PuctConfig { iterations, c_puct: 1.0, prior_temperature: 1.0, empties_exact: 0 },
         )
     }
 
@@ -443,7 +466,7 @@ mod tests {
         let m = model(0);
         let root_edge = |s: TttState, mv: u8| {
             let mut p = puct(&m, 1);
-            p.new_node(s, false);
+            p.new_node(s, false, false);
             let n = &p.nodes[0];
             let e = n.actions.iter().position(|a| *a == Move(mv)).unwrap();
             (n.edge_values[e], n.edge_terminal[e])
@@ -461,7 +484,7 @@ mod tests {
     fn priors_are_a_softmax_of_the_successor_values() {
         let m = model(0);
         let mut p = puct(&m, 1);
-        p.new_node(after(&[0, 3, 1, 4]), false);
+        p.new_node(after(&[0, 3, 1, 4]), false, false);
         let n = &p.nodes[0];
         let sum: f32 = n.priors.iter().sum();
         assert!((sum - 1.0).abs() < 1e-6);

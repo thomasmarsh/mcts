@@ -13,3 +13,7 @@ c_puct = 1.0
 # The paper does not give a temperature; values live in (-1, 1), so 1.0 is a
 # plain softmax over the values themselves.
 prior_temperature = 1.0
+
+# Replace a node by its exact win/draw/loss result once it has at most this many
+# empty cells (Slice 6). 0 = off. Priors still come from the model.
+empties_exact = 0

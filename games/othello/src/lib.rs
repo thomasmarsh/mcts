@@ -15,6 +15,7 @@ pub const BOARD_SIZE: usize = 8;
 pub mod convnet;
 pub mod dump;
 pub mod edax;
+pub mod endgame;
 pub mod harvest;
 pub mod ntuple;
 pub mod td_cells;
