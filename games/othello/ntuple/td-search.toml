@@ -1,0 +1,15 @@
+# Play-time PUCT search on a trained TD n-tuple agent (Slice 2 of the Edax-5
+# North Star). Setup follows Scheiermann and Konen (arXiv 2204.13307): priors are a
+# softmax over the 1-ply successor values, leaf values come from the n-tuple,
+# terminal states are scored exactly, c_puct 1.0, the tree is reused between moves.
+#
+# Run:  cargo run --release --example td_search_gate -p game-othello -- \
+#           --model-dir local/output/edax5/slice1/td4-s1 [--set iterations=1000] ...
+# Any key can be overridden with `--set key=value`.
+
+# New search iterations per move (a reused tree adds its retained visits on top).
+iterations = 10000
+c_puct = 1.0
+# The paper does not give a temperature; values live in (-1, 1), so 1.0 is a
+# plain softmax over the values themselves.
+prior_temperature = 1.0

@@ -6,13 +6,17 @@
 
 pub mod config;
 pub mod geometry;
+pub mod search;
 pub mod selfplay;
 pub mod tcl;
 pub mod td;
+#[cfg(test)]
+mod test_support;
 pub mod weights;
 
 pub use config::TrainConfig;
 pub use geometry::{random_walk_tuples, CellFeatures, Geometry, Tuple};
+pub use search::{PuctConfig, PuctPlayer};
 pub use selfplay::{
     play_match, terminal_value, uniform_random, EpisodeStats, GreedyPlayer, MatchRecord, Trainer,
 };

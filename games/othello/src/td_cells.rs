@@ -75,7 +75,10 @@ mod tests {
     use super::*;
     use crate::ntuple::{ModelGeometry, NTupleModel};
     use mcts::game::Game;
-    use ntuple::{random_walk_tuples, Geometry, Model};
+    use ntuple::{random_walk_tuples, terminal_value, Geometry, Model, PuctConfig, PuctPlayer};
+    use mcts::algorithms::Search;
+    use mcts::game::PlayerIndex;
+    use std::sync::Arc;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
 
@@ -171,5 +174,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Exact result of `s` for its player to move (+1, 0, -1), by exhaustive
+    /// negamax over the game's own actions (so passes count as moves), and
+    /// whether any line of play passes.
+    fn solve(s: &State) -> (f32, bool) {
+        let mover = Othello::player_to_move(s).to_index();
+        if Othello::is_terminal(s) {
+            return (terminal_value::<Othello>(s, mover), false);
+        }
+        let mut actions = Vec::new();
+        Othello::generate_actions(s, &mut actions);
+        let (mut best, mut passes) = (f32::NEG_INFINITY, false);
+        for a in &actions {
+            let (v, p) = solve_child(s, a);
+            best = best.max(v);
+            passes |= p || *a == crate::Move::PASS;
+        }
+        (best, passes)
+    }
+
+    /// Value of playing `a` in `s`, for the player to move in `s`.
+    fn solve_child(s: &State, a: &crate::Move) -> (f32, bool) {
+        let c = Othello::apply(*s, a);
+        let (v, p) = solve(&c);
+        let same = Othello::player_to_move(&c).to_index() == Othello::player_to_move(s).to_index();
+        (if same { v } else { -v }, p)
+    }
+
+    #[test]
+    fn endgame_search_picks_an_exactly_best_move_through_passes_with_an_untrained_model() {
+        // All-zero weights: every non-terminal value is 0, so only the exact
+        // terminal scores and the negamax signs can steer the search.
+        let mut rng = SmallRng::seed_from_u64(5);
+        let neighbors: Vec<Vec<usize>> = (0..64).map(|c| OthelloCells.neighbors(c)).collect();
+        let tuples = random_walk_tuples(&neighbors, 4, 4, &mut rng);
+        let geom = Geometry::from_tuples(4, tuples, &OthelloCells.orientations());
+        let model = Arc::new(Model::zeros(geom));
+        let cfg = PuctConfig { iterations: 3000, c_puct: 1.0, prior_temperature: 1.0 };
+
+        let (mut checked, mut with_passes) = (0, 0);
+        while checked < 24 {
+            // Random play to 6 empties, keeping games that have not ended.
+            let mut s = State::default();
+            let mut actions = Vec::new();
+            while !Othello::is_terminal(&s) && (s.black.count_ones() + s.white.count_ones()) < 58 {
+                actions.clear();
+                Othello::generate_actions(&s, &mut actions);
+                s = Othello::apply(s, &actions[rng.gen_range(0..actions.len())]);
+            }
+            actions.clear();
+            if Othello::is_terminal(&s) {
+                continue;
+            }
+            Othello::generate_actions(&s, &mut actions);
+            if actions.len() < 2 {
+                continue;
+            }
+            let (best, passes) = solve(&s);
+            let mut player = PuctPlayer::new(OthelloCells, model.clone(), cfg.clone());
+            let chosen = player.choose_action(&s);
+            let (got, _) = solve_child(&s, &chosen);
+            assert_eq!(got, best, "chose {chosen:?} worth {got}, best is {best}, in\n{s}");
+            checked += 1;
+            with_passes += passes as u32;
+        }
+        assert!(with_passes > 0, "no sampled endgame contained a pass line");
     }
 }
