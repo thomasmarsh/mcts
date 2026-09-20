@@ -1,0 +1,70 @@
+# The 5x5 Gonnect yardstick: the repo's own MCTS presets at fixed iteration
+# counts (single thread), plus uniform random. Paired games: every seeded random
+# opening is played from both seats, so a pairing is 2 * openings games.
+# Agents from `presets.json`: `easy` (UCB1, uniform playouts, q_init Infinity),
+# `strong` (UCB1, uniform playouts, q_init Loss), and the tuned candidate.
+#
+# Run:  LIBRARY_PATH=/opt/homebrew/lib cargo run --release --example gonnect_gate -p game-gonnect -- \
+#           --config games/gonnect/ntuple/ladder.toml [--set openings=20] [--pair A:B]
+# Any top-level key can be overridden with `--set key=value`.
+
+openings = 100
+opening_plies = 2
+# A deterministic agent can repeat a position forever under the positional ko
+# rule; a game that reaches this many plies is scored a draw and flagged.
+max_plies = 300
+seed = 1
+workers = 4
+out = "local/output/gonnect/ladder.jsonl"
+presets = "games/gonnect/presets.json"
+
+# Round robin over the cheap rungs, plus tuned-10000 (about 4x the cost per
+# iteration of `strong`) against the three rungs it is compared with.
+pairs = [
+    "random:easy-100", "random:strong-100", "random:strong-1000", "random:tuned-1000",
+    "random:strong-10000", "easy-100:strong-100", "easy-100:strong-1000", "easy-100:tuned-1000",
+    "easy-100:strong-10000", "strong-100:strong-1000", "strong-100:tuned-1000",
+    "strong-100:strong-10000", "strong-1000:tuned-1000", "strong-1000:strong-10000",
+    "tuned-1000:strong-10000", "tuned-10000:strong-10000", "tuned-10000:tuned-1000",
+    "tuned-10000:strong-1000",
+]
+
+[[agent]]
+name = "random"
+kind = "random"
+
+[[agent]]
+name = "easy-100"
+kind = "preset"
+preset = "easy"
+iterations = 100
+
+[[agent]]
+name = "strong-100"
+kind = "preset"
+preset = "strong"
+iterations = 100
+
+[[agent]]
+name = "strong-1000"
+kind = "preset"
+preset = "strong"
+iterations = 1000
+
+[[agent]]
+name = "strong-10000"
+kind = "preset"
+preset = "strong"
+iterations = 10000
+
+[[agent]]
+name = "tuned-1000"
+kind = "preset"
+preset = "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f"
+iterations = 1000
+
+[[agent]]
+name = "tuned-10000"
+kind = "preset"
+preset = "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f"
+iterations = 10000

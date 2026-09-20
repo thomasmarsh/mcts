@@ -1,6 +1,8 @@
 #![allow(unused)]
 
 pub mod book;
+pub mod sized;
+pub mod td_cells;
 
 use bitboard::{Board, Dyn, GoEngine};
 use game_core::symmetry::{invert_words, transform_board, transform_words, D4Dyn};

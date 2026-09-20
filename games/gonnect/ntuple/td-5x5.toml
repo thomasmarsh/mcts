@@ -1,0 +1,33 @@
+# TD(lambda) n-tuple trainer settings for 5x5 Gonnect (arm A: stones only). Same
+# recipe as games/othello/ntuple/td-ref.toml (Scheiermann and Konen, arXiv
+# 2204.13307): 200 random-walk 7-tuples, alpha 0.2, lambda 0.5, epsilon 0.2 down
+# to 0.1, TCL on, no search during training. Cells are coded 0 empty / 1 own
+# stone / 2 opponent stone, so a table is 3^7 = 2,187 weights.
+#
+# Run:  LIBRARY_PATH=/opt/homebrew/lib cargo run --release --example gonnect_train -p game-gonnect -- \
+#           --config games/gonnect/ntuple/td-5x5.toml --set seed=1 --set out_dir=...
+# Any key can be overridden with `--set key=value`.
+
+seed = 1
+episodes = 250000
+
+n_tuples = 200
+tuple_len = 7
+states_per_cell = 3
+
+alpha = 0.2
+lambda = 0.5
+gamma = 1.0
+epsilon_start = 0.2
+epsilon_end = 0.1
+
+tcl = true
+
+reset_traces_on_explore = true
+trace_cutoff = 0.001
+
+# A JSONL row and a checkpoint every log_every episodes; the periodic evaluation
+# plays eval_games games (half as each colour) per opponent.
+log_every = 5000
+eval_games = 200
+out_dir = "local/output/gonnect/td5-a-s1"

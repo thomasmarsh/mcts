@@ -1,0 +1,184 @@
+# Gate for the arm-A (stones only, 3 states) 5x5 Gonnect n-tuple agents, seeds 1 to 4:
+# raw greedy agent, and the agent under play-time PUCT at 1,000 and 10,000 iterations,
+# against the MCTS ladder at equal iteration counts. Same openings, protocol and
+# presets as ladder.toml (200 paired games per pairing).
+#
+# Equal-budget comparators fixed from the baseline ladder before any n-tuple row
+# existed: tuned-1000 beat strong-1000 0.745, so tuned-1000 is the 1,000-iteration
+# comparator. At 10,000 iterations strong-10000 is the cheap comparator; tuned-10000
+# (about 7 s per move) is added only once the 10,000-iteration row against
+# strong-10000 says it can matter.
+#
+# Run:  LIBRARY_PATH=/opt/homebrew/lib cargo run --release --example gonnect_gate -p game-gonnect -- \
+#           --config games/gonnect/ntuple/gate-a.toml [--pair A:B]...
+
+openings = 100
+opening_plies = 2
+max_plies = 300
+seed = 1
+workers = 4
+out = "local/output/gonnect/gate-a.jsonl"
+presets = "games/gonnect/presets.json"
+
+pairs = [
+    "a1-raw:random",
+    "a1-raw:easy-100",
+    "a1-raw:strong-100",
+    "a1-raw:strong-1000",
+    "a1-raw:tuned-1000",
+    "a1-raw:strong-10000",
+    "a2-raw:random",
+    "a2-raw:easy-100",
+    "a2-raw:strong-100",
+    "a2-raw:strong-1000",
+    "a2-raw:tuned-1000",
+    "a2-raw:strong-10000",
+    "a3-raw:random",
+    "a3-raw:easy-100",
+    "a3-raw:strong-100",
+    "a3-raw:strong-1000",
+    "a3-raw:tuned-1000",
+    "a3-raw:strong-10000",
+    "a4-raw:random",
+    "a4-raw:easy-100",
+    "a4-raw:strong-100",
+    "a4-raw:strong-1000",
+    "a4-raw:tuned-1000",
+    "a4-raw:strong-10000",
+    "a1-p1000:a1-p1000",
+    "a1-p1000:a1-raw",
+    "a1-p1000:strong-1000",
+    "a1-p1000:tuned-1000",
+    "a2-p1000:a2-p1000",
+    "a2-p1000:a2-raw",
+    "a2-p1000:strong-1000",
+    "a2-p1000:tuned-1000",
+    "a3-p1000:a3-p1000",
+    "a3-p1000:a3-raw",
+    "a3-p1000:strong-1000",
+    "a3-p1000:tuned-1000",
+    "a4-p1000:a4-p1000",
+    "a4-p1000:a4-raw",
+    "a4-p1000:strong-1000",
+    "a4-p1000:tuned-1000",
+    "a1-p10000:a1-raw",
+    "a1-p10000:tuned-1000",
+    "a1-p10000:strong-10000",
+    "a2-p10000:a2-raw",
+    "a2-p10000:tuned-1000",
+    "a2-p10000:strong-10000",
+    "a3-p10000:a3-raw",
+    "a3-p10000:tuned-1000",
+    "a3-p10000:strong-10000",
+    "a4-p10000:a4-raw",
+    "a4-p10000:tuned-1000",
+    "a4-p10000:strong-10000",
+]
+
+[[agent]]
+name = "random"
+kind = "random"
+
+[[agent]]
+name = "easy-100"
+kind = "preset"
+preset = "easy"
+iterations = 100
+
+[[agent]]
+name = "strong-100"
+kind = "preset"
+preset = "strong"
+iterations = 100
+
+[[agent]]
+name = "strong-1000"
+kind = "preset"
+preset = "strong"
+iterations = 1000
+
+[[agent]]
+name = "tuned-1000"
+kind = "preset"
+preset = "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f"
+iterations = 1000
+
+[[agent]]
+name = "strong-10000"
+kind = "preset"
+preset = "strong"
+iterations = 10000
+
+[[agent]]
+name = "tuned-10000"
+kind = "preset"
+preset = "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f"
+iterations = 10000
+
+[[agent]]
+name = "a1-raw"
+kind = "ntuple-greedy"
+model_dir = "local/output/gonnect/td5-a-s1"
+
+[[agent]]
+name = "a1-p1000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s1"
+iterations = 1000
+
+[[agent]]
+name = "a1-p10000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s1"
+iterations = 10000
+
+[[agent]]
+name = "a2-raw"
+kind = "ntuple-greedy"
+model_dir = "local/output/gonnect/td5-a-s2"
+
+[[agent]]
+name = "a2-p1000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s2"
+iterations = 1000
+
+[[agent]]
+name = "a2-p10000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s2"
+iterations = 10000
+
+[[agent]]
+name = "a3-raw"
+kind = "ntuple-greedy"
+model_dir = "local/output/gonnect/td5-a-s3"
+
+[[agent]]
+name = "a3-p1000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s3"
+iterations = 1000
+
+[[agent]]
+name = "a3-p10000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s3"
+iterations = 10000
+
+[[agent]]
+name = "a4-raw"
+kind = "ntuple-greedy"
+model_dir = "local/output/gonnect/td5-a-s4"
+
+[[agent]]
+name = "a4-p1000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s4"
+iterations = 1000
+
+[[agent]]
+name = "a4-p10000"
+kind = "ntuple-puct"
+model_dir = "local/output/gonnect/td5-a-s4"
+iterations = 10000
