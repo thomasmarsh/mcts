@@ -400,6 +400,21 @@ mod tests {
         let exe = "test_host";
 
         path.push(exe);
+
+        // `cargo test --lib` does not build examples, so build the host once
+        // when a clean or partial target directory lacks it.
+        static BUILD: std::sync::Once = std::sync::Once::new();
+        BUILD.call_once(|| {
+            if !path.exists() {
+                let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+                let status = std::process::Command::new(cargo)
+                    .args(["build", "--example", "test_host", "-p", "game-host"])
+                    .current_dir(workspace)
+                    .status()
+                    .expect("run cargo to build the test_host example");
+                assert!(status.success(), "building the test_host example failed");
+            }
+        });
         path
     }
 
