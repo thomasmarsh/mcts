@@ -30,6 +30,8 @@ pub struct Outcome {
     pub capped: bool,
     pub secs: [f64; 2],
     pub moves: [u64; 2],
+    /// Notation of every move the agents chose, in order (the opening plies are not included).
+    pub log: Vec<String>,
 }
 
 /// Play one game from `start`; `agents[0]` controls the side to move at `start`.
@@ -37,21 +39,23 @@ pub fn play_game<G: Game>(start: G::S, agents: &mut [Agent<G>; 2], max_plies: us
     let first = G::player_to_move(&start).to_index();
     let mut state = start;
     let (mut secs, mut moves) = ([0.0f64; 2], [0u64; 2]);
+    let mut log = Vec::new();
     let mut plies = 0;
     while !G::is_terminal(&state) {
         if plies >= max_plies {
-            return Outcome { winner: None, plies, capped: true, secs, moves };
+            return Outcome { winner: None, plies, capped: true, secs, moves, log };
         }
         let seat = usize::from(G::player_to_move(&state).to_index() != first);
         let t = Instant::now();
         let a = agents[seat].choose_action(&state);
         secs[seat] += t.elapsed().as_secs_f64();
         moves[seat] += 1;
+        log.push(G::notation(&state, &a));
         state = G::apply(state, &a);
         plies += 1;
     }
     let winner = G::winner(&state).map(|p| usize::from(p.to_index() != first));
-    Outcome { winner, plies, capped: false, secs, moves }
+    Outcome { winner, plies, capped: false, secs, moves, log }
 }
 
 /// A non-terminal position reached by `plies` uniformly random legal actions
@@ -158,7 +162,7 @@ pub fn paired_match<G: Game>(
                         serde_json::json!({
                             "type": "game", "a": a_name, "b": b_name, "opening": op,
                             "a_first": a_first, "winner": verdict, "plies": o.plies,
-                            "capped": o.capped,
+                            "capped": o.capped, "log": o.log.join(" "),
                             "a_secs": o.secs[a_seat], "a_moves": o.moves[a_seat],
                             "b_secs": o.secs[b_seat], "b_moves": o.moves[b_seat],
                         })

@@ -128,6 +128,8 @@ fn main() {
     println!("Rollouts: {ROLLOUT_GAMES} seeded uniform-random self-play games per size.");
     println!();
 
+    run_size(5, iterations);
+    run_size(7, iterations);
     run_size(9, iterations);
     run_size(13, iterations);
     run_size(19, iterations);

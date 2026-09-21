@@ -1,4 +1,5 @@
-//! Paired-game measurements on 5x5 Gonnect: the MCTS preset ladder, and (through
+//! Paired-game measurements on N x N Gonnect (`size` in the config, 5 by default; 5, 7 and 9 are
+//! compiled in): the MCTS preset ladder, and (through
 //! the same config) any n-tuple agent placed against it.
 //!
 //! ```text
@@ -28,8 +29,6 @@ use serde::Deserialize;
 mod common;
 use common::{load_toml_config, open_append, paired_match, Agent, Maker, PairedConfig};
 
-type G = SizedGonnect<5>;
-
 #[derive(Deserialize, Clone, Debug)]
 struct AgentSpec {
     name: String,
@@ -41,6 +40,10 @@ struct AgentSpec {
     prior_temperature: Option<f32>,
 }
 
+fn default_size() -> usize {
+    5
+}
+
 #[derive(Deserialize, Debug)]
 struct Config {
     openings: usize,
@@ -48,6 +51,8 @@ struct Config {
     max_plies: usize,
     seed: u64,
     workers: usize,
+    #[serde(default = "default_size")]
+    size: usize,
     out: String,
     presets: String,
     #[serde(default)]
@@ -55,13 +60,13 @@ struct Config {
     agent: Vec<AgentSpec>,
 }
 
-struct RandomPlayer {
+struct RandomPlayer<const N: usize> {
     rng: SmallRng,
     name: String,
 }
 
-impl Search for RandomPlayer {
-    type G = G;
+impl<const N: usize> Search for RandomPlayer<N> {
+    type G = SizedGonnect<N>;
 
     fn friendly_name(&self) -> String {
         self.name.clone()
@@ -71,25 +76,26 @@ impl Search for RandomPlayer {
         self.name = name.to_string();
     }
 
-    fn choose_action(&mut self, state: &<G as Game>::S) -> <G as Game>::A {
+    fn choose_action(&mut self, state: &<SizedGonnect<N> as Game>::S) -> <SizedGonnect<N> as Game>::A {
         let mut actions = Vec::new();
-        G::generate_actions(state, &mut actions);
+        SizedGonnect::<N>::generate_actions(state, &mut actions);
         actions[self.rng.gen_range(0..actions.len())]
     }
 }
 
-fn maker(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<G> {
+fn maker<const N: usize>(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<SizedGonnect<N>> {
+    type G<const N: usize> = SizedGonnect<N>;
     match spec.kind.as_str() {
-        "random" => Box::new(|seed| -> Agent<G> {
-            Box::new(RandomPlayer { rng: SmallRng::seed_from_u64(seed), name: "random".into() })
+        "random" => Box::new(|seed| -> Agent<G<N>> {
+            Box::new(RandomPlayer::<N> { rng: SmallRng::seed_from_u64(seed), name: "random".into() })
         }),
         "preset" => {
             let presets = presets.clone();
             let id = spec.preset.clone().expect("preset agents need `preset`");
             let iterations = spec.iterations.expect("preset agents need `iterations`");
-            Box::new(move |seed| -> Agent<G> {
+            Box::new(move |seed| -> Agent<G<N>> {
                 presets
-                    .build_with::<G>(&id, seed, |b: &mut SearchBudget| {
+                    .build_with::<G<N>>(&id, seed, |b: &mut SearchBudget| {
                         b.threads = 1;
                         b.max_iterations = Some(iterations);
                         b.max_time = None;
@@ -106,18 +112,18 @@ fn maker(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<G> {
                 prior_temperature: spec.prior_temperature.unwrap_or(1.0),
                 empties_exact: 0,
             });
-            Box::new(move |_seed| -> Agent<G> {
+            Box::new(move |_seed| -> Agent<G<N>> {
                 let m = model
                     .get_or_init(|| {
                         Arc::new(Model::load(
                             std::path::Path::new(&dir),
-                            &GonnectCells::<5>.orientations(),
+                            &GonnectCells::<N>.orientations(),
                         ))
                     })
                     .clone();
                 match &puct {
-                    Some(cfg) => Box::new(PuctPlayer::new(GonnectCells::<5>, m, cfg.clone())),
-                    None => Box::new(GreedyPlayer::new(GonnectCells::<5>, m)),
+                    Some(cfg) => Box::new(PuctPlayer::new(GonnectCells::<N>, m, cfg.clone())),
+                    None => Box::new(GreedyPlayer::new(GonnectCells::<N>, m)),
                 }
             })
         }
@@ -143,12 +149,21 @@ fn main() {
         }
     }
     let cfg: Config = load_toml_config(&config, &sets);
+    match cfg.size {
+        5 => run::<5>(cfg, pairs),
+        7 => run::<7>(cfg, pairs),
+        9 => run::<9>(cfg, pairs),
+        n => panic!("size {n} is not compiled in (5, 7, 9)"),
+    }
+}
+
+fn run<const N: usize>(cfg: Config, mut pairs: Vec<(String, String)>) {
     let presets = Arc::new(
         PresetTable::load_from_path(std::path::Path::new(&cfg.presets))
             .unwrap_or_else(|e| panic!("{}: {e}", cfg.presets)),
     );
-    let makers: Vec<(String, Maker<G>)> =
-        cfg.agent.iter().map(|s| (s.name.clone(), maker(s, &presets))).collect();
+    let makers: Vec<(String, Maker<SizedGonnect<N>>)> =
+        cfg.agent.iter().map(|s| (s.name.clone(), maker::<N>(s, &presets))).collect();
     if pairs.is_empty() {
         for p in &cfg.pairs {
             let (a, b) = p.split_once(':').expect("pairs entries are A:B");
@@ -177,7 +192,7 @@ fn main() {
         let (an, am) = find(a);
         let (bn, bm) = find(b);
         let t = std::time::Instant::now();
-        let r = paired_match::<G>(an, am, bn, bm, &paired, &out);
+        let r = paired_match::<SizedGonnect<N>>(an, am, bn, bm, &paired, &out);
         let row = r.summary_json(an, bn);
         {
             use std::io::Write;
