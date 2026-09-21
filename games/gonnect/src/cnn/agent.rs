@@ -196,22 +196,22 @@ mod tests {
     use bitboard::Dyn;
     use grid_cnn::Geometry;
 
-    fn zero_net_weights() -> Arc<Weights> {
+    fn zero_net_weights<const N: usize>() -> Arc<Weights> {
         let g = Geometry {
-            size: 7,
+            size: N,
             in_planes: 7,
             channels: 8,
             blocks: 1,
             policy_planes: 2,
-            policy_out: 51,
+            policy_out: N * N + 2,
             value_planes: 1,
             value_hidden: 8,
         };
         Arc::new(Weights::zeros(g))
     }
 
-    fn board(cells: &[usize]) -> Bits {
-        let mut b = Bits::new(Dyn(7), Dyn(7));
+    fn board<const N: usize>(cells: &[usize]) -> Bits {
+        let mut b = Bits::new(Dyn(N), Dyn(N));
         for &c in cells {
             b.set_index(c);
         }
@@ -221,46 +221,56 @@ mod tests {
     /// With a flat prior a search only finds a win by trying every root action, so these tests
     /// use more simulations than actions and consider them all.
     ///
-    /// `mover` (to move) has a column of six stones at column 3 (rows 0..=5); the opponent has six
-    /// far-away stones. The cell 45 (row 6, column 3) completes the mover's connection between the
-    /// top and bottom edges.
-    fn one_move_from_connection(mover: Player) -> SizedState<7> {
-        let column = board(&[3, 10, 17, 24, 31, 38]);
-        let other = board(&[0, 7, 14, 21, 28, 35]);
-        let ones = !Bits::new(Dyn(7), Dyn(7));
+    /// `mover` (to move) has a column of `N - 1` stones at column 1 (rows `0..N-1`); the opponent
+    /// has `N - 1` far-away stones in column 0. The cell in the last row of column 1 completes
+    /// the mover's connection between the top and bottom edges.
+    fn one_move_from_connection<const N: usize>(mover: Player) -> (SizedState<N>, usize) {
+        let column: Vec<usize> = (0..N - 1).map(|r| r * N + 1).collect();
+        let other: Vec<usize> = (0..N - 1).map(|r| r * N).collect();
+        let ones = !Bits::new(Dyn(N), Dyn(N));
         let (black, white) = if mover == Player::Black {
-            (column, other)
+            (board::<N>(&column), board::<N>(&other))
         } else {
-            (other, column)
+            (board::<N>(&other), board::<N>(&column))
         };
-        SizedState(State::from_parts(
+        let state = SizedState(State::from_parts(
             black, white, ones, ones, mover, false, false,
-        ))
+        ));
+        (state, (N - 1) * N + 1)
     }
 
-    fn agent(kind: Kind) -> CnnAgent<7> {
+    fn agent<const N: usize>(kind: Kind, simulations: usize) -> CnnAgent<N> {
         let cfg = Config {
-            num_simulations: 100,
-            num_considered_actions: 51,
+            num_simulations: simulations,
+            num_considered_actions: N * N + 2,
             value_scale: 0.1,
             max_visit_init: 50,
         };
-        CnnAgent::<7>::new("test", &zero_net_weights(), cfg, kind, 16, 0x51)
+        CnnAgent::<N>::new("test", &zero_net_weights::<N>(), cfg, kind, 16, 0x51)
     }
 
-    #[test]
-    fn a_search_takes_the_winning_connection_for_either_colour_and_kind() {
+    fn takes_the_winning_connection<const N: usize>(simulations: usize, kinds: &[Kind]) {
         for mover in [Player::Black, Player::White] {
-            for kind in [Kind::Deterministic, Kind::Gumbel] {
-                let state = one_move_from_connection(mover);
-                let mv = agent(kind).choose_action(&state);
+            for &kind in kinds {
+                let (state, winning) = one_move_from_connection::<N>(mover);
+                let mv = agent::<N>(kind, simulations).choose_action(&state);
                 assert_eq!(
-                    mv.index(),
-                    45,
-                    "{mover:?} {kind:?} should complete the connection"
+                    mv.index() as usize,
+                    winning,
+                    "{N}x{N} {mover:?} {kind:?} should complete the connection"
                 );
                 assert!(Gonnect::is_terminal(&Gonnect::apply(state.0, &mv)));
             }
         }
+    }
+
+    #[test]
+    fn a_search_takes_the_winning_connection_for_either_colour_and_kind() {
+        takes_the_winning_connection::<7>(100, &[Kind::Deterministic, Kind::Gumbel]);
+    }
+
+    #[test]
+    fn a_9x9_search_takes_the_winning_connection_too() {
+        takes_the_winning_connection::<9>(200, &[Kind::Deterministic]);
     }
 }

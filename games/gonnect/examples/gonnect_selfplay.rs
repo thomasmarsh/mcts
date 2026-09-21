@@ -44,19 +44,20 @@ fn main() {
         cfg.net.geometry(),
         "{weights} does not match [net] in {config}"
     );
-    match cfg.net.size {
-        7 => {
-            let oracle = GonnectOracle::<7>::new(
+    game_gonnect::with_board_size!(
+        cfg.net.size,
+        N => {
+            let oracle = GonnectOracle::<N>::new(
                 Net::new(&w),
                 cfg.selfplay.chunk_size,
                 Some(seed ^ 0xA5A5_5A5A),
             );
             let (records, stats) = play_games(&oracle, &cfg.selfplay, seed);
-            write_shard(Path::new(&out), 7, &records).unwrap_or_else(|e| panic!("{out}: {e}"));
+            write_shard(Path::new(&out), N, &records).unwrap_or_else(|e| panic!("{out}: {e}"));
             let line = serde_json::to_string(&stats).unwrap();
             std::fs::write(format!("{out}.stats.json"), &line).unwrap();
             println!("{line}");
-        }
-        n => panic!("size {n} is not compiled in (7)"),
-    }
+        },
+        n => panic!("size {n} is not compiled in ({:?})", game_gonnect::cnn::SUPPORTED_SIZES),
+    );
 }

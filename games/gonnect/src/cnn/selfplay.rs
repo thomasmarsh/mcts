@@ -35,7 +35,7 @@ pub struct Stats {
 
 struct Row {
     fields: Fields,
-    ply: u8,
+    ply: u16,
     policy: Vec<f32>,
 }
 
@@ -102,7 +102,7 @@ pub fn play_games<const N: usize>(
             let (fields, _) = analyse(&game.state.0);
             game.rows.push(Row {
                 fields,
-                ply: ply as u8,
+                ply: ply as u16,
                 policy: policy.clone(),
             });
             let id = if ply < cfg.temp_moves {

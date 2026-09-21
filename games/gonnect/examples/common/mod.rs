@@ -187,6 +187,64 @@ pub fn paired_match<G: Game>(
     result.into_inner().unwrap()
 }
 
+/// Every pairing of `pairs` (by agent name) through [`paired_match`]: one JSONL game row per game
+/// and one summary row per pairing appended to `out_path` as they finish, one line per pairing on
+/// stdout. With `resume`, pairings that already have a summary row in `out_path` are skipped, so a
+/// killed round robin continues at its first unfinished pairing (that pairing's partial game rows
+/// stay in the file; only summary rows are ever scored).
+pub fn run_pairings<G: Game>(
+    makers: &[(String, Maker<G>)],
+    pairs: &[(String, String)],
+    cfg: &PairedConfig,
+    out_path: &str,
+    resume: bool,
+) {
+    let done: std::collections::HashSet<(String, String)> = if resume {
+        std::fs::read_to_string(out_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter(|v| v["type"] == "pairing")
+            .filter_map(|v| Some((v["a"].as_str()?.to_string(), v["b"].as_str()?.to_string())))
+            .collect()
+    } else {
+        Default::default()
+    };
+    let find = |n: &str| {
+        makers.iter().find(|(name, _)| name == n).unwrap_or_else(|| panic!("no agent {n:?}"))
+    };
+    let out = Mutex::new(open_append(out_path));
+    for (a, b) in pairs {
+        if done.contains(&(a.clone(), b.clone())) {
+            println!("{a:>14} vs {b:<14} already in {out_path}, skipped");
+            continue;
+        }
+        let (an, am) = find(a);
+        let (bn, bm) = find(b);
+        let t = Instant::now();
+        let r = paired_match::<G>(an, am, bn, bm, cfg, &out);
+        let row = r.summary_json(an, bn);
+        {
+            let mut f = out.lock().unwrap();
+            writeln!(f, "{row}").unwrap();
+            f.flush().unwrap();
+        }
+        let (score, (lo, hi)) = r.tally.win_rate_ci(1.96);
+        println!(
+            "{an:>14} vs {bn:<14} {:>3} games  W-L-D {}-{}-{}  score {score:.3} [{lo:.3}, {hi:.3}]  \
+             capped {}  {:.1} / {:.1} ms per move  ({:.0}s)",
+            r.tally.total(),
+            r.tally.wins,
+            r.tally.losses,
+            r.tally.draws,
+            r.capped,
+            r.ms_per_move(0),
+            r.ms_per_move(1),
+            t.elapsed().as_secs_f64()
+        );
+    }
+}
+
 fn hash_name(s: &str) -> u64 {
     s.bytes()
         .fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))

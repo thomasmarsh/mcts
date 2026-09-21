@@ -61,16 +61,23 @@ th:first-child, td:first-child { text-align: left; }
 <main>
   <header>
     <div>
-      <h1>Gonnect 7x7 CNN, self-play run</h1>
-      <p class="sub">128 channels x 6 residual blocks, trained from scratch by Gumbel self-play. Each generation plays 256 games, takes 1000 batch-32 steps, then plays 40 games against the MCTS preset strong-100.</p>
+      <h1>Gonnect CNN, self-play run</h1>
+      <p class="sub">128 channels x 6 residual blocks, trained from scratch by Gumbel self-play. Progress is measured only by nets playing nets: each generation plays the net 10 generations earlier and the current champion, on shared openings from both seats.</p>
     </div>
     <span class="pill" id="status">loading</span>
   </header>
   <section class="tiles" id="tiles"></section>
   <section class="panel">
     <h2>Progress gate</h2>
-    <p>Score of the new net (100 simulations, about 0.27 s per move) against strong-100, 40 paired games per generation on the same openings. Band is the Wilson 95% interval. Above the dashed line the net wins.</p>
+    <p>Score of each new net against the net 10 generations earlier (generation 0 while earlier than that), and against the current champion. 40 paired games per match. Band is the Wilson 95% interval of the lag score. Above the dashed line the new net wins; a self-match is exactly 0.5.</p>
+    <div class="legend"><span><i style="background:var(--s1)"></i>vs 10 generations earlier</span><span><i style="background:var(--s2)"></i>vs champion</span></div>
     <div class="chart" id="c-gate"></div>
+  </section>
+  <section class="panel" id="rating-panel" hidden>
+    <h2>Rating curve</h2>
+    <p>Bradley-Terry Elo of checkpoints from the end-of-run round robin (generation 0 = 0), 95% error bars. Steady growth is the pass condition; a flat stretch is a plateau.</p>
+    <div id="rating-svg"></div>
+    <div class="foot" id="rating-note"></div>
   </section>
   <section class="grid">
     <div class="panel"><h2>Training loss</h2><p>Mean of the last 100 steps of each generation.</p>
@@ -78,7 +85,13 @@ th:first-child, td:first-child { text-align: left; }
       <div class="chart" id="c-loss"></div></div>
     <div class="panel"><h2>Held-out policy top-1</h2><p>Share of held-out positions where the net's best move matches the search's, 24 games not trained on.</p>
       <div class="chart" id="c-top1"></div></div>
-    <div class="panel"><h2>Game length</h2><p>Mean plies per self-play game; the MCTS ladder's games last about 27.</p>
+    <div class="panel"><h2>Policy entropy</h2><p>Mean entropy in nats of the search's improved policy (target) and of the net's own prior on held-out positions.</p>
+      <div class="legend"><span><i style="background:var(--s2)"></i>search target</span><span><i style="background:var(--s1)"></i>net prior</span></div>
+      <div class="chart" id="c-entropy"></div></div>
+    <div class="panel"><h2>Value calibration and capped games</h2><p>Calibration error of the value head on held-out games (probability units), and the share of self-play games dropped at the ply cap.</p>
+      <div class="legend"><span><i style="background:var(--s1)"></i>calibration error</span><span><i style="background:var(--s2)"></i>capped games</span></div>
+      <div class="chart" id="c-ece"></div></div>
+    <div class="panel"><h2>Game length</h2><p>Mean plies per self-play game.</p>
       <div class="chart" id="c-plies"></div></div>
     <div class="panel"><h2>Black wins and swaps</h2><p>Share of self-play games Black wins, and games where White swaps at ply 2.</p>
       <div class="legend"><span><i style="background:var(--s1)"></i>Black wins</span><span><i style="background:var(--s3)"></i>swap played</span></div>
@@ -112,19 +125,15 @@ function tiles() {
   const elapsed = G.reduce((s, g) => s + g.wall, 0);
   const recent = G.slice(-10).map((g) => g.wall);
   const eta = mean(recent) * (N - last.gen);
-  const best = G.reduce((b, g) => (g.score >= b.score ? g : b), G[0]);
-  const c = DATA.curve;
-  let curve = "needs 8 gates past gen 5", note = "";
-  if (c.rising !== null) {
-    curve = c.rising ? "rising" : "flat";
-    note = `quartiles ${fmt(c.first_quartile_mean, 2)} to ${fmt(c.last_quartile_mean, 2)}, needs +${fmt(c.wilson_half_width, 2)}`;
-  }
+  const gated = G.filter((g) => g.score != null);
+  const lastGate = gated[gated.length - 1];
+  const v = DATA.verdict;
   const items = [
     ["Generation", `${last.gen} / ${N}`, `${G.reduce((s, g) => s + (g.positions || 0), 0).toLocaleString()} positions`],
     ["Elapsed", mmss(elapsed), last.gen < N ? `about ${mmss(eta)} left` : "done"],
-    ["Latest gate", fmt(last.score, 3), `[${fmt(last.lo, 2)}, ${fmt(last.hi, 2)}] vs strong-100`],
-    ["Best gate", fmt(best.score, 3), `generation ${best.gen}`],
-    ["Learning curve", curve, note],
+    ["Latest lag gate", lastGate ? fmt(lastGate.score, 3) : "-", lastGate ? `[${fmt(lastGate.lo, 2)}, ${fmt(lastGate.hi, 2)}] vs gen ${lastGate.lag_opponent}` : ""],
+    ["Champion", lastGate ? `gen ${lastGate.champion}` : "-", "promoted at 0.55 vs champion"],
+    ["Verdict", v ? v.verdict : "n/a", v && v.plateau_from != null ? `flat from generation ${v.plateau_from}` : "pre-registered rules"],
   ];
   el.innerHTML = items.map(([k, v, n]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
   document.getElementById("status").textContent = last.gen < N ? `generation ${last.gen} of ${N} done` : "run complete";
@@ -205,9 +214,22 @@ function makeChart(id, spec) {
 function build() {
   tiles();
   if (!G.length) { document.getElementById("foot").textContent = "No generations logged yet."; return; }
-  makeChart("c-gate", { label: "Progress gate score by generation", height: 260, y0: 0, y1: 1, ref: 0.5, yd: 1,
-    series: [{ name: "score", color: "--s1", get: (g) => g.score, lo: (g) => g.lo, hi: (g) => g.hi }],
-    tfmt: (v, g) => `${v.toFixed(3)} [${g.lo.toFixed(2)}, ${g.hi.toFixed(2)}]  ${g.cnn_ms.toFixed(0)} ms/move` });
+  makeChart("c-gate", { label: "Progress gate scores by generation", height: 260, y0: 0, y1: 1, ref: 0.5, yd: 1,
+    series: [{ name: "vs 10 earlier", color: "--s1", get: (g) => g.score ?? 0.5, lo: (g) => g.lo ?? 0.5, hi: (g) => g.hi ?? 0.5 },
+             { name: "vs champion", color: "--s2", get: (g) => g.best_score ?? 0.5 }],
+    tfmt: (v, g, s) => s.name === "vs 10 earlier" ? `${v.toFixed(3)} [${(g.lo ?? 0).toFixed(2)}, ${(g.hi ?? 1).toFixed(2)}] vs gen ${g.lag_opponent}` : `${v.toFixed(3)} (champion gen ${g.champion})` });
+  makeChart("c-entropy", { label: "Policy entropy", y0: 0, series: [
+    { name: "search target", color: "--s2", get: (g) => g.target_entropy ?? 0 },
+    { name: "net prior", color: "--s1", get: (g) => g.prior_entropy ?? 0 }] });
+  makeChart("c-ece", { label: "Calibration error and capped games", y0: 0, yfmt: (t) => (t * 100).toFixed(0) + "%", series: [
+    { name: "calibration error", color: "--s1", get: (g) => g.ece ?? 0 },
+    { name: "capped games", color: "--s2", get: (g) => g.capped ?? 0 }], tfmt: (v) => (v * 100).toFixed(1) + "%" });
+  if (DATA.ratings_svg) {
+    document.getElementById("rating-panel").hidden = false;
+    document.getElementById("rating-svg").innerHTML = DATA.ratings_svg;
+    const r = DATA.ratings;
+    document.getElementById("rating-note").textContent = r ? `${r.cycles.length} significant cycles; deviance ${r.deviance.toFixed(1)} on ${r.df} degrees of freedom` : "";
+  }
   makeChart("c-loss", { label: "Training loss", series: [
     { name: "policy CE", color: "--s2", get: (g) => g.policy_loss },
     { name: "value MSE", color: "--s1", get: (g) => g.value_loss }] });
@@ -221,7 +243,7 @@ function build() {
     { name: "self-play", color: "--s1", get: (g) => g.t_selfplay }, { name: "fit", color: "--s2", get: (g) => g.t_fit },
     { name: "gate", color: "--s3", get: (g) => g.t_gate }], tfmt: (v) => v.toFixed(0) + " s" });
   const rows = G.slice().reverse().slice(0, 40);
-  document.getElementById("tbl").innerHTML = `<table><thead><tr><th>gen</th><th>gate</th><th>wilson lo</th><th>wilson hi</th><th>policy CE</th><th>value MSE</th><th>top-1</th><th>plies</th><th>Black</th><th>swap</th><th>wall s</th></tr></thead><tbody>` +
+  document.getElementById("tbl").innerHTML = `<table><thead><tr><th>gen</th><th>lag gate</th><th>wilson lo</th><th>wilson hi</th><th>policy CE</th><th>value MSE</th><th>top-1</th><th>plies</th><th>Black</th><th>swap</th><th>wall s</th></tr></thead><tbody>` +
     rows.map((g) => `<tr><td>${g.gen}</td><td>${fmt(g.score)}</td><td>${fmt(g.lo, 2)}</td><td>${fmt(g.hi, 2)}</td><td>${fmt(g.policy_loss)}</td><td>${fmt(g.value_loss)}</td><td>${fmt(g.val_policy_top1)}</td><td>${fmt(g.plies, 1)}</td><td>${fmt(g.black, 2)}</td><td>${fmt(g.swap, 3)}</td><td>${g.wall.toFixed(0)}</td></tr>`).join("") + `</tbody></table>`;
   document.getElementById("foot").textContent = `Snapshot of ${DATA.steps_done.toLocaleString()} optimizer steps across ${G.length} generations. Table shows the latest 40.`;
 }

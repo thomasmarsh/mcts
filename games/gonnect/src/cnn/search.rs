@@ -23,6 +23,7 @@ use serde::Deserialize;
 
 use super::agent::{CnnAgent, Kind, RootSummary};
 use super::encode::{num_actions, IN_PLANES};
+use super::SUPPORTED_SIZES;
 use crate::sized::SizedState;
 use crate::{Gonnect, Move, State};
 
@@ -32,9 +33,6 @@ pub const MODELS_ENV: &str = "GONNECT_CNN_MODELS";
 /// States per GPU forward call. The play search evaluates one leaf at a time, so this only bounds
 /// memory.
 const CHUNK_SIZE: usize = 64;
-
-/// Board sizes a loaded network can play (one monomorphic agent per size).
-const SUPPORTED_SIZES: &[usize] = &[7];
 
 #[derive(Deserialize)]
 struct ModelEntry {
@@ -136,16 +134,11 @@ impl NetSearchFactory<Gonnect> for GonnectNets {
             NetSelection::Gumbel => Kind::Gumbel,
             NetSelection::MostVisited => Kind::Deterministic,
         };
-        match weights.geometry.size {
-            7 => Ok(Box::new(GonnectCnnSearch::<7>::new(
-                &spec.model,
-                weights,
-                cfg,
-                kind,
-                seed,
-            ))),
+        crate::with_board_size!(
+            weights.geometry.size,
+            N => Ok(Box::new(GonnectCnnSearch::<N>::new(&spec.model, weights, cfg, kind, seed))),
             n => Err(HostError::internal(format!("no {n}x{n} network support"))),
-        }
+        )
     }
 }
 
@@ -289,21 +282,28 @@ mod tests {
     use grid_cnn::Geometry;
     use mcts::game::Game;
 
-    fn zero_weights() -> Arc<Weights> {
+    fn zero_weights_of(size: usize) -> Arc<Weights> {
         Arc::new(Weights::zeros(Geometry {
-            size: 7,
+            size,
             in_planes: IN_PLANES,
             channels: 8,
             blocks: 1,
             policy_planes: 2,
-            policy_out: num_actions(7),
+            policy_out: num_actions(size),
             value_planes: 1,
             value_hidden: 8,
         }))
     }
 
+    fn zero_weights() -> Arc<Weights> {
+        zero_weights_of(7)
+    }
+
     pub(crate) fn nets() -> GonnectNets {
-        GonnectNets::new(BTreeMap::from([("zero-7x7".to_string(), zero_weights())]))
+        GonnectNets::new(BTreeMap::from([
+            ("zero-7x7".to_string(), zero_weights()),
+            ("zero-9x9".to_string(), zero_weights_of(9)),
+        ]))
     }
 
     fn spec(simulations: usize) -> NetSearchSpec {
@@ -342,6 +342,22 @@ mod tests {
         let root = search.root_report(&state);
         assert_eq!(root.total_visits, 8);
         assert_eq!(root.actions.len(), report.actions.len());
+    }
+
+    #[test]
+    fn a_9x9_net_plays_9x9_and_refuses_7x7() {
+        let mut nine = spec(8);
+        nine.model = "zero-9x9".into();
+        let mut search = nets().build(&nine, 0).unwrap();
+        let state = State::new(9);
+        assert_eq!(search.unsupported_reason(&state), None);
+        let mv = search.choose_action(&state);
+        let mut legal = Vec::new();
+        Gonnect::generate_actions(&state, &mut legal);
+        assert!(legal.contains(&mv));
+        assert_eq!(search.root_report(&state).total_visits, 8);
+        let why = search.unsupported_reason(&State::new(7)).unwrap();
+        assert!(why.contains("9x9"), "{why}");
     }
 
     #[test]

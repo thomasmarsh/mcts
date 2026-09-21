@@ -1,9 +1,9 @@
-# Gonnect 7x7 AlphaZero-style run: a 128-channel x 6-block CNN trained by Gumbel self-play from
+# Gonnect 9x9 AlphaZero-style run: a 128-channel x 6-block CNN trained by Gumbel self-play from
 # scratch. Rust reads [net], [selfplay] and [play]; the coordinator and trainer
 # (research/az-train/src/az_train/gonnect_cnn.py) read the rest.
 
 [net]
-size = 7
+size = 9
 channels = 128
 blocks = 6
 policy_planes = 4
@@ -18,7 +18,7 @@ considered_actions = 8
 value_scale = 0.1
 max_visit_init = 50
 temp_moves = 8
-max_plies = 200
+max_plies = 300
 chunk_size = 64
 
 # The play-time agent used by the progress gate and the final gate.
@@ -54,7 +54,7 @@ validate_every = 100
 # against the champion reaches `promote_score`; self-play always uses the latest net.
 lag = 10
 games = 40
-opening_plies = 2
+opening_plies = 4
 # Search budget of both gate agents (other search settings come from [play]).
 simulations = 32
 promote_score = 0.55
@@ -70,7 +70,7 @@ max_plies = 300
 [round_robin]
 every = 10
 games = 100
-opening_plies = 2
+opening_plies = 4
 simulations = 32
 max_gap = 0
 workers = 4
@@ -116,4 +116,4 @@ iterations = 1000
 
 [loop]
 generations = 100
-out_dir = "local/output/gonnect/cnn-7x7/run1"
+out_dir = "local/output/gonnect/cnn-9x9/run1"

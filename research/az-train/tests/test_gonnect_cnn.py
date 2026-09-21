@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from az_train import gonnect_cnn as gc
@@ -123,3 +124,115 @@ def test_checkpoint_round_trip_reproduces_the_exported_weights(tmp_path):
 def test_wilson_interval_brackets_the_score():
     lo, hi = gc.wilson(20, 40)
     assert lo < 0.5 < hi and 0.34 < lo < 0.36 and 0.64 < hi < 0.66
+
+
+def gate_cfg(lag=10, every=1, promote=0.55):
+    return {
+        "net": {"size": 9},
+        "play": {"considered_actions": 16, "value_scale": 0.1, "max_visit_init": 50,
+                 "chunk_size": 64},
+        "gate": {"lag": lag, "games": 40, "opening_plies": 4, "simulations": 32,
+                 "promote_score": promote, "every": every, "workers": 4, "seed": 1,
+                 "max_plies": 300},
+    }  # fmt: skip
+
+
+def pairing_row(a, b, score, games=40):
+    wins = round(score * games)
+    return {"type": "pairing", "a": a, "b": b, "games": games, "score_a": wins / games,
+            "wilson_lo": 0.1, "wilson_hi": 0.9, "a_wins": wins, "b_wins": games - wins,
+            "draws": 0, "capped": 0, "a_ms_per_move": 10.0, "b_ms_per_move": 11.0}  # fmt: skip
+
+
+def test_match_config_is_valid_toml_with_net_agents_and_no_presets(tmp_path):
+    import tomllib
+
+    text = gc.match_config_text(
+        gate_cfg(), out=tmp_path / "o.jsonl",
+        agents=[("gen5", tmp_path / "gen5.bin", 32), ("gen0", tmp_path / "gen0.bin", 32)],
+        pairs=[("gen5", "gen0")], openings=20, opening_plies=4, seed=1, workers=4, max_plies=300,
+    )  # fmt: skip
+    conf = tomllib.loads(text)
+    assert conf["size"] == 9 and conf["openings"] == 20 and conf["opening_plies"] == 4
+    assert conf["pairs"] == ["gen5:gen0"] and "presets" not in conf
+    assert [a["kind"] for a in conf["agent"]] == ["cnn-gumbel", "cnn-gumbel"]
+    assert [a["iterations"] for a in conf["agent"]] == [32, 32]
+
+
+def fake_gate(monkeypatch, scores, calls):
+    def fake(conf, text, out, **kw):
+        import tomllib
+
+        pairs = tomllib.loads(text)["pairs"]
+        calls.append(pairs)
+        return [pairing_row(*p.split(":"), scores[p.split(":")[1]]) for p in pairs]
+
+    monkeypatch.setattr(gc, "run_gate_binary", fake)
+
+
+def test_the_progress_gate_plays_lag_and_champion_and_promotes_at_the_threshold(
+    tmp_path, monkeypatch
+):
+    calls: list = []
+    fake_gate(monkeypatch, {"gen15": 0.8, "gen20": 0.55}, calls)
+    out = gc.run_progress_gate(gate_cfg(), tmp_path, 25, champion=20)
+    assert calls == [["gen25:gen15", "gen25:gen20"]]
+    assert out["lag"]["opponent_gen"] == 15 and out["lag"]["score"] == pytest.approx(0.8)
+    assert out["best"]["opponent_gen"] == 20
+    assert out["promoted"] and out["champion"] == 25 and out["champion_before"] == 20
+
+    fake_gate(monkeypatch, {"gen15": 0.8, "gen20": 0.5}, calls)
+    out = gc.run_progress_gate(gate_cfg(), tmp_path, 25, champion=20)
+    assert not out["promoted"] and out["champion"] == 20
+
+
+def test_one_match_when_the_champion_is_the_lag_opponent_and_generation_0_early(
+    tmp_path, monkeypatch
+):
+    calls: list = []
+    fake_gate(monkeypatch, {"gen15": 0.6, "gen0": 0.9}, calls)
+    out = gc.run_progress_gate(gate_cfg(), tmp_path, 25, champion=15)
+    assert calls == [["gen25:gen15"]] and out["lag"] == out["best"]
+    calls.clear()
+    out = gc.run_progress_gate(gate_cfg(), tmp_path, 4, champion=0)
+    assert calls == [["gen4:gen0"]] and out["lag"]["opponent_gen"] == 0
+
+
+def test_the_champion_is_carried_by_the_log_and_starts_at_generation_zero():
+    assert gc.current_champion([]) == 0
+    rows = [{"gen": 1, "gate": {"champion": 1}}, {"gen": 2}, {"gen": 3, "gate": {"champion": 1}}]
+    assert gc.current_champion(rows) == 1
+
+
+def test_checkpoints_and_round_robin_pairs():
+    cfg = {"round_robin": {"every": 10}}
+    assert gc.checkpoint_generations(cfg, 100) == list(range(0, 101, 10))
+    assert gc.checkpoint_generations(cfg, 35) == [0, 10, 20, 30, 35]
+    gens = gc.checkpoint_generations(cfg, 100)
+    assert len(gc.round_robin_pairs(gens, 0)) == 55
+    near = gc.round_robin_pairs(gens, 2)
+    assert ("gen100", "gen50") in near and ("gen100", "gen90") in near
+    assert ("gen100", "gen10") not in near
+    assert all(int(a[3:]) > int(b[3:]) for a, b in near)
+
+
+def test_the_rating_plot_is_well_formed_svg():
+    import xml.etree.ElementTree as ET
+
+    report = {"players": ["gen0", "gen10", "gen20"], "elo": [0.0, 90.0, 150.0],
+              "se": [0.0, 20.0, 25.0]}  # fmt: skip
+    root = ET.fromstring(gc.rating_plot_svg(report))
+    assert root.tag.endswith("svg")
+    assert len(list(root.iter("{http://www.w3.org/2000/svg}circle"))) == 3
+
+
+def test_dump_toml_round_trips_the_real_config_and_carries_overrides(tmp_path):
+    import tomllib
+    from pathlib import Path
+
+    path = Path(gc.ROOT / "games/gonnect/cnn/az-9x9.toml")
+    cfg = gc.load_config(path, ["selfplay.games=16", "gate.lag=2"])
+    assert cfg["selfplay"]["games"] == 16
+    back = tomllib.loads(gc.dump_toml(cfg))
+    assert back == cfg
+    assert back["sanity"]["opponent"][1]["iterations"] == 1000

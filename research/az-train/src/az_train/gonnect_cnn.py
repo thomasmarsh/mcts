@@ -1,17 +1,21 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false
 # pyright: reportUnknownArgumentType=false, reportMissingTypeStubs=false
 # pyright: reportAttributeAccessIssue=false, reportCallIssue=false
-"""Trainer and coordinator for the Gonnect CNN track (``games/gonnect/cnn/az-7x7.toml``).
+"""Trainer and coordinator for the Gonnect CNN track (``games/gonnect/cnn/az-9x9.toml``).
 
 One generation is: Gumbel self-play with the current weights (Rust, MLX) -> a fixed number of
 batch-32 Adam steps on a sliding replay window, warm-started from the previous generation (torch,
-MPS) -> the progress gate, the new net against an MCTS preset (Rust, MLX). Everything a generation
-produces is written before the next starts, so a killed run resumes from ``latest.pt``.
+MPS) -> the progress gate, the new net against the net ``gate.lag`` generations ago and against the
+current champion (Rust, MLX). Progress is measured only by nets playing nets (``yardstick.py``);
+no reference engine, MCTS ladder or solver takes part, except the informational ``--sanity-gate``
+at the end of a run, which nothing reads. Everything a generation produces is written before the
+next starts, so a killed run resumes from ``latest.pt``.
 
 Files under the run directory: ``gen<N>.bin`` (exported weights, ``crates/grid-cnn`` format),
 ``shards/gen<N>.bin`` (self-play), ``latest.pt`` (model + optimizer of the newest generation),
-``steps.jsonl`` (one line per optimizer step, written as it happens), ``log.jsonl`` (one line per
-generation), ``gate/gen<N>.jsonl`` (the progress gate's games).
+``steps.jsonl`` (one line per optimizer step, written as it happens), ``log.jsonl`` and
+``diagnostics.jsonl`` (one line per generation), ``gate/gen<N>.jsonl`` (the progress gate's games),
+``ratings/`` (``--round-robin``), ``verdict.json`` (``--verdict``), ``sanity/`` (``--sanity-gate``).
 """
 
 from __future__ import annotations
@@ -19,7 +23,6 @@ from __future__ import annotations
 import argparse
 import functools
 import json
-import math
 import os
 import subprocess
 import time
@@ -32,7 +35,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 
-from az_train import gridcnn
+from az_train import gridcnn, yardstick
+from az_train.gonnect_diagnostics import diagnostics
 from az_train.gonnect_records import (
     IN_PLANES,
     Positions,
@@ -57,6 +61,37 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> dict[st
         value = tomllib.loads(f"v = {raw}")["v"]
         cfg[section][name] = value
     return cfg
+
+
+def _toml_scalar(v: Any) -> str:
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, str):
+        return json.dumps(v)
+    if isinstance(v, list):
+        return "[" + ", ".join(_toml_scalar(x) for x in v) + "]"
+    return repr(v)
+
+
+def dump_toml(cfg: dict[str, Any], prefix: str = "") -> str:
+    """The config as TOML text (tables, arrays of tables, scalars and scalar lists), so the Rust
+    binaries read the same effective settings the coordinator runs with, ``--set`` overrides
+    included."""
+    lines = [f"{k} = {_toml_scalar(v)}" for k, v in cfg.items() if _is_scalar(v)]
+    for k, v in cfg.items():
+        name = f"{prefix}.{k}" if prefix else k
+        if isinstance(v, dict):
+            lines += ["", f"[{name}]", dump_toml(v, name)]
+        elif isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+            for item in v:
+                lines += ["", f"[[{name}]]", dump_toml(item, name)]
+    return "\n".join(lines).strip("\n") + "\n"
+
+
+def _is_scalar(v: Any) -> bool:
+    return not isinstance(v, dict) and not (
+        isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+    )
 
 
 def geometry_of(cfg: dict[str, Any]) -> gridcnn.Geometry:
@@ -179,6 +214,37 @@ def evaluate(
         "policy_ce": float(np.concatenate(ce).mean()),
         "policy_top1": float(np.concatenate(top1).mean()),
     }
+
+
+@torch.no_grad()
+def predict(
+    model: gridcnn.GridCNN, positions: Positions, device: torch.device, chunk: int = 512
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(values (N,), logits (N, actions))`` of the net in eval mode, no augmentation."""
+    was_training = model.training
+    model.eval()
+    values, logits = [], []
+    for start in range(0, len(positions), chunk):
+        part = Data(positions.slice(start, start + chunk), device)
+        v, lg = model(part.planes.float())
+        values.append(v.cpu().numpy())
+        logits.append(lg.cpu().numpy())
+    model.train(was_training)
+    return np.concatenate(values), np.concatenate(logits)
+
+
+def diagnose(
+    model: gridcnn.GridCNN,
+    shard: Path,
+    stats: dict[str, Any],
+    held: Positions,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Oracle-free diagnostics of one generation: its self-play shard, and the fitted net's
+    predictions on the shard's held-out games (see ``gonnect_diagnostics``)."""
+    _, positions = load_positions(shard)
+    values, logits = predict(model, held, device)
+    return diagnostics(positions, stats, held, values, logits)
 
 
 class Stalled(RuntimeError):
@@ -325,29 +391,13 @@ def run_selfplay(config: Path, weights: Path, shard: Path, seed: int) -> dict[st
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
-def gate_config_text(cfg: dict[str, Any], run_dir: Path, gen: int, weights: Path) -> str:
-    gate, play = cfg["gate"], cfg["play"]
-    return f"""size = {cfg["net"]["size"]}
-openings = {gate["games"] // 2}
-opening_plies = 2
-max_plies = {gate["max_plies"]}
-seed = {gate["seed"]}
-workers = {gate["workers"]}
-out = "{run_dir / "gate" / f"gen{gen}.jsonl"}"
-presets = "{gate["presets"]}"
-pairs = ["cnn:{gate["opponent"]}"]
-
+def agent_stanza(name: str, weights: Path, simulations: int, play: dict[str, Any]) -> str:
+    return f"""
 [[agent]]
-name = "{gate["opponent"]}"
-kind = "preset"
-preset = "{gate["opponent_preset"]}"
-iterations = {gate["opponent_iterations"]}
-
-[[agent]]
-name = "cnn"
+name = "{name}"
 kind = "cnn-gumbel"
 weights = "{weights}"
-iterations = {play["simulations"]}
+iterations = {simulations}
 considered_actions = {play["considered_actions"]}
 value_scale = {play["value_scale"]}
 max_visit_init = {play["max_visit_init"]}
@@ -355,36 +405,118 @@ chunk_size = {play["chunk_size"]}
 """
 
 
-def run_progress_gate(
-    cfg: dict[str, Any], run_dir: Path, gen: int, weights: Path
-) -> dict[str, Any]:
-    (run_dir / "gate").mkdir(exist_ok=True)
-    out = run_dir / "gate" / f"gen{gen}.jsonl"
-    out.unlink(missing_ok=True)
-    conf = run_dir / "gate" / f"gen{gen}.toml"
-    conf.write_text(gate_config_text(cfg, run_dir, gen, weights))
-    subprocess.run(
-        [str(EXAMPLES / "gonnect_gate"), "--config", str(conf)],
+def match_config_text(
+    cfg: dict[str, Any],
+    *,
+    out: Path,
+    agents: list[tuple[str, Path, int]],
+    pairs: list[tuple[str, str]],
+    openings: int,
+    opening_plies: int,
+    seed: int,
+    workers: int,
+    max_plies: int,
+) -> str:
+    """A ``gonnect_gate`` config: net-vs-net pairings of ``(name, weights, simulations)`` agents,
+    each opening played from both seats, openings random legal plies from the empty board."""
+    head = f"""size = {cfg["net"]["size"]}
+openings = {openings}
+opening_plies = {opening_plies}
+max_plies = {max_plies}
+seed = {seed}
+workers = {workers}
+out = "{out}"
+pairs = {json.dumps([f"{a}:{b}" for a, b in pairs])}
+"""
+    return head + "".join(agent_stanza(n, w, sims, cfg["play"]) for n, w, sims in agents)
+
+
+def run_gate_binary(
+    conf: Path, text: str, out: Path, *, resume: bool = False, extra: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Write ``conf``, run ``gonnect_gate`` on it and return the pairing summary rows of ``out``
+    (which is cleared first unless ``resume``)."""
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(text)
+    if not resume:
+        out.unlink(missing_ok=True)
+    cmd = [str(EXAMPLES / "gonnect_gate"), "--config", str(conf)] + (extra or [])
+    done = subprocess.run(
+        cmd + (["--resume"] if resume else []),
         cwd=ROOT,
         env=rust_env(),
-        check=True,
         capture_output=True,
+        text=True,
     )
-    rows = [r for r in read_jsonl(out) if r.get("type") == "pairing"]
-    return rows[-1]
+    if done.returncode != 0:
+        raise RuntimeError(f"gonnect_gate failed ({done.returncode}): {done.stderr[-2000:]}")
+    return [r for r in read_jsonl(out) if r.get("type") == "pairing"]
+
+
+def pairing_summary(row: dict[str, Any], opponent_gen: int) -> dict[str, Any]:
+    return {
+        "opponent_gen": opponent_gen,
+        "games": row["games"],
+        "score": row["score_a"],
+        "wilson_lo": row["wilson_lo"],
+        "wilson_hi": row["wilson_hi"],
+        "wins": row["a_wins"],
+        "losses": row["b_wins"],
+        "draws": row["draws"],
+        "capped": row["capped"],
+        "ms_per_move": row["a_ms_per_move"],
+        "opponent_ms_per_move": row["b_ms_per_move"],
+    }
+
+
+def current_champion(rows: list[dict[str, Any]]) -> int:
+    """The champion after the last gated generation (generation 0, the zero net, before any)."""
+    for r in reversed(rows):
+        if "gate" in r:
+            return r["gate"]["champion"]
+    return 0
+
+
+def run_progress_gate(
+    cfg: dict[str, Any], run_dir: Path, gen: int, champion: int
+) -> dict[str, Any]:
+    """Generation ``gen`` against the net ``gate.lag`` generations earlier (generation 0 while
+    ``gen <= lag``) and against the champion, on one shared opening set. The new net is promoted
+    when its score against the champion reaches ``gate.promote_score``. When the two opponents
+    are the same net there is one match."""
+    gate = cfg["gate"]
+    lag_gen = max(0, gen - gate["lag"])
+    opponents = [lag_gen] + ([champion] if champion != lag_gen else [])
+    names = {g: f"gen{g}" for g in [gen, *opponents]}
+    out = run_dir / "gate" / f"gen{gen}.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[(n, run_dir / f"gen{g}.bin", gate["simulations"]) for g, n in names.items()],
+        pairs=[(names[gen], names[o]) for o in opponents],
+        openings=gate["games"] // 2,
+        opening_plies=gate["opening_plies"],
+        seed=gate["seed"],
+        workers=gate["workers"],
+        max_plies=gate["max_plies"],
+    )
+    rows = {r["b"]: r for r in run_gate_binary(run_dir / "gate" / f"gen{gen}.toml", text, out)}
+    lag = pairing_summary(rows[names[lag_gen]], lag_gen)
+    best = pairing_summary(rows[names[champion]], champion)
+    promoted = best["score"] >= gate["promote_score"]
+    return {
+        "lag": lag,
+        "best": best,
+        "champion_before": champion,
+        "promoted": promoted,
+        "champion": gen if promoted else champion,
+    }
 
 
 # ------------------------------------------------------------------------------ coordinator
 
 
-def wilson(wins: float, games: int, z: float = 1.96) -> tuple[float, float]:
-    if games == 0:
-        return 0.0, 1.0
-    p = wins / games
-    denom = 1 + z * z / games
-    centre = (p + z * z / (2 * games)) / denom
-    half = z * math.sqrt(p * (1 - p) / games + z * z / (4 * games * games)) / denom
-    return centre - half, centre + half
+wilson = yardstick.wilson
 
 
 def load_window(
@@ -422,6 +554,8 @@ def run(
 
     steps_log, gen_log = run_dir / "steps.jsonl", run_dir / "log.jsonl"
     (run_dir / "config.toml").write_text(Path(config_path).read_text())
+    effective = run_dir / "config.effective.toml"
+    effective.write_text(dump_toml(cfg))
 
     latest = run_dir / "latest.pt"
     model: gridcnn.GridCNN | None = None
@@ -454,7 +588,7 @@ def run(
         shard = run_dir / "shards" / f"gen{gen}.bin"
         if not shard.exists():
             print(f"[gen {gen}] self-play", flush=True)
-            row["selfplay"] = run_selfplay(config_path, weights, shard, seed=1000 + gen)
+            row["selfplay"] = run_selfplay(effective, weights, shard, seed=1000 + gen)
         else:
             stats = shard.with_name(shard.name + ".stats.json")
             row["selfplay"] = json.loads(stats.read_text()) if stats.exists() else {"reused": True}
@@ -485,6 +619,8 @@ def run(
             )
         row["train"] = summary
         row["val_after"] = summary["validation"][-1]
+        row["diagnostics"] = diagnose(model, shard, row["selfplay"], val, device)
+        append_jsonl(run_dir / "diagnostics.jsonl", {"gen": gen + 1, **row["diagnostics"]})
         gen += 1
         ckpt = {
             "model": model.state_dict(),
@@ -497,35 +633,38 @@ def run(
         del window
         torch.mps.empty_cache()
         finish_generation(cfg, run_dir, gen, row, started)
+        if gen == cfg["rules"]["early_gen"] and check_early_kill(cfg, run_dir, total):
+            raise SystemExit(3)
 
 
 def finish_generation(
     cfg: dict[str, Any], run_dir: Path, gen: int, row: dict[str, Any], started: float
 ) -> None:
-    """The progress gate for generation ``gen``'s weights, then its log line."""
+    """The progress gate for generation ``gen``'s weights (every ``gate.every`` generations),
+    then its log line."""
     gate_started = time.perf_counter()
-    print(f"[gen {gen}] progress gate", flush=True)
-    gate = run_progress_gate(cfg, run_dir, gen, run_dir / f"gen{gen}.bin")
-    row["gate"] = {
-        "opponent": cfg["gate"]["opponent"],
-        "games": gate["games"],
-        "score": gate["score_a"],
-        "wilson_lo": gate["wilson_lo"],
-        "wilson_hi": gate["wilson_hi"],
-        "wins": gate["a_wins"],
-        "losses": gate["b_wins"],
-        "cnn_ms_per_move": gate["a_ms_per_move"],
-        "opponent_ms_per_move": gate["b_ms_per_move"],
-    }
+    if gen % cfg["gate"].get("every", 1) == 0:
+        print(f"[gen {gen}] progress gate", flush=True)
+        row["gate"] = run_progress_gate(
+            cfg, run_dir, gen, current_champion(read_jsonl(run_dir / "log.jsonl"))
+        )
     row["gate_seconds"] = time.perf_counter() - gate_started
     row["wall_seconds"] = time.perf_counter() - started
     append_jsonl(run_dir / "log.jsonl", row)
     summary = row.get(
         "train", {"loss_first": float("nan"), "loss_last": float("nan"), "fit_seconds": 0.0}
     )
+    gate = row.get("gate")
+    verdict = (
+        f"lag {gate['lag']['score']:.3f} [{gate['lag']['wilson_lo']:.3f}, "
+        f"{gate['lag']['wilson_hi']:.3f}] vs gen{gate['lag']['opponent_gen']}, "
+        f"best {gate['best']['score']:.3f} vs gen{gate['best']['opponent_gen']}"
+        f"{' PROMOTED' if gate['promoted'] else ''}"
+        if gate
+        else "no gate"
+    )
     print(
-        f"[gen {gen}] gate {row['gate']['score']:.3f} [{row['gate']['wilson_lo']:.3f}, "
-        f"{row['gate']['wilson_hi']:.3f}]  "
+        f"[gen {gen}] {verdict}  "
         f"loss {summary['loss_first']:.3f}->{summary['loss_last']:.3f}  "
         f"selfplay {row.get('selfplay_seconds', 0):.0f}s fit {summary['fit_seconds']:.0f}s "
         f"gate {row['gate_seconds']:.0f}s",
@@ -572,151 +711,197 @@ def fit_first_generation(
     raise RuntimeError(f"every initialization stalled: {attempts}")
 
 
-def curve_report(rows: list[dict[str, Any]], first: int = 5) -> dict[str, Any]:
-    """The learning-curve requirement: from generation ``first`` on, the mean progress-gate score
-    of the last quarter of generations must exceed that of the first quarter by more than the
-    Wilson half-width of one gate."""
-    gates = [(r["gen"], r["gate"]["score"], r["gate"]["games"]) for r in rows if r["gen"] >= first]
-    if len(gates) < 8:
-        return {"generations": len(gates), "rising": None}
-    q = len(gates) // 4
-    q1 = float(np.mean([s for _, s, _ in gates[:q]]))
-    q4 = float(np.mean([s for _, s, _ in gates[-q:]]))
-    n = gates[0][2]
-    lo, hi = wilson(n / 2, n)
-    half = (hi - lo) / 2
-    return {
-        "generations": len(gates),
-        "first_quartile_mean": q1,
-        "last_quartile_mean": q4,
-        "wilson_half_width": half,
-        "rising": q4 - q1 > half,
-    }
+def write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj, indent=2))
 
 
-def best_generation(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Highest raw progress-gate score; ties go to the later generation."""
-    return max(rows, key=lambda r: (r["gate"]["score"], r["gen"]))
-
-
-def final_gate_config(
-    cfg: dict[str, Any], run_dir: Path, weights: Path, *, name: str, openings: int,
-    opening_plies: int, pairs: list[str],
-) -> str:  # fmt: skip
-    fin, gate, play = cfg["final"], cfg["gate"], cfg["play"]
-
-    def cnn(agent: str, sims: int) -> str:
-        return f"""
-[[agent]]
-name = "{agent}"
-kind = "cnn-gumbel"
-weights = "{weights}"
-iterations = {sims}
-considered_actions = {play["considered_actions"]}
-value_scale = {play["value_scale"]}
-max_visit_init = {play["max_visit_init"]}
-chunk_size = {play["chunk_size"]}
-"""
-
-    def preset(agent: str, which: str, iterations: int) -> str:
-        return f"""
-[[agent]]
-name = "{agent}"
-kind = "preset"
-preset = "{which}"
-iterations = {iterations}
-"""
-
-    return (
-        f"""size = {cfg["net"]["size"]}
-openings = {openings}
-opening_plies = {opening_plies}
-max_plies = {gate["max_plies"]}
-seed = {fin["seed"]}
-workers = {fin["workers"]}
-out = "{run_dir / "final-gate" / f"{name}.jsonl"}"
-presets = "{gate["presets"]}"
-pairs = {json.dumps(pairs)}
-"""
-        + cnn("cnn-100", 100)
-        + cnn("cnn-32", 32)
-        + preset("strong-100", "strong", 100)
-        + preset("strong-1000", "strong", 1000)
-        + preset("strong-10000", "strong", 10000)
-        + preset("tuned-100", fin["tuned_preset"], 100)
-    )
-
-
-MAIN_ROWS = ["cnn-100:tuned-100", "cnn-100:strong-100", "cnn-100:strong-1000", "cnn-32:strong-1000"]
-
-
-def final_gate(
-    config_path: Path, run_dir: Path, overrides: list[str] | None = None
-) -> dict[str, Any]:
-    """The pre-declared final gate (plan: edax5-northstar.md, "FINAL kill line"): the best
-    generation by progress-gate score against the MCTS ladder, 200 paired games per row (100 for
-    the anchor), seconds per move next to every score."""
-    cfg = load_config(config_path, overrides)
+def evaluate_run(
+    cfg: dict[str, Any], run_dir: Path, total: int
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The pre-registered rules applied to the run so far."""
     rows = read_jsonl(run_dir / "log.jsonl")
-    best = best_generation(rows)
-    weights = run_dir / f"gen{best['gen']}.bin"
-    out_dir = run_dir / "final-gate"
-    out_dir.mkdir(exist_ok=True)
-    fin = cfg["final"]
-    plans = [
-        ("main", fin["openings"], 2, MAIN_ROWS),
-        ("anchor", fin["anchor_openings"], 2, ["cnn-100:strong-10000"]),
-        ("swap-probe", fin["openings"], 1, ["cnn-100:strong-1000"]),
-    ]  # fmt: skip
-    table: list[dict[str, Any]] = []
-    for name, openings, opening_plies, pairs in plans:
-        conf = out_dir / f"{name}.toml"
-        conf.write_text(
-            final_gate_config(
-                cfg,
-                run_dir,
-                weights,
-                name=name,
-                openings=openings,
-                opening_plies=opening_plies,
-                pairs=pairs,
-            )
+    report = run_dir / "ratings" / "report.json"
+    ratings = json.loads(report.read_text()) if report.exists() else None
+    verdict = yardstick.evaluate_rules(
+        cfg["rules"],
+        cfg["gate"]["lag"],
+        total,
+        rows,
+        ratings,
+        cfg["train"]["stall_check_min_value_std"],
+    )
+    return verdict, rows
+
+
+def check_early_kill(cfg: dict[str, Any], run_dir: Path, total: int) -> bool:
+    """Rule 1: at ``rules.early_gen`` the mean lag-gate score must be at least
+    ``early_min_mean_lag_score``, otherwise the run stops and ``verdict.json`` says KILL_EARLY."""
+    verdict, _ = evaluate_run(cfg, run_dir, total)
+    early = verdict["clauses"]["early"]
+    print(f"[early check] {early}", flush=True)
+    if early["status"] == "fail":
+        write_json(run_dir / "verdict.json", verdict)
+        print("[early check] KILL_EARLY: the run is stopped", flush=True)
+        return True
+    return False
+
+
+def checkpoint_generations(cfg: dict[str, Any], last: int) -> list[int]:
+    """Round-robin checkpoints: generation 0, every ``round_robin.every``-th generation, and the
+    last generation."""
+    every = cfg["round_robin"]["every"]
+    gens = list(range(0, last + 1, every))
+    return gens if gens[-1] == last else [*gens, last]
+
+
+def round_robin_pairs(gens: list[int], max_gap: int) -> list[tuple[str, str]]:
+    """Every pair of checkpoints (later against earlier, so a positive score is progress), or only
+    those at most ``max_gap`` checkpoints apart when ``max_gap`` is positive. The last generation
+    against half of it is always played: rule 3 needs that pair."""
+    half = gens[-1] // 2
+    return [
+        (f"gen{gens[j]}", f"gen{gens[i]}")
+        for i in range(len(gens))
+        for j in range(i + 1, len(gens))
+        if max_gap <= 0 or j - i <= max_gap or (j == len(gens) - 1 and gens[i] == half)
+    ]
+
+
+def round_robin(
+    config_path: Path, run_dir: Path, overrides: list[str], last: int | None = None
+) -> dict[str, Any]:
+    """The end-of-run rating curve: every pair of checkpoints plays ``round_robin.games`` paired
+    games (resumable: finished pairings are skipped), then a Bradley-Terry fit, the pair table,
+    intransitivity and the rating plot are written under ``ratings/``."""
+    cfg = load_config(config_path, overrides)
+    rr = cfg["round_robin"]
+    rows = read_jsonl(run_dir / "log.jsonl")
+    gens = checkpoint_generations(cfg, last if last is not None else max(r["gen"] for r in rows))
+    pairs = round_robin_pairs(gens, rr["max_gap"])
+    out = run_dir / "ratings" / "round-robin.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[(f"gen{g}", run_dir / f"gen{g}.bin", rr["simulations"]) for g in gens],
+        pairs=pairs,
+        openings=rr["games"] // 2,
+        opening_plies=rr["opening_plies"],
+        seed=rr["seed"],
+        workers=rr["workers"],
+        max_plies=rr["max_plies"],
+    )
+    print(f"[round robin] {len(gens)} checkpoints, {len(pairs)} pairings x {rr['games']} games")
+    pair_rows = run_gate_binary(run_dir / "ratings" / "round-robin.toml", text, out, resume=True)
+    report = yardstick.rating_report(pair_rows, [f"gen{g}" for g in gens])
+    write_json(run_dir / "ratings" / "report.json", report)
+    (run_dir / "ratings" / "curve.svg").write_text(rating_plot_svg(report))
+    return report
+
+
+def rating_plot_svg(report: dict[str, Any]) -> str:
+    """Rating against generation with 95 percent error bars, one self-contained SVG (light and
+    dark)."""
+    gens = [int(n[3:]) for n in report["players"]]
+    elo, se = report["elo"], report["se"]
+    w, h, left, right, top, bottom = 720, 360, 64, 20, 24, 44
+    lo = min(e - 1.96 * s for e, s in zip(elo, se, strict=True))
+    hi = max(e + 1.96 * s for e, s in zip(elo, se, strict=True))
+    pad = 0.06 * max(hi - lo, 1.0)
+    lo, hi = lo - pad, hi + pad
+    gmax = max(max(gens), 1)
+
+    def x(g: float) -> float:
+        return left + (w - left - right) * g / gmax
+
+    def y(e: float) -> float:
+        return top + (h - top - bottom) * (1 - (e - lo) / (hi - lo))
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" role="img" '
+        f'aria-label="Bradley-Terry rating against generation">',
+        "<style>:root{--bg:#fff;--ink:#101418;--muted:#6f7a86;--grid:#e3e7eb;--s1:#2a78d6}"
+        "@media(prefers-color-scheme:dark){:root{--bg:#161b21;--ink:#f1f4f7;--muted:#8b96a2;"
+        "--grid:#262d35;--s1:#3987e5}}"
+        "text{fill:var(--muted);font:11px ui-monospace,Menlo,monospace}"
+        ".grid{stroke:var(--grid)}.line{stroke:var(--s1);fill:none;stroke-width:2}"
+        ".bar{stroke:var(--s1);stroke-width:1;opacity:.55}.dot{fill:var(--s1)}</style>",
+        f'<rect width="{w}" height="{h}" fill="var(--bg)"/>',
+    ]
+    ticks = 5
+    for i in range(ticks + 1):
+        e = lo + (hi - lo) * i / ticks
+        parts.append(
+            f'<line class="grid" x1="{left}" x2="{w - right}" y1="{y(e):.1f}" y2="{y(e):.1f}"/>'
         )
-        (out_dir / f"{name}.jsonl").unlink(missing_ok=True)
-        print(f"[final gate] {name}: {pairs}", flush=True)
-        subprocess.run(
-            [str(EXAMPLES / "gonnect_gate"), "--config", str(conf)],
-            cwd=ROOT,
-            env=rust_env(),
-            check=True,
-            capture_output=True,
+        parts.append(f'<text x="{left - 8}" y="{y(e) + 4:.1f}" text-anchor="end">{e:.0f}</text>')
+    for g in gens:
+        parts.append(f'<text x="{x(g):.1f}" y="{h - bottom + 16}" text-anchor="middle">{g}</text>')
+    mid = (left + w - right) / 2
+    parts.append(f'<text x="{mid}" y="{h - 6}" text-anchor="middle">generation</text>')
+    parts.append(f'<text x="14" y="{top + 4}">Elo (generation 0 = 0)</text>')
+    pts = " ".join(f"{x(g):.1f},{y(e):.1f}" for g, e in zip(gens, elo, strict=True))
+    parts.append(f'<polyline class="line" points="{pts}"/>')
+    for g, e, s in zip(gens, elo, se, strict=True):
+        parts.append(
+            f'<line class="bar" x1="{x(g):.1f}" x2="{x(g):.1f}" '
+            f'y1="{y(e - 1.96 * s):.1f}" y2="{y(e + 1.96 * s):.1f}"/>'
         )
-        for r in read_jsonl(out_dir / f"{name}.jsonl"):
-            if r.get("type") == "pairing":
-                table.append(
-                    {
-                        "set": name,
-                        "row": f"{r['a']} vs {r['b']}",
-                        "games": r["games"],
-                        "score": r["score_a"],
-                        "wilson_lo": r["wilson_lo"],
-                        "wilson_hi": r["wilson_hi"],
-                        "cnn_ms_per_move": r["a_ms_per_move"],
-                        "opponent_ms_per_move": r["b_ms_per_move"],
-                        "capped": r["capped"],
-                    }
-                )
-    primary = next(t for t in table if t["row"] == "cnn-100 vs tuned-100")
-    strong = next(t for t in table if t["row"] == "cnn-100 vs strong-1000" and t["set"] == "main")
+        parts.append(f'<circle class="dot" cx="{x(g):.1f}" cy="{y(e):.1f}" r="3.5"/>')
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def verdict_command(
+    config_path: Path, run_dir: Path, overrides: list[str], total: int | None
+) -> dict[str, Any]:
+    cfg = load_config(config_path, overrides)
+    verdict, _ = evaluate_run(cfg, run_dir, total or cfg["loop"]["generations"])
+    write_json(run_dir / "verdict.json", verdict)
+    return verdict
+
+
+def sanity_gate(config_path: Path, run_dir: Path, overrides: list[str]) -> dict[str, Any]:
+    """INFORMATIONAL ONLY. The champion against MCTS presets at fixed iterations, once, at the end
+    of a run. Nothing in the coordinator, the rules or the verdict reads this file: it gates,
+    promotes and stops nothing."""
+    cfg = load_config(config_path, overrides)
+    san = cfg["sanity"]
+    champion = current_champion(read_jsonl(run_dir / "log.jsonl"))
+    name = f"gen{champion}"
+    out = run_dir / "sanity" / "sanity.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[(name, run_dir / f"gen{champion}.bin", san["simulations"])],
+        pairs=[(name, o["name"]) for o in san["opponent"]],
+        openings=san["openings"],
+        opening_plies=san["opening_plies"],
+        seed=san["seed"],
+        workers=san["workers"],
+        max_plies=san["max_plies"],
+    )
+    text = text.replace(f'out = "{out}"', f'out = "{out}"\npresets = "{san["presets"]}"')
+    for o in san["opponent"]:
+        text += f"""
+[[agent]]
+name = "{o["name"]}"
+kind = "preset"
+preset = "{o["preset"]}"
+iterations = {o["iterations"]}
+"""
+    rows = run_gate_binary(run_dir / "sanity" / "sanity.toml", text, out)
     report = {
-        "best_generation": best["gen"],
-        "best_progress_gate": best["gate"]["score"],
-        "curve": curve_report(rows),
-        "rows": table,
-        "kill_line_passed": primary["score"] > 0.5 and primary["wilson_lo"] > 0.5,
-        "beats_strong_1000_at_100_sims": strong["score"] > 0.5 and strong["wilson_lo"] > 0.5,
-    }
-    (out_dir / "report.json").write_text(json.dumps(report, indent=2))
+        "informational": True,
+        "champion": champion,
+        "rows": [
+            {"vs": r["b"], "games": r["games"], "score": r["score_a"],
+             "wilson_lo": r["wilson_lo"], "wilson_hi": r["wilson_hi"],
+             "ms_per_move": r["a_ms_per_move"], "opponent_ms_per_move": r["b_ms_per_move"]}
+            for r in rows
+        ],
+    }  # fmt: skip
+    write_json(run_dir / "sanity" / "report.json", report)
     return report
 
 
@@ -763,22 +948,20 @@ def smoke_checks(config_path: Path, run_dir: Path) -> dict[str, Any]:
     ).read_bytes()
 
     weights = run_dir / f"gen{gen}.bin"
-    conf = run_dir / "gate" / "self-match.toml"
-    text = gate_config_text(cfg, run_dir, gen, weights).replace(
-        f"gen{gen}.jsonl", "self-match.jsonl"
+    gate = cfg["gate"]
+    out = run_dir / "gate" / "self-match.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[("cnn", weights, gate["simulations"]), ("cnn-b", weights, gate["simulations"])],
+        pairs=[("cnn", "cnn-b")],
+        openings=gate["games"] // 2,
+        opening_plies=gate["opening_plies"],
+        seed=gate["seed"],
+        workers=gate["workers"],
+        max_plies=gate["max_plies"],
     )
-    twin = text[text.index('[[agent]]\nname = "cnn"') :].replace('name = "cnn"', 'name = "cnn-b"')
-    conf.write_text(text + "\n" + twin)
-    (run_dir / "gate" / "self-match.jsonl").unlink(missing_ok=True)
-    subprocess.run(
-        [str(EXAMPLES / "gonnect_gate"), "--config", str(conf), "--pair", "cnn:cnn-b"],
-        cwd=ROOT,
-        env=rust_env(),
-        check=True,
-        capture_output=True,
-    )
-    rows = read_jsonl(run_dir / "gate" / "self-match.jsonl")
-    row = [r for r in rows if r.get("type") == "pairing"][-1]
+    row = run_gate_binary(run_dir / "gate" / "self-match.toml", text, out)[-1]
     report["self_match"] = {"games": row["games"], "a_wins": row["a_wins"], "b_wins": row["b_wins"]}
 
     checks = {
@@ -796,28 +979,36 @@ def smoke_checks(config_path: Path, run_dir: Path) -> dict[str, Any]:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--config", default=str(ROOT / "games/gonnect/cnn/az-7x7.toml"))
+    p.add_argument("--config", default=str(ROOT / "games/gonnect/cnn/az-9x9.toml"))
     p.add_argument("--set", action="append", default=[], help="section.key=value override")
     p.add_argument("--out-dir")
     p.add_argument("--generations", type=int)
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
-    p.add_argument("--final-gate", action="store_true", help="the pre-declared final gate")
+    p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
+    p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
+    p.add_argument("--sanity-gate", action="store_true", help="informational MCTS-preset check")
     args = p.parse_args()
-    if args.final_gate:
-        run_dir = Path(args.out_dir)
-        report = final_gate(
-            Path(args.config), run_dir if run_dir.is_absolute() else ROOT / run_dir, args.set
-        )
-        print(json.dumps(report, indent=2))
+
+    def run_dir() -> Path:
+        d = Path(args.out_dir)
+        return d if d.is_absolute() else ROOT / d
+
+    config = Path(args.config)
+    if args.round_robin:
+        report = round_robin(config, run_dir(), args.set)
+        print(json.dumps({k: report[k] for k in ("players", "elo", "se", "cycles")}, indent=2))
+        raise SystemExit(0)
+    if args.verdict:
+        print(json.dumps(verdict_command(config, run_dir(), args.set, args.generations), indent=2))
+        raise SystemExit(0)
+    if args.sanity_gate:
+        print(json.dumps(sanity_gate(config, run_dir(), args.set), indent=2))
         raise SystemExit(0)
     if args.smoke_checks:
-        run_dir = Path(args.out_dir)
-        report = smoke_checks(
-            Path(args.config), run_dir if run_dir.is_absolute() else ROOT / run_dir
-        )
+        report = smoke_checks(config, run_dir())
         print(json.dumps(report, indent=2))
         raise SystemExit(0 if report["pass"] else 1)
-    run(Path(args.config), args.set, Path(args.out_dir) if args.out_dir else None, args.generations)
+    run(config, args.set, Path(args.out_dir) if args.out_dir else None, args.generations)
 
 
 if __name__ == "__main__":

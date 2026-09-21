@@ -12,8 +12,8 @@ from pathlib import Path
 
 import numpy as np
 
-MAGIC = b"GNCSHRD1"
-HEADER_BYTES = 8 + 3 * 4
+MAGIC = b"GNCSHRD2"
+HEADER_BYTES = 8 + 4 * 4
 IN_PLANES = 7
 FLAG_BLACK_TO_MOVE = 1
 FLAG_SWAP_LEGAL = 2
@@ -24,18 +24,24 @@ def num_actions(size: int) -> int:
     return size * size + 2
 
 
+def mask_words(size: int) -> int:
+    """64-bit words per cell mask: cell ``c`` is bit ``c % 64`` of word ``c // 64``."""
+    return -(-size * size // 64)
+
+
 def record_dtype(size: int) -> np.dtype:
+    words = mask_words(size)
     return np.dtype(
         [
-            ("black", "<u8"),
-            ("white", "<u8"),
-            ("ko", "<u8"),
-            ("legal", "<u8"),
+            ("black", "<u8", (words,)),
+            ("white", "<u8", (words,)),
+            ("ko", "<u8", (words,)),
+            ("legal", "<u8", (words,)),
             ("value", "<f4"),
             ("game", "<u4"),
-            ("ply", "u1"),
+            ("ply", "<u2"),
             ("flags", "u1"),
-            ("pad", "<u2"),
+            ("pad", "u1"),
             ("policy", "<f4", (num_actions(size),)),
         ]
     )
@@ -44,10 +50,10 @@ def record_dtype(size: int) -> np.dtype:
 def read_shard(path: str | Path) -> tuple[int, np.ndarray]:
     raw = Path(path).read_bytes()
     if raw[:8] != MAGIC:
-        raise ValueError(f"{path}: not a GNCSHRD1 shard")
-    size, actions, per = struct.unpack_from("<3I", raw, 8)
+        raise ValueError(f"{path}: not a GNCSHRD2 shard")
+    size, actions, per, words = struct.unpack_from("<4I", raw, 8)
     dtype = record_dtype(size)
-    if actions != num_actions(size) or per != dtype.itemsize:
+    if actions != num_actions(size) or per != dtype.itemsize or words != mask_words(size):
         raise ValueError(f"{path}: header disagrees with the record layout")
     body = len(raw) - HEADER_BYTES
     if body % per:
@@ -56,7 +62,9 @@ def read_shard(path: str | Path) -> tuple[int, np.ndarray]:
 
 
 def _bits(mask: np.ndarray, cells: int) -> np.ndarray:
-    return ((mask[:, None] >> np.arange(cells, dtype=np.uint64)) & np.uint64(1)).astype(np.uint8)
+    """``(N, words)`` little-endian u64 masks -> ``(N, cells)`` uint8 bits (cell ``c`` = bit ``c``)."""
+    as_bytes = np.ascontiguousarray(mask).astype("<u8", copy=False).view(np.uint8)
+    return np.unpackbits(as_bytes.reshape(len(mask), -1), axis=1, bitorder="little")[:, :cells]
 
 
 def decode_planes(records: np.ndarray, size: int) -> np.ndarray:

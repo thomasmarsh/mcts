@@ -4,16 +4,18 @@
 //!
 //! ```text
 //! LIBRARY_PATH=/opt/homebrew/lib cargo run --release --example gonnect_gate -p game-gonnect -- \
-//!     [--config games/gonnect/ntuple/ladder.toml] [--set key=value]... [--pair A:B]...
+//!     [--config games/gonnect/ntuple/ladder.toml] [--set key=value]... [--pair A:B]... [--resume]
 //! ```
 //!
 //! Every pairing plays each of `openings` seeded random openings from both seats
 //! (`2 * openings` games); games run on `workers` threads. `[[agent]]` tables
 //! define the field; `--pair` (repeatable) or the config's `pairs = ["A:B", ...]` pick the
 //! pairings, and with neither every unordered pair plays. One JSONL row per
-//! game and one per pairing is appended to `out` as the run goes.
+//! game and one per pairing is appended to `out` as the run goes; `--resume` skips pairings
+//! already summarised in `out` (the game loop itself is `common::run_pairings`, which any game's
+//! example can call with its own agent makers).
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use game_gonnect::sized::SizedGonnect;
 use game_gonnect::td_cells::GonnectCells;
@@ -27,7 +29,7 @@ use rand::{Rng, SeedableRng};
 use serde::Deserialize;
 
 mod common;
-use common::{load_toml_config, open_append, paired_match, Agent, Maker, PairedConfig};
+use common::{load_toml_config, run_pairings, Agent, Maker, PairedConfig};
 
 #[derive(Deserialize, Clone, Debug)]
 #[cfg_attr(not(feature = "cnn"), allow(dead_code))]
@@ -61,7 +63,8 @@ struct Config {
     #[serde(default = "default_size")]
     size: usize,
     out: String,
-    presets: String,
+    /// The MCTS preset file; only needed by `preset` agents (a net-vs-net gate has none).
+    presets: Option<String>,
     #[serde(default)]
     pairs: Vec<String>,
     agent: Vec<AgentSpec>,
@@ -90,14 +93,14 @@ impl<const N: usize> Search for RandomPlayer<N> {
     }
 }
 
-fn maker<const N: usize>(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<SizedGonnect<N>> {
+fn maker<const N: usize>(spec: &AgentSpec, presets: &Option<Arc<PresetTable>>) -> Maker<SizedGonnect<N>> {
     type G<const N: usize> = SizedGonnect<N>;
     match spec.kind.as_str() {
         "random" => Box::new(|seed| -> Agent<G<N>> {
             Box::new(RandomPlayer::<N> { rng: SmallRng::seed_from_u64(seed), name: "random".into() })
         }),
         "preset" => {
-            let presets = presets.clone();
+            let presets = presets.clone().expect("preset agents need `presets` in the config");
             let id = spec.preset.clone().expect("preset agents need `preset`");
             let iterations = spec.iterations.expect("preset agents need `iterations`");
             Box::new(move |seed| -> Agent<G<N>> {
@@ -155,14 +158,15 @@ fn maker<const N: usize>(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<
 }
 
 fn main() {
-    let (mut config, mut sets, mut pairs) =
-        ("games/gonnect/ntuple/ladder.toml".to_string(), Vec::new(), Vec::<(String, String)>::new());
+    let (mut config, mut sets, mut pairs, mut resume) =
+        ("games/gonnect/ntuple/ladder.toml".to_string(), Vec::new(), Vec::<(String, String)>::new(), false);
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| panic!("{arg} needs a value"));
         match arg.as_str() {
             "--config" => config = val(),
             "--set" => sets.push(val()),
+            "--resume" => resume = true,
             "--pair" => {
                 let v = val();
                 let (a, b) = v.split_once(':').expect("--pair takes A:B");
@@ -173,18 +177,20 @@ fn main() {
     }
     let cfg: Config = load_toml_config(&config, &sets);
     match cfg.size {
-        5 => run::<5>(cfg, pairs),
-        7 => run::<7>(cfg, pairs),
-        9 => run::<9>(cfg, pairs),
+        5 => run::<5>(cfg, pairs, resume),
+        7 => run::<7>(cfg, pairs, resume),
+        9 => run::<9>(cfg, pairs, resume),
         n => panic!("size {n} is not compiled in (5, 7, 9)"),
     }
 }
 
-fn run<const N: usize>(cfg: Config, mut pairs: Vec<(String, String)>) {
-    let presets = Arc::new(
-        PresetTable::load_from_path(std::path::Path::new(&cfg.presets))
-            .unwrap_or_else(|e| panic!("{}: {e}", cfg.presets)),
-    );
+fn run<const N: usize>(cfg: Config, mut pairs: Vec<(String, String)>, resume: bool) {
+    let presets = cfg.presets.as_ref().map(|path| {
+        Arc::new(
+            PresetTable::load_from_path(std::path::Path::new(path))
+                .unwrap_or_else(|e| panic!("{path}: {e}")),
+        )
+    });
     let makers: Vec<(String, Maker<SizedGonnect<N>>)> =
         cfg.agent.iter().map(|s| (s.name.clone(), maker::<N>(s, &presets))).collect();
     if pairs.is_empty() {
@@ -200,9 +206,6 @@ fn run<const N: usize>(cfg: Config, mut pairs: Vec<(String, String)>) {
             }
         }
     }
-    let find = |n: &str| {
-        makers.iter().find(|(name, _)| name == n).unwrap_or_else(|| panic!("no agent {n:?}"))
-    };
     let paired = PairedConfig {
         openings: cfg.openings,
         opening_plies: cfg.opening_plies,
@@ -210,31 +213,5 @@ fn run<const N: usize>(cfg: Config, mut pairs: Vec<(String, String)>) {
         seed: cfg.seed,
         workers: cfg.workers,
     };
-    let out = Mutex::new(open_append(&cfg.out));
-    for (a, b) in &pairs {
-        let (an, am) = find(a);
-        let (bn, bm) = find(b);
-        let t = std::time::Instant::now();
-        let r = paired_match::<SizedGonnect<N>>(an, am, bn, bm, &paired, &out);
-        let row = r.summary_json(an, bn);
-        {
-            use std::io::Write;
-            let mut f = out.lock().unwrap();
-            writeln!(f, "{row}").unwrap();
-            f.flush().unwrap();
-        }
-        let (score, (lo, hi)) = r.tally.win_rate_ci(1.96);
-        println!(
-            "{an:>14} vs {bn:<14} {:>3} games  W-L-D {}-{}-{}  score {score:.3} [{lo:.3}, {hi:.3}]  \
-             capped {}  {:.1} / {:.1} ms per move  ({:.0}s)",
-            r.tally.total(),
-            r.tally.wins,
-            r.tally.losses,
-            r.tally.draws,
-            r.capped,
-            r.ms_per_move(0),
-            r.ms_per_move(1),
-            t.elapsed().as_secs_f64()
-        );
-    }
+    run_pairings::<SizedGonnect<N>>(&makers, &pairs, &paired, &cfg.out, resume);
 }
