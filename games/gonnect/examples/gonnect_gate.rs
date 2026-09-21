@@ -38,6 +38,12 @@ struct AgentSpec {
     model_dir: Option<String>,
     c_puct: Option<f32>,
     prior_temperature: Option<f32>,
+    /// `cnn-gumbel` / `cnn-det`: the `grid-cnn` weights file; `iterations` is the simulation count.
+    weights: Option<String>,
+    considered_actions: Option<usize>,
+    value_scale: Option<f32>,
+    max_visit_init: Option<i32>,
+    chunk_size: Option<usize>,
 }
 
 fn default_size() -> usize {
@@ -127,7 +133,23 @@ fn maker<const N: usize>(spec: &AgentSpec, presets: &Arc<PresetTable>) -> Maker<
                 }
             })
         }
-        other => panic!("unknown agent kind {other:?}"),
+        #[cfg(feature = "cnn")]
+        "cnn-gumbel" | "cnn-det" => {
+            use game_gonnect::cnn::agent::{CnnAgent, Kind};
+            let path = spec.weights.clone().expect("cnn agents need `weights`");
+            let weights = Arc::new(grid_cnn::Weights::load(&path).unwrap_or_else(|e| panic!("{path}: {e}")));
+            let cfg = mcts_batch::Config {
+                num_simulations: spec.iterations.expect("cnn agents need `iterations`"),
+                num_considered_actions: spec.considered_actions.unwrap_or(16),
+                value_scale: spec.value_scale.unwrap_or(0.1),
+                max_visit_init: spec.max_visit_init.unwrap_or(50),
+            };
+            let kind = if spec.kind == "cnn-gumbel" { Kind::Gumbel } else { Kind::Deterministic };
+            let (name, chunk) = (spec.name.clone(), spec.chunk_size.unwrap_or(64));
+            // The agent is a deterministic function of the position, so the per-game seed is unused.
+            Box::new(move |_seed| -> Agent<G<N>> { Box::new(CnnAgent::<N>::new(&name, &weights, cfg, kind, chunk, 0x51)) })
+        }
+        other => panic!("unknown agent kind {other:?} (cnn agents need the `cnn` feature)"),
     }
 }
 

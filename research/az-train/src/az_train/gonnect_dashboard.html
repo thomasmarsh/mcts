@@ -1,0 +1,229 @@
+<title>Gonnect Run Monitor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #f3f5f7; --panel: #ffffff; --ink: #101418; --ink2: #48515c; --muted: #6f7a86;
+  --grid: #e3e7eb; --rule: #d5dbe1;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --good: #1d7a4d; --warn: #9a6700;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1317; --panel: #161b21; --ink: #f1f4f7; --ink2: #b4bdc7; --muted: #8b96a2;
+    --grid: #262d35; --rule: #333c46; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --good: #4fbf86; --warn: #d9a441;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1317; --panel: #161b21; --ink: #f1f4f7; --ink2: #b4bdc7; --muted: #8b96a2;
+  --grid: #262d35; --rule: #333c46; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --good: #4fbf86; --warn: #d9a441;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); margin: 0;
+  padding-inline: 20px; padding-block: 24px 48px; }
+main { max-width: 1080px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--ink2); font-size: 13px; margin: 4px 0 0; max-width: 62ch; }
+.pill { font: 500 12px var(--mono); padding: 4px 10px; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink2); white-space: nowrap; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 12px 14px; }
+.tile .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.tile .v { font: 500 24px var(--mono); margin-top: 4px; font-variant-numeric: tabular-nums; }
+.tile .n { font-size: 12px; color: var(--ink2); margin-top: 2px; }
+.panel { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 16px 16px 10px; }
+.panel h2 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.panel p { font-size: 12px; color: var(--ink2); margin: 0 0 8px; max-width: 80ch; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink2); margin: 4px 0 2px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 6px 8px; font: 12px var(--mono); color: var(--ink); white-space: nowrap; z-index: 2;
+  box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+.tip b { font-weight: 500; }
+svg text { fill: var(--muted); font: 11px var(--mono); }
+details { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 10px 14px; }
+summary { cursor: pointer; font-size: 13px; font-weight: 500; }
+summary:focus-visible { outline: 2px solid var(--s1); outline-offset: 3px; }
+.tbl { overflow-x: auto; margin-top: 8px; }
+table { border-collapse: collapse; font: 12px var(--mono); width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; }
+th:first-child, td:first-child { text-align: left; }
+.foot { font-size: 12px; color: var(--muted); }
+</style>
+<main>
+  <header>
+    <div>
+      <h1>Gonnect 7x7 CNN, self-play run</h1>
+      <p class="sub">128 channels x 6 residual blocks, trained from scratch by Gumbel self-play. Each generation plays 256 games, takes 1000 batch-32 steps, then plays 40 games against the MCTS preset strong-100.</p>
+    </div>
+    <span class="pill" id="status">loading</span>
+  </header>
+  <section class="tiles" id="tiles"></section>
+  <section class="panel">
+    <h2>Progress gate</h2>
+    <p>Score of the new net (100 simulations, about 0.27 s per move) against strong-100, 40 paired games per generation on the same openings. Band is the Wilson 95% interval. Above the dashed line the net wins.</p>
+    <div class="chart" id="c-gate"></div>
+  </section>
+  <section class="grid">
+    <div class="panel"><h2>Training loss</h2><p>Mean of the last 100 steps of each generation.</p>
+      <div class="legend"><span><i style="background:var(--s2)"></i>policy cross-entropy</span><span><i style="background:var(--s1)"></i>value MSE</span></div>
+      <div class="chart" id="c-loss"></div></div>
+    <div class="panel"><h2>Held-out policy top-1</h2><p>Share of held-out positions where the net's best move matches the search's, 24 games not trained on.</p>
+      <div class="chart" id="c-top1"></div></div>
+    <div class="panel"><h2>Game length</h2><p>Mean plies per self-play game; the MCTS ladder's games last about 27.</p>
+      <div class="chart" id="c-plies"></div></div>
+    <div class="panel"><h2>Black wins and swaps</h2><p>Share of self-play games Black wins, and games where White swaps at ply 2.</p>
+      <div class="legend"><span><i style="background:var(--s1)"></i>Black wins</span><span><i style="background:var(--s3)"></i>swap played</span></div>
+      <div class="chart" id="c-color"></div></div>
+  </section>
+  <section class="panel">
+    <h2>Time per generation</h2>
+    <p>Seconds spent in self-play, fitting, and the progress gate.</p>
+    <div class="legend"><span><i style="background:var(--s1)"></i>self-play</span><span><i style="background:var(--s2)"></i>fit</span><span><i style="background:var(--s3)"></i>gate</span></div>
+    <div class="chart" id="c-time"></div>
+  </section>
+  <details><summary>Table of generations</summary><div class="tbl" id="tbl"></div></details>
+  <p class="foot" id="foot"></p>
+</main>
+<script>
+const DATA = /*__DATA__*/null;
+const G = DATA.gens, N = DATA.total;
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, d = 3) => (v == null || Number.isNaN(v) ? "-" : v.toFixed(d));
+const mean = (a) => a.reduce((s, x) => s + x, 0) / Math.max(1, a.length);
+
+function mmss(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+function tiles() {
+  const last = G[G.length - 1];
+  const el = document.getElementById("tiles");
+  if (!last) { el.innerHTML = ""; return; }
+  const elapsed = G.reduce((s, g) => s + g.wall, 0);
+  const recent = G.slice(-10).map((g) => g.wall);
+  const eta = mean(recent) * (N - last.gen);
+  const best = G.reduce((b, g) => (g.score >= b.score ? g : b), G[0]);
+  const c = DATA.curve;
+  let curve = "needs 8 gates past gen 5", note = "";
+  if (c.rising !== null) {
+    curve = c.rising ? "rising" : "flat";
+    note = `quartiles ${fmt(c.first_quartile_mean, 2)} to ${fmt(c.last_quartile_mean, 2)}, needs +${fmt(c.wilson_half_width, 2)}`;
+  }
+  const items = [
+    ["Generation", `${last.gen} / ${N}`, `${G.reduce((s, g) => s + (g.positions || 0), 0).toLocaleString()} positions`],
+    ["Elapsed", mmss(elapsed), last.gen < N ? `about ${mmss(eta)} left` : "done"],
+    ["Latest gate", fmt(last.score, 3), `[${fmt(last.lo, 2)}, ${fmt(last.hi, 2)}] vs strong-100`],
+    ["Best gate", fmt(best.score, 3), `generation ${best.gen}`],
+    ["Learning curve", curve, note],
+  ];
+  el.innerHTML = items.map(([k, v, n]) => `<div class="tile"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
+  document.getElementById("status").textContent = last.gen < N ? `generation ${last.gen} of ${N} done` : "run complete";
+}
+
+/* A small SVG chart kit: one shared x scale (generation), hover crosshair with a tooltip. */
+function makeChart(id, spec) {
+  const host = document.getElementById(id);
+  const H = spec.height || 220, M = { l: 44, r: 12, t: 10, b: 24 };
+  function draw() {
+    host.innerHTML = "";
+    const W = Math.max(260, host.clientWidth);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const xs = G.map((g) => g.gen);
+    const x0 = 1, x1 = Math.max(N > 30 ? 20 : N, Math.max(...xs, 2));
+    const xdom = spec.bars ? [0.5, Math.max(...xs, 2) + 0.5] : [x0, x1];
+    const sx = (v) => M.l + ((v - xdom[0]) / (xdom[1] - xdom[0])) * iw;
+    const all = spec.series.flatMap((s) => G.flatMap((g) => [s.get(g), s.lo && s.lo(g), s.hi && s.hi(g)]).filter((v) => v != null));
+    let y0 = spec.y0 ?? Math.min(...all, 0), y1 = spec.y1 ?? Math.max(...all, 1);
+    if (spec.stack) y1 = Math.max(...G.map((g) => spec.series.reduce((s, k) => s + k.get(g), 0)));
+    if (spec.y1 == null) y1 = y1 + (y1 - y0) * 0.06;
+    const sy = (v) => M.t + ih - ((v - y0) / (y1 - y0 || 1)) * ih;
+    const ticks = (a, b, n) => { const st = (b - a) / n; return Array.from({ length: n + 1 }, (_, i) => a + st * i); };
+    let out = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${spec.label}">`;
+    ticks(y0, y1, 4).forEach((t) => {
+      out += `<line x1="${M.l}" x2="${W - M.r}" y1="${sy(t)}" y2="${sy(t)}" stroke="${css("--grid")}" stroke-width="1"/>`;
+      out += `<text x="${M.l - 6}" y="${sy(t) + 4}" text-anchor="end">${spec.yfmt ? spec.yfmt(t) : t.toFixed(spec.yd ?? 2)}</text>`;
+    });
+    const step = Math.max(1, Math.ceil((xdom[1] - xdom[0]) / 8 / 5) * 5) || 1;
+    for (let v = step; v <= xdom[1]; v += step) out += `<text x="${sx(v)}" y="${H - 6}" text-anchor="middle">${v}</text>`;
+    if (spec.ref != null) out += `<line x1="${M.l}" x2="${W - M.r}" y1="${sy(spec.ref)}" y2="${sy(spec.ref)}" stroke="${css("--muted")}" stroke-dasharray="4 4" stroke-width="1"/>`;
+    if (spec.bars) {
+      const bw = Math.max(2, iw / (xdom[1] - xdom[0]) - 2);
+      G.forEach((g) => {
+        let acc = 0;
+        spec.series.forEach((s) => {
+          const v = s.get(g);
+          const yt = sy(acc + v), yb = sy(acc);
+          out += `<rect x="${sx(g.gen) - bw / 2}" y="${yt}" width="${bw}" height="${Math.max(0, yb - yt - 1)}" fill="${css(s.color)}"/>`;
+          acc += v;
+        });
+      });
+    } else {
+      spec.series.forEach((s) => {
+        if (s.lo) {
+          const top = G.map((g) => `${sx(g.gen)},${sy(s.hi(g))}`);
+          const bot = G.map((g) => `${sx(g.gen)},${sy(s.lo(g))}`).reverse();
+          out += `<polygon points="${top.concat(bot).join(" ")}" fill="${css(s.color)}" opacity="0.14"/>`;
+        }
+        const pts = G.map((g) => `${sx(g.gen)},${sy(s.get(g))}`).join(" ");
+        out += `<polyline points="${pts}" fill="none" stroke="${css(s.color)}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+        const g = G[G.length - 1];
+        if (g) out += `<circle cx="${sx(g.gen)}" cy="${sy(s.get(g))}" r="4" fill="${css(s.color)}" stroke="${css("--panel")}" stroke-width="2"/>`;
+      });
+    }
+    out += `<line id="${id}-x" y1="${M.t}" y2="${M.t + ih}" stroke="${css("--muted")}" stroke-width="1" visibility="hidden"/>`;
+    out += `<rect x="${M.l}" y="${M.t}" width="${iw}" height="${ih}" fill="transparent" id="${id}-hit"/></svg>`;
+    host.innerHTML = out + `<div class="tip" id="${id}-tip" hidden></div>`;
+    const svg = host.querySelector("svg"), tip = host.querySelector(".tip"), cross = host.querySelector(`#${id}-x`);
+    host.querySelector(`#${id}-hit`).addEventListener("pointermove", (e) => {
+      const r = svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * W;
+      const gen = xdom[0] + ((px - M.l) / iw) * (xdom[1] - xdom[0]);
+      const g = G.reduce((b, c) => (Math.abs(c.gen - gen) < Math.abs(b.gen - gen) ? c : b), G[0]);
+      if (!g) return;
+      cross.setAttribute("x1", sx(g.gen)); cross.setAttribute("x2", sx(g.gen)); cross.setAttribute("visibility", "visible");
+      tip.innerHTML = `<b>generation ${g.gen}</b><br>` + spec.series.map((s) => `${s.name}: ${(spec.tfmt || ((v) => v.toFixed(3)))(s.get(g), g, s)}`).join("<br>");
+      tip.hidden = false;
+      const left = (sx(g.gen) / W) * r.width;
+      tip.style.left = Math.min(left + 12, r.width - tip.offsetWidth - 4) + "px";
+      tip.style.top = "8px";
+    });
+    host.querySelector(`#${id}-hit`).addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+  }
+  draw();
+  new ResizeObserver(draw).observe(host);
+}
+
+function build() {
+  tiles();
+  if (!G.length) { document.getElementById("foot").textContent = "No generations logged yet."; return; }
+  makeChart("c-gate", { label: "Progress gate score by generation", height: 260, y0: 0, y1: 1, ref: 0.5, yd: 1,
+    series: [{ name: "score", color: "--s1", get: (g) => g.score, lo: (g) => g.lo, hi: (g) => g.hi }],
+    tfmt: (v, g) => `${v.toFixed(3)} [${g.lo.toFixed(2)}, ${g.hi.toFixed(2)}]  ${g.cnn_ms.toFixed(0)} ms/move` });
+  makeChart("c-loss", { label: "Training loss", series: [
+    { name: "policy CE", color: "--s2", get: (g) => g.policy_loss },
+    { name: "value MSE", color: "--s1", get: (g) => g.value_loss }] });
+  makeChart("c-top1", { label: "Held-out policy top-1", y0: 0, yfmt: (t) => (t * 100).toFixed(0) + "%",
+    series: [{ name: "top-1", color: "--s1", get: (g) => g.val_policy_top1 }], tfmt: (v) => (v * 100).toFixed(1) + "%" });
+  makeChart("c-plies", { label: "Mean plies per game", yd: 0, series: [{ name: "plies", color: "--s1", get: (g) => g.plies }], tfmt: (v) => v.toFixed(1) });
+  makeChart("c-color", { label: "Black wins and swap rate", y0: 0, y1: 1, yfmt: (t) => (t * 100).toFixed(0) + "%", series: [
+    { name: "Black wins", color: "--s1", get: (g) => g.black }, { name: "swap", color: "--s3", get: (g) => g.swap }],
+    tfmt: (v) => (v * 100).toFixed(1) + "%" });
+  makeChart("c-time", { label: "Seconds per generation", bars: true, stack: true, y0: 0, yd: 0, series: [
+    { name: "self-play", color: "--s1", get: (g) => g.t_selfplay }, { name: "fit", color: "--s2", get: (g) => g.t_fit },
+    { name: "gate", color: "--s3", get: (g) => g.t_gate }], tfmt: (v) => v.toFixed(0) + " s" });
+  const rows = G.slice().reverse().slice(0, 40);
+  document.getElementById("tbl").innerHTML = `<table><thead><tr><th>gen</th><th>gate</th><th>wilson lo</th><th>wilson hi</th><th>policy CE</th><th>value MSE</th><th>top-1</th><th>plies</th><th>Black</th><th>swap</th><th>wall s</th></tr></thead><tbody>` +
+    rows.map((g) => `<tr><td>${g.gen}</td><td>${fmt(g.score)}</td><td>${fmt(g.lo, 2)}</td><td>${fmt(g.hi, 2)}</td><td>${fmt(g.policy_loss)}</td><td>${fmt(g.value_loss)}</td><td>${fmt(g.val_policy_top1)}</td><td>${fmt(g.plies, 1)}</td><td>${fmt(g.black, 2)}</td><td>${fmt(g.swap, 3)}</td><td>${g.wall.toFixed(0)}</td></tr>`).join("") + `</tbody></table>`;
+  document.getElementById("foot").textContent = `Snapshot of ${DATA.steps_done.toLocaleString()} optimizer steps across ${G.length} generations. Table shows the latest 40.`;
+}
+build();
+</script>

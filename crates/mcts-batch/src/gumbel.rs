@@ -148,6 +148,17 @@ pub fn gumbel_explore<Env: Clone + Default + Sync + Send>(
     envs: &[Env],
     rng: &mut SmallRng,
 ) -> Tree<Env> {
+    gumbel_explore_with_noise(cfg, oracle, envs, rng).0
+}
+
+/// [`gumbel_explore`], also returning each tree's root Gumbel noise (`noise[bid][aid]`), which
+/// [`gumbel_selected_action`] needs to name the search's final action.
+pub fn gumbel_explore_with_noise<Env: Clone + Default + Sync + Send>(
+    cfg: &Config,
+    oracle: &dyn EnvOracle<Env>,
+    envs: &[Env],
+    rng: &mut SmallRng,
+) -> (Tree<Env>, Vec<Vec<f32>>) {
     let mut tree = create_tree(oracle, envs, cfg.num_simulations);
     let a = tree.num_actions();
     let b = tree.batch_size();
@@ -164,5 +175,29 @@ pub fn gumbel_explore<Env: Clone + Default + Sync + Send>(
         let frontier = eval_batch(oracle, &mut tree, simnum, &parent_frontier);
         crate::search::backpropagate_batch(&mut tree, &frontier);
     }
-    tree
+    (tree, gumbel)
+}
+
+/// The action Sequential Halving leaves standing at the root: among the root actions with the
+/// most visits (the last survivors), the one with the highest `gumbel + log prior + sigma(q)`
+/// (Danihelka et al. 2022, the action a Gumbel search plays; `gumbel` is that tree's
+/// [`gumbel_explore_with_noise`] noise row).
+pub fn gumbel_selected_action<Env: Clone>(cfg: &Config, tree: &Tree<Env>, bid: usize, gumbel: &[f32]) -> u16 {
+    let visits = tree.child_visits(bid, ROOT);
+    let most = visits.iter().copied().max().unwrap_or(0);
+    let score = target_policy(cfg, tree, bid, ROOT);
+    let mut best = NO_ACTION;
+    let mut best_score = f32::NEG_INFINITY;
+    for aid in 0..tree.num_actions() {
+        if visits[aid] != most || !tree.is_valid_action(bid, ROOT, aid as u16) {
+            continue;
+        }
+        let s = gumbel[aid] + score[aid];
+        if best == NO_ACTION || s > best_score {
+            best = aid as u16;
+            best_score = s;
+        }
+    }
+    debug_assert_ne!(best, NO_ACTION, "a root with a legal action has a most-visited legal action");
+    best
 }

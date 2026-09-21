@@ -1,6 +1,8 @@
 #![allow(unused)]
 
 pub mod book;
+#[cfg(feature = "cnn")]
+pub mod cnn;
 pub mod sized;
 pub mod td_cells;
 

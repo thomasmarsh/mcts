@@ -1,0 +1,72 @@
+# Gonnect 7x7 AlphaZero-style run: a 128-channel x 6-block CNN trained by Gumbel self-play from
+# scratch. Rust reads [net], [selfplay] and [play]; the coordinator and trainer
+# (research/az-train/src/az_train/gonnect_cnn.py) read the rest.
+
+[net]
+size = 7
+channels = 128
+blocks = 6
+policy_planes = 4
+value_planes = 2
+value_hidden = 64
+
+# Self-play search (Gumbel root, Sequential Halving over `considered_actions`).
+[selfplay]
+games = 256
+simulations = 32
+considered_actions = 8
+value_scale = 0.1
+max_visit_init = 50
+temp_moves = 8
+max_plies = 200
+chunk_size = 64
+
+# The play-time agent used by the progress gate and the final gate.
+[play]
+simulations = 100
+considered_actions = 16
+value_scale = 0.1
+max_visit_init = 50
+chunk_size = 64
+
+[train]
+batch_size = 32
+steps_per_generation = 1000
+learning_rate = 1e-3
+l2 = 1e-4
+# Positions from this many most recent generations are sampled from.
+replay_generations = 20
+# Games of each generation held out to monitor value/policy fit; never trained on. Outcomes are
+# per game, so the held-out value Pearson is noisy at this size; the policy metrics are steadier.
+validation_games = 24
+# Weight-init seeds tried for generation 1's fit if the first attempts are dead.
+seed = 1
+max_init_retries = 4
+stall_check_step = 100
+stall_check_min_value_std = 0.005
+# Steps between validation evaluations (the step log is written every step).
+validate_every = 100
+
+[gate]
+# Progress gate: the freshly trained net (play-time agent) against this MCTS preset.
+games = 40
+opponent = "strong-100"
+opponent_preset = "strong"
+opponent_iterations = 100
+workers = 4
+seed = 1
+max_plies = 300
+presets = "games/gonnect/presets.json"
+
+# The final gate (`az-train-gonnect-cnn --final-gate`): the best generation by progress-gate score
+# against the MCTS ladder, on fresh openings (the progress gate uses seed 1).
+[final]
+openings = 100
+anchor_openings = 50
+workers = 4
+seed = 2
+tuned_preset = "candidate-trial_x2d_8511d30bd7395abfa0f03a77f8473a8f"
+
+[loop]
+generations = 100
+out_dir = "local/output/gonnect/cnn-7x7/run1"

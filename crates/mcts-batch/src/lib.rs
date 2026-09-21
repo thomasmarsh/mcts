@@ -18,7 +18,7 @@ pub mod search;
 pub mod selfplay;
 pub mod tree;
 
-pub use gumbel::gumbel_explore;
+pub use gumbel::{gumbel_explore, gumbel_explore_with_noise, gumbel_selected_action};
 pub use oracle::{EnvOracle, StepOutput, TransitionOutput};
 pub use search::{explore, improved_policy, Config};
 pub use tree::Tree;

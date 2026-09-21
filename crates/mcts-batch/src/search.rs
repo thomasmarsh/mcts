@@ -252,10 +252,11 @@ pub fn eval_batch<Env: Clone + Default>(
 }
 
 /// Walk each batch item's frontier node back to its root, incrementing
-/// `num_visits` and accumulating a TD-style backup of `total_values`,
-/// negating the running value exactly when the mover switched -- the same
-/// nega-convention flip `Tree::qvalue` uses for a single node, applied
-/// along the whole path.
+/// `num_visits` and accumulating `total_values` (each node holds values from
+/// the perspective of its own mover, as `Tree::value` promises). Moving up
+/// to the parent adds the transition's reward and negates the value exactly
+/// when the mover switched -- the same nega-convention flip `Tree::qvalue`
+/// uses for a single node, applied along the whole path.
 ///
 /// See AlphaZero.jl `BatchedMcts.backpropagate!`.
 pub fn backpropagate_batch<Env: Clone + Sync + Send>(tree: &mut Tree<Env>, frontier: &[i32]) {
@@ -279,18 +280,17 @@ pub fn backpropagate_batch<Env: Clone + Sync + Send>(tree: &mut Tree<Env>, front
             let mut val = value_prior[base + cid as usize];
             loop {
                 let i = cid as usize;
-                val += prev_reward[base + i];
-                if prev_switched[base + i] {
-                    val = -val;
-                }
+                // `val` is from the perspective of the mover at node `cid`, which is what
+                // `Tree::value` promises; the reward and switch of the transition into `cid`
+                // only matter once the value moves up to the parent.
                 num_visits[i] += 1;
                 total_values[i] += val;
                 let p = parent[base + i];
-                if p != NO_PARENT {
-                    cid = p;
-                } else {
+                if p == NO_PARENT {
                     break;
                 }
+                val = if prev_switched[base + i] { prev_reward[base + i] - val } else { prev_reward[base + i] + val };
+                cid = p;
             }
         });
 }

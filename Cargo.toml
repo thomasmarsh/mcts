@@ -41,6 +41,7 @@ members = [
     "crates/bitboard",
     "crates/pyramid",
     "crates/mlx-sys",
+    "crates/grid-cnn",
     "crates/mcts-batch",
     "crates/ntuple",
     "crates/othello-env",

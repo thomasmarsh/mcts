@@ -22,9 +22,26 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = { version = "0.8.5", features = ["small_rng"] }
 toml = "0.8"
+grid-cnn = { path = "../../crates/grid-cnn", optional = true }
+mcts-batch = { path = "../../crates/mcts-batch", optional = true }
+rayon = { version = "1.8.1", optional = true }
 
 [dev-dependencies]
 mcts-bench = { path = "../../crates/mcts-bench", default-features = false }
+
+[[example]]
+name = "gonnect_selfplay"
+required-features = ["cnn"]
+
+[[example]]
+name = "gonnect_check"
+required-features = ["cnn"]
+
+[features]
+# CNN value+policy evaluation on the GPU (MLX): encoding, batched oracle, self-play, play-time agent.
+# On by default; building without Homebrew's mlx/mlx-c needs `--no-default-features`.
+default = ["cnn"]
+cnn = ["dep:grid-cnn", "dep:mcts-batch", "dep:rayon"]
 
 [lints]
 workspace = true
