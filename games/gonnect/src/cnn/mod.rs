@@ -6,5 +6,6 @@ pub mod agent;
 pub mod config;
 pub mod encode;
 pub mod oracle;
+pub mod search;
 pub mod selfplay;
 pub mod shard;

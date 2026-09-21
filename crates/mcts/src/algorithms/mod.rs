@@ -164,6 +164,16 @@ pub trait Search: Sync + Send {
 
     fn choose_action(&mut self, state: &<Self::G as Game>::S) -> <Self::G as Game>::A;
 
+    /// Why this search cannot play `state`, if it cannot (for example a
+    /// network trained for one board size asked about another). Callers that
+    /// take a search from a user-facing request check this before
+    /// `choose_action`, which has no way to fail. `None` (the default) means
+    /// every state of the game is playable.
+    #[allow(unused_variables)]
+    fn unsupported_reason(&self, state: &<Self::G as Game>::S) -> Option<String> {
+        None
+    }
+
     fn principle_variation(&self) -> Vec<<Self::G as Game>::A> {
         vec![]
     }

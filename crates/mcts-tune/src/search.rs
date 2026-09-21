@@ -376,6 +376,13 @@ pub(crate) fn make_candidate<G: Game + 'static>(
             config_ir::validate_search_spec::<G>(&spec).map_err(HostError::bad_request)?;
             Ok(config_ir::build_search(&spec, &settings))
         }
+        AlgorithmSpec::Net(mut spec) => {
+            // Like `bandit`'s rollout budget, the operator's per-run cap can only lower the
+            // configured simulation count. A wall-clock limit does not apply: the search's
+            // schedule is fixed by its simulation count.
+            spec.simulations = spec.simulations.min(budget.iteration_limit());
+            crate::net_search::build::<G>(&spec, seed)
+        }
         other => Ok(build_direct::<G>(&other, seed, budget)),
     }
 }

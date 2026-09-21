@@ -5,7 +5,8 @@
 //! `games/traffic-lights/src/main.rs` for the reference wiring.
 //!
 //! The tunable search space describes a configuration directly: a top-level
-//! `algorithm` categorical (`random`/`bandit`/`mcts`/`negamax`) and, for
+//! `algorithm` categorical (`random`/`bandit`/`mcts`/`negamax`, plus `net_gumbel`
+//! for a game that registers a network, see `net_search`) and, for
 //! `mcts`, the four policy-axis categoricals (`select`/`simulate`/`backprop`/
 //! `final_action`) plus each variant's own parameters and the orthogonal
 //! `q_init`/`mcgs` engine settings. `dispatch.rs` resolves a params object
@@ -33,6 +34,7 @@ mod direct_search;
 mod dispatch;
 mod evaluation;
 mod fields;
+pub mod net_search;
 // Named partial configurations (`rave`, `power_uct`, ...) for axis
 // compositions whose shape is more than a single categorical swap.
 pub mod preset_catalog;

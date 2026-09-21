@@ -30,6 +30,7 @@ mod common;
 use common::{load_toml_config, open_append, paired_match, Agent, Maker, PairedConfig};
 
 #[derive(Deserialize, Clone, Debug)]
+#[cfg_attr(not(feature = "cnn"), allow(dead_code))]
 struct AgentSpec {
     name: String,
     kind: String,

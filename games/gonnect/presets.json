@@ -44,5 +44,19 @@
         "max_iterations": 10000,
         "threads": 1,
         "use_transpositions": false
+    },
+    {
+        "id": "cnn-gen100",
+        "label": "CNN gen100 (7x7 only)",
+        "description": "The trained 7x7 residual CNN (run1, generation 100) with a 100-simulation Gumbel search, about 0.2-0.4 s per move. Only plays 7x7 boards.",
+        "params": {
+            "algorithm": "net_gumbel",
+            "net_model": "gonnect-7x7-run1-gen100",
+            "net_simulations": 100,
+            "net_considered_actions": 16,
+            "net_value_scale": 0.1,
+            "net_max_visit_init": 50,
+            "net_selection": "gumbel"
+        }
     }
 ]

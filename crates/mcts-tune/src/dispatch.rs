@@ -23,6 +23,7 @@ use crate::config_ir::{
     BackpropSpec, BaseSelectSpec, BaseSimulateSpec, FinalActionSpec, SearchSpec, SelectSpec,
     SimulateSpec,
 };
+use crate::net_search::{self, NetSearchSpec};
 use crate::search::META_MCTS_INNER_ITERATIONS;
 
 /// A fully resolved algorithm choice: an MCTS composition (routed through
@@ -47,6 +48,9 @@ pub(crate) enum AlgorithmSpec {
         countermove_heuristic: bool,
     },
     Random,
+    /// A network-driven search; built by the game's registered factory (see
+    /// `net_search`), not by this crate.
+    Net(NetSearchSpec),
 }
 
 /// A `bandit_policy` categorical resolved to the parameters
@@ -413,6 +417,7 @@ pub(crate) fn to_algorithm_spec(cfg: &Value) -> Result<AlgorithmSpec, HostError>
             countermove_heuristic: field(cfg, "countermove_heuristic")
                 .map_err(HostError::bad_request)?,
         }),
+        net_search::ALGORITHM => Ok(AlgorithmSpec::Net(net_search::spec_from_params(cfg)?)),
         other => Err(HostError::bad_request(format!(
             "unknown algorithm: {other}"
         ))),

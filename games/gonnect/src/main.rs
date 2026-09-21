@@ -10,6 +10,8 @@ use serde_json::Value;
 
 use bitboard::Dyn;
 use game_gonnect::book::{self, BookBuildConfig};
+#[cfg(feature = "cnn")]
+use game_gonnect::cnn::search::GonnectNets;
 use game_gonnect::{Bits, Gonnect, Move, Player, State};
 use mcts::algorithms::Search;
 use mcts::game::Game;
@@ -309,7 +311,7 @@ impl GameAdapter for GonnectAdapter {
         .map_err(|e| HostError::internal(e.to_string()))
     }
     fn ai_presets(&self) -> Vec<AiPresetInfo> {
-        presets().ai_presets()
+        presets().ai_presets_for::<Gonnect>()
     }
     fn ai_move(
         &self,
@@ -328,6 +330,9 @@ impl GameAdapter for GonnectAdapter {
         }
         let size = s.black().rows();
         let mut ai = self.augmented_preset(size, preset, custom_spec.as_ref())?;
+        if let Some(why) = ai.unsupported_reason(&s) {
+            return Err(HostError::bad_request(why));
+        }
         let (action, search) = mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
             serde_json::to_value(action).expect("Gonnect action always serializes")
         });
@@ -356,6 +361,9 @@ impl GameAdapter for GonnectAdapter {
         }
         let size = s.black().rows();
         let mut ai = self.augmented_preset(size, preset, custom_spec.as_ref())?;
+        if let Some(why) = ai.unsupported_reason(&s) {
+            return Err(HostError::bad_request(why));
+        }
         let (selected_action, search) =
             mcts_tune::choose_action_with_report(&mut *ai, &s, |action| {
                 serde_json::to_value(action).expect("Gonnect action always serializes")
@@ -370,11 +378,16 @@ impl GameAdapter for GonnectAdapter {
     }
 
     fn tuner(&self) -> Option<TunerInfo> {
-        let baselines = presets().ai_preset_ids();
-        Some(TunerInfo {
+        let baselines = presets().baseline_preset_ids();
+        let mut info = TunerInfo {
             game_config: self.default_config(),
             ..mcts_tune::strategy_tuner_info(&baselines, TUNE_EVAL_ROUNDS)
-        })
+        };
+        mcts_tune::net_search::add_net_algorithm(
+            &mut info,
+            &mcts_tune::net_search::available_models::<Gonnect>(),
+        );
+        Some(info)
     }
 
     fn tune_eval(
@@ -509,7 +522,19 @@ impl GameAdapter for GonnectAdapter {
     }
 }
 
+/// Makes `algorithm: net_gumbel` buildable when a CNN model loads; without one nothing changes.
+#[cfg(feature = "cnn")]
+fn register_nets() {
+    use mcts_tune::net_search::{register, NetSearchFactory};
+    let nets = GonnectNets::from_env();
+    if !NetSearchFactory::<Gonnect>::models(&nets).is_empty() {
+        register::<Gonnect>(std::sync::Arc::new(nets));
+    }
+}
+
 fn main() {
+    #[cfg(feature = "cnn")]
+    register_nets();
     run_cli(GonnectAdapter::load());
 }
 
@@ -644,5 +669,172 @@ mod tests {
 
     fn color_at_json(state: &Value, index: usize) -> Option<&str> {
         state["cells"][index].as_str()
+    }
+
+    #[cfg(feature = "cnn")]
+    mod cnn {
+        use super::*;
+        use game_gonnect::cnn::encode::{num_actions, IN_PLANES};
+        use grid_cnn::{Geometry, Weights};
+        use mcts_tune::net_search;
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        /// The model id `presets.json`'s CNN preset names.
+        const MODEL: &str = "gonnect-7x7-run1-gen100";
+
+        /// A tiny zero-weights 7x7 net standing in for the real one: legal moves and report
+        /// shapes, not strength. Registered once per process, under the shipped preset's id.
+        fn adapter() -> GonnectAdapter {
+            static REGISTERED: std::sync::Once = std::sync::Once::new();
+            REGISTERED.call_once(|| {
+                let weights = Arc::new(Weights::zeros(Geometry {
+                    size: 7,
+                    in_planes: IN_PLANES,
+                    channels: 8,
+                    blocks: 1,
+                    policy_planes: 2,
+                    policy_out: num_actions(7),
+                    value_planes: 1,
+                    value_hidden: 8,
+                }));
+                let nets = GonnectNets::new(BTreeMap::from([(MODEL.to_string(), weights)]));
+                net_search::register::<Gonnect>(Arc::new(nets));
+            });
+            GonnectAdapter::load()
+        }
+
+        fn new_state(adapter: &GonnectAdapter, size: usize) -> Value {
+            adapter.new_state(serde_json::json!({ "size": size })).unwrap()
+        }
+
+        /// A `custom` strategy naming the network with a small search.
+        fn custom(simulations: u64) -> Value {
+            serde_json::json!({
+                "params": {
+                    "algorithm": "net_gumbel",
+                    "net_model": MODEL,
+                    "net_simulations": simulations,
+                    "net_considered_actions": 4,
+                    "net_value_scale": 0.1,
+                    "net_max_visit_init": 50,
+                    "net_selection": "gumbel",
+                }
+            })
+        }
+
+        fn shipped_id(adapter: &GonnectAdapter) -> String {
+            adapter
+                .ai_presets()
+                .into_iter()
+                .map(|p| p.id)
+                .find(|id| id.starts_with("cnn"))
+                .expect("the CNN preset is listed while its model is loaded")
+        }
+
+        #[test]
+        fn the_cnn_preset_is_listed_only_while_its_model_is_loaded() {
+            let adapter = adapter();
+            let info = adapter
+                .ai_presets()
+                .into_iter()
+                .find(|p| p.id.starts_with("cnn"))
+                .unwrap();
+            assert!(info.label.contains("7x7"), "{}", info.label);
+            let table = presets();
+            assert!(table.ai_presets().len() > table.baseline_preset_ids().len());
+            // Presets that need a network are never tuner baselines.
+            let baselines = adapter.tuner().unwrap().baselines;
+            assert!(!baselines.iter().any(|b| b.starts_with("cnn")), "{baselines:?}");
+        }
+
+        #[test]
+        fn the_strategy_catalog_offers_net_gumbel_with_its_parameters() {
+            let info = adapter().tuner().unwrap();
+            let algorithm = info.parameters.iter().find(|p| p.name == "algorithm").unwrap();
+            assert!(algorithm.spec["choices"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("net_gumbel")));
+            for name in ["net_model", "net_simulations", "net_considered_actions", "net_value_scale"] {
+                assert!(info.parameters.iter().any(|p| p.name == name), "{name}");
+            }
+        }
+
+        #[test]
+        fn the_preset_and_a_custom_strategy_both_play_a_legal_7x7_move_with_a_report() {
+            let adapter = adapter();
+            let state = new_state(&adapter, 7);
+            let preset = shipped_id(&adapter);
+            // The shipped preset asks for 100 simulations; the tiny net makes that cheap.
+            for (preset, custom) in [(preset.as_str(), None), ("custom", Some(custom(8)))] {
+                let reply = adapter.ai_move(&state, preset, custom.as_ref()).unwrap();
+                assert!(adapter.legal_moves(&state).unwrap().contains(&reply.mv));
+                assert_eq!(reply.state, adapter.apply(&state, &reply.mv).unwrap());
+                let search = reply.search.expect("the network search reports itself");
+                assert_eq!(search.selected_action.as_ref(), Some(&reply.mv));
+                assert!(!search.actions.is_empty());
+            }
+        }
+
+        #[test]
+        fn a_custom_strategys_parameters_take_effect() {
+            let adapter = adapter();
+            let state = new_state(&adapter, 7);
+            let reply = adapter.ai_move(&state, "custom", Some(&custom(5))).unwrap();
+            assert_eq!(reply.search.unwrap().completed_iterations, 5);
+        }
+
+        #[test]
+        fn other_board_sizes_fail_with_a_bad_request_for_move_and_analysis() {
+            let adapter = adapter();
+            let preset = shipped_id(&adapter);
+            for size in [5, 13] {
+                let state = new_state(&adapter, size);
+                let moved = adapter.ai_move(&state, &preset, None).unwrap_err();
+                assert_eq!(moved.code, 400, "size {size}: {}", moved.message);
+                assert!(moved.message.contains("7x7"), "{}", moved.message);
+                let analyzed = adapter.analyze(&state, &preset, None, None).unwrap_err();
+                assert_eq!(analyzed.code, 400);
+            }
+        }
+
+        #[test]
+        fn analysis_on_7x7_summarises_the_root() {
+            let adapter = adapter();
+            let state = new_state(&adapter, 7);
+            let analysis = adapter
+                .analyze(&state, "custom", Some(&custom(8)), None)
+                .unwrap();
+            assert!(analysis.suggested_move.is_some());
+            assert_eq!(analysis.total_visits, 8);
+            assert!(!analysis.actions.is_empty());
+        }
+
+        /// The swap reply the net can pick after a one-stone opening goes through the same wire
+        /// `apply` the UI uses, and the stone changes colour.
+        #[test]
+        fn a_swap_round_trips_through_the_wire() {
+            let adapter = adapter();
+            let start = new_state(&adapter, 7);
+            let open = adapter
+                .legal_moves(&start)
+                .unwrap()
+                .into_iter()
+                .find(|m| m[0].as_u64() == Some(24))
+                .unwrap();
+            let opened = adapter.apply(&start, &open).unwrap();
+            assert_eq!(color_at_json(&opened, 24), Some("Black"));
+            let swap = adapter
+                .legal_moves(&opened)
+                .unwrap()
+                .into_iter()
+                .find(|m| m[0].as_u64() == Some(0xffff))
+                .expect("the swap is legal for White's first reply");
+            let after = adapter.apply(&opened, &swap).unwrap();
+            assert_eq!(color_at_json(&after, 24), Some("White"));
+            assert_eq!(after["turn"], "Black");
+            assert_eq!(after["can_swap"], Value::Bool(false));
+        }
     }
 }

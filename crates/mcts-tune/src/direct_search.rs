@@ -102,8 +102,8 @@ pub(crate) fn build_direct<G: Game + 'static>(
                 options,
             ))
         }
-        AlgorithmSpec::Mcts(_) => {
-            unreachable!("build_direct is only called for a non-MCTS AlgorithmSpec")
+        AlgorithmSpec::Mcts(_) | AlgorithmSpec::Net(_) => {
+            unreachable!("build_direct is only called for random, bandit and negamax")
         }
     }
 }

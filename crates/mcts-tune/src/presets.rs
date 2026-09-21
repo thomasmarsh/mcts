@@ -172,6 +172,32 @@ impl PresetTable {
         self.presets.iter().map(PresetSpec::to_info).collect()
     }
 
+    /// [`Self::ai_presets`] for game `G` in this process: a preset that runs a network model
+    /// (`algorithm: net_gumbel`) is listed only while that model is loaded, so a machine
+    /// without the weights simply does not offer it.
+    pub fn ai_presets_for<G: Game + 'static>(&self) -> Vec<AiPresetInfo> {
+        let loaded = crate::net_search::available_models::<G>();
+        self.presets
+            .iter()
+            .filter(|p| {
+                crate::net_search::model_of_params(&p.params)
+                    .is_none_or(|model| loaded.iter().any(|m| m == model))
+            })
+            .map(PresetSpec::to_info)
+            .collect()
+    }
+
+    /// Ids of the presets that need no network, in file order: the ones that can serve as a
+    /// tuner baseline (a tuner plays thousands of games, and a network preset is tied to one
+    /// game setup and to a GPU).
+    pub fn baseline_preset_ids(&self) -> Vec<&str> {
+        self.presets
+            .iter()
+            .filter(|p| crate::net_search::model_of_params(&p.params).is_none())
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+
     /// Every preset's `id`, in file order -- the dynamic replacement for a
     /// hand-written `&["strong"]` baseline list: a `tuner()` reports
     /// whichever presets this game's own `presets.json` actually declares,

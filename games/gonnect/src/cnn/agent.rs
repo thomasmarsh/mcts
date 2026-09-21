@@ -10,7 +10,7 @@ use std::sync::Arc;
 use grid_cnn::{Net, Weights};
 use mcts::algorithms::Search;
 use mcts::game::Game;
-use mcts_batch::{explore, gumbel_explore_with_noise, gumbel_selected_action, Config};
+use mcts_batch::{explore, gumbel_explore_with_noise, gumbel_selected_action, Config, Tree};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
@@ -55,6 +55,123 @@ impl<const N: usize> CnnAgent<N> {
     }
 }
 
+/// What one search left at the root, in the terms the play UI shows.
+#[derive(Clone, Debug)]
+pub struct RootSummary {
+    /// Visits the root received, i.e. the simulations that ran (`0` when the move was forced).
+    pub simulations: usize,
+    /// Legal root actions that were visited, most visited first (ties by action id), each with
+    /// its completed Q from the mover's point of view in `[-1, 1]`.
+    pub actions: Vec<RootAction>,
+    /// The most-visited line from the root, at most [`PV_LIMIT`] plies.
+    pub principal_variation: Vec<Move>,
+    /// The mean value of the root from the mover's point of view, in `[-1, 1]`.
+    pub root_value: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RootAction {
+    pub mv: Move,
+    pub visits: u32,
+    pub q: f32,
+}
+
+pub const PV_LIMIT: usize = 8;
+
+impl<const N: usize> CnnAgent<N> {
+    /// `None` for the tree when the position has a single legal move (no search is run).
+    fn search(&self, state: &SizedState<N>) -> (u16, Option<Tree<SizedState<N>>>) {
+        let (_, legal) = analyse(&state.0);
+        if legal.len() == 1 {
+            return (action_id(&legal[0], N), None);
+        }
+        let key = SizedGonnect::<N>::zobrist_hash(state) ^ self.seed;
+        self.oracle.reseed(key);
+        match self.kind {
+            Kind::Gumbel => {
+                let mut rng = SmallRng::seed_from_u64(key.rotate_left(29));
+                let (tree, noise) = gumbel_explore_with_noise(
+                    &self.cfg,
+                    &self.oracle,
+                    std::slice::from_ref(state),
+                    &mut rng,
+                );
+                let id = gumbel_selected_action(&self.cfg, &tree, 0, &noise[0]);
+                (id, Some(tree))
+            }
+            Kind::Deterministic => {
+                let tree = explore(&self.cfg, &self.oracle, std::slice::from_ref(state));
+                let visits = tree.child_visits(0, tree.root());
+                let most = *visits.iter().max().unwrap();
+                let id = legal
+                    .iter()
+                    .map(|m| action_id(m, N))
+                    .find(|&id| visits[id as usize] == most)
+                    .unwrap();
+                (id, Some(tree))
+            }
+        }
+    }
+
+    /// [`Search::choose_action`], also summarising the search tree that chose the move.
+    pub fn choose_with_summary(&mut self, state: &SizedState<N>) -> (Move, RootSummary) {
+        let (id, tree) = self.search(state);
+        let mv = move_from_id(&state.0, id);
+        let summary = match tree {
+            Some(tree) => summarise(&tree),
+            None => RootSummary {
+                simulations: 0,
+                actions: vec![RootAction {
+                    mv,
+                    visits: 0,
+                    q: 0.0,
+                }],
+                principal_variation: vec![mv],
+                root_value: 0.0,
+            },
+        };
+        (mv, summary)
+    }
+}
+
+fn summarise<const N: usize>(tree: &Tree<SizedState<N>>) -> RootSummary {
+    let root = tree.root();
+    let visits = tree.child_visits(0, root);
+    let q = tree.completed_qvalues(0, root);
+    let mut actions: Vec<RootAction> = (0..tree.num_actions())
+        .filter(|&id| visits[id] > 0)
+        .map(|id| RootAction {
+            mv: move_from_id(&tree.state(0, root).0, id as u16),
+            visits: visits[id] as u32,
+            q: q[id],
+        })
+        .collect();
+    let id_of = |a: &RootAction| action_id(&a.mv, N);
+    actions.sort_by(|a, b| b.visits.cmp(&a.visits).then(id_of(a).cmp(&id_of(b))));
+
+    let mut principal_variation = Vec::new();
+    let mut node = root;
+    while principal_variation.len() < PV_LIMIT && !tree.is_terminal(0, node) {
+        let visits = tree.child_visits(0, node);
+        let Some((id, &most)) = visits.iter().enumerate().max_by_key(|&(id, &v)| (v, -(id as i64)))
+        else {
+            break;
+        };
+        if most == 0 {
+            break;
+        }
+        principal_variation.push(move_from_id(&tree.state(0, node).0, id as u16));
+        node = tree.child(0, node, id as u16);
+    }
+
+    RootSummary {
+        simulations: tree.num_visits(0, root).max(0) as usize,
+        actions,
+        principal_variation,
+        root_value: tree.value(0, root),
+    }
+}
+
 impl<const N: usize> Search for CnnAgent<N> {
     type G = SizedGonnect<N>;
 
@@ -67,34 +184,7 @@ impl<const N: usize> Search for CnnAgent<N> {
     }
 
     fn choose_action(&mut self, state: &SizedState<N>) -> Move {
-        let (_, legal) = analyse(&state.0);
-        if legal.len() == 1 {
-            return legal[0];
-        }
-        let key = SizedGonnect::<N>::zobrist_hash(state) ^ self.seed;
-        self.oracle.reseed(key);
-        let id = match self.kind {
-            Kind::Gumbel => {
-                let mut rng = SmallRng::seed_from_u64(key.rotate_left(29));
-                let (tree, noise) = gumbel_explore_with_noise(
-                    &self.cfg,
-                    &self.oracle,
-                    std::slice::from_ref(state),
-                    &mut rng,
-                );
-                gumbel_selected_action(&self.cfg, &tree, 0, &noise[0])
-            }
-            Kind::Deterministic => {
-                let tree = explore(&self.cfg, &self.oracle, std::slice::from_ref(state));
-                let visits = tree.child_visits(0, tree.root());
-                let most = *visits.iter().max().unwrap();
-                legal
-                    .iter()
-                    .map(|m| action_id(m, N))
-                    .find(|&id| visits[id as usize] == most)
-                    .unwrap()
-            }
-        };
+        let (id, _tree) = self.search(state);
         move_from_id(&state.0, id)
     }
 }
