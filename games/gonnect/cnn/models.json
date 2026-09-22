@@ -2,7 +2,7 @@
     {
         "id": "gonnect-7x7-run1-gen100",
         "label": "7x7 CNN, run1 generation 100",
-        "weights": "local/output/gonnect/cnn-7x7/run1/gen100.bin"
+        "weights": "games/gonnect/cnn/weights/7x7-run1-gen100.bin"
     },
     {
         "id": "gonnect-9x9-run1-gen97",
