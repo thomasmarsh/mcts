@@ -33,6 +33,14 @@ mcts-bench = { path = "../../crates/mcts-bench", default-features = false }
 name = "mlx_selfplay_bench"
 required-features = ["mlx"]
 
+[[example]]
+name = "mlx_tree_batch_bench"
+required-features = ["mlx"]
+
+[[example]]
+name = "mlx_call_latency_probe"
+required-features = ["mlx"]
+
 [features]
 # GPU-backed `CnnValueNet` forward pass via `mlx-sys` (Homebrew mlx-c/mlx,
 # see `crates/mlx-sys/build.rs`). On by default: this backend is faster than
