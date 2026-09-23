@@ -377,10 +377,15 @@ pub(crate) fn make_candidate<G: Game + 'static>(
             Ok(config_ir::build_search(&spec, &settings))
         }
         AlgorithmSpec::Net(mut spec) => {
-            // Like `bandit`'s rollout budget, the operator's per-run cap can only lower the
-            // configured simulation count. A wall-clock limit does not apply: the search's
-            // schedule is fixed by its simulation count.
-            spec.simulations = spec.simulations.min(budget.iteration_limit());
+            // `net_gumbel` has no `net_simulations`/`net_max_time` params of its own -- its move
+            // budget is the same general `SearchBudget` every other algorithm shares (see
+            // `NetSearchSpec::simulations`'s doc comment). Sequential Halving still needs a
+            // concrete total to size its elimination schedule, so an explicit `max_iterations`
+            // (or this crate's historical `MAX_ITER` default, same as every other algorithm's
+            // unset case) sizes the schedule, while `max_time` is layered on top as an early
+            // exit checked between phases (`gumbel_search_with_root_value`).
+            spec.simulations = budget.max_iterations.unwrap_or(MAX_ITER);
+            spec.max_time = budget.max_time;
             crate::net_search::build::<G>(&spec, seed)
         }
         other => Ok(build_direct::<G>(&other, seed, budget)),

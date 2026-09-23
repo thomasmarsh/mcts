@@ -708,18 +708,20 @@ mod tests {
             adapter.new_state(serde_json::json!({ "size": size })).unwrap()
         }
 
-        /// A `custom` strategy naming the network with a small search.
+        /// A `custom` strategy naming the network with a small search. The move budget is the
+        /// general `max_iterations` field every algorithm shares, not a `net_*` param -- see
+        /// `mcts_tune::net_search::NetSearchSpec::simulations`'s doc comment.
         fn custom(simulations: u64) -> Value {
             serde_json::json!({
                 "params": {
                     "algorithm": "net_gumbel",
                     "net_model": MODEL,
-                    "net_simulations": simulations,
                     "net_considered_actions": 4,
                     "net_value_scale": 0.1,
                     "net_max_visit_init": 50,
                     "net_selection": "gumbel",
-                }
+                },
+                "max_iterations": simulations,
             })
         }
 
@@ -756,7 +758,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::json!("net_gumbel")));
-            for name in ["net_model", "net_simulations", "net_considered_actions", "net_value_scale"] {
+            for name in ["net_model", "net_considered_actions", "net_value_scale"] {
                 assert!(info.parameters.iter().any(|p| p.name == name), "{name}");
             }
         }

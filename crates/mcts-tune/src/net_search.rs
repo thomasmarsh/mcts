@@ -1,11 +1,15 @@
 //! Searches driven by a trained policy/value network (the `net_gumbel` algorithm).
 //!
-//! This crate knows the algorithm's parameters (which network, how many simulations, how many root
-//! actions the Gumbel search considers, ...) but not how to evaluate a position: that needs the
-//! game's encoding and an inference backend. A game crate implements [`NetSearchFactory`] for its
-//! `Game` type and [`register`]s it once at startup; from then on `algorithm: "net_gumbel"` builds
-//! through the same [`crate::build_search`] as every other algorithm, appears in the game's
-//! strategy catalog ([`add_net_algorithm`]), and can be named by a preset or a custom strategy.
+//! This crate knows the algorithm's parameters (which network, how many root actions the Gumbel
+//! search considers, ...) but not how to evaluate a position: that needs the game's encoding and
+//! an inference backend. A game crate implements [`NetSearchFactory`] for its `Game` type and
+//! [`register`]s it once at startup; from then on `algorithm: "net_gumbel"` builds through the
+//! same [`crate::build_search`] as every other algorithm, appears in the game's strategy catalog
+//! ([`add_net_algorithm`]), and can be named by a preset or a custom strategy. The move budget
+//! (how many simulations, or how much wall clock) is deliberately not one of this algorithm's own
+//! params -- it comes from the same general `SearchBudget` every other algorithm shares (see
+//! [`NetSearchSpec::simulations`]'s doc comment), so a `net_gumbel` preset sets it exactly the way
+//! an `mcts` preset does, with one field, not two competing ones.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -24,7 +28,6 @@ pub const ALGORITHM: &str = "net_gumbel";
 
 const PARAMS: &[&str] = &[
     "net_model",
-    "net_simulations",
     "net_considered_actions",
     "net_value_scale",
     "net_max_visit_init",
@@ -58,8 +61,17 @@ impl NetSelection {
 pub struct NetSearchSpec {
     /// A model id the game's factory lists in [`NetSearchFactory::models`].
     pub model: String,
-    /// Network evaluations spent per move (the search's iteration count).
+    /// Network evaluations spent per move (the search's iteration count). Unlike every other
+    /// field here, this is not a `net_*` param -- it's the general per-run `SearchBudget` every
+    /// algorithm shares (`crate::search::make_candidate`'s `AlgorithmSpec::Net` arm fills this
+    /// in from `budget`, not from `params`), so a `net_gumbel` preset has exactly one place to
+    /// set its move budget, the same as an `mcts` preset's `max_iterations`/`max_time_ms`.
     pub simulations: usize,
+    /// The same budget's wall-clock half: checked between Sequential-Halving phases (see
+    /// `mcts::algorithms::mcts::gumbel::gumbel_search_with_root_value`), since a phase's visits
+    /// are handed out evenly across the surviving candidates and cutting one short mid-phase
+    /// would bias the elimination.
+    pub max_time: Option<std::time::Duration>,
     /// Root actions Sequential Halving starts from (Gumbel selection only).
     pub considered_actions: usize,
     /// The completed-Q scale `c_scale` of the Gumbel search's sigma transform.
@@ -167,7 +179,10 @@ pub(crate) fn spec_from_params(cfg: &Value) -> Result<NetSearchSpec, HostError> 
     )?;
     Ok(NetSearchSpec {
         model,
-        simulations: count("net_simulations")?,
+        // Filled in by `crate::search::make_candidate` from the general `SearchBudget` before
+        // the spec is built, not read from `params` -- see the field's doc comment.
+        simulations: 0,
+        max_time: None,
         considered_actions: count("net_considered_actions")?,
         value_scale,
         max_visit_init: count("net_max_visit_init")? as u32,
@@ -195,10 +210,6 @@ pub fn add_net_algorithm(info: &mut TunerInfo, models: &[String]) {
             json!({"type": "categorical", "choices": models, "default": first}),
         ),
         param(
-            "net_simulations",
-            json!({"type": "int", "bounds": [1, 4000], "default": 100}),
-        ),
-        param(
             "net_considered_actions",
             json!({"type": "int", "bounds": [1, 64], "default": 16}),
         ),
@@ -222,6 +233,7 @@ pub fn add_net_algorithm(info: &mut TunerInfo, models: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::SearchBudget;
     use crate::strategy_tuner_info;
     use game_nim::Nim;
     use mcts::algorithms::random::Random;
@@ -246,7 +258,6 @@ mod tests {
         json!({
             "algorithm": "net_gumbel",
             "net_model": "fake-model",
-            "net_simulations": 7,
             "net_considered_actions": 4,
             "net_value_scale": 0.25,
             "net_max_visit_init": 50,
@@ -254,23 +265,30 @@ mod tests {
         })
     }
 
+    /// `spec.simulations`/`max_time` come from the general `SearchBudget`, not `params` -- see
+    /// `NetSearchSpec::simulations`'s doc comment.
+    fn budget(max_iterations: usize) -> SearchBudget {
+        SearchBudget {
+            max_iterations: Some(max_iterations),
+            ..Default::default()
+        }
+    }
+
     #[test]
-    fn params_resolve_to_a_spec() {
+    fn params_resolve_to_a_spec_with_the_budget_left_for_the_caller_to_fill_in() {
         let spec = spec_from_params(&params()).unwrap();
         assert_eq!(
             spec,
             NetSearchSpec {
                 model: "fake-model".into(),
-                simulations: 7,
+                simulations: 0,
+                max_time: None,
                 considered_actions: 4,
                 value_scale: 0.25,
                 max_visit_init: 50,
                 selection: NetSelection::MostVisited,
             }
         );
-        let mut bad = params();
-        bad["net_simulations"] = json!(0);
-        assert!(spec_from_params(&bad).is_err());
         let mut bad = params();
         bad["net_selection"] = json!("nope");
         assert!(spec_from_params(&bad).is_err());
@@ -280,19 +298,19 @@ mod tests {
     }
 
     #[test]
-    fn build_search_goes_through_the_registered_factory() {
+    fn build_search_goes_through_the_registered_factory_using_the_budgets_iteration_limit() {
         // The registry is per game type and process-wide; Nim is only registered by this test.
-        let e = crate::build_search::<Nim>(&params(), 0, false, &Default::default())
+        let e = crate::build_search::<Nim>(&params(), 0, false, &budget(7))
             .err()
             .expect("no factory is registered yet");
         assert_eq!(e.code, 400);
         assert!(e.message.contains("not available"), "{}", e.message);
         register::<Nim>(Arc::new(Fake));
         assert_eq!(available_models::<Nim>(), vec!["fake-model".to_string()]);
-        assert!(crate::build_search::<Nim>(&params(), 0, false, &Default::default()).is_ok());
+        assert!(crate::build_search::<Nim>(&params(), 0, false, &budget(7)).is_ok());
         let mut other = params();
         other["net_model"] = json!("not-a-model");
-        assert!(crate::build_search::<Nim>(&other, 0, false, &Default::default()).is_err());
+        assert!(crate::build_search::<Nim>(&other, 0, false, &budget(7)).is_err());
     }
 
     #[test]

@@ -12,8 +12,9 @@ use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
-use super::encode::{analyse, move_from_id, num_actions, IN_PLANES};
+use super::encode::{action_id, analyse, move_from_id, num_actions, IN_PLANES};
 use crate::sized::{SizedGonnect, SizedState};
+use crate::Move;
 
 pub struct GonnectOracle<const N: usize> {
     net: Net,
@@ -120,6 +121,41 @@ impl<const N: usize> GonnectOracle<N> {
             policy_prior,
             value_prior,
         }
+    }
+}
+
+impl<const N: usize> GonnectOracle<N> {
+    /// This state's value from one (possibly orientation-randomised) forward pass -- the
+    /// single-tree counterpart of `evaluate`'s batched call, for `crates/mcts`'s `Evaluator`
+    /// contract. Terminal positions are worth `+1` to the side to move there, matching `evaluate`.
+    pub(crate) fn single_value(&self, state: &SizedState<N>) -> f32 {
+        if SizedGonnect::<N>::is_terminal(state) {
+            return 1.0;
+        }
+        let (fields, _) = analyse(&state.0);
+        let sym = self.draw_orientations(1)[0];
+        let planes = transform_planes(&fields.planes(N), N, IN_PLANES, sym);
+        self.net.forward(&planes, 1).values[0]
+    }
+
+    /// Raw (unnormalised) per-action logits for `actions`, in the real board's coordinate
+    /// frame -- the single-tree counterpart of `evaluate`'s batched, softmax-normalised policy
+    /// prior, for `crates/mcts`'s `PolicyLogits` contract (which wants logits, not
+    /// probabilities).
+    pub(crate) fn single_logits(&self, state: &SizedState<N>, actions: &[Move]) -> Vec<f64> {
+        let (fields, _) = analyse(&state.0);
+        let sym = self.draw_orientations(1)[0];
+        let planes = transform_planes(&fields.planes(N), N, IN_PLANES, sym);
+        let out = self.net.forward(&planes, 1);
+        let map = &self.maps[sym];
+        let logit = |id: usize| {
+            if id < N * N {
+                out.logits[map[id]]
+            } else {
+                out.logits[id]
+            }
+        };
+        actions.iter().map(|a| logit(action_id(a, N) as usize) as f64).collect()
     }
 }
 

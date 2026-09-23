@@ -516,11 +516,36 @@ where
     });
     considered.truncate(m);
 
-    let schedule = mctx_sh_schedule(m, cfg.sims);
-    for (phase_idx, sh_phase) in schedule.iter().enumerate() {
+    // `SearchConfig::max_iterations`/`max_time` are the same per-move budget
+    // knobs every other search strategy in this crate honors -- Sequential
+    // Halving needs its total budget up front to lay out the elimination
+    // schedule, so `max_iterations` clamps that total. `max_time` is checked
+    // on every forced iteration, not just between phases: a phase sized for
+    // the full (often large, e.g. `crate mcts-tune`'s `MAX_ITER`-default)
+    // budget can itself run for far longer than a short deadline before ever
+    // reaching a phase boundary, so a between-phases-only check can blow the
+    // deadline by however long one whole phase takes. Cutting a phase short
+    // does mean its surviving candidates split its visits unevenly, but a
+    // time-limited search already has degraded guarantees -- ignoring the
+    // caller's deadline by seconds is a worse failure than that bias.
+    // Finalization below already tolerates stopping after any iteration --
+    // `RootMoveSelection::VisitCount` and `CompletedQ` both rank whatever
+    // `considered` set remains, however many visits each one actually got.
+    let sims = if search.config.max_iterations == usize::MAX {
+        cfg.sims
+    } else {
+        cfg.sims.min(search.config.max_iterations as u32)
+    };
+    search.timer.start(search.config.max_time);
+
+    let schedule = mctx_sh_schedule(m, sims);
+    'phases: for (phase_idx, sh_phase) in schedule.iter().enumerate() {
         debug_assert_eq!(considered.len(), sh_phase.num_considered);
         for (rank, &a) in considered.iter().enumerate() {
             for _ in 0..sh_phase.visits[rank] {
+                if search.timer.done() {
+                    break 'phases;
+                }
                 run_forced_iteration(search, root_id, state, &actions[a]);
             }
         }

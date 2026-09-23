@@ -401,6 +401,64 @@ mod tests {
         }
     }
 
+    /// `gumbel_search_with_root_value` builds its Sequential Halving schedule
+    /// from `GumbelConfig::sims`, but must still honor the same per-move
+    /// `SearchConfig::max_iterations`/`max_time` ceiling every other search
+    /// strategy in `crates/mcts` respects -- otherwise a Gumbel-backed player
+    /// has its own disconnected simulation budget that a host's generic
+    /// per-move limit can't reach at all.
+    fn gumbel_tree(max_iterations: usize, max_time: std::time::Duration) -> TreeSearch<Othello, GumbelProfile> {
+        TreeSearch::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_playout_depth(0)
+                .q_init(QInit::Loss)
+                .select(GumbelCompletedQ::with_config(wide_cfg()))
+                .simulate(EvaluatedCutoff::new().evaluator(zero_net()))
+                .with_policy_logits(zero_policy())
+                .max_iterations(max_iterations)
+                .max_time(max_time)
+                .seed(1),
+        )
+    }
+
+    fn total_root_visits(search: &TreeSearch<Othello, GumbelProfile>, root_id: mcts::algorithms::mcts::index::Id) -> u32 {
+        let children = search.index.get(root_id).children();
+        (0..children.len()).map(|i| children.num_visits(i)).sum()
+    }
+
+    #[test]
+    fn gumbel_search_clamps_sims_to_max_iterations() {
+        let cfg = GumbelConfig {
+            sims: 1000,
+            ..wide_cfg()
+        };
+        let mut search = gumbel_tree(5, std::time::Duration::default());
+        let root_id = search.reset(0, 0);
+        let state = State::default();
+        gumbel_search_with_root_value(&mut search, &state, &cfg, 0.0);
+        assert_eq!(total_root_visits(&search, root_id), 5);
+    }
+
+    #[test]
+    fn gumbel_search_stops_early_once_max_time_elapses() {
+        let cfg = GumbelConfig {
+            sims: 100_000,
+            ..wide_cfg()
+        };
+        let mut search = gumbel_tree(usize::MAX, std::time::Duration::from_nanos(1));
+        let root_id = search.reset(0, 0);
+        let state = State::default();
+        gumbel_search_with_root_value(&mut search, &state, &cfg, 0.0);
+        let visits = total_root_visits(&search, root_id);
+        // A weaker `< cfg.sims` bound would also pass if the deadline were only checked between
+        // phases (any phase boundary reached after 1ns has already elapsed) -- the schedule's
+        // first phase alone hands out roughly `sims / (log2(max_considered) * max_considered)`
+        // per candidate, tens of thousands of visits at this scale, so this bound instead proves
+        // the deadline is checked within a phase, not just between phases.
+        assert!(visits < 1000, "ran {visits} simulations against an expired 1ns deadline");
+    }
+
     /// Logits that rank squares by index, so the raw player must pick the
     /// highest-indexed legal square rather than whatever comes first.
     #[derive(Clone)]

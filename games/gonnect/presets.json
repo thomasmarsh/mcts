@@ -52,11 +52,25 @@
         "params": {
             "algorithm": "net_gumbel",
             "net_model": "gonnect-7x7-run1-gen100",
-            "net_simulations": 100,
             "net_considered_actions": 16,
             "net_value_scale": 0.1,
             "net_max_visit_init": 50,
             "net_selection": "gumbel"
-        }
+        },
+        "max_iterations": 100
+    },
+    {
+        "id": "cnn-gen400-9x9",
+        "label": "CNN gen400 (9x9 only)",
+        "description": "The trained 9x9 residual CNN (run1, generation 400, final round-robin champion) with a 100-simulation Gumbel search, about 0.2-0.4 s per move. Only plays 9x9 boards.",
+        "params": {
+            "algorithm": "net_gumbel",
+            "net_model": "gonnect-9x9-run1-gen400",
+            "net_considered_actions": 16,
+            "net_value_scale": 0.1,
+            "net_max_visit_init": 50,
+            "net_selection": "gumbel"
+        },
+        "max_iterations": 100
     }
 ]

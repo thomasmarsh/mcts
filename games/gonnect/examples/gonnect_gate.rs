@@ -16,6 +16,7 @@
 //! example can call with its own agent makers).
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use game_gonnect::sized::SizedGonnect;
 use game_gonnect::td_cells::GonnectCells;
@@ -151,7 +152,9 @@ fn maker<const N: usize>(spec: &AgentSpec, presets: &Option<Arc<PresetTable>>) -
             let kind = if spec.kind == "cnn-gumbel" { Kind::Gumbel } else { Kind::Deterministic };
             let (name, chunk) = (spec.name.clone(), spec.chunk_size.unwrap_or(64));
             // The agent is a deterministic function of the position, so the per-game seed is unused.
-            Box::new(move |_seed| -> Agent<G<N>> { Box::new(CnnAgent::<N>::new(&name, &weights, cfg, kind, chunk, 0x51)) })
+            Box::new(move |_seed| -> Agent<G<N>> {
+                Box::new(CnnAgent::<N>::new(&name, &weights, cfg, kind, chunk, Duration::default(), 0x51))
+            })
         }
         other => panic!("unknown agent kind {other:?} (cnn agents need the `cnn` feature)"),
     }

@@ -134,9 +134,10 @@ impl NetSearchFactory<Gonnect> for GonnectNets {
             NetSelection::Gumbel => Kind::Gumbel,
             NetSelection::MostVisited => Kind::Deterministic,
         };
+        let max_time = spec.max_time.unwrap_or_default();
         crate::with_board_size!(
             weights.geometry.size,
-            N => Ok(Box::new(GonnectCnnSearch::<N>::new(&spec.model, weights, cfg, kind, seed))),
+            N => Ok(Box::new(GonnectCnnSearch::<N>::new(&spec.model, weights, cfg, kind, max_time, seed))),
             n => Err(HostError::internal(format!("no {n}x{n} network support"))),
         )
     }
@@ -156,11 +157,12 @@ impl<const N: usize> GonnectCnnSearch<N> {
         weights: &Arc<Weights>,
         cfg: mcts_batch::Config,
         kind: Kind,
+        max_time: Duration,
         seed: u64,
     ) -> Self {
         GonnectCnnSearch {
             simulation_limit: cfg.num_simulations,
-            agent: CnnAgent::<N>::new(name, weights, cfg, kind, CHUNK_SIZE, seed),
+            agent: CnnAgent::<N>::new(name, weights, cfg, kind, CHUNK_SIZE, max_time, seed),
             last: None,
         }
     }
@@ -310,6 +312,7 @@ mod tests {
         NetSearchSpec {
             model: "zero-7x7".into(),
             simulations,
+            max_time: None,
             considered_actions: 4,
             value_scale: 0.1,
             max_visit_init: 50,
