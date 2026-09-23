@@ -12,6 +12,7 @@
 //! `Flat`, the pre-move-splitting whole-`PlacedPiece` snapshot kept for the
 //! `strength_move_splitting` comparison.
 
+pub mod cnn;
 mod connectivity;
 pub mod game;
 mod heuristics;
