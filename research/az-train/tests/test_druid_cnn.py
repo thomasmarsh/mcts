@@ -30,3 +30,24 @@ def test_augment_agrees_with_decoding_the_reflected_position():
             np.testing.assert_array_equal(alegal.numpy() > 0, dr.decode_legal(flipped, size))
             np.testing.assert_allclose(api.numpy().sum(1), pos.policy.sum(1), rtol=1e-6)
             np.testing.assert_array_equal(api.numpy() > 0, alegal.numpy() > 0)
+
+
+def _row(draw: float, pearson: float | None, over: float | None) -> dict:
+    return {
+        "diagnostics": {
+            "selfplay": {"draw_rate": draw},
+            "value": {"held": {"pearson": pearson, "mse_vs_constant": over}},
+        }
+    }
+
+
+def test_druid_warnings_flag_draws_and_an_anti_correlated_value_head():
+    healthy = [_row(0.02, 0.3, 0.8)] * 10
+    assert dc.druid_warnings(healthy) == []
+    sick = [_row(0.2, -0.2, 1.3)] * 10
+    text = " | ".join(dc.druid_warnings(sick))
+    assert "draw rate" in text and "Pearson" in text and "constant predictor" in text
+    assert dc.druid_warnings([]) == []
+    # Only the last 10 generations count, and a missing Pearson (constant head) is skipped.
+    assert dc.druid_warnings([_row(0.9, -1.0, 2.0)] * 5 + healthy) == []
+    assert dc.druid_warnings([_row(0.0, None, None)] * 3) == []

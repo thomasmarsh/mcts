@@ -5,15 +5,21 @@
 
 One generation is: Gumbel self-play with the current weights (Rust, MLX) -> a fixed number of
 batch-32 Adam steps on a sliding replay window, warm-started from the previous generation (torch,
-MPS) -> weights export and a log line. There is no gate yet: this is the plumbing, and
-``--smoke-checks`` proves the pieces agree (Rust and torch forwards, checkpoint reload, a net
-against itself). The game-agnostic helpers (config, JSONL, export, optimizer) come from
+MPS) -> weights export -> the reference-free progress gate (the new net against the net ``lag``
+generations earlier and against the current champion, paired openings, both seats; a promotion
+when it beats the champion) -> a log line. Progress is only ever measured net against net.
+``--round-robin`` rates checkpoints (Bradley-Terry, cycles), ``--verdict`` applies the
+pre-registered ``[rules]``, and ``--smoke-checks`` proves the pieces agree (Rust and torch
+forwards, checkpoint reload, a net against itself). The game-agnostic helpers (config, JSONL,
+export, optimizer, match-config text, round-robin pairing, the rating plot) come from
 ``gonnect_cnn``; the network and the rating code are ``gridcnn`` and ``yardstick``, unchanged.
 
 Files under the run directory: ``gen<N>.bin`` (exported weights, ``crates/grid-cnn`` format),
 ``shards/gen<N>.bin`` (self-play), ``latest.pt`` (model + optimizer of the newest generation),
 ``steps.jsonl`` (one line per optimizer step) and ``validation.jsonl`` (one line per validation
-evaluation), both written as they happen, ``log.jsonl`` (one line per generation),
+evaluation), both written as they happen, ``log.jsonl`` (one line per generation, with its gate),
+``diagnostics.jsonl`` (one line per generation, see ``druid_diagnostics``), ``gate/gen<N>.jsonl``
+(the gate's games), ``ratings/`` (``--round-robin``), ``verdict.json`` (``--verdict``),
 ``smoke-report.json`` (``--smoke-checks``).
 
 Augmentation: Druid is not D4-invariant (Black joins top-bottom, White left-right), so only the
@@ -36,7 +42,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F  # noqa: N812
 
-from az_train import gridcnn
+from az_train import gridcnn, yardstick
+from az_train.druid_diagnostics import diagnostics
 from az_train.druid_records import (
     IN_PLANES,
     SYMMETRIES,
@@ -53,14 +60,21 @@ from az_train.gonnect_cnn import (
     _pearson,
     append_jsonl,
     atomic_torch_save,
+    checkpoint_generations,
+    current_champion,
     dump_toml,
     export_weights,
     load_config,
     make_optimizer,
+    match_config_text,
     new_model,
+    pairing_summary,
     policy_loss,
+    rating_plot_svg,
     read_jsonl,
+    round_robin_pairs,
     rust_env,
+    write_json,
 )
 
 CELL_PLANE = 3  # the legal-cell plane, read in the pending phase's own anchor convention
@@ -305,7 +319,7 @@ def _log(path: Path, extra: dict[str, Any], row: dict[str, Any]) -> None:
 def build_binaries() -> None:
     subprocess.run(
         ["cargo", "build", "--release", "-p", "game-druid"]
-        + ["--example", "druid_selfplay", "--example", "druid_check"],
+        + ["--example", "druid_selfplay", "--example", "druid_check", "--example", "druid_gate"],
         cwd=ROOT,
         env=rust_env(),
         check=True,
@@ -322,6 +336,82 @@ def run_selfplay(config: Path, weights: Path, shard: Path, seed: int) -> dict[st
         text=True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+# ------------------------------------------------------------------------------------ the gate
+
+
+def run_gate_binary(
+    conf: Path, text: str, out: Path, *, resume: bool = False
+) -> list[dict[str, Any]]:
+    """Write ``conf``, run ``druid_gate`` on it and return the pairing summary rows of ``out``
+    (which is cleared first unless ``resume``)."""
+    conf.parent.mkdir(parents=True, exist_ok=True)
+    conf.write_text(text)
+    if not resume:
+        out.unlink(missing_ok=True)
+    cmd = [str(EXAMPLES / "druid_gate"), "--config", str(conf)] + (["--resume"] if resume else [])
+    done = subprocess.run(cmd, cwd=ROOT, env=rust_env(), capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"druid_gate failed ({done.returncode}): {done.stderr[-2000:]}")
+    return [r for r in read_jsonl(out) if r.get("type") == "pairing"]
+
+
+def run_progress_gate(
+    cfg: dict[str, Any], run_dir: Path, gen: int, champion: int
+) -> dict[str, Any]:
+    """Generation ``gen`` against the net ``gate.lag`` generations earlier (generation 0 while
+    ``gen <= lag``) and against the champion, on one shared opening set. The new net is promoted
+    when its score against the champion reaches ``gate.promote_score``. When the two opponents
+    are the same net there is one match."""
+    gate = cfg["gate"]
+    lag_gen = max(0, gen - gate["lag"])
+    opponents = [lag_gen] + ([champion] if champion != lag_gen else [])
+    names = {g: f"gen{g}" for g in [gen, *opponents]}
+    out = run_dir / "gate" / f"gen{gen}.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[(n, run_dir / f"gen{g}.bin", gate["simulations"]) for g, n in names.items()],
+        pairs=[(names[gen], names[o]) for o in opponents],
+        openings=gate["games"] // 2,
+        opening_plies=gate["opening_plies"],
+        seed=gate["seed"],
+        workers=gate["workers"],
+        max_plies=gate["max_plies"],
+    )
+    rows = {r["b"]: r for r in run_gate_binary(run_dir / "gate" / f"gen{gen}.toml", text, out)}
+    lag = pairing_summary(rows[names[lag_gen]], lag_gen)
+    best = pairing_summary(rows[names[champion]], champion)
+    promoted = best["score"] >= gate["promote_score"]
+    return {
+        "lag": lag,
+        "best": best,
+        "champion_before": champion,
+        "promoted": promoted,
+        "champion": gen if promoted else champion,
+    }
+
+
+def diagnose(
+    model: gridcnn.GridCNN,
+    shard: Path,
+    stats: dict[str, Any],
+    held: Positions,
+    device: torch.device,
+    validation_games: int,
+    train_sample: int = 2000,
+) -> dict[str, Any]:
+    """Oracle-free diagnostics of one generation: its self-play shard, the fitted net's predictions
+    on the shard's held-out games, and on an evenly spaced sample of the shard's own training
+    positions (see ``druid_diagnostics``)."""
+    size, positions = load_positions(shard)
+    values, logits = predict(model, held, device)
+    train, _ = split_validation(positions, validation_games)
+    if len(train) > train_sample:
+        train = train.take(np.linspace(0, len(train) - 1, train_sample).astype(np.int64))
+    train_values, _ = predict(model, train, device)
+    return diagnostics(positions, stats, held, values, logits, size, train_values, train.value)
 
 
 # ----------------------------------------------------------------------------------- run loop
@@ -379,10 +469,17 @@ def run(
     else:
         export_weights(gridcnn.zero_model(g), run_dir / "gen0.bin")
 
-    while gen < total:
+    gen_log = run_dir / "log.jsonl"
+    while True:
         weights = run_dir / f"gen{gen}.bin"
         if model is not None and not weights.exists():
             export_weights(model, weights)
+        if gen > 0 and gen not in {r["gen"] for r in read_jsonl(gen_log)}:
+            print(f"[gen {gen}] checkpoint without a log line: running its gate", flush=True)
+            finish_generation(cfg, run_dir, gen, {"gen": gen, "resumed": True}, time.perf_counter())
+        if gen >= total:
+            break
+
         row: dict[str, Any] = {"gen": gen + 1}
         started = time.perf_counter()
 
@@ -421,6 +518,10 @@ def run(
             )
         row["train"] = summary
         row["val_after"] = summary["validation"][-1]
+        row["diagnostics"] = diagnose(
+            model, shard, row["selfplay"], val, device, tcfg["validation_games"]
+        )
+        append_jsonl(run_dir / "diagnostics.jsonl", {"gen": gen + 1, **row["diagnostics"]})
         gen += 1
         atomic_torch_save(
             {
@@ -434,15 +535,149 @@ def run(
         export_weights(model, run_dir / f"gen{gen}.bin")
         del window
         torch.mps.empty_cache()
-        row["wall_seconds"] = time.perf_counter() - started
-        append_jsonl(run_dir / "log.jsonl", row)
-        print(
-            f"[gen {gen}] loss {summary['loss_first']:.3f}->{summary['loss_last']:.3f}  "
-            f"val value_mse {row['val_after']['value_mse']:.3f} "
-            f"policy_ce {row['val_after']['policy_ce']:.3f}  "
-            f"selfplay {row['selfplay_seconds']:.0f}s fit {summary['fit_seconds']:.0f}s",
-            flush=True,
+        finish_generation(cfg, run_dir, gen, row, started)
+        if gen == cfg["rules"]["early_gen"] and check_early_kill(cfg, run_dir, total):
+            raise SystemExit(3)
+
+
+def finish_generation(
+    cfg: dict[str, Any], run_dir: Path, gen: int, row: dict[str, Any], started: float
+) -> None:
+    """The progress gate for generation ``gen``'s weights (every ``gate.every`` generations),
+    then its log line."""
+    gate_started = time.perf_counter()
+    if gen % cfg["gate"].get("every", 1) == 0:
+        print(f"[gen {gen}] progress gate", flush=True)
+        row["gate"] = run_progress_gate(
+            cfg, run_dir, gen, current_champion(read_jsonl(run_dir / "log.jsonl"))
         )
+    row["gate_seconds"] = time.perf_counter() - gate_started
+    row["wall_seconds"] = time.perf_counter() - started
+    append_jsonl(run_dir / "log.jsonl", row)
+    summary = row.get(
+        "train", {"loss_first": float("nan"), "loss_last": float("nan"), "fit_seconds": 0.0}
+    )
+    val = row.get("val_after", {"value_mse": float("nan"), "policy_ce": float("nan")})
+    gate = row.get("gate")
+    verdict = (
+        f"lag {gate['lag']['score']:.3f} [{gate['lag']['wilson_lo']:.3f}, "
+        f"{gate['lag']['wilson_hi']:.3f}] vs gen{gate['lag']['opponent_gen']}, "
+        f"best {gate['best']['score']:.3f} vs gen{gate['best']['opponent_gen']}"
+        f"{' PROMOTED' if gate['promoted'] else ''}"
+        if gate
+        else "no gate"
+    )
+    print(
+        f"[gen {gen}] {verdict}  "
+        f"loss {summary['loss_first']:.3f}->{summary['loss_last']:.3f}  "
+        f"val value_mse {val['value_mse']:.3f} policy_ce {val['policy_ce']:.3f}  "
+        f"selfplay {row.get('selfplay_seconds', 0):.0f}s fit {summary['fit_seconds']:.0f}s "
+        f"gate {row['gate_seconds']:.0f}s",
+        flush=True,
+    )
+
+
+# ------------------------------------------------------------------ round robin and the verdict
+
+
+def druid_warnings(rows: list[dict[str, Any]]) -> list[str]:
+    """Health warnings ``yardstick`` does not know about (it is game-agnostic and unchanged). They
+    never gate: they are appended to the verdict's health clause for the reader."""
+    recent = [r for r in rows[-10:] if "diagnostics" in r]
+    warnings: list[str] = []
+    if not recent:
+        return warnings
+    draw = float(np.mean([r["diagnostics"]["selfplay"]["draw_rate"] for r in recent]))
+    if draw > 0.10:
+        warnings.append(f"self-play draw rate {draw:.2f} above 0.10 over the last {len(recent)}")
+    pear = [r["diagnostics"]["value"]["held"]["pearson"] for r in recent]
+    pear = [p for p in pear if p is not None]
+    if pear and float(np.mean(pear)) < 0.0:
+        warnings.append(
+            f"held-out value Pearson {np.mean(pear):.2f} below 0 over the last {len(recent)}: "
+            "the value head is anti-correlated with outcomes on unseen games"
+        )
+    over = [r["diagnostics"]["value"]["held"]["mse_vs_constant"] for r in recent]
+    over = [m for m in over if m is not None]
+    if over and float(np.mean(over)) > 1.0:
+        warnings.append(
+            f"held-out value MSE {np.mean(over):.2f}x a constant predictor "
+            f"over the last {len(recent)}"
+        )
+    return warnings
+
+
+def evaluate_run(
+    cfg: dict[str, Any], run_dir: Path, total: int
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The pre-registered rules applied to the run so far, plus Druid's non-gating warnings."""
+    rows = read_jsonl(run_dir / "log.jsonl")
+    report = run_dir / "ratings" / "report.json"
+    ratings = json.loads(report.read_text()) if report.exists() else None
+    verdict = yardstick.evaluate_rules(
+        cfg["rules"],
+        cfg["gate"]["lag"],
+        total,
+        rows,
+        ratings,
+        cfg["train"]["stall_check_min_value_std"],
+    )
+    verdict["clauses"]["health"]["warnings"] += druid_warnings(rows)
+    return verdict, rows
+
+
+def check_early_kill(cfg: dict[str, Any], run_dir: Path, total: int) -> bool:
+    """Rule 1: at ``rules.early_gen`` the mean lag-gate score must be at least
+    ``early_min_mean_lag_score``, otherwise the run stops and ``verdict.json`` says KILL_EARLY."""
+    verdict, _ = evaluate_run(cfg, run_dir, total)
+    early = verdict["clauses"]["early"]
+    print(f"[early check] {early}", flush=True)
+    if early["status"] == "fail":
+        write_json(run_dir / "verdict.json", verdict)
+        print("[early check] KILL_EARLY: the run is stopped", flush=True)
+        return True
+    return False
+
+
+def round_robin(
+    config_path: Path, run_dir: Path, overrides: list[str], last: int | None = None
+) -> dict[str, Any]:
+    """The end-of-run rating curve: every pair of checkpoints (within ``round_robin.max_gap``)
+    plays ``round_robin.games`` paired games (resumable: finished pairings are skipped), then a
+    Bradley-Terry fit, the pair table, intransitivity and the rating plot are written under
+    ``ratings/``."""
+    cfg = load_config(config_path, overrides)
+    rr = cfg["round_robin"]
+    rows = read_jsonl(run_dir / "log.jsonl")
+    gens = checkpoint_generations(cfg, last if last is not None else max(r["gen"] for r in rows))
+    pairs = round_robin_pairs(gens, rr["max_gap"])
+    out = run_dir / "ratings" / "round-robin.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=[(f"gen{g}", run_dir / f"gen{g}.bin", rr["simulations"]) for g in gens],
+        pairs=pairs,
+        openings=rr["games"] // 2,
+        opening_plies=rr["opening_plies"],
+        seed=rr["seed"],
+        workers=rr["workers"],
+        max_plies=rr["max_plies"],
+    )
+    print(f"[round robin] {len(gens)} checkpoints, {len(pairs)} pairings x {rr['games']} games")
+    pair_rows = run_gate_binary(run_dir / "ratings" / "round-robin.toml", text, out, resume=True)
+    report = yardstick.rating_report(pair_rows, [f"gen{g}" for g in gens])
+    write_json(run_dir / "ratings" / "report.json", report)
+    (run_dir / "ratings" / "curve.svg").write_text(rating_plot_svg(report))
+    return report
+
+
+def verdict_command(
+    config_path: Path, run_dir: Path, overrides: list[str], total: int | None
+) -> dict[str, Any]:
+    cfg = load_config(config_path, overrides)
+    verdict, _ = evaluate_run(cfg, run_dir, total or cfg["loop"]["generations"])
+    write_json(run_dir / "verdict.json", verdict)
+    return verdict
 
 
 # --------------------------------------------------------------------------------- smoke checks
@@ -523,11 +758,24 @@ def main() -> None:
     p.add_argument("--out-dir")
     p.add_argument("--generations", type=int)
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
+    p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
+    p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
     args = p.parse_args()
     config = Path(args.config)
-    if args.smoke_checks:
+
+    def run_dir() -> Path:
         d = Path(args.out_dir)
-        report = smoke_checks(config, d if d.is_absolute() else ROOT / d, args.set)
+        return d if d.is_absolute() else ROOT / d
+
+    if args.round_robin:
+        report = round_robin(config, run_dir(), args.set)
+        print(json.dumps({k: report[k] for k in ("players", "elo", "se", "cycles")}, indent=2))
+        raise SystemExit(0)
+    if args.verdict:
+        print(json.dumps(verdict_command(config, run_dir(), args.set, args.generations), indent=2))
+        raise SystemExit(0)
+    if args.smoke_checks:
+        report = smoke_checks(config, run_dir(), args.set)
         print(json.dumps(report, indent=2))
         raise SystemExit(0 if report["pass"] else 1)
     run(config, args.set, Path(args.out_dir) if args.out_dir else None, args.generations)

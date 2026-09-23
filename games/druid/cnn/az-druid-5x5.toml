@@ -54,6 +54,79 @@ opening_plies = 4
 seed = 1
 max_plies = 300
 
+[gate]
+# Progress gate, net against net (no reference engine): the new net plays the net `lag`
+# generations earlier (generation 0, the zero net, while generation <= lag) and the current
+# champion, each opening from both seats. The champion is replaced by the new net when its score
+# against the champion reaches `promote_score`; self-play always uses the latest net.
+#
+# Sizing (measured on 5x5 checkpoints, 32 simulations, `druid_gate`): a game costs 1.2-1.4 s of wall
+# time on 4 workers (full-size 40-game matches of the plumbing run's nets: 55 s and 47 s; between
+# zero-net checkpoints 16 games in 19 s; 1 worker 76 s, 8 workers 20 s, so the batch-1 MLX search is
+# latency bound and 4 is enough), at 100-135 ms per move. A generation with two distinct opponents
+# pays about 100 s next to about 70 s of self-play and 25 s of fit; longer games from stronger
+# nets will raise it, so re-measure in the smoke run. 40 games puts the Wilson half-width near 0.15,
+# so a single gate is a coarse signal; the rules below only ever use means over many gates.
+lag = 10
+games = 40
+# Random plies (single sub-decisions) before the net takes over; 4 is about two turns.
+opening_plies = 4
+simulations = 32
+promote_score = 0.55
+every = 1
+workers = 4
+seed = 1
+# Same cap as self-play: the longest zero-net game was 148 plies at 5x5, random play averages 81.
+max_plies = 250
+
+# End-of-run rating curve (`az-train-druid-cnn --round-robin`): checkpoints at generation 0, every
+# `every`-th generation and the last one. All pairs is 55 pairings for 11 checkpoints, about 2.3 h
+# at 100 games each (2-2.5 min a pairing, 1.2-1.5 s a game measured); `max_gap = 3` keeps pairs at
+# most 3 checkpoints apart plus the final-vs-half pair the rules need, 28 pairings (about 1.2 h),
+# and still closes triangles for the cycle check. 100 games is what makes rule 3's 0.60 reachable with a Wilson
+# lower bound above one half (60 of 100 gives 0.50).
+[round_robin]
+every = 10
+games = 100
+opening_plies = 4
+simulations = 32
+max_gap = 3
+workers = 4
+seed = 2
+max_plies = 250
+
+# Pre-registered pass / kill rules, applied by `az-train-druid-cnn --verdict` (and rule 1 by the
+# coordinator itself at `early_gen`). Written before any generation past 2 exists.
+#
+# Calibration. What the S1-S3 numbers pin down is the mechanics, not a strength curve, so the
+# strength thresholds are Gonnect's (same statistical footing: 40-game gates, 100-game pairings) and
+# any of them that fails for a shape reason (a run that saturates early, a plateau that is a real
+# ceiling) is reported N/A-needs-interpretation, not FAIL, and not silently rescored:
+# - Capped-game rate: 0 of 256 games hit the 250-ply cap in both S2 and S3 (longest 148), so 5% is a
+#   loose ceiling at 5x5. It must be revisited at 7x7, where random games average 153 plies.
+# - First-player win rate: 55% in zero-net self-play (S2), inside the 35-65% warning band that
+#   `yardstick` hard-codes; paired openings cancel it in every gate.
+# - Draws: 4 of 256 in S3 gen 2. `yardstick` has no draw clause, so `--verdict` adds a non-gating
+#   warning above 10% (druid_cnn.druid_warnings), plus one for held-out value Pearson below 0 over the
+#   last 10 generations (S3 saw it go negative after generation 1 on zero-net outcomes).
+# - Gate score: a gate is 40 games (SE 0.08), so rule 1 averages 20 gates (SE about 0.02) and 0.55 is
+#   where a net with a true 0.55 edge would pass about 50% of the time by construction; the gap to a
+#   healthy run (generation 2 scored 0.81 over generation 0 in 16 games, before any real learning)
+#   is what the rule is for.
+[rules]
+# 1. Early kill: mean lag-gate score over generations lag+1..early_gen.
+early_gen = 30
+early_min_mean_lag_score = 0.55
+# 2. Rating grows over every `rating_step`-generation step of the round robin (from generation 10).
+rating_step = 20
+# 3. Still improving: generation N vs N/2 (round-robin pair) and the last-quartile lag score.
+final_vs_half_min_score = 0.60
+last_quartile_min_lag_score = 0.55
+# 4. Significant directed 3-cycles among the round-robin checkpoints.
+max_significant_cycles = 0
+# 5. Health: capped-game rate over the last 10 generations.
+max_capped_rate = 0.05
+
 [loop]
 generations = 100
 out_dir = "local/output/druid/cnn-5x5/run1"

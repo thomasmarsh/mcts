@@ -1,0 +1,476 @@
+<title>Druid 5x5 Run</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg: #f3f5f7; --panel: #ffffff; --ink: #101418; --ink2: #48515c; --muted: #6a7480;
+  --grid: #e3e7eb; --rule: #d5dbe1; --band: #e9f4ee;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --good: #1d7a4d; --warn: #9a6700; --crit: #c2362f;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1317; --panel: #161b21; --ink: #f1f4f7; --ink2: #b4bdc7; --muted: #8b96a2;
+    --grid: #262d35; --rule: #333c46; --band: #17281f; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --good: #4fbf86; --warn: #d9a441; --crit: #ee6b64;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1317; --panel: #161b21; --ink: #f1f4f7; --ink2: #b4bdc7; --muted: #8b96a2;
+  --grid: #262d35; --rule: #333c46; --band: #17281f; --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --good: #4fbf86; --warn: #d9a441; --crit: #ee6b64;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); margin: 0;
+  padding-inline: 16px; padding-block: 24px 48px; }
+main { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -0.01em; text-wrap: balance; }
+h2.group { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600;
+  margin: 14px 0 0; padding-bottom: 6px; border-bottom: 1px solid var(--rule); }
+.sub { color: var(--ink2); font-size: 13px; margin: 4px 0 0; max-width: 70ch; }
+.pill { font: 500 12px var(--mono); padding: 4px 10px; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink2); white-space: nowrap; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 12px 14px; min-width: 0; }
+.tile .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.tile .v { font: 500 22px var(--mono); margin-top: 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tile .n { font-size: 12px; color: var(--ink2); margin-top: 2px; }
+.clauses { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.clause { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 9px 12px; display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.chip { font: 600 11px var(--mono); padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; flex: none; }
+.chip.pass { color: var(--good); } .chip.fail { color: var(--crit); } .chip.pending { color: var(--muted); } .chip.warn { color: var(--warn); }
+.clause b { font-size: 12px; font-weight: 600; display: block; }
+.clause span.d { font-size: 12px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.warns { font-size: 12px; color: var(--warn); margin: 0; }
+.panel { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 14px 16px 10px; min-width: 0; }
+.panel h3 { font-size: 14px; font-weight: 600; margin: 0 0 2px; }
+.panel p { font-size: 12px; color: var(--ink2); margin: 0 0 8px; max-width: 80ch; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.legend { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink2); margin: 2px 0 2px; min-height: 16px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+.legend i.tri { width: 0; height: 0; border-radius: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; border-bottom: 9px solid var(--ink2); background: none; }
+.legend i.dash { height: 0; border-top: 2px dashed var(--muted); background: none; border-radius: 0; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 6px 8px; font: 12px var(--mono); color: var(--ink); white-space: nowrap; z-index: 2;
+  box-shadow: 0 2px 8px rgba(0,0,0,.14); }
+.tip b { font-weight: 500; }
+svg text { fill: var(--muted); font: 11px var(--mono); }
+svg .lab { fill: var(--ink2); }
+details { background: var(--panel); border: 1px solid var(--grid); border-radius: 6px; padding: 10px 14px; }
+summary { cursor: pointer; font-size: 13px; font-weight: 500; }
+summary:focus-visible, select:focus-visible { outline: 2px solid var(--s1); outline-offset: 3px; }
+select { font: 12px var(--mono); background: var(--panel); color: var(--ink); border: 1px solid var(--rule); border-radius: 4px; padding: 2px 6px; }
+label.pick { font-size: 12px; color: var(--ink2); }
+.tbl { overflow-x: auto; margin-top: 8px; max-height: 480px; overflow-y: auto; }
+table { border-collapse: collapse; font: 12px var(--mono); width: 100%; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+th { color: var(--muted); font-weight: 500; position: sticky; top: 0; background: var(--panel); }
+th:first-child, td:first-child { text-align: left; }
+.foot { font-size: 12px; color: var(--muted); margin: 0; }
+.note { font-size: 12px; color: var(--ink2); margin: 6px 0 0; }
+</style>
+<main>
+  <header>
+    <div>
+      <h1>Druid 5x5 CNN run</h1>
+      <p class="sub">128 channels x 6 residual blocks, Gumbel self-play from an all-zero net; every sub-decision of a turn (piece, orientation, cell) is its own ply. Progress is measured only by nets playing nets: each generation plays the net 10 generations earlier and the current champion, on shared openings from both seats. A round robin of checkpoints runs after the last generation.</p>
+    </div>
+    <span class="pill" id="status">loading</span>
+  </header>
+
+  <section class="tiles" id="tiles"></section>
+  <section class="clauses" id="clauses"></section>
+  <p class="warns" id="warns" hidden></p>
+
+  <h2 class="group">Progress</h2>
+  <section class="panel">
+    <h3>Progress gate</h3>
+    <p id="gate-desc"></p>
+    <div class="chart" id="c-gate"></div>
+  </section>
+  <section class="grid">
+    <div class="panel"><h3>Implied strength (approximate)</h3>
+      <p>Elo chained from the lag-gate scores: Elo(g) = Elo(opponent) + 400 log10(s / (1 - s)), s clamped to [0.02, 0.98]. Derived from the gates, not the round robin; it drifts and saturates, read it as a shape.</p>
+      <div class="chart" id="c-elo"></div></div>
+    <div class="panel" id="rr-panel"><h3>Round-robin rating</h3>
+      <p id="rr-desc">Bradley-Terry Elo of the checkpoints (generation 0 = 0) with 95% error bars. Appears when the round robin has run, after the last generation.</p>
+      <div class="chart" id="c-rr"></div>
+      <p class="note" id="rr-note"></p></div>
+  </section>
+  <details id="rr-details" hidden><summary>Round-robin pair scores and cycles</summary><div class="tbl" id="rr-tbl"></div><p class="note" id="rr-cycles"></p></details>
+
+  <h2 class="group">Training</h2>
+  <section class="grid">
+    <div class="panel"><h3>Training loss</h3><p>Mean of the last 100 optimizer steps of each generation.</p>
+      <div class="chart" id="c-loss"></div></div>
+    <div class="panel"><h3>Held-out policy top-1</h3><p>Share of held-out positions where the net's best move matches the search's (24 games never trained on).</p>
+      <div class="chart" id="c-top1"></div></div>
+    <div class="panel"><h3>Held-out policy cross-entropy</h3><p>Nats against the search's improved policy; lower is better.</p>
+      <div class="chart" id="c-ce"></div></div>
+    <div class="panel"><h3>Held-out value MSE</h3><p>Squared error of the value head against game outcomes; 1.0 is what a constant zero scores.</p>
+      <div class="chart" id="c-vmse"></div></div>
+    <div class="panel"><h3>Held-out value Pearson</h3><p>Correlation of predicted value and outcome; below the dashed zero line the head is anti-correlated with outcomes on unseen games. Noisy: 24 games give 24 outcomes.</p>
+      <div class="chart" id="c-vpear"></div></div>
+    <div class="panel"><h3>Value overfit gap</h3><p>Value MSE on held-out games minus value MSE on a sample of the generation's own training positions. A gap that opens while the training error falls is the head memorising outcomes.</p>
+      <div class="chart" id="c-vgap"></div></div>
+    <div class="panel"><h3>Held-out policy cross-entropy by phase</h3><p>Nats against the search's policy, split by the phase of the turn (forced single-move positions excluded). The dashed line is what a uniform policy over the legal cells would score; a cell curve on it is the net at chance.</p>
+      <div class="chart" id="c-phase-ce"></div></div>
+    <div class="panel"><h3>Held-out policy top-1 by phase</h3><p>Share of positions where the net's best move matches the search's, per phase.</p>
+      <div class="chart" id="c-phase-top1"></div></div>
+  </section>
+
+  <h2 class="group">Self-play health</h2>
+  <section class="grid">
+    <div class="panel"><h3>Game length</h3><p>Mean plies per self-play game.</p>
+      <div class="chart" id="c-plies"></div></div>
+    <div class="panel"><h3>Capped games</h3><p>Share of games dropped at the 250-ply cap (pre-registered health limit 5%, dashed).</p>
+      <div class="chart" id="c-capped"></div></div>
+    <div class="panel"><h3>Black wins and draws</h3><p>Black win rate (shaded band 35 to 65% is the healthy range) and the share of drawn games (warning above 10%).</p>
+      <div class="chart" id="c-color"></div></div>
+    <div class="panel"><h3>Phase mix</h3><p>Share of self-play positions in each phase of a turn: choosing the piece kind, a lintel's orientation, or the cell.</p>
+      <div class="chart" id="c-phase"></div></div>
+    <div class="panel"><h3>Mean legal moves</h3><p>Average number of legal moves per self-play position.</p>
+      <div class="chart" id="c-legal"></div></div>
+  </section>
+
+  <h2 class="group">Oracle-free diagnostics</h2>
+  <section class="grid">
+    <div class="panel"><h3>Policy entropy</h3><p>Nats, on held-out positions: the search's improved policy (target) and the net's own prior.</p>
+      <div class="chart" id="c-entropy"></div></div>
+    <div class="panel"><h3>Target vs prior divergence</h3><p>KL(target || prior) in nats on held-out positions, after the fit: how much the search still corrects the net.</p>
+      <div class="chart" id="c-kl"></div></div>
+    <div class="panel"><h3>Value calibration</h3><p>Expected calibration error and Brier score of the value head on held-out positions. ECE above 0.15 (dashed) is a warning.</p>
+      <div class="chart" id="c-cal"></div></div>
+    <div class="panel"><h3>Reliability diagram</h3><p>Mean predicted win probability against the realised win rate, per bin of prediction. On the diagonal is calibrated.
+      <label class="pick" for="rel-gen">Compare with generation</label> <select id="rel-gen"></select></p>
+      <div class="chart" id="c-rel"></div></div>
+  </section>
+
+  <h2 class="group">Cost</h2>
+  <section class="grid">
+    <div class="panel"><h3>Time per generation</h3><p>Seconds in self-play, fitting and the progress gate.</p>
+      <div class="chart" id="c-time"></div>
+      <p class="note" id="skip-note"></p></div>
+    <div class="panel"><h3>Positions per generation</h3><p>Self-play positions written to the replay window.</p>
+      <div class="chart" id="c-pos"></div></div>
+    <div class="panel"><h3>Gate speed</h3><p>Milliseconds per move of the new net in the lag-gate match (32 simulations).</p>
+      <div class="chart" id="c-ms"></div></div>
+  </section>
+
+  <details><summary>Table view: every generation</summary><div class="tbl" id="tbl"></div></details>
+  <p class="foot" id="foot"></p>
+</main>
+<script>
+const DATA = /*__DATA__*/null;
+const G = DATA.gens, N = DATA.total, S = DATA.settings || {};
+const LAG = S.lag ?? 10;
+const $ = (id) => document.getElementById(id);
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, d = 3) => (v == null || Number.isNaN(v) ? "-" : v.toFixed(d));
+const pct = (v, d = 1) => (v == null ? "-" : (v * 100).toFixed(d) + "%");
+const mean = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : null);
+const last = G[G.length - 1];
+
+function hm(sec) {
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h ? `${h}h ${String(m).padStart(2, "0")}m` : `${m}m`;
+}
+
+/* ---------- header: tiles, rule clauses, warnings ---------- */
+function clauseView() {
+  const v = DATA.verdict;
+  if (!v) return [];
+  const c = v.clauses;
+  const lagRun = G.filter((g) => g.score != null && g.gen > LAG && g.gen <= (S.early_gen ?? 30)).map((g) => g.score);
+  const out = [];
+  const early = c.early;
+  out.push(["Early (gen " + (S.early_gen ?? 30) + ")", early.status,
+    early.status === "pending"
+      ? (lagRun.length ? `running mean ${fmt(mean(lagRun), 3)} over ${lagRun.length} gens, need ${fmt(S.early_min, 2)}` : `lag scores start at generation ${LAG + 1}`)
+      : `mean ${fmt(early.value, 3)}, need ${fmt(early.threshold, 2)}`]);
+  const rg = c.rating_grows;
+  out.push(["Rating grows", rg.status, rg.status === "pending" ? "needs the round robin"
+    : (rg.first_non_increasing_step == null ? (rg.steps.length ? `${rg.steps.length} steps all rise` : "no complete step yet") : `first flat step from gen ${rg.first_non_increasing_step}`)]);
+  const fh = c.final_vs_half;
+  out.push([`Gen ${N} vs ${N / 2}`, fh.status, fh.status === "pending" ? "needs the round robin"
+    : `score ${fmt(fh.score, 2)} (lo ${fmt(fh.wilson_lo, 2)}), need ${fmt(fh.threshold, 2)}`]);
+  const ll = c.late_lag;
+  out.push(["Late lag score", ll.status, ll.status === "pending" ? `needs generation ${N}` : `mean ${fmt(ll.value, 3)}, need ${fmt(ll.threshold, 2)}`]);
+  const cy = c.no_cycles;
+  out.push(["No cycles", cy.status, cy.status === "pending" ? "needs the round robin" : `${cy.cycles.length} significant 3-cycles`]);
+  const h = c.health;
+  out.push(["Health", h.status === "pass" && h.warnings.length ? "warn" : h.status,
+    h.capped_rate == null ? "no games yet" : `capped ${pct(h.capped_rate)} of last 10, min value std ${fmt(h.min_value_std, 3)}`]);
+  return out;
+}
+
+function header() {
+  const el = $("tiles");
+  if (!last) { el.innerHTML = ""; $("status").textContent = "waiting for generation 1"; return; }
+  const elapsed = G.reduce((s, g) => s + g.wall, 0);
+  const eta = mean(G.slice(-10).map((g) => g.wall)) * (N - last.gen);
+  const gated = G.filter((g) => g.score != null);
+  const lg = gated[gated.length - 1];
+  const promos = G.filter((g) => g.promoted).length;
+  const v = DATA.verdict;
+  const items = [
+    ["Generation", `${last.gen} / ${N}`, `${G.reduce((s, g) => s + (g.positions || 0), 0).toLocaleString()} positions`],
+    ["Elapsed", hm(elapsed), last.gen < N ? `about ${hm(eta)} left (last 10 gens)` : "training done"],
+    ["Champion", lg ? `gen ${lg.champion}` : "-", `${promos} promotion${promos === 1 ? "" : "s"} at ${fmt(S.promote_score, 2)} vs champion`],
+    ["Latest lag gate", lg ? fmt(lg.score, 3) : "-", lg ? `Wilson [${fmt(lg.lo, 2)}, ${fmt(lg.hi, 2)}] vs gen ${lg.lag_opponent}` : ""],
+    ["Verdict so far", v ? v.verdict : "n/a", v && v.plateau_from != null ? `flat from generation ${v.plateau_from}` : "pre-registered rules"],
+  ];
+  el.innerHTML = items.map(([k, val, n]) => `<div class="tile"><div class="k">${k}</div><div class="v">${val}</div><div class="n">${n}</div></div>`).join("");
+  $("status").textContent = last.gen < N ? `generation ${last.gen} of ${N} done` : "training complete";
+  const icons = { pass: "✓ pass", fail: "✗ fail", pending: "… pending", warn: "! warn" };
+  $("clauses").innerHTML = clauseView().map(([name, st, d]) =>
+    `<div class="clause"><span class="chip ${st}">${icons[st]}</span><div><b>${name}</b><span class="d">${d}</span></div></div>`).join("");
+  const w = v ? v.clauses.health.warnings : [];
+  if (w.length) { $("warns").hidden = false; $("warns").textContent = "Health warnings: " + w.join("; "); }
+}
+
+/* ---------- chart kit ---------- */
+function niceStep(range, n) {
+  const raw = range / n, mag = Math.pow(10, Math.floor(Math.log10(raw || 1)));
+  const f = raw / mag;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * mag;
+}
+function niceTicks(a, b, n) {
+  const st = niceStep(b - a, n), out = [];
+  for (let v = Math.ceil(a / st - 1e-9) * st; v <= b + 1e-9; v += st) out.push(+v.toFixed(10));
+  return out;
+}
+
+/* spec() returns { height, x:[a,b], y:[a,b]?, yfmt, xfmt, xlabel, series:[{name,color,kind,pts:[{x,y,lo,hi,n}],dash}],
+   refs:[{y,label}], bandY:[y0,y1], vmarks:[x], legendExtra:[[cls,label]], stack, tfmt } */
+function chart(id, spec) {
+  const host = $(id);
+  const M = { l: 46, r: 14, t: 10, b: 26 };
+  function draw() {
+    const sp = spec();
+    const H = sp.height || 200;
+    const W = Math.max(240, host.clientWidth);
+    const iw = W - M.l - M.r, ih = H - M.t - M.b;
+    const ser = sp.series.map((s) => ({ ...s, pts: s.pts.filter((p) => p.y != null && !Number.isNaN(p.y)) }));
+    const allx = ser.flatMap((s) => s.pts.map((p) => p.x));
+    const xmax = allx.length ? Math.max(...allx) : 1;
+    const xdom = sp.x || [0, Math.max(10, Math.ceil(xmax / 10) * 10)];
+    const bars = ser.some((s) => s.kind === "bars");
+    const xs = bars ? [xdom[0] - 0.5, xdom[1] + 0.5] : xdom;
+    const sx = (v) => M.l + ((v - xs[0]) / (xs[1] - xs[0])) * iw;
+    let ys = sp.y;
+    if (!ys) {
+      let lo = Infinity, hi = -Infinity;
+      if (sp.stack) {
+        const tot = new Map();
+        ser.forEach((s) => s.pts.forEach((p) => tot.set(p.x, (tot.get(p.x) || 0) + p.y)));
+        lo = 0; hi = Math.max(1, ...tot.values());
+      } else {
+        ser.forEach((s) => s.pts.forEach((p) => { lo = Math.min(lo, p.lo ?? p.y, p.y); hi = Math.max(hi, p.hi ?? p.y, p.y); }));
+        (sp.refs || []).forEach((r) => { if (sp.refsInDomain) { lo = Math.min(lo, r.y); hi = Math.max(hi, r.y); } });
+      }
+      if (!Number.isFinite(lo)) { lo = 0; hi = 1; }
+      if (sp.zero) lo = Math.min(lo, 0);
+      if (hi - lo < 1e-9) { hi = lo + 1; }
+      const st = niceStep(hi - lo, 4);
+      ys = [Math.floor(lo / st - 1e-9) * st, Math.ceil(hi / st + 1e-9) * st];
+    }
+    const sy = (v) => M.t + ih - ((v - ys[0]) / (ys[1] - ys[0] || 1)) * ih;
+    const yfmt = sp.yfmt || ((t) => (Math.abs(t) >= 100 ? t.toFixed(0) : +t.toFixed(3)).toString());
+    let out = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${sp.label || id}">`;
+    if (sp.bandY) out += `<rect x="${M.l}" y="${sy(sp.bandY[1])}" width="${iw}" height="${sy(sp.bandY[0]) - sy(sp.bandY[1])}" fill="${css("--band")}"/>`;
+    niceTicks(ys[0], ys[1], 4).forEach((t) => {
+      out += `<line x1="${M.l}" x2="${W - M.r}" y1="${sy(t)}" y2="${sy(t)}" stroke="${css("--grid")}" stroke-width="1"/>`;
+      out += `<text x="${M.l - 6}" y="${sy(t) + 4}" text-anchor="end">${yfmt(t)}</text>`;
+    });
+    const xfmt = sp.xfmt || ((v) => String(v));
+    niceTicks(xdom[0], xdom[1], W < 420 ? 4 : 8).forEach((v) => { out += `<text x="${sx(v)}" y="${H - 6}" text-anchor="middle">${xfmt(v)}</text>`; });
+    if (sp.diag) out += `<line x1="${sx(0)}" y1="${sy(0)}" x2="${sx(1)}" y2="${sy(1)}" stroke="${css("--muted")}" stroke-dasharray="4 4"/>`;
+    (sp.refs || []).forEach((r) => {
+      out += `<line x1="${M.l}" x2="${W - M.r}" y1="${sy(r.y)}" y2="${sy(r.y)}" stroke="${css("--muted")}" stroke-dasharray="4 4" stroke-width="1"/>`;
+      if (r.label) out += `<text class="lab" x="${W - M.r - 2}" y="${sy(r.y) - 4}" text-anchor="end">${r.label}</text>`;
+    });
+    const surf = css("--panel");
+    if (bars) {
+      const bw = Math.max(2, Math.min(18, iw / (xs[1] - xs[0]) - 2));
+      const acc = new Map();
+      ser.forEach((s) => {
+        const col = css(s.color);
+        s.pts.forEach((p) => {
+          const a = acc.get(p.x) || 0, yt = sy(a + p.y), yb = sy(a);
+          out += `<rect x="${sx(p.x) - bw / 2}" y="${yt}" width="${bw}" height="${Math.max(0, yb - yt - 1)}" fill="${col}"/>`;
+          acc.set(p.x, a + p.y);
+        });
+      });
+    } else {
+      ser.forEach((s) => {
+        const col = css(s.color);
+        if (s.band && s.pts.length) {
+          const top = s.pts.map((p) => `${sx(p.x)},${sy(p.hi)}`), bot = s.pts.map((p) => `${sx(p.x)},${sy(p.lo)}`).reverse();
+          out += `<polygon points="${top.concat(bot).join(" ")}" fill="${col}" opacity="0.14"/>`;
+        }
+        if (s.err) s.pts.forEach((p) => {
+          out += `<line x1="${sx(p.x)}" x2="${sx(p.x)}" y1="${sy(p.lo)}" y2="${sy(p.hi)}" stroke="${col}" stroke-width="1.5"/>`;
+          out += `<line x1="${sx(p.x) - 3}" x2="${sx(p.x) + 3}" y1="${sy(p.lo)}" y2="${sy(p.lo)}" stroke="${col}" stroke-width="1.5"/>`;
+          out += `<line x1="${sx(p.x) - 3}" x2="${sx(p.x) + 3}" y1="${sy(p.hi)}" y2="${sy(p.hi)}" stroke="${col}" stroke-width="1.5"/>`;
+        });
+        if (s.kind !== "dots" && s.pts.length > 1)
+          out += `<polyline points="${s.pts.map((p) => `${sx(p.x)},${sy(p.y)}`).join(" ")}" fill="none" stroke="${col}" stroke-width="2" ${s.dash ? 'stroke-dasharray="5 4"' : ""} stroke-linejoin="round" stroke-linecap="round"/>`;
+        if (s.dots || s.kind === "dots") s.pts.forEach((p) => { out += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="4" fill="${col}" stroke="${surf}" stroke-width="2"/>`; });
+        else if (s.pts.length) { const p = s.pts[s.pts.length - 1]; out += `<circle cx="${sx(p.x)}" cy="${sy(p.y)}" r="4" fill="${col}" stroke="${surf}" stroke-width="2"/>`; }
+      });
+    }
+    (sp.vmarks || []).forEach((x) => {
+      const cx = sx(x), by = M.t + ih;
+      out += `<path d="M${cx - 4},${by} L${cx + 4},${by} L${cx},${by - 8} Z" fill="${css("--ink2")}" stroke="${surf}" stroke-width="1"/>`;
+    });
+    out += `<line id="${id}-x" y1="${M.t}" y2="${M.t + ih}" stroke="${css("--muted")}" stroke-width="1" visibility="hidden"/>`;
+    out += `<rect x="${M.l}" y="${M.t}" width="${iw}" height="${ih}" fill="transparent" id="${id}-hit" style="touch-action:pan-y"/></svg>`;
+    const legend = [];
+    if (ser.length > 1 || (sp.legendExtra || []).length) {
+      ser.forEach((s) => legend.push(`<span><i style="background:${css(s.color)}"></i>${s.name}</span>`));
+      (sp.legendExtra || []).forEach(([cls, label]) => legend.push(`<span><i class="${cls}"></i>${label}</span>`));
+    }
+    host.innerHTML = (legend.length ? `<div class="legend">${legend.join("")}</div>` : "") + out + `<div class="tip" hidden></div>`;
+    const svg = host.querySelector("svg"), tip = host.querySelector(".tip"), cross = host.querySelector(`#${id}-x`), hit = host.querySelector(`#${id}-hit`);
+    const xsAll = [...new Set(allx)].sort((a, b) => a - b);
+    hit.addEventListener("pointermove", (e) => {
+      if (!xsAll.length) return;
+      const r = svg.getBoundingClientRect(), px = ((e.clientX - r.left) / r.width) * W;
+      const hx = xs[0] + ((px - M.l) / iw) * (xs[1] - xs[0]);
+      const x = xsAll.reduce((b, c) => (Math.abs(c - hx) < Math.abs(b - hx) ? c : b), xsAll[0]);
+      cross.setAttribute("x1", sx(x)); cross.setAttribute("x2", sx(x)); cross.setAttribute("visibility", "visible");
+      const lines = ser.map((s) => {
+        const p = s.pts.reduce((b, c) => (b == null || Math.abs(c.x - x) < Math.abs(b.x - x) ? c : b), null);
+        return p ? `${s.name}: ${(sp.tfmt || ((q) => (+q.y.toFixed(4)).toString()))(p, s)}` : null;
+      }).filter(Boolean);
+      tip.innerHTML = `<b>${(sp.xlabel || ((v) => "generation " + v))(x)}</b><br>${lines.join("<br>")}`;
+      tip.hidden = false;
+      const left = (sx(x) / W) * r.width;
+      tip.style.left = Math.max(2, Math.min(left + 12, r.width - tip.offsetWidth - 4)) + "px";
+      tip.style.top = "8px";
+    });
+    hit.addEventListener("pointerleave", () => { tip.hidden = true; cross.setAttribute("visibility", "hidden"); });
+  }
+  draw();
+  new ResizeObserver(draw).observe(host);
+  return draw;
+}
+
+const pts = (f, sub = {}) => G.map((g) => ({ x: g.gen, y: f(g), ...Object.fromEntries(Object.entries(sub).map(([k, fn]) => [k, fn(g)])) }));
+const line = (name, color, f, extra = {}) => ({ name, color, pts: pts(f), ...extra });
+const P = (v) => pct(v, 1);
+
+/* ---------- charts ---------- */
+function build() {
+  header();
+  $("gate-desc").textContent = `Score of each new net against the net ${LAG} generations earlier (generation 0 until then) and against the current champion, ${S.gate_games ?? 40} paired games each. Band: Wilson 95% interval of the lag score. Above the dashed line the new net wins; a self-match is exactly 0.5. Triangles mark promotions (champion score at least ${fmt(S.promote_score, 2)}).`;
+  const promoted = G.filter((g) => g.promoted).map((g) => g.gen);
+  // Wilson band values ride on the lag series points.
+  const lagSeries = () => pts((g) => g.score, { lo: (g) => g.lo, hi: (g) => g.hi });
+  chart("c-gate", () => ({
+    label: "Progress gate score per generation", height: 260, y: [0, 1], yfmt: (t) => t.toFixed(1), refs: [{ y: 0.5 }],
+    vmarks: promoted, legendExtra: [["tri", "promotion"], ["dash", "0.5, even"]],
+    series: [{ name: `vs ${LAG} generations earlier`, color: "--s1", band: true, pts: lagSeries() },
+             { name: "vs champion", color: "--s2", pts: pts((g) => g.best_score) }],
+    tfmt: (p, s) => {
+      const g = G.find((q) => q.gen === p.x);
+      return s.color === "--s2"
+        ? `${p.y.toFixed(3)} vs gen ${g.best_opponent}${g.promoted ? " (promoted)" : ""}`
+        : `${p.y.toFixed(3)} [${fmt(g.lo, 2)}, ${fmt(g.hi, 2)}] vs gen ${g.lag_opponent}`;
+    },
+  }));
+  chart("c-elo", () => ({ label: "Implied Elo", zero: true, yfmt: (t) => t.toFixed(0),
+    series: [line("implied Elo", "--s1", (g) => g.implied_elo)], tfmt: (p) => p.y.toFixed(0) + " Elo (approx.)" }));
+
+  const R = DATA.ratings;
+  const rrGen = (n) => parseInt(n.slice(3), 10);
+  if (R) {
+    $("rr-desc").textContent = "Bradley-Terry Elo of the checkpoints (generation 0 = 0) with 95% error bars, from the end-of-run round robin. Steady growth is the pass condition; a flat stretch is a plateau.";
+    $("rr-note").textContent = `${R.cycles.length} significant 3-cycles; deviance ${R.deviance.toFixed(1)} on ${R.df} degrees of freedom.`;
+    chart("c-rr", () => ({ label: "Round-robin Elo by checkpoint", height: 200, x: [0, Math.max(...R.players.map(rrGen))], yfmt: (t) => t.toFixed(0),
+      series: [{ name: "Elo", color: "--s1", err: true, dots: true,
+        pts: R.players.map((n, i) => ({ x: rrGen(n), y: R.elo[i], lo: R.elo[i] - 1.96 * R.se[i], hi: R.elo[i] + 1.96 * R.se[i] })) }],
+      tfmt: (p) => `${p.y.toFixed(0)} Elo [${p.lo.toFixed(0)}, ${p.hi.toFixed(0)}]` }));
+    $("rr-details").hidden = false;
+    $("rr-tbl").innerHTML = `<table><thead><tr><th>pair</th><th>games</th><th>W</th><th>L</th><th>D</th><th>score</th><th>wilson lo</th><th>wilson hi</th></tr></thead><tbody>` +
+      R.pairs.map((p) => `<tr><td>${p.a} vs ${p.b}</td><td>${p.games}</td><td>${p.wins}</td><td>${p.losses}</td><td>${p.draws}</td><td>${fmt(p.score, 2)}</td><td>${fmt(p.wilson_lo, 2)}</td><td>${fmt(p.wilson_hi, 2)}</td></tr>`).join("") + `</tbody></table>`;
+    $("rr-cycles").textContent = R.cycles.length ? "Significant cycles: " + R.cycles.map((c) => JSON.stringify(c)).join(", ") : "No significant 3-cycles.";
+  } else {
+    chart("c-rr", () => ({ label: "Round-robin Elo (not run yet)", height: 200, x: [0, N], y: [0, 1], series: [{ name: "Elo", color: "--s1", pts: [] }] }));
+  }
+
+  chart("c-loss", () => ({ label: "Training loss", series: [line("policy cross-entropy", "--s2", (g) => g.policy_loss), line("value MSE", "--s1", (g) => g.value_loss)], tfmt: (p) => p.y.toFixed(3) }));
+  chart("c-top1", () => ({ label: "Held-out policy top-1", zero: true, yfmt: (t) => (t * 100).toFixed(0) + "%", series: [line("top-1", "--s1", (g) => g.val_policy_top1)], tfmt: (p) => P(p.y) }));
+  chart("c-ce", () => ({ label: "Held-out policy cross-entropy", series: [line("cross-entropy", "--s2", (g) => g.val_policy_ce)], tfmt: (p) => p.y.toFixed(3) + " nats" }));
+  chart("c-vmse", () => ({ label: "Held-out value MSE", zero: true, series: [line("value MSE", "--s1", (g) => g.val_value_mse)], tfmt: (p) => p.y.toFixed(3) }));
+  chart("c-vpear", () => ({ label: "Held-out value Pearson", refs: [{ y: 0 }], refsInDomain: true, series: [line("Pearson", "--s1", (g) => g.val_value_pearson)], tfmt: (p) => p.y.toFixed(3) }));
+
+  chart("c-plies", () => ({ label: "Mean plies per game", series: [line("plies", "--s1", (g) => g.plies)], tfmt: (p) => p.y.toFixed(1) }));
+  chart("c-capped", () => ({ label: "Capped game rate", y: [0, Math.max(0.1, ...G.map((g) => g.capped || 0)) * 1.1], yfmt: (t) => (t * 100).toFixed(0) + "%",
+    refs: [{ y: S.max_capped_rate ?? 0.05, label: "5% limit" }], series: [line("capped games", "--s1", (g) => g.capped)], tfmt: (p) => P(p.y) }));
+  chart("c-color", () => ({ label: "Black win rate and draw rate", y: [0, 1], yfmt: (t) => (t * 100).toFixed(0) + "%", bandY: [0.35, 0.65],
+    series: [line("Black wins", "--s1", (g) => g.black), line("draws", "--s3", (g) => g.draw)], tfmt: (p) => P(p.y) }));
+  const PH = [["piece", "--s1"], ["orientation", "--s3"], ["cell", "--s2"]];
+  chart("c-phase", () => ({ label: "Phase mix", y: [0, 1], yfmt: (t) => (t * 100).toFixed(0) + "%",
+    series: PH.map(([k, c]) => line(k, c, (g) => (g.phase_share || {})[k])), tfmt: (p) => P(p.y) }));
+  chart("c-phase-ce", () => ({ label: "Policy cross-entropy by phase", zero: true,
+    series: [...PH.map(([k, c]) => line(k, c, (g) => (g.phase_ce || {})[k])), line("cell, uniform policy", "--s2", (g) => (g.phase_uniform || {}).cell, { dash: true })],
+    tfmt: (p) => p.y.toFixed(3) + " nats" }));
+  chart("c-phase-top1", () => ({ label: "Policy top-1 by phase", y: [0, 1], yfmt: (t) => (t * 100).toFixed(0) + "%",
+    series: PH.map(([k, c]) => line(k, c, (g) => (g.phase_top1 || {})[k])), tfmt: (p) => P(p.y) }));
+  chart("c-vgap", () => ({ label: "Value MSE gap (held-out minus train)", refs: [{ y: 0 }], refsInDomain: true,
+    series: [line("gap", "--s1", (g) => g.v_gap), line("held-out MSE", "--s2", (g) => g.vh_mse), line("train MSE", "--s3", (g) => g.vt_mse)], tfmt: (p) => p.y.toFixed(3) }));
+  chart("c-legal", () => ({ label: "Mean legal moves", series: [line("legal moves", "--s1", (g) => g.legal_moves)], tfmt: (p) => p.y.toFixed(1) }));
+
+  chart("c-entropy", () => ({ label: "Policy entropy", zero: true, series: [line("search target", "--s2", (g) => g.target_entropy), line("net prior", "--s1", (g) => g.prior_entropy)], tfmt: (p) => p.y.toFixed(3) + " nats" }));
+  chart("c-kl", () => ({ label: "KL target to prior", zero: true, series: [line("KL(target || prior)", "--s1", (g) => g.kl)], tfmt: (p) => p.y.toFixed(4) + " nats" }));
+  chart("c-cal", () => ({ label: "Calibration error and Brier score", zero: true, refs: [{ y: 0.15, label: "ECE 0.15" }], refsInDomain: true,
+    series: [line("ECE", "--s1", (g) => g.ece), line("Brier", "--s2", (g) => g.brier)], tfmt: (p) => p.y.toFixed(3) }));
+
+  const withBins = G.filter((g) => g.bins && g.bins.some((b) => b[0] > 0));
+  const sel = $("rel-gen");
+  if (withBins.length) {
+    const dflt = withBins.length >= 20 ? withBins[9] : withBins[0];
+    sel.innerHTML = withBins.map((g) => `<option value="${g.gen}"${g.gen === dflt.gen ? " selected" : ""}>${g.gen}</option>`).join("");
+  }
+  const binSeries = (g, name, color) => ({ name, color, dots: true,
+    pts: g ? g.bins.filter((b) => b[0] > 0).map((b) => ({ x: b[1], y: b[2], n: b[0] })) : [] });
+  const redrawRel = chart("c-rel", () => {
+    const early = withBins.find((g) => String(g.gen) === sel.value);
+    const late = withBins[withBins.length - 1];
+    return { label: "Value reliability diagram", height: 240, x: [0, 1], y: [0, 1], diag: true, xfmt: (v) => v.toFixed(1), yfmt: (t) => t.toFixed(1),
+      xlabel: (v) => "predicted " + v.toFixed(2),
+      series: [binSeries(early, early ? `generation ${early.gen}` : "earlier", "--s2"), binSeries(late, late ? `generation ${late.gen} (latest)` : "latest", "--s1")],
+      tfmt: (p) => `realised ${p.y.toFixed(2)} (n=${p.n})` };
+  });
+  sel.addEventListener("change", redrawRel);
+
+  chart("c-time", () => ({ label: "Seconds per generation", bars: true, stack: true, height: 220, yfmt: (t) => t.toFixed(0),
+    series: [{ name: "self-play", color: "--s1", kind: "bars", pts: pts((g) => g.t_selfplay) },
+             { name: "fit", color: "--s2", kind: "bars", pts: pts((g) => g.t_fit) },
+             { name: "gate", color: "--s3", kind: "bars", pts: pts((g) => g.t_gate) }], tfmt: (p) => p.y.toFixed(0) + " s" }));
+  const skipped = G.filter((g) => g.gate_skipped).map((g) => g.gen);
+  $("skip-note").textContent = skipped.length ? `Gate skipped in ${skipped.length} generation${skipped.length === 1 ? "" : "s"}: ${skipped.join(", ")}.` : "No gate was skipped.";
+  chart("c-pos", () => ({ label: "Positions per generation", zero: true, yfmt: (t) => (t >= 1000 ? (t / 1000).toFixed(0) + "k" : t), series: [line("positions", "--s1", (g) => g.positions)], tfmt: (p) => p.y.toLocaleString() }));
+  chart("c-ms", () => ({ label: "Gate ms per move", zero: true, series: [line("ms per move", "--s1", (g) => g.cnn_ms)], tfmt: (p) => p.y.toFixed(0) + " ms" }));
+
+  const cols = [["gen", (g) => g.gen], ["lag opp", (g) => g.lag_opponent], ["lag score", (g) => fmt(g.score)], ["lo", (g) => fmt(g.lo, 2)], ["hi", (g) => fmt(g.hi, 2)],
+    ["champ score", (g) => fmt(g.best_score)], ["champion", (g) => g.champion], ["promoted", (g) => (g.promoted ? "yes" : "")], ["implied Elo", (g) => fmt(g.implied_elo, 0)],
+    ["policy loss", (g) => fmt(g.policy_loss)], ["value loss", (g) => fmt(g.value_loss)], ["top-1", (g) => fmt(g.val_policy_top1)], ["policy CE", (g) => fmt(g.val_policy_ce)],
+    ["value MSE", (g) => fmt(g.val_value_mse)], ["Pearson", (g) => fmt(g.val_value_pearson)], ["target H", (g) => fmt(g.target_entropy)], ["prior H", (g) => fmt(g.prior_entropy)],
+    ["KL", (g) => fmt(g.kl, 4)], ["ECE", (g) => fmt(g.ece)], ["Brier", (g) => fmt(g.brier)], ["plies", (g) => fmt(g.plies, 1)], ["capped", (g) => fmt(g.capped, 3)],
+    ["Black", (g) => fmt(g.black, 2)], ["draws", (g) => fmt(g.draw, 3)], ["legal", (g) => fmt(g.legal_moves, 1)],
+    ["CE piece", (g) => fmt((g.phase_ce || {}).piece)], ["CE orient", (g) => fmt((g.phase_ce || {}).orientation)], ["CE cell", (g) => fmt((g.phase_ce || {}).cell)],
+    ["val gap", (g) => fmt(g.v_gap)],
+    ["positions", (g) => g.positions], ["self-play s", (g) => fmt(g.t_selfplay, 0)], ["fit s", (g) => fmt(g.t_fit, 0)], ["gate s", (g) => fmt(g.t_gate, 0)], ["ms/move", (g) => fmt(g.cnn_ms, 0)]];
+  $("tbl").innerHTML = `<table><thead><tr>${cols.map((c) => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>` +
+    G.slice().reverse().map((g) => `<tr>${cols.map((c) => `<td>${c[1](g) ?? "-"}</td>`).join("")}</tr>`).join("") + `</tbody></table>`;
+  $("foot").textContent = `Snapshot of ${DATA.steps_done.toLocaleString()} optimizer steps across ${G.length} generations, written ${DATA.generated}. Republished by hand: values are as of that time.`;
+}
+build();
+</script>
