@@ -212,7 +212,8 @@ pub fn read_shard(path: &Path) -> io::Result<(usize, Vec<Record>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cnn::encode::{legal_moves, planes};
+    use crate::cnn::encode::{action_id, legal_moves, planes};
+    use crate::Move;
     use crate::DruidSplit;
     use mcts::game::Game;
     use rand::rngs::SmallRng;
@@ -272,6 +273,136 @@ mod tests {
             );
             for (r, s) in back.iter().zip(&states) {
                 assert_eq!(planes(&r.fields.to_state(size)), planes(s));
+            }
+        }
+    }
+
+    /// Positions sampled every `stride` plies from `games` random games, so heights, both owners,
+    /// hands and every pending phase occur, in a fixed order.
+    fn sample_positions(size: usize, games: usize, stride: usize, seed: u64) -> Vec<HashedState> {
+        (0..games as u64)
+            .flat_map(|g| positions(size, 400, seed + g).into_iter().step_by(stride))
+            .collect()
+    }
+
+    /// Real positions written by Rust and read back by `research/az-train/tests/test_druid_records.py`,
+    /// so the two encoders cannot drift. The policy is uniform over the legal ids, which lets the
+    /// Python side check its own legality derivation against the support. Regenerate with
+    /// `UPDATE_FIXTURE=1 cargo test -p game-druid --lib fixture`.
+    fn fixture_matches_the_encoding(size: usize, games: usize) {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("cnn/fixtures");
+        let shard_path = dir.join(format!("encode-{size}.shard.bin"));
+        let planes_path = dir.join(format!("encode-{size}.planes.bin"));
+        let states = sample_positions(size, games, 5, 100);
+        let records: Vec<Record> = states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let ids = legal_moves(s).1;
+                let mut policy = vec![0.0f32; num_actions(size)];
+                for &id in &ids {
+                    policy[usize::from(id)] = 1.0 / ids.len() as f32;
+                }
+                Record {
+                    fields: Fields::of(s),
+                    value: if i % 2 == 0 { 1.0 } else { -1.0 },
+                    game: i as u32,
+                    ply: (i % 200) as u16,
+                    policy,
+                }
+            })
+            .collect();
+        let planes: Vec<u8> = states.iter().flat_map(planes).flat_map(f32::to_le_bytes).collect();
+        let phases: std::collections::HashSet<u8> =
+            records.iter().map(|r| r.fields.pending).collect();
+        assert_eq!(phases.len(), 5, "the fixture must cover every pending phase");
+        assert!(records.iter().any(|r| r.fields.heights.iter().any(|&h| h >= 2)), "stacked cells");
+        if std::env::var("UPDATE_FIXTURE").is_ok() {
+            std::fs::create_dir_all(&dir).unwrap();
+            write_shard(&shard_path, size, &records).unwrap();
+            std::fs::write(&planes_path, &planes).unwrap();
+        }
+        let (read_size, stored) =
+            read_shard(&shard_path).expect("fixture shard (run with UPDATE_FIXTURE=1)");
+        assert_eq!(read_size, size);
+        assert_eq!(stored, records, "the stored shard fixture is stale");
+        assert_eq!(std::fs::read(&planes_path).unwrap(), planes, "the stored planes fixture is stale");
+    }
+
+    #[test]
+    fn fixtures_match_the_encoding() {
+        fixture_matches_the_encoding(5, 6);
+        fixture_matches_the_encoding(7, 4);
+    }
+
+    /// The board reflected across the horizontal axis (`flip_rows`) and/or the vertical one.
+    fn mirror(f: &Fields, size: usize, flip_rows: bool, flip_cols: bool) -> Fields {
+        let mut out = f.clone();
+        for r in 0..size {
+            for c in 0..size {
+                let (r2, c2) = (
+                    if flip_rows { size - 1 - r } else { r },
+                    if flip_cols { size - 1 - c } else { c },
+                );
+                out.heights[r2 * size + c2] = f.heights[r * size + c];
+                out.owners[r2 * size + c2] = f.owners[r * size + c];
+            }
+        }
+        out
+    }
+
+    /// The action id `mv` becomes under [`mirror`]. A lintel's cell id is its anchor (its first
+    /// cell, the left or top end), so a reflection along the lintel's own axis moves the anchor to
+    /// the other end: `n - 3 - x`. This is the table `druid_records.py` implements.
+    fn mirror_move(mv: Move, pending: Pending, size: usize, flip_rows: bool, flip_cols: bool) -> Move {
+        let Move::Cell(cell) = mv else { return mv };
+        let (n, x, y) = (size as i32, i32::from(cell) % size as i32, i32::from(cell) / size as i32);
+        let refl = |v: i32, flip: bool, span: i32| if !flip { v } else { (n - span - v).rem_euclid(n) };
+        let (along_x, along_y) = match pending {
+            Pending::Oriented(Orientation::Horizontal) => (3, 1),
+            Pending::Oriented(Orientation::Vertical) => (1, 3),
+            _ => (1, 1),
+        };
+        Move::Cell((refl(y, flip_rows, along_y) * n + refl(x, flip_cols, along_x)) as u8)
+    }
+
+    /// Druid is invariant under the reflections that keep each colour's axis (Black joins top and
+    /// bottom, White left and right): a game replayed through one has the mapped legal moves, the
+    /// mapped successor position and the same outcome at every ply. Quarter turns and transposes
+    /// swap the axes, so they are not symmetries.
+    #[test]
+    fn the_rules_are_invariant_under_axis_preserving_reflections() {
+        let mut rng = SmallRng::seed_from_u64(9);
+        for size in [5usize, 7] {
+            for (flip_rows, flip_cols) in [(true, false), (false, true), (true, true)] {
+                for _ in 0..6 {
+                    let mut s = HashedState::new(Size { w: size as u8, h: size as u8 });
+                    loop {
+                        let m = mirror(&Fields::of(&s), size, flip_rows, flip_cols).to_state(size);
+                        assert_eq!(DruidSplit::is_terminal(&s), DruidSplit::is_terminal(&m));
+                        assert_eq!(DruidSplit::winner(&s), DruidSplit::winner(&m));
+                        if DruidSplit::is_terminal(&s) {
+                            break;
+                        }
+                        let pending = s.state().pending;
+                        let (moves, _) = legal_moves(&s);
+                        let mut mapped: Vec<u16> = moves
+                            .iter()
+                            .map(|&mv| action_id(&mirror_move(mv, pending, size, flip_rows, flip_cols), size))
+                            .collect();
+                        mapped.sort_unstable();
+                        assert_eq!(mapped, legal_moves(&m).1, "size {size} phase {pending:?}");
+                        let mv = moves[rng.gen_range(0..moves.len())];
+                        let mv2 = mirror_move(mv, pending, size, flip_rows, flip_cols);
+                        s = DruidSplit::apply(s, &mv);
+                        let m = DruidSplit::apply(m, &mv2);
+                        assert_eq!(
+                            Fields::of(&m),
+                            mirror(&Fields::of(&s), size, flip_rows, flip_cols),
+                            "size {size} {mv:?} in {pending:?}"
+                        );
+                    }
+                }
             }
         }
     }

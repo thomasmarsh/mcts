@@ -34,6 +34,10 @@ rand_core = "0.6.4"
 name = "druid_selfplay"
 required-features = ["cnn"]
 
+[[example]]
+name = "druid_check"
+required-features = ["cnn"]
+
 [features]
 # CNN value+policy evaluation on the GPU (MLX): batched oracle, self-play, shards, play-time agent.
 # On by default; building without Homebrew's mlx/mlx-c needs `--no-default-features`. The encoder
