@@ -5,8 +5,8 @@
         "weights": "games/gonnect/cnn/weights/7x7-run1-gen100.bin"
     },
     {
-        "id": "gonnect-9x9-run1-gen97",
-        "label": "9x9 CNN, run1 generation 97 (champion)",
-        "weights": "games/gonnect/cnn/weights/9x9-run1-gen97.bin"
+        "id": "gonnect-9x9-run1-gen400",
+        "label": "9x9 CNN, run1 generation 400 (final, round-robin champion)",
+        "weights": "games/gonnect/cnn/weights/9x9-run1-gen400.bin"
     }
 ]
