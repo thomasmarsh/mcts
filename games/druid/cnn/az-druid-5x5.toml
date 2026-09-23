@@ -1,0 +1,30 @@
+# Druid 5x5 AlphaZero-style plumbing run: a 128-channel x 6-block CNN trained by Gumbel self-play
+# from scratch. Rust reads [net], [selfplay] and [play]. Every sub-decision of a turn (piece kind,
+# orientation, cell) is its own ply, about 2.2 plies per turn.
+
+[net]
+size = 5
+channels = 128
+blocks = 6
+policy_planes = 4
+value_planes = 2
+value_hidden = 64
+
+# Self-play search (Gumbel root, Sequential Halving over `considered_actions`).
+[selfplay]
+games = 256
+simulations = 32
+considered_actions = 8
+value_scale = 0.1
+max_visit_init = 50
+temp_moves = 16
+max_plies = 250
+chunk_size = 64
+
+# The play-time agent.
+[play]
+simulations = 100
+considered_actions = 16
+value_scale = 0.1
+max_visit_init = 50
+chunk_size = 64
