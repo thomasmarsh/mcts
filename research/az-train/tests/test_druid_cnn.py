@@ -72,3 +72,35 @@ def test_record_window_batches_equal_the_decoded_window(tmp_path):
     for g, w in zip(got, want, strict=True):
         assert g.dtype == w.dtype
         torch.testing.assert_close(g, w, rtol=0, atol=0)
+
+
+def _tiny_model():
+    net = {"size": 5, "channels": 8, "blocks": 1, "policy_planes": 2, "value_planes": 2}
+    cfg = {"net": {**net, "value_hidden": 8, "head": "agnostic"}}
+    return dc.gridcnn.GridCNN(dc.geometry_of(cfg))
+
+
+def test_adamw_decays_only_conv_and_linear_weights():
+    model = _tiny_model()
+    opt = dc.build_optimizer(model, 1e-3, {"optimizer": "adamw", "weight_decay": 0.05})
+    assert isinstance(opt, torch.optim.AdamW)
+    decayed, plain = opt.param_groups
+    assert decayed["weight_decay"] == 0.05 and plain["weight_decay"] == 0.0
+    assert {id(p) for p in decayed["params"]} == {id(w) for w in model.weight_tensors()}
+    assert len(decayed["params"]) + len(plain["params"]) == len(list(model.parameters()))
+    assert plain["params"]  # biases and batch-norm exist and are exempt
+
+
+def test_adam_is_default_with_l2_and_adamw_has_none_in_the_loss():
+    model = _tiny_model()
+    assert type(dc.build_optimizer(model, 1e-3, {})) is torch.optim.Adam
+    w, dev = model.weight_tensors(), torch.device("cpu")
+    assert dc.coupled_l2(w, {"l2": 1e-4}, dev) > 0
+    assert dc.coupled_l2(w, {"optimizer": "adamw", "weight_decay": 0.05, "l2": 1e-4}, dev) == 0
+    # Resume restores lr and weight_decay from the checkpoint over freshly built groups.
+    cfg = {"optimizer": "adamw", "weight_decay": 0.05}
+    saved = dc.build_optimizer(model, 1e-3, cfg).state_dict()
+    fresh = dc.build_optimizer(model, 5e-4, {**cfg, "weight_decay": 0.5})
+    fresh.load_state_dict(saved)
+    assert fresh.param_groups[0]["lr"] == 1e-3
+    assert fresh.param_groups[0]["weight_decay"] == 0.05

@@ -39,6 +39,13 @@ chunk_size = 64
 batch_size = 32
 steps_per_generation = 1000
 learning_rate = 1e-3
+# "adam": plain Adam with `l2` as a coupled L2 term in the loss (the default; Adam rescales it by the
+# adaptive step, so it is not true weight decay). "adamw": decoupled `weight_decay` on conv/linear
+# weights only (never biases or batch-norm), and no L2 term in the loss. Decay per step is
+# learning_rate * weight_decay, so 0.05 at 1e-3 shrinks weights about 5% per 1000-step generation.
+# A resume loads the checkpoint's optimizer state, so do not switch `optimizer` mid-run.
+optimizer = "adam"
+weight_decay = 0.05
 l2 = 1e-4
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20

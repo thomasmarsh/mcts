@@ -42,6 +42,13 @@ learning_rate = 1e-3
 # Learning rate when the run starts from `--init-from` weights (the optimizer is fresh, and 1e-3
 # degraded the warm net at 10x10 within the first fit while 1e-4 did not); a cold run ignores it.
 warm_learning_rate = 1e-4
+# "adam": plain Adam with `l2` as a coupled L2 term in the loss (the default; Adam rescales it by the
+# adaptive step, so it is not true weight decay). "adamw": decoupled `weight_decay` on conv/linear
+# weights only (never biases or batch-norm), and no L2 term in the loss. Decay per step is
+# learning_rate * weight_decay, so 0.05 at 1e-3 shrinks weights about 5% per 1000-step generation.
+# A resume loads the checkpoint's optimizer state, so do not switch `optimizer` mid-run.
+optimizer = "adam"
+weight_decay = 0.05
 l2 = 1e-4
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20

@@ -68,7 +68,6 @@ from az_train.gonnect_cnn import (
     dump_toml,
     export_weights,
     load_config,
-    make_optimizer,
     match_config_text,
     new_model,
     pairing_summary,
@@ -235,6 +234,35 @@ class Stalled(RuntimeError):
     """The value head outputs a constant at the stall check (a dead initialization)."""
 
 
+def build_optimizer(
+    model: gridcnn.GridCNN, lr: float, tcfg: dict[str, Any]
+) -> torch.optim.Optimizer:
+    """``train.optimizer``: "adam" (default; the loss carries a coupled L2 term) or "adamw"
+    (decoupled ``train.weight_decay`` on conv/linear weights only, never biases or batch-norm).
+    A resumed run loads the checkpoint's optimizer state over this, so the groups must match."""
+    kind = tcfg.get("optimizer", "adam")
+    if kind == "adam":
+        return torch.optim.Adam(model.parameters(), lr=lr)
+    if kind != "adamw":
+        raise ValueError(f"train.optimizer must be 'adam' or 'adamw', got {kind!r}")
+    decayed = {id(w) for w in model.weight_tensors()}
+    params = list(model.parameters())
+    groups = [
+        {"params": [p for p in params if id(p) in decayed], "weight_decay": tcfg["weight_decay"]},
+        {"params": [p for p in params if id(p) not in decayed], "weight_decay": 0.0},
+    ]
+    return torch.optim.AdamW(groups, lr=lr)
+
+
+def coupled_l2(
+    weights: list[torch.Tensor], tcfg: dict[str, Any], device: torch.device
+) -> torch.Tensor:
+    """The loss's L2 term: ``train.l2`` under Adam, zero under AdamW (which decays in the step)."""
+    if tcfg.get("optimizer", "adam") != "adam":
+        return torch.zeros((), device=device)
+    return tcfg["l2"] * sum((w**2).sum() for w in weights)
+
+
 def fit(
     model: gridcnn.GridCNN,
     opt: torch.optim.Optimizer,
@@ -254,7 +282,7 @@ def fit(
     size = model.geometry.size
     src = torch.from_numpy(symmetry_sources(size)).to(device)
     weights = model.weight_tensors()
-    batch, steps, l2 = tcfg["batch_size"], tcfg["steps_per_generation"], tcfg["l2"]
+    batch, steps = tcfg["batch_size"], tcfg["steps_per_generation"]
     model.train()
     losses: list[float] = []
     val_trace: list[dict[str, Any]] = []
@@ -267,7 +295,7 @@ def fit(
         value, logits = model(x)
         value_loss = F.mse_loss(value, target)
         pol_loss = policy_loss(logits, pi, legal > 0)
-        reg = l2 * sum((w**2).sum() for w in weights)
+        reg = coupled_l2(weights, tcfg, device)
         loss = value_loss + pol_loss + reg
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -322,7 +350,7 @@ def fit_first_generation(
     for attempt in range(tcfg["max_init_retries"] + 1):
         seed = tcfg["seed"] + attempt
         model = new_model(g, seed, device)
-        opt = make_optimizer(model, tcfg["learning_rate"])
+        opt = build_optimizer(model, tcfg["learning_rate"], tcfg)
         try:
             global_step, summary = fit(
                 model,
@@ -534,7 +562,7 @@ def run(
         ckpt = torch.load(latest, map_location=device, weights_only=False)
         model = gridcnn.GridCNN(g).to(device)
         model.load_state_dict(ckpt["model"])
-        opt = make_optimizer(model, tcfg["learning_rate"])
+        opt = build_optimizer(model, tcfg["learning_rate"], tcfg)
         opt.load_state_dict(ckpt["opt"])
         gen, global_step = ckpt["gen"], ckpt["global_step"]
         print(f"resuming at generation {gen} (step {global_step})", flush=True)
@@ -542,7 +570,9 @@ def run(
         # Generation 0 is the warm-started net (fresh optimizer), so generation 1's self-play
         # already uses it and the lag gate's generation-0 opponent is that same net.
         model = warm_started_model(g, init_from, init_mode, device)
-        opt = make_optimizer(model, tcfg.get("warm_learning_rate", tcfg["learning_rate"]))
+        opt = build_optimizer(
+            model, tcfg.get("warm_learning_rate", tcfg["learning_rate"]), tcfg
+        )
         (run_dir / "warm-start.json").write_text(
             json.dumps({"init_from": str(init_from), "mode": init_mode})
         )
