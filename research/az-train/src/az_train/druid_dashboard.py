@@ -119,10 +119,21 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
     report = run_dir / "ratings" / "report.json"
     verdict = None
     settings = {}
+    warm = run_dir / "warm-start.json"
     if config is not None:
-        cfg = load_config(config)
+        # The run's effective config carries any --set overrides (net size, optimizer).
+        effective = run_dir / "config.effective.toml"
+        cfg = load_config(effective if effective.exists() else config)
         verdict = evaluate_run(cfg, run_dir, total)[0]
         settings = {
+            "size": cfg["net"]["size"],
+            "channels": cfg["net"]["channels"],
+            "blocks": cfg["net"]["blocks"],
+            "optimizer": cfg["train"].get("optimizer", "adam"),
+            "weight_decay": cfg["train"].get("weight_decay"),
+            "learning_rate": cfg["train"]["learning_rate"],
+            "warm_learning_rate": cfg["train"].get("warm_learning_rate"),
+            "warm_start": json.loads(warm.read_text()) if warm.exists() else None,
             "lag": cfg["gate"]["lag"],
             "promote_score": cfg["gate"]["promote_score"],
             "gate_games": cfg["gate"]["games"],

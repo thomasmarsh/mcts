@@ -2,11 +2,12 @@
 # from scratch. Rust reads [net], [selfplay] and [play]. Every sub-decision of a turn (piece kind,
 # orientation, cell) is its own ply, about 2.2 plies per turn.
 
-# Net size and head: from the 5x5 capacity and head measurements (see the plan log), a measured axis.
+# Net size: 64x4 (operator decision after the 7x7 runs; 32x2 tied it on strength within noise but a
+# longer run is expected to saturate the smaller net). Head: from the 5x5 head measurements.
 [net]
 size = 9
-channels = 32
-blocks = 2
+channels = 64
+blocks = 4
 policy_planes = 4
 value_planes = 2
 value_hidden = 64
@@ -47,7 +48,7 @@ warm_learning_rate = 1e-4
 # weights only (never biases or batch-norm), and no L2 term in the loss. Decay per step is
 # learning_rate * weight_decay, so 0.05 at 1e-3 shrinks weights about 5% per 1000-step generation.
 # A resume loads the checkpoint's optimizer state, so do not switch `optimizer` mid-run.
-optimizer = "adam"
+optimizer = "adamw"
 weight_decay = 0.05
 l2 = 1e-4
 # Positions from this many most recent generations are sampled from.

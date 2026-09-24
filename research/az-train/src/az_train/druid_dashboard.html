@@ -1,4 +1,4 @@
-<title>Druid 5x5 Run</title>
+<title>Druid CNN Run</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
@@ -76,8 +76,8 @@ th:first-child, td:first-child { text-align: left; }
 <main>
   <header>
     <div>
-      <h1>Druid 5x5 CNN run</h1>
-      <p class="sub">128 channels x 6 residual blocks, Gumbel self-play from an all-zero net; every sub-decision of a turn (piece, orientation, cell) is its own ply. Progress is measured only by nets playing nets: each generation plays the net 10 generations earlier and the current champion, on shared openings from both seats. A round robin of checkpoints runs after the last generation.</p>
+      <h1 id="run-title">Druid CNN run</h1>
+      <p class="sub" id="run-sub"></p>
     </div>
     <span class="pill" id="status">loading</span>
   </header>
@@ -166,6 +166,23 @@ th:first-child, td:first-child { text-align: left; }
 </main>
 <script>
 const DATA = /*__DATA__*/null;
+(() => {
+  const c = DATA.settings || {};
+  if (!c.size) return;
+  const el = (id) => document.getElementById(id);
+  const wd = c.optimizer === "adamw" ? `AdamW (weight decay ${c.weight_decay})` : "Adam";
+  const w = c.warm_start;
+  const start = w
+    ? `warm-started (${w.mode} load) from ${w.init_from.split("/").slice(-2).join("/")} at lr ${c.warm_learning_rate}`
+    : "from an all-zero net";
+  document.title = `Druid ${c.size}x${c.size} Run`;
+  el("run-title").textContent = `Druid ${c.size}x${c.size} CNN run`;
+  el("run-sub").textContent =
+    `${c.channels} channels x ${c.blocks} residual blocks, ${wd}, Gumbel self-play ${start}; ` +
+    "every sub-decision of a turn (piece, orientation, cell) is its own ply. Progress is measured " +
+    `only by nets playing nets: each generation plays the net ${c.lag} generations earlier and the ` +
+    "current champion, on shared openings from both seats. A round robin of checkpoints runs after the last generation.";
+})();
 const G = DATA.gens, N = DATA.total, S = DATA.settings || {};
 const LAG = S.lag ?? 10;
 const $ = (id) => document.getElementById(id);
