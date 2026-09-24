@@ -8,7 +8,9 @@
 //! The config has the same shape as `gonnect_gate`'s net-only configs: `size`, `openings`,
 //! `opening_plies`, `max_plies`, `seed`, `workers`, `out`, `pairs = ["A:B", ...]` and one
 //! `[[agent]]` table per net (`name`, `weights`, `iterations`, and optionally `considered_actions`,
-//! `value_scale`, `max_visit_init`, `chunk_size`). Each pairing plays every seeded random opening
+//! `value_scale`, `max_visit_init`, `chunk_size`). An agent with `kind = "mcts"` is instead a plain
+//! MCTS preset from `presets.json` (`preset`, default `"strong"`, run single-threaded for
+//! `iterations` iterations per ply, no `weights`), so a net can be placed against `strong-N`. Each pairing plays every seeded random opening
 //! from both seats (`2 * openings` games) on `workers` threads. One JSONL row per game and one per
 //! pairing (same fields as `gonnect_gate`, so `yardstick.pairs_from_rows` reads them unchanged) is
 //! appended to `out` as the run goes; `--resume` skips pairings already summarised there.
@@ -19,7 +21,8 @@
 
 use std::collections::HashSet;
 use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,6 +32,8 @@ use game_druid::{DruidSplit, HashedState, Player, Size};
 use grid_cnn::Weights;
 use mcts::algorithms::Search;
 use mcts::game::Game;
+use mcts_tune::presets::PresetTable;
+use mcts_tune::SearchBudget;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde::Deserialize;
@@ -36,7 +41,14 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 struct AgentSpec {
     name: String,
+    /// `"net"` (default, a Gumbel-search CNN agent) or `"mcts"` (a `presets.json` preset).
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
     weights: String,
+    /// The `presets.json` id for `kind = "mcts"`; `"strong"` when omitted.
+    #[serde(default)]
+    preset: Option<String>,
     iterations: usize,
     considered_actions: Option<usize>,
     value_scale: Option<f32>,
@@ -58,20 +70,64 @@ struct Config {
     agent: Vec<AgentSpec>,
 }
 
-type Maker<const N: usize> = Box<dyn Fn() -> CnnAgent<N> + Send + Sync>;
+/// One seat's move chooser: a CNN agent or a plain MCTS preset, both over `DruidSplit`.
+trait Mover {
+    fn choose(&mut self, state: &HashedState) -> <DruidSplit as Game>::A;
+}
 
-fn maker<const N: usize>(spec: &AgentSpec) -> Maker<N> {
-    let weights = Arc::new(Weights::load(&spec.weights).unwrap_or_else(|e| panic!("{}: {e}", spec.weights)));
-    assert_eq!(weights.geometry.size, N, "{} is not a {N}x{N} net", spec.weights);
-    let cfg = mcts_batch::Config {
-        num_simulations: spec.iterations,
-        num_considered_actions: spec.considered_actions.unwrap_or(16),
-        value_scale: spec.value_scale.unwrap_or(0.1),
-        max_visit_init: spec.max_visit_init.unwrap_or(50),
-    };
-    let (name, chunk) = (spec.name.clone(), spec.chunk_size.unwrap_or(64));
-    // The agent is a deterministic function of the position, so there is no per-game seed.
-    Box::new(move || CnnAgent::<N>::new(&name, &weights, cfg, Kind::Gumbel, chunk, Duration::default(), 0x51))
+impl<const N: usize> Mover for CnnAgent<N> {
+    fn choose(&mut self, state: &HashedState) -> <DruidSplit as Game>::A {
+        self.choose_action(state)
+    }
+}
+
+struct PresetMover(Box<dyn Search<G = DruidSplit>>);
+
+impl Mover for PresetMover {
+    fn choose(&mut self, state: &HashedState) -> <DruidSplit as Game>::A {
+        self.0.choose_action(state)
+    }
+}
+
+type Maker = Box<dyn Fn() -> Box<dyn Mover> + Send + Sync>;
+
+fn maker<const N: usize>(spec: &AgentSpec) -> Maker {
+    match spec.kind.as_deref().unwrap_or("net") {
+        "mcts" => {
+            let path = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/presets.json"));
+            let table = Arc::new(PresetTable::load_from_path(&path).expect("presets.json must parse"));
+            let (preset, iterations) = (spec.preset.clone().unwrap_or_else(|| "strong".into()), spec.iterations);
+            // Each game gets its own seed, so repeated games are not the same search.
+            let games = AtomicU64::new(0);
+            Box::new(move || {
+                let seed = games.fetch_add(1, Ordering::Relaxed);
+                let search = table
+                    .build_with::<DruidSplit>(&preset, seed, |b: &mut SearchBudget| {
+                        b.threads = 1;
+                        b.max_iterations = Some(iterations);
+                        b.max_time = None;
+                    })
+                    .unwrap_or_else(|e| panic!("preset {preset:?}: {e:?}"));
+                Box::new(PresetMover(search))
+            })
+        }
+        "net" | "cnn-gumbel" => {
+            let weights = Arc::new(Weights::load(&spec.weights).unwrap_or_else(|e| panic!("{}: {e}", spec.weights)));
+            assert_eq!(weights.geometry.size, N, "{} is not a {N}x{N} net", spec.weights);
+            let cfg = mcts_batch::Config {
+                num_simulations: spec.iterations,
+                num_considered_actions: spec.considered_actions.unwrap_or(16),
+                value_scale: spec.value_scale.unwrap_or(0.1),
+                max_visit_init: spec.max_visit_init.unwrap_or(50),
+            };
+            let (name, chunk) = (spec.name.clone(), spec.chunk_size.unwrap_or(64));
+            // The agent is a deterministic function of the position, so there is no per-game seed.
+            Box::new(move || {
+                Box::new(CnnAgent::<N>::new(&name, &weights, cfg, Kind::Gumbel, chunk, Duration::default(), 0x51))
+            })
+        }
+        other => panic!("unknown agent kind {other:?}, expected \"net\" (or \"cnn-gumbel\") or \"mcts\""),
+    }
 }
 
 /// A non-terminal position `plies` uniformly random plies from the start; opening `index` is the
@@ -106,10 +162,10 @@ struct Outcome {
     moves: [u64; 2],
 }
 
-fn play<const N: usize>(
+fn play(
     start: &HashedState,
-    black: &mut CnnAgent<N>,
-    white: &mut CnnAgent<N>,
+    black: &mut dyn Mover,
+    white: &mut dyn Mover,
     max_plies: usize,
 ) -> Outcome {
     let mut s = start.clone();
@@ -120,9 +176,9 @@ fn play<const N: usize>(
             return Outcome { winner: None, plies, capped: true, secs, moves };
         }
         let seat = usize::from(DruidSplit::player_to_move(&s) != Player::Black);
-        let agent = if seat == 0 { &mut *black } else { &mut *white };
+        let agent: &mut dyn Mover = if seat == 0 { &mut *black } else { &mut *white };
         let t = Instant::now();
-        let mv = agent.choose_action(&s);
+        let mv = agent.choose(&s);
         secs[seat] += t.elapsed().as_secs_f64();
         moves[seat] += 1;
         s = DruidSplit::apply(s, &mv);
@@ -154,8 +210,8 @@ struct Tally {
 }
 
 fn paired_match<const N: usize>(
-    a: &(String, Maker<N>),
-    b: &(String, Maker<N>),
+    a: &(String, Maker),
+    b: &(String, Maker),
     cfg: &Config,
     out: &Mutex<std::fs::File>,
 ) -> Tally {
@@ -178,9 +234,9 @@ fn paired_match<const N: usize>(
                 let mover = DruidSplit::player_to_move(&start);
                 let a_colour = if a_moves_first { mover } else { other(mover) };
                 let o = if a_colour == Player::Black {
-                    play(&start, &mut x, &mut y, cfg.max_plies)
+                    play(&start, &mut *x, &mut *y, cfg.max_plies)
                 } else {
-                    play(&start, &mut y, &mut x, cfg.max_plies)
+                    play(&start, &mut *y, &mut *x, cfg.max_plies)
                 };
                 let (a_seat, b_seat) = if a_colour == Player::Black { (0, 1) } else { (1, 0) };
                 let verdict = match o.winner {
@@ -230,7 +286,7 @@ fn other(p: Player) -> Player {
 }
 
 fn run<const N: usize>(cfg: &Config, resume: bool) {
-    let makers: Vec<(String, Maker<N>)> = cfg.agent.iter().map(|s| (s.name.clone(), maker::<N>(s))).collect();
+    let makers: Vec<(String, Maker)> = cfg.agent.iter().map(|s| (s.name.clone(), maker::<N>(s))).collect();
     let pairs: Vec<(String, String)> = if cfg.pairs.is_empty() {
         (0..makers.len())
             .flat_map(|i| (i + 1..makers.len()).map(move |j| (i, j)))
@@ -272,7 +328,7 @@ fn run<const N: usize>(cfg: &Config, resume: bool) {
             continue;
         }
         let started = Instant::now();
-        let t = paired_match(find(an), find(bn), cfg, &out);
+        let t = paired_match::<N>(find(an), find(bn), cfg, &out);
         let games = f64::from(t.wins + t.losses + t.draws);
         let score = (f64::from(t.wins) + 0.5 * f64::from(t.draws)) / games.max(1.0);
         let (lo, hi) = wilson(f64::from(t.wins) + 0.5 * f64::from(t.draws), games);

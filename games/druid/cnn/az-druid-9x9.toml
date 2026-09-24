@@ -39,6 +39,9 @@ chunk_size = 64
 batch_size = 32
 steps_per_generation = 1000
 learning_rate = 1e-3
+# Learning rate when the run starts from `--init-from` weights (the optimizer is fresh, and 1e-3
+# degraded the warm net at 10x10 within the first fit while 1e-4 did not); a cold run ignores it.
+warm_learning_rate = 1e-4
 l2 = 1e-4
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20

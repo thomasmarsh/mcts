@@ -542,7 +542,7 @@ def run(
         # Generation 0 is the warm-started net (fresh optimizer), so generation 1's self-play
         # already uses it and the lag gate's generation-0 opponent is that same net.
         model = warm_started_model(g, init_from, init_mode, device)
-        opt = make_optimizer(model, tcfg["learning_rate"])
+        opt = make_optimizer(model, tcfg.get("warm_learning_rate", tcfg["learning_rate"]))
         (run_dir / "warm-start.json").write_text(
             json.dumps({"init_from": str(init_from), "mode": init_mode})
         )
