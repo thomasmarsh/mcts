@@ -59,3 +59,16 @@ def test_geometry_of_reads_the_head_kind():
     assert dc.geometry_of({"net": net}).head == "dense"
     agnostic = dc.geometry_of({"net": {**net, "head": "agnostic"}})
     assert agnostic.head == "agnostic" and agnostic.policy_out == 7 * 7 + 4
+
+
+def test_record_window_batches_equal_the_decoded_window(tmp_path):
+    fixtures = Path(__file__).resolve().parents[3] / "games/druid/cnn/fixtures"
+    size, records = dr.read_shard(fixtures / "encode-7.shard.bin")
+    positions = dr.load_positions(fixtures / "encode-7.shard.bin")[1]
+    cpu = torch.device("cpu")
+    idx = torch.tensor([0, 3, 5, 3, len(records) - 1])
+    got = dc.RecordWindow(records, size, cpu).batch(idx)
+    want = dc.Data(positions, cpu).batch(idx)
+    for g, w in zip(got, want, strict=True):
+        assert g.dtype == w.dtype
+        torch.testing.assert_close(g, w, rtol=0, atol=0)

@@ -199,8 +199,8 @@ mod tests {
     #[test]
     fn legal_ids_always_match_generate_actions_over_random_games() {
         let mut rng = SmallRng::seed_from_u64(5);
-        for n in [5u8, 7] {
-            for _ in 0..4 {
+        for n in [5u8, 7, 10] {
+            for _ in 0..if n == 10 { 1 } else { 4 } {
                 let mut s = HashedState::new(Size { w: n, h: n });
                 while !DruidSplit::is_terminal(&s) {
                     let (moves, ids) = legal_moves(&s);

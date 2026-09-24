@@ -1,10 +1,10 @@
-# Druid 7x7 AlphaZero-style run: a residual CNN trained by Gumbel self-play
+# Druid 10x10 AlphaZero-style run: a residual CNN trained by Gumbel self-play
 # from scratch. Rust reads [net], [selfplay] and [play]. Every sub-decision of a turn (piece kind,
 # orientation, cell) is its own ply, about 2.2 plies per turn.
 
 # Net size and head: from the 5x5 capacity and head measurements (see the plan log), a measured axis.
 [net]
-size = 7
+size = 10
 channels = 32
 blocks = 2
 policy_planes = 4
@@ -23,7 +23,7 @@ considered_actions = 8
 value_scale = 0.1
 max_visit_init = 50
 temp_moves = 16
-max_plies = 400
+max_plies = 800
 chunk_size = 64
 
 # The play-time agent.
@@ -63,7 +63,7 @@ validate_every = 100
 openings = 10
 opening_plies = 4
 seed = 1
-max_plies = 400
+max_plies = 800
 
 [gate]
 # Progress gate, net against net (no reference engine): the new net plays the net `lag`
@@ -88,7 +88,7 @@ every = 1
 workers = 4
 seed = 1
 # Same cap as self-play: the longest zero-net game was 148 plies at 5x5, random play averages 81.
-max_plies = 400
+max_plies = 800
 
 # End-of-run rating curve (`az-train-druid-cnn --round-robin`): checkpoints at generation 0, every
 # `every`-th generation and the last one. All pairs is 55 pairings for 11 checkpoints, about 2.3 h
@@ -104,7 +104,7 @@ simulations = 32
 max_gap = 3
 workers = 4
 seed = 2
-max_plies = 400
+max_plies = 800
 
 # Pre-registered pass / kill rules, applied by `az-train-druid-cnn --verdict` (and rule 1 by the
 # coordinator itself at `early_gen`). Written before any generation past 2 exists.
@@ -140,4 +140,4 @@ max_capped_rate = 0.05
 
 [loop]
 generations = 100
-out_dir = "local/output/druid/cnn-7x7/run1"
+out_dir = "local/output/druid/cnn-10x10/run1"

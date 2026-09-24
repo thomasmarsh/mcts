@@ -20,7 +20,7 @@ pub mod shard;
 
 /// Board sizes that have a compiled-in network agent (`CnnAgent<N>` is const-generic). To add a
 /// size, add it here and as an arm of [`with_board_size!`]; a test checks the two agree.
-pub const SUPPORTED_SIZES: &[usize] = &[5, 7];
+pub const SUPPORTED_SIZES: &[usize] = &[5, 7, 9, 10];
 
 /// Runs `$body` with the const `$n` bound to the runtime board size `$size`, or `$fallback`
 /// (with the unsupported size bound to `$other`) when no network agent is compiled in for it.
@@ -34,6 +34,14 @@ macro_rules! with_board_size {
             }
             7 => {
                 const $n: usize = 7;
+                $body
+            }
+            9 => {
+                const $n: usize = 9;
+                $body
+            }
+            10 => {
+                const $n: usize = 10;
                 $body
             }
             $other => $fallback,

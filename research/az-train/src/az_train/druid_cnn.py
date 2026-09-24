@@ -49,9 +49,11 @@ from az_train.druid_records import (
     IN_PLANES,
     SYMMETRIES,
     Positions,
+    decode_legal,
     decode_planes,
     load_positions,
     num_actions,
+    phase_kind,
     read_shard,
     symmetry_sources,
 )
@@ -118,6 +120,39 @@ class Data:
 
     def __len__(self) -> int:
         return len(self.value)
+
+    def batch(self, idx: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        """``(planes, policy, legal, kind, value)`` of the sampled positions, planes as float32."""
+        return (
+            self.planes[idx].float(),
+            self.policy[idx],
+            self.legal[idx],
+            self.kind[idx],
+            self.value[idx],
+        )
+
+
+class RecordWindow:
+    """A replay window kept as raw shard records (``record_dtype``: 732 bytes a position at
+    10x10, against about 3.4 KB for decoded float16 planes). A batch is decoded on the fly from
+    the sampled records, so the window's memory is independent of the plane count."""
+
+    def __init__(self, records: np.ndarray, size: int, device: torch.device) -> None:
+        self.records, self.size, self.device = records, size, device
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def batch(self, idx: torch.Tensor) -> tuple[torch.Tensor, ...]:
+        rec = self.records[idx.cpu().numpy()]
+        to = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(self.device)  # noqa: E731
+        return (
+            to(decode_planes(rec, self.size)),
+            to(rec["policy"]),
+            to(decode_legal(rec, self.size).astype(np.uint8)),
+            to(phase_kind(rec["pending"]).astype(np.int64)),
+            to(rec["value"]),
+        )
 
 
 def concat_positions(parts: list[Positions]) -> Positions:
@@ -203,7 +238,7 @@ class Stalled(RuntimeError):
 def fit(
     model: gridcnn.GridCNN,
     opt: torch.optim.Optimizer,
-    window: Data,
+    window: Data | RecordWindow,
     val: Positions,
     tcfg: dict[str, Any],
     *,
@@ -227,16 +262,10 @@ def fit(
     for step in range(1, steps + 1):
         t0 = time.perf_counter()
         idx = torch.randint(0, len(window), (batch,), device=device)
-        x, pi, legal = augment(
-            window.planes[idx].float(),
-            window.policy[idx],
-            window.legal[idx],
-            window.kind[idx],
-            src,
-            size,
-        )
+        planes, policy, legal_mask, kind, target = window.batch(idx)
+        x, pi, legal = augment(planes, policy, legal_mask, kind, src, size)
         value, logits = model(x)
-        value_loss = F.mse_loss(value, window.value[idx])
+        value_loss = F.mse_loss(value, target)
         pol_loss = policy_loss(logits, pi, legal > 0)
         reg = l2 * sum((w**2).sum() for w in weights)
         loss = value_loss + pol_loss + reg
@@ -279,7 +308,7 @@ def fit(
 def fit_first_generation(
     g: gridcnn.Geometry,
     cfg: dict[str, Any],
-    window: Data,
+    window: Data | RecordWindow,
     val: Positions,
     device: torch.device,
     gen: int,
@@ -426,13 +455,25 @@ def diagnose(
 
 def load_window(
     run_dir: Path, gen: int, cfg: dict[str, Any], device: torch.device
-) -> tuple[Data, Positions, int]:
+) -> tuple[Data | RecordWindow, Positions, int]:
     """Replay window for generation ``gen``'s fit (train parts of the last ``replay_generations``
-    shards) and the held-out games of shard ``gen``."""
+    shards) and the held-out games of shard ``gen``. ``train.window_storage = "records"`` keeps
+    the window as raw shard records decoded per batch; the default decodes every plane up front."""
     tcfg = cfg["train"]
-    parts: list[Positions] = []
+    records = tcfg.get("window_storage", "planes") == "records"
+    parts: list[Any] = []
     val = None
+    size = 0
     for g in range(max(0, gen - tcfg["replay_generations"] + 1), gen + 1):
+        if records:
+            size, rec = read_shard(run_dir / "shards" / f"gen{g}.bin")
+            held_mask = np.isin(rec["game"], np.unique(rec["game"])[: tcfg["validation_games"]])
+            parts.append(rec[~held_mask])
+            if g == gen:
+                val = load_positions(run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000)[
+                    1
+                ].take(held_mask)
+            continue
         _, positions = load_positions(run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000)
         train, held = split_validation(positions, tcfg["validation_games"])
         if tcfg.get("window_dtype", "float32") == "float16":
@@ -443,6 +484,9 @@ def load_window(
         if g == gen:
             val = held
     assert val is not None
+    if records:
+        joined_records = np.concatenate(parts)
+        return RecordWindow(joined_records, size, device), val, len(joined_records)
     joined = concat_positions(parts)
     return Data(joined, device), val, len(joined)
 

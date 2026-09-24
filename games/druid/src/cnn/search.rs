@@ -375,13 +375,13 @@ mod tests {
     #[test]
     fn a_net_of_an_unsupported_size_is_refused_at_load() {
         let mut g = zero_weights_of(5).geometry;
-        g.size = 9;
-        g.policy_out = num_actions(9);
+        g.size = 8;
+        g.policy_out = num_actions(8);
         let dir = std::env::temp_dir().join(format!("druid-cnn-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("nine.bin");
+        let path = dir.join("eight.bin");
         Weights::zeros(g).save(&path).unwrap();
-        let entry = ModelEntry { id: "nine".into(), weights: path };
+        let entry = ModelEntry { id: "eight".into(), weights: path };
         assert!(load_model(&entry).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
