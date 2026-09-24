@@ -30,6 +30,7 @@ Augmentation: Druid is not D4-invariant (Black joins top-bottom, White left-righ
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import functools
 import json
 import subprocess
@@ -91,6 +92,7 @@ def geometry_of(cfg: dict[str, Any]) -> gridcnn.Geometry:
         policy_out=num_actions(n["size"]),
         value_planes=n["value_planes"],
         value_hidden=n["value_hidden"],
+        head=n.get("head", gridcnn.HEAD_DENSE),
     )
 
 
@@ -226,7 +228,12 @@ def fit(
         t0 = time.perf_counter()
         idx = torch.randint(0, len(window), (batch,), device=device)
         x, pi, legal = augment(
-            window.planes[idx], window.policy[idx], window.legal[idx], window.kind[idx], src, size
+            window.planes[idx].float(),
+            window.policy[idx],
+            window.legal[idx],
+            window.kind[idx],
+            src,
+            size,
         )
         value, logits = model(x)
         value_loss = F.mse_loss(value, window.value[idx])
@@ -428,6 +435,10 @@ def load_window(
     for g in range(max(0, gen - tcfg["replay_generations"] + 1), gen + 1):
         _, positions = load_positions(run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000)
         train, held = split_validation(positions, tcfg["validation_games"])
+        if tcfg.get("window_dtype", "float32") == "float16":
+            # Halves the window's memory (the planes dominate it); every plane value is a 0/1
+            # flag or a small fraction, and batches are widened back to float32 before use.
+            train = dataclasses.replace(train, planes=train.planes.astype(np.float16))
         parts.append(train)
         if g == gen:
             val = held
@@ -436,8 +447,25 @@ def load_window(
     return Data(joined, device), val, len(joined)
 
 
+def warm_started_model(
+    g: gridcnn.Geometry, init_from: Path, mode: str, device: torch.device
+) -> gridcnn.GridCNN:
+    """A fresh net for ``g`` with the weights of the ``latest.pt`` at ``init_from`` (a run at any
+    board size) copied in per ``gridcnn.warm_start``."""
+    ckpt = torch.load(init_from, map_location="cpu", weights_only=False)
+    model = new_model(g, 1, device)
+    copied = gridcnn.warm_start(model, ckpt["model"], mode)
+    print(f"warm start ({mode}) from {init_from}: {len(copied)} entries copied", flush=True)
+    return model
+
+
 def run(
-    config_path: Path, overrides: list[str], out_dir: Path | None, generations: int | None
+    config_path: Path,
+    overrides: list[str],
+    out_dir: Path | None,
+    generations: int | None,
+    init_from: Path | None = None,
+    init_mode: str = "trunk",
 ) -> None:
     cfg = load_config(config_path, overrides)
     tcfg = cfg["train"]
@@ -466,6 +494,14 @@ def run(
         opt.load_state_dict(ckpt["opt"])
         gen, global_step = ckpt["gen"], ckpt["global_step"]
         print(f"resuming at generation {gen} (step {global_step})", flush=True)
+    elif init_from is not None:
+        # Generation 0 is the warm-started net (fresh optimizer), so generation 1's self-play
+        # already uses it and the lag gate's generation-0 opponent is that same net.
+        model = warm_started_model(g, init_from, init_mode, device)
+        opt = make_optimizer(model, tcfg["learning_rate"])
+        (run_dir / "warm-start.json").write_text(
+            json.dumps({"init_from": str(init_from), "mode": init_mode})
+        )
     else:
         export_weights(gridcnn.zero_model(g), run_dir / "gen0.bin")
 
@@ -757,6 +793,8 @@ def main() -> None:
     p.add_argument("--set", action="append", default=[], help="section.key=value override")
     p.add_argument("--out-dir")
     p.add_argument("--generations", type=int)
+    p.add_argument("--init-from", help="latest.pt of a run (any board size) to warm-start from")
+    p.add_argument("--init-mode", choices=("trunk", "full"), default="trunk")
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
     p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
     p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
@@ -778,7 +816,9 @@ def main() -> None:
         report = smoke_checks(config, run_dir(), args.set)
         print(json.dumps(report, indent=2))
         raise SystemExit(0 if report["pass"] else 1)
-    run(config, args.set, Path(args.out_dir) if args.out_dir else None, args.generations)
+    init_from = Path(args.init_from) if args.init_from else None
+    out_dir = Path(args.out_dir) if args.out_dir else None
+    run(config, args.set, out_dir, args.generations, init_from, args.init_mode)
 
 
 if __name__ == "__main__":

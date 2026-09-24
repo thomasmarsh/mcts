@@ -1,4 +1,4 @@
-use grid_cnn::{cell_map, transform_planes, Net, Weights, SYMMETRIES};
+use grid_cnn::{cell_map, transform_planes, Head, Net, Weights, SYMMETRIES};
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
@@ -19,9 +19,13 @@ fn floats(v: &serde_json::Value) -> Vec<f32> {
 }
 
 fn fixture() -> Fixture {
-    let weights = Weights::load(format!("{DIR}/weights.bin")).unwrap();
+    fixture_in(DIR)
+}
+
+fn fixture_in(dir: &str) -> Fixture {
+    let weights = Weights::load(format!("{dir}/weights.bin")).unwrap();
     let io: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(format!("{DIR}/io.json")).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(format!("{dir}/io.json")).unwrap()).unwrap();
     Fixture {
         net: Net::new(&weights),
         n: io["n"].as_u64().unwrap() as usize,
@@ -114,4 +118,50 @@ fn the_orientation_ensemble_is_d4_equivariant() {
             );
         }
     }
+}
+
+const AGNOSTIC_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/agnostic");
+
+#[test]
+fn agnostic_forward_matches_the_torch_reference() {
+    let weights = Weights::load(format!("{AGNOSTIC_DIR}/weights.bin")).unwrap();
+    assert_eq!(weights.head, Head::Agnostic);
+    let f = fixture_in(AGNOSTIC_DIR);
+    let out = f.net.forward(&f.planes, f.n);
+    assert_close(&out.values, &f.values, 1e-4, "value");
+    assert_close(&out.logits, &f.logits, 1e-4, "logits");
+}
+
+#[test]
+fn agnostic_batch_equals_its_positions_evaluated_alone() {
+    let f = fixture_in(AGNOSTIC_DIR);
+    let g = f.net.geometry();
+    let per = g.cells() * g.in_planes;
+    let batch = f.net.forward(&f.planes, f.n);
+    for i in 0..f.n {
+        let one = f.net.forward(&f.planes[i * per..(i + 1) * per], 1);
+        assert_close(&one.values, &batch.values[i..i + 1], 1e-5, "value");
+        assert_close(
+            &one.logits,
+            &batch.logits[i * g.policy_out..(i + 1) * g.policy_out],
+            1e-5,
+            "logits",
+        );
+    }
+}
+
+/// The same agnostic weights, declared for a larger board, still form a valid net.
+#[test]
+fn agnostic_weights_run_at_another_board_size() {
+    let mut weights = Weights::load(format!("{AGNOSTIC_DIR}/weights.bin")).unwrap();
+    let extra = weights.geometry.policy_out - weights.geometry.cells();
+    weights.geometry.size = 9;
+    weights.geometry.policy_out = 81 + extra;
+    let g = weights.geometry;
+    let net = Net::new(&weights);
+    let planes = vec![0.5f32; 2 * g.cells() * g.in_planes];
+    let out = net.forward(&planes, 2);
+    assert_eq!(out.values.len(), 2);
+    assert_eq!(out.logits.len(), 2 * g.policy_out);
+    assert!(out.logits.iter().all(|x| x.is_finite()));
 }

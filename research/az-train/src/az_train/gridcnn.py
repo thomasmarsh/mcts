@@ -27,8 +27,12 @@ import torch
 from torch import nn
 
 MAGIC = b"GRIDCNN1"
-VERSION = 1
+VERSION = 1  # dense heads; the agnostic head's files are VERSION_AGNOSTIC (one extra header field)
+VERSION_AGNOSTIC = 2
 BN_EPS = 1e-5
+HEAD_DENSE = "dense"
+HEAD_AGNOSTIC = "agnostic"
+HEADS = (HEAD_DENSE, HEAD_AGNOSTIC)
 
 
 @dataclass(frozen=True)
@@ -41,6 +45,13 @@ class Geometry:
     policy_out: int
     value_planes: int
     value_hidden: int
+    # "dense": dense layers over the flattened head feature maps (tied to ``size``, the layout
+    # every existing checkpoint uses). "agnostic": per-cell 1x1-conv policy logits plus a dense
+    # layer on the pooled trunk for the ``policy_out - size^2`` non-cell logits, and a value head
+    # on the trunk's global mean and max (``value_planes`` is unused): no weight depends on
+    # ``size``, so a trained net loads at any board size. Not part of the header's 8 geometry
+    # fields; the file version says which.
+    head: str = HEAD_DENSE
 
     @property
     def cells(self) -> int:
@@ -58,6 +69,16 @@ class Geometry:
         def dense(i: int, o: int) -> int:
             return i * o + o
 
+        if self.head == HEAD_AGNOSTIC:
+            return (
+                conv3(self.in_planes, c)
+                + self.blocks * 2 * conv3(c, c)
+                + conv1(c, self.policy_planes)
+                + conv1(self.policy_planes, 1)
+                + dense(c, self.policy_out - cells)
+                + dense(2 * c, self.value_hidden)
+                + dense(self.value_hidden, 1)
+            )
         return (
             conv3(self.in_planes, c)
             + self.blocks * 2 * conv3(c, c)
@@ -95,10 +116,19 @@ class GridCNN(nn.Module):
         self.geometry = g
         self.stem = _ConvBn(g.in_planes, g.channels, 3)
         self.blocks = nn.ModuleList(_Block(g.channels) for _ in range(g.blocks))
+        if g.head not in HEADS:
+            raise ValueError(f"unknown head {g.head!r}, expected one of {HEADS}")
         self.policy_conv = _ConvBn(g.channels, g.policy_planes, 1)
-        self.policy_dense = nn.Linear(g.policy_planes * g.cells, g.policy_out)
-        self.value_conv = _ConvBn(g.channels, g.value_planes, 1)
-        self.value_dense1 = nn.Linear(g.value_planes * g.cells, g.value_hidden)
+        if g.head == HEAD_AGNOSTIC:
+            if g.policy_out < g.cells:
+                raise ValueError("the agnostic head needs policy_out >= size^2")
+            self.policy_cell = nn.Conv2d(g.policy_planes, 1, 1)
+            self.policy_extra = nn.Linear(g.channels, g.policy_out - g.cells)
+            self.value_dense1 = nn.Linear(2 * g.channels, g.value_hidden)
+        else:
+            self.policy_dense = nn.Linear(g.policy_planes * g.cells, g.policy_out)
+            self.value_conv = _ConvBn(g.channels, g.value_planes, 1)
+            self.value_dense1 = nn.Linear(g.value_planes * g.cells, g.value_hidden)
         self.value_dense2 = nn.Linear(g.value_hidden, 1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -107,6 +137,13 @@ class GridCNN(nn.Module):
         for block in self.blocks:
             h = block(h)
         n = x.shape[0]
+        if self.geometry.head == HEAD_AGNOSTIC:
+            pooled = h.mean(dim=(2, 3))
+            cell_logits = self.policy_cell(torch.relu(self.policy_conv(h))).reshape(n, -1)
+            logits = torch.cat([cell_logits, self.policy_extra(pooled)], dim=1)
+            both = torch.cat([pooled, h.amax(dim=(2, 3))], dim=1)
+            value = torch.tanh(self.value_dense2(torch.relu(self.value_dense1(both))))
+            return value.reshape(n), logits
         logits = self.policy_dense(torch.relu(self.policy_conv(h)).reshape(n, -1))
         v = torch.relu(self.value_conv(h)).reshape(n, -1)
         value = torch.tanh(self.value_dense2(torch.relu(self.value_dense1(v)))).reshape(n)
@@ -147,8 +184,13 @@ def export_flat(model: GridCNN) -> np.ndarray:
         conv(block.c1)
         conv(block.c2)
     conv(model.policy_conv, one_by_one=True)
-    dense(model.policy_dense)
-    conv(model.value_conv, one_by_one=True)
+    if model.geometry.head == HEAD_AGNOSTIC:
+        parts.append(model.policy_cell.weight.detach().cpu().numpy().reshape(1, -1).ravel())
+        parts.append(model.policy_cell.bias.detach().cpu().numpy().ravel())
+        dense(model.policy_extra)
+    else:
+        dense(model.policy_dense)
+        conv(model.value_conv, one_by_one=True)
     dense(model.value_dense1)
     dense(model.value_dense2)
     flat = np.concatenate(parts).astype(np.float32)
@@ -160,7 +202,12 @@ def write_weights(path: str | Path, g: Geometry, flat: np.ndarray) -> None:
     flat = np.asarray(flat, dtype="<f4")
     if flat.shape != (g.n_weights(),):
         raise ValueError(f"expected {g.n_weights()} weights, got {flat.shape}")
-    header = MAGIC + struct.pack("<I", VERSION) + struct.pack("<8I", *astuple(g))
+    fields = astuple(g)[:8]
+    if g.head == HEAD_AGNOSTIC:
+        header = MAGIC + struct.pack("<I", VERSION_AGNOSTIC) + struct.pack("<8I", *fields)
+        header += struct.pack("<I", 1)  # head kind: agnostic
+    else:
+        header = MAGIC + struct.pack("<I", VERSION) + struct.pack("<8I", *fields)
     Path(path).write_bytes(header + struct.pack("<Q", flat.size) + flat.tobytes())
 
 
@@ -169,16 +216,37 @@ def read_weights(path: str | Path) -> tuple[Geometry, np.ndarray]:
     if raw[:8] != MAGIC:
         raise ValueError(f"{path}: not a GRIDCNN1 weights file")
     (version,) = struct.unpack_from("<I", raw, 8)
-    if version != VERSION:
+    if version not in (VERSION, VERSION_AGNOSTIC):
         raise ValueError(f"{path}: unsupported version {version}")
-    g = Geometry(*struct.unpack_from("<8I", raw, 12))
-    (count,) = struct.unpack_from("<Q", raw, 44)
+    head = HEAD_AGNOSTIC if version == VERSION_AGNOSTIC else HEAD_DENSE
+    g = Geometry(*struct.unpack_from("<8I", raw, 12), head=head)
+    count_at = 44 + (4 if head == HEAD_AGNOSTIC else 0)
+    (count,) = struct.unpack_from("<Q", raw, count_at)
     if count != g.n_weights():
         raise ValueError(f"{path}: header says {count} weights, geometry needs {g.n_weights()}")
-    flat = np.frombuffer(raw, dtype="<f4", offset=52)
+    flat = np.frombuffer(raw, dtype="<f4", offset=count_at + 8)
     if flat.size != count:
         raise ValueError(f"{path}: expected {count} weights, found {flat.size}")
     return g, flat.astype(np.float32)
+
+
+def warm_start(model: GridCNN, state: dict[str, torch.Tensor], mode: str) -> list[str]:
+    """Load a net trained at another board size into ``model``; returns the copied parameter and
+    buffer names. ``trunk`` copies the stem and residual blocks (convolutional, so any board size)
+    and leaves the heads at their fresh initialisation; ``full`` loads every entry and needs the
+    same head kind (an agnostic net, whose every weight is size independent)."""
+    if mode == "full":
+        model.load_state_dict(state)
+        return list(state)
+    if mode != "trunk":
+        raise ValueError(f"unknown warm-start mode {mode!r}, expected trunk or full")
+    trunk = {k: v for k, v in state.items() if k.startswith(("stem.", "blocks."))}
+    if not trunk:
+        raise ValueError("the checkpoint has no trunk entries")
+    missing = model.load_state_dict(trunk, strict=False).unexpected_keys
+    if missing:
+        raise ValueError(f"trunk entries the model does not have: {missing}")
+    return list(trunk)
 
 
 def d4_apply(x: torch.Tensor, sym: int) -> torch.Tensor:
@@ -236,13 +304,25 @@ FIXTURE_GEOMETRY = Geometry(
     value_planes=2,
     value_hidden=16,
 )
+FIXTURE_GEOMETRY_AGNOSTIC = Geometry(
+    size=7,
+    in_planes=7,
+    channels=8,
+    blocks=2,
+    policy_planes=4,
+    policy_out=51,
+    value_planes=2,
+    value_hidden=16,
+    head=HEAD_AGNOSTIC,
+)
 FIXTURE_POSITIONS = 5
 
 
-def fixture(seed: int = 7) -> tuple[Geometry, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def fixture(
+    seed: int = 7, g: Geometry = FIXTURE_GEOMETRY
+) -> tuple[Geometry, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """``(geometry, flat weights, planes (n, size, size, in_planes), values, logits)`` from the
     torch model in eval mode. Planes are NHWC here because that is what the Rust forward takes."""
-    g = FIXTURE_GEOMETRY
     model = GridCNN(g)
     _fill_random(model, seed)
     model.eval()
@@ -255,10 +335,10 @@ def fixture(seed: int = 7) -> tuple[Geometry, np.ndarray, np.ndarray, np.ndarray
     return g, export_flat(model), planes, value.numpy(), logits.numpy()
 
 
-def write_fixture(out_dir: str | Path) -> None:
+def write_fixture(out_dir: str | Path, g: Geometry = FIXTURE_GEOMETRY) -> None:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    g, flat, planes, value, logits = fixture()
+    g, flat, planes, value, logits = fixture(g=g)
     write_weights(out / "weights.bin", g, flat)
     (out / "io.json").write_text(
         json.dumps(
@@ -275,5 +355,7 @@ def write_fixture(out_dir: str | Path) -> None:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "fixture":
         write_fixture(sys.argv[2])
+    elif len(sys.argv) == 3 and sys.argv[1] == "fixture-agnostic":
+        write_fixture(sys.argv[2], FIXTURE_GEOMETRY_AGNOSTIC)
     else:
-        raise SystemExit("usage: python -m az_train.gridcnn fixture <dir>")
+        raise SystemExit("usage: python -m az_train.gridcnn fixture|fixture-agnostic <dir>")

@@ -5,7 +5,7 @@
 //! LIBRARY_PATH=/opt/homebrew/lib cargo run --release --example bench_forward -p grid-cnn
 //! ```
 
-use grid_cnn::{Geometry, Net, Weights};
+use grid_cnn::{Geometry, Head, Net, Weights};
 use std::time::Instant;
 
 fn main() {
@@ -27,7 +27,11 @@ fn main() {
         (state >> 40) as f32 / (1u64 << 24) as f32 - 0.5
     };
     let data = (0..geometry.n_weights()).map(|_| 0.05 * next()).collect();
-    let net = Net::new(&Weights { geometry, data });
+    let net = Net::new(&Weights {
+        geometry,
+        head: Head::Dense,
+        data,
+    });
     println!("{} weights", geometry.n_weights());
     for n in [1usize, 8, 32, 64, 128, 256, 512] {
         let planes: Vec<f32> = (0..n * geometry.cells() * geometry.in_planes)

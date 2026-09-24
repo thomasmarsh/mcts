@@ -4,7 +4,7 @@
 
 use mlx_sys::*;
 
-use crate::{Geometry, Weights};
+use crate::{Geometry, Head, Weights};
 
 // MLX's default device and stream registration is thread-local, so each thread that evaluates a
 // net gets its own GPU stream. The arrays a `Net` owns are immutable host-copied buffers and are
@@ -85,6 +85,28 @@ fn conv3(x: &Array, weight: &Array) -> Array {
     Array(out)
 }
 
+/// Reduce over axis 1 (the cells of an `(n, cells, channels)` array).
+fn reduce(
+    f: unsafe extern "C" fn(*mut mlx_array, mlx_array, i32, bool, mlx_stream) -> i32,
+    x: &Array,
+    what: &str,
+) -> Array {
+    let mut out = unsafe { mlx_array_new() };
+    check(unsafe { f(&mut out, x.0, 1, false, stream()) }, what);
+    Array(out)
+}
+
+/// Concatenate 2-D arrays along axis 1.
+fn concat(parts: &[&Array]) -> Array {
+    let raw: Vec<mlx_array> = parts.iter().map(|a| a.0).collect();
+    let vec = unsafe { mlx_vector_array_new_data(raw.as_ptr(), raw.len()) };
+    let mut out = unsafe { mlx_array_new() };
+    let rc = unsafe { mlx_concatenate_axis(&mut out, vec, 1, stream()) };
+    unsafe { mlx_vector_array_free(vec) };
+    check(rc, "concatenate");
+    Array(out)
+}
+
 fn tanh(x: &Array) -> Array {
     let mut out = unsafe { mlx_array_new() };
     check(unsafe { mlx_tanh(&mut out, x.0, stream()) }, "tanh");
@@ -102,9 +124,27 @@ struct Dense {
     bias: Array,
 }
 
-struct Head {
+struct DenseHead {
     conv: Dense,
     dense: Dense,
+}
+
+/// The policy and value heads on top of the trunk.
+enum Heads {
+    /// Dense layers over the flattened feature maps (tied to the board size).
+    Dense {
+        policy: DenseHead,
+        value: DenseHead,
+        value_out: Dense,
+    },
+    /// Per-cell policy logits and pooled value head (any board size).
+    Agnostic {
+        policy_conv: Dense,
+        policy_cell: Dense,
+        policy_extra: Dense,
+        value_hidden: Dense,
+        value_out: Dense,
+    },
 }
 
 /// Reads consecutive tensors out of the flat weight vector.
@@ -181,9 +221,7 @@ pub struct Net {
     zero: Array,
     stem: Conv3,
     blocks: Vec<(Conv3, Conv3)>,
-    policy: Head,
-    value: Head,
-    value_out: Dense,
+    heads: Heads,
 }
 
 // SAFETY: a `Net` never mutates its arrays after construction (see the note on `STREAM`), and
@@ -203,7 +241,7 @@ impl Net {
         let g = weights.geometry;
         assert_eq!(
             weights.data.len(),
-            g.n_weights(),
+            g.n_weights_for(weights.head),
             "weight vector does not match its geometry"
         );
         let mut r = Reader {
@@ -220,24 +258,36 @@ impl Net {
                 )
             })
             .collect();
-        let policy = Head {
-            conv: r.conv1(g.channels, g.policy_planes),
-            dense: r.dense_from_map(g.policy_planes, cells, g.policy_out),
+        let heads = match weights.head {
+            Head::Dense => {
+                let policy = DenseHead {
+                    conv: r.conv1(g.channels, g.policy_planes),
+                    dense: r.dense_from_map(g.policy_planes, cells, g.policy_out),
+                };
+                let value = DenseHead {
+                    conv: r.conv1(g.channels, g.value_planes),
+                    dense: r.dense_from_map(g.value_planes, cells, g.value_hidden),
+                };
+                Heads::Dense {
+                    policy,
+                    value,
+                    value_out: r.dense(g.value_hidden, 1),
+                }
+            }
+            Head::Agnostic => Heads::Agnostic {
+                policy_conv: r.conv1(g.channels, g.policy_planes),
+                policy_cell: r.conv1(g.policy_planes, 1),
+                policy_extra: r.dense(g.channels, g.policy_out - cells),
+                value_hidden: r.dense(2 * g.channels, g.value_hidden),
+                value_out: r.dense(g.value_hidden, 1),
+            },
         };
-        let value = Head {
-            conv: r.conv1(g.channels, g.value_planes),
-            dense: r.dense_from_map(g.value_planes, cells, g.value_hidden),
-        };
-        let value_out = r.dense(g.value_hidden, 1);
-        assert_eq!(r.at, weights.data.len());
         Net {
             geometry: g,
             zero: from_data(&[0.0], &[1]),
             stem,
             blocks,
-            policy,
-            value,
-            value_out,
+            heads,
         }
     }
 
@@ -286,19 +336,40 @@ impl Net {
             h = self.relu(&binary(mlx_add, &z, &h, "residual add"));
         }
         let flat = reshape(&h, &[n * cells, g.channels]);
-        let head_features = |head: &Head, planes: usize| {
-            let f = self.relu(&self.dense(&flat, &head.conv));
-            reshape(&f, &[n, cells * planes])
+        let (value, logits) = match &self.heads {
+            Heads::Dense {
+                policy,
+                value,
+                value_out,
+            } => {
+                let head_features = |head: &DenseHead, planes: usize| {
+                    let f = self.relu(&self.dense(&flat, &head.conv));
+                    reshape(&f, &[n, cells * planes])
+                };
+                let logits = self.dense(&head_features(policy, g.policy_planes), &policy.dense);
+                let hidden = self.relu(&self.dense(&head_features(value, g.value_planes), &value.dense));
+                (tanh(&self.dense(&hidden, value_out)), logits)
+            }
+            Heads::Agnostic {
+                policy_conv,
+                policy_cell,
+                policy_extra,
+                value_hidden,
+                value_out,
+            } => {
+                let per_cell = reshape(&h, &[n, cells, g.channels]);
+                let mean = reduce(mlx_mean_axis, &per_cell, "mean");
+                let max = reduce(mlx_max_axis, &per_cell, "max");
+                let cell_logits = reshape(
+                    &self.dense(&self.relu(&self.dense(&flat, policy_conv)), policy_cell),
+                    &[n, cells],
+                );
+                let logits = concat(&[&cell_logits, &self.dense(&mean, policy_extra)]);
+                let pooled = concat(&[&mean, &max]);
+                let hidden = self.relu(&self.dense(&pooled, value_hidden));
+                (tanh(&self.dense(&hidden, value_out)), logits)
+            }
         };
-        let logits = self.dense(
-            &head_features(&self.policy, g.policy_planes),
-            &self.policy.dense,
-        );
-        let hidden = self.relu(&self.dense(
-            &head_features(&self.value, g.value_planes),
-            &self.value.dense,
-        ));
-        let value = tanh(&self.dense(&hidden, &self.value_out));
 
         let outputs = [value.0, logits.0];
         let vec = unsafe { mlx_vector_array_new_data(outputs.as_ptr(), outputs.len()) };

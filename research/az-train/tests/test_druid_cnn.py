@@ -51,3 +51,11 @@ def test_druid_warnings_flag_draws_and_an_anti_correlated_value_head():
     # Only the last 10 generations count, and a missing Pearson (constant head) is skipped.
     assert dc.druid_warnings([_row(0.9, -1.0, 2.0)] * 5 + healthy) == []
     assert dc.druid_warnings([_row(0.0, None, None)] * 3) == []
+
+
+def test_geometry_of_reads_the_head_kind():
+    net = {"size": 7, "channels": 8, "blocks": 1, "policy_planes": 2, "value_planes": 1}
+    net["value_hidden"] = 4
+    assert dc.geometry_of({"net": net}).head == "dense"
+    agnostic = dc.geometry_of({"net": {**net, "head": "agnostic"}})
+    assert agnostic.head == "agnostic" and agnostic.policy_out == 7 * 7 + 4
