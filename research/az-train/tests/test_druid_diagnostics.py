@@ -70,3 +70,28 @@ def test_diagnostics_reports_draws_phases_and_the_value_gap():
     assert set(d["policy"]["by_phase"]) == set(dd.PHASES)
     assert d["value"]["mse_gap"] == d["value"]["held"]["mse"] - d["value"]["train"]["mse"]
     assert d["value"]["train"]["pearson"] > 0.8
+
+
+def test_value_by_progress_separates_early_noise_from_late_fit():
+    from az_train.druid_diagnostics import game_progress, value_by_progress
+
+    game = np.repeat([7, 3], 10)  # two games of 10 plies, the second listed after the first
+    assert np.allclose(game_progress(game)[:10], np.arange(10) / 10)
+    target = np.where(np.arange(20) % 2 == 0, 1.0, -1.0)
+    # Perfect in the second half of each game, always wrong in the first half.
+    pred = np.where(np.tile(np.arange(10), 2) < 5, -target, target)
+    bins = value_by_progress(pred, target, game, bins=2)
+    assert bins[0]["mse"] == 4.0 and bins[1]["mse"] == 0.0 and bins[0]["n"] == 10
+
+
+def test_druid_warns_when_prior_entropy_collapses():
+    from az_train import druid_cnn as dc
+
+    def row(e):
+        return {"diagnostics": {"policy": {"prior_entropy": e},
+                                "selfplay": {"draw_rate": 0.0},
+                                "value": {"held": {"pearson": 0.4, "mse_vs_constant": 0.8}}}}
+
+    steady = [row(1.0)] * 30
+    assert not any("rigid" in w for w in dc.druid_warnings(steady))
+    assert any("rigid" in w for w in dc.druid_warnings([row(1.0)] * 10 + [row(0.5)] * 20))

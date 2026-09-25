@@ -4,7 +4,7 @@
 use grid_cnn::Geometry;
 use serde::Deserialize;
 
-use super::encode::{num_actions, IN_PLANES};
+use super::encode::{num_actions, CONNECT_PLANES, IN_PLANES};
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct Config {
@@ -21,13 +21,17 @@ pub struct NetConfig {
     pub policy_planes: usize,
     pub value_planes: usize,
     pub value_hidden: usize,
+    /// Append the connectivity planes to the input (`encode::CONNECT_PLANES` wide instead of the
+    /// base `IN_PLANES`). Off by default, which every earlier checkpoint needs.
+    #[serde(default)]
+    pub connectivity: bool,
 }
 
 impl NetConfig {
     pub fn geometry(&self) -> Geometry {
         Geometry {
             size: self.size,
-            in_planes: IN_PLANES,
+            in_planes: if self.connectivity { CONNECT_PLANES } else { IN_PLANES },
             channels: self.channels,
             blocks: self.blocks,
             policy_planes: self.policy_planes,

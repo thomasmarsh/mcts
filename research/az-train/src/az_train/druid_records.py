@@ -24,7 +24,8 @@ import numpy as np
 
 MAGIC = b"DRDSHRD1"
 HEADER_BYTES = 8 + 3 * 4
-IN_PLANES = 14
+IN_PLANES = 14  # the base encoding; ``CONNECT_PLANES`` appends the six connectivity planes
+CONNECT_PLANES = 20
 HEIGHT_SCALE = np.float32(8.0)
 SYMMETRIES = 4
 
@@ -134,9 +135,50 @@ def decode_legal(records: np.ndarray, size: int) -> np.ndarray:
     return legal
 
 
-def decode_planes(records: np.ndarray, size: int) -> np.ndarray:
-    """``(N, 14, size, size)`` float32 planes, channels first (the torch layout); the encoder's
-    table is in ``games/druid/src/cnn/encode.rs``."""
+def _edge_distances(cost: np.ndarray, axis: int, far: bool) -> np.ndarray:
+    """``(N, size, size)`` least path cost from one edge (row or column 0, or the last one when
+    ``far``; rows for ``axis`` 1, columns for 2) to each cell, ends included, 4-connected."""
+    size = cost.shape[1]
+    dist = np.full(cost.shape, np.inf, dtype=np.float32)
+    edge = [slice(None)] * 3
+    edge[axis] = size - 1 if far else 0
+    dist[tuple(edge)] = cost[tuple(edge)]
+    while True:
+        best = dist.copy()
+        for ax in (1, 2):
+            for shift in (1, -1):
+                moved = np.full(dist.shape, np.inf, dtype=np.float32)
+                src, dst = [slice(None)] * 3, [slice(None)] * 3
+                src[ax], dst[ax] = (slice(0, -1), slice(1, None)) if shift == 1 else (
+                    slice(1, None), slice(0, -1))  # fmt: skip
+                moved[tuple(dst)] = dist[tuple(src)]
+                best = np.minimum(best, moved + cost)
+        if np.array_equal(best, dist):
+            return dist
+        dist = best
+
+
+def _side_connectivity(
+    top: np.ndarray, side: np.ndarray, size: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One side's ``(through, near, total)``, mirroring ``encode.rs::side_connectivity``: ``top``
+    is the ``(N, size, size)`` top-piece colour (0 empty, 1 Black, 2 White) and ``side`` the
+    ``(N,)`` colour code (1 Black, whose edges are the rows; 2 White, the columns)."""
+    own = top == side[:, None, None]
+    cost = np.where(top == 0, 1.0, np.where(own, 0.0, 2.0)).astype(np.float32)
+    black = (side == 1)[:, None, None]
+    first = np.where(black, _edge_distances(cost, 1, False), _edge_distances(cost, 2, False))
+    second = np.where(black, _edge_distances(cost, 1, True), _edge_distances(cost, 2, True))
+    through = first + second - cost
+    return through, np.minimum(first, second), through.reshape(len(cost), -1).min(axis=1)
+
+
+def decode_planes(records: np.ndarray, size: int, in_planes: int = IN_PLANES) -> np.ndarray:
+    """``(N, in_planes, size, size)`` float32 planes, channels first (the torch layout); the
+    encoder's table is in ``games/druid/src/cnn/encode.rs``. ``in_planes`` picks the base
+    (``IN_PLANES``) or the connectivity (``CONNECT_PLANES``) encoding."""
+    if in_planes not in (IN_PLANES, CONNECT_PLANES):
+        raise ValueError(f"no encoding with {in_planes} planes")
     n, cells = len(records), size * size
     mover = _mover(records)[:, None]
     owners = records["owners"]
@@ -146,7 +188,7 @@ def decode_planes(records: np.ndarray, size: int) -> np.ndarray:
     opp = np.where(black[:, None], hands[:, 2:4], hands[:, 0:2])
     sarsen_start, lintel_start = np.float32(2 * cells), np.float32(cells)
     pending = records["pending"]
-    planes = np.zeros((n, IN_PLANES, cells), dtype=np.float32)
+    planes = np.zeros((n, in_planes, cells), dtype=np.float32)
     planes[:, 0] = owners == mover
     planes[:, 1] = (owners != 0) & (owners != mover)
     planes[:, 2] = records["heights"].astype(np.float32) / HEIGHT_SCALE
@@ -161,7 +203,16 @@ def decode_planes(records: np.ndarray, size: int) -> np.ndarray:
     ):
         planes[:, plane] = (pending == code)[:, None]
     planes[:, 13] = 1.0
-    return planes.reshape(n, IN_PLANES, size, size)
+    if in_planes == CONNECT_PLANES:
+        mover_code = np.where(black, 1, 2)
+        scale = np.float32(2 * size)
+        top = owners.reshape(n, size, size)
+        for at, total_at, side in ((14, 18, mover_code), (16, 19, 3 - mover_code)):
+            through, near, total = _side_connectivity(top, side, size)
+            planes[:, at] = through.reshape(n, cells) / scale
+            planes[:, at + 1] = near.reshape(n, cells) / scale
+            planes[:, total_at] = (total / scale)[:, None]
+    return planes.reshape(n, in_planes, size, size)
 
 
 def symmetry_sources(size: int) -> np.ndarray:
@@ -218,10 +269,12 @@ class Positions:
         )
 
 
-def load_positions(path: str | Path, game_offset: int = 0) -> tuple[int, Positions]:
+def load_positions(
+    path: str | Path, game_offset: int = 0, in_planes: int = IN_PLANES
+) -> tuple[int, Positions]:
     size, records = read_shard(path)
     return size, Positions(
-        planes=decode_planes(records, size),
+        planes=decode_planes(records, size, in_planes),
         policy=np.ascontiguousarray(records["policy"]),
         legal=decode_legal(records, size),
         value=np.ascontiguousarray(records["value"]),

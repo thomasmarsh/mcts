@@ -39,3 +39,20 @@ def test_summarize_reads_druid_diagnostics_and_survives_a_missing_gate(tmp_path:
     assert g["gate_skipped"] and g["score"] is None
     assert g["draw"] == 0.25 and g["v_gap"] == 0.5 and g["vt_mse"] == 0.6
     assert g["phase_ce"] == {"cell": 2.9} and g["phase_uniform"] == {"cell": 2.7}
+
+
+def test_bt_ratings_tie_lag_chains_together_and_dedupe_shared_opponent():
+    from az_train.druid_dashboard import bt_ratings, gate_pairs
+
+    def gate(opp, wins, losses):
+        return {"opponent_gen": opp, "wins": wins, "losses": losses, "draws": 0}
+
+    rows = [
+        {"gen": 1, "gate": {"lag": gate(0, 30, 10), "best": gate(0, 30, 10)}},
+        {"gen": 2, "gate": {"lag": gate(0, 30, 10), "best": gate(1, 20, 20)}},
+        {"gen": 3, "gate": {"lag": gate(0, 32, 8), "best": gate(1, 28, 12)}},
+    ]
+    assert len(gate_pairs(rows)) == 5  # gen 1's identical lag/best gate counts once
+    elo = {g: e for g, (e, _) in bt_ratings(rows).items()}
+    assert elo[0] == 0
+    assert elo[3] > elo[1] > 0  # gen 3 beat gen 1 and gen 0 more clearly

@@ -1,4 +1,4 @@
-//! Input encoding. A position becomes `IN_PLANES` `size x size` planes from the side to move's
+//! Input encoding. A position becomes `in_planes` `size x size` planes from the side to move's
 //! point of view. Druid's split encoding makes every sub-decision of a turn (piece kind,
 //! lintel orientation, cell) its own ply, so the same board is encoded again at each phase, with
 //! the phase carried by constant planes. Non-spatial features (hand counts, phase, colour) are
@@ -21,7 +21,21 @@
 //! | 12 | constant 1 once a vertical lintel is chosen (cell still to pick) |
 //! | 13 | constant 1 (lets the net see the board edge past the zero padding) |
 //!
-//! No connectivity information is encoded: the net has to learn it.
+//! The base encoding (14 planes) carries no connectivity information: the net has to learn it. The
+//! connectivity encoding (`CONNECT_PLANES` = 20) appends six planes, so the base planes are always
+//! a prefix and a net's input width (`in_planes`) picks the encoding. Each side's cost to link its
+//! two edges is a shortest path over the top-piece colours (own piece 0, empty 1, opponent's piece
+//! 2, so a path through the opponent is pricey but not blocked: a lintel can repaint it), computed
+//! from each of the side's two edges. Both are symmetric under the board flips, so the edge order
+//! never shows:
+//!
+//! | plane | content |
+//! |---|---|
+//! | 14 | side to move: cheapest edge-to-edge path through the cell / [`dist_scale`] |
+//! | 15 | side to move: the cell's cost to the nearer of its two edges / [`dist_scale`] |
+//! | 16, 17 | the same for the opponent |
+//! | 18 | side to move: cheapest edge-to-edge path overall / [`dist_scale`] (constant) |
+//! | 19 | the same for the opponent (constant) |
 //!
 //! Policy actions are the cells (`row * size + col`), then the four non-cell sub-decisions:
 //! choose sarsen, choose lintel, orient horizontal, orient vertical. Which of them is legal
@@ -30,7 +44,21 @@
 use crate::{DruidSplit, HashedState, Move, Orientation, Pending, PieceKind, Player};
 use mcts::game::Game;
 
+/// Width of the base encoding; the width every checkpoint before the connectivity planes has.
 pub const IN_PLANES: usize = 14;
+
+/// Width of the connectivity encoding: the base planes plus six.
+pub const CONNECT_PLANES: usize = 20;
+
+/// Whether `in_planes` is one of the two encodings.
+pub fn supported_planes(in_planes: usize) -> bool {
+    in_planes == IN_PLANES || in_planes == CONNECT_PLANES
+}
+
+/// Path costs are divided by this (twice the board's side: an all-opponent row).
+pub fn dist_scale(size: usize) -> f32 {
+    (2 * size) as f32
+}
 
 /// Stack heights are divided by this so typical stacks land in [0, 1]; taller ones are not clamped.
 pub const HEIGHT_SCALE: f32 = 8.0;
@@ -88,9 +116,80 @@ pub fn legal_moves(state: &HashedState) -> (Vec<Move>, Vec<u16>) {
     (moves, ids)
 }
 
-/// The planes as `(row, col, plane)` floats, the layout `grid_cnn::Net::forward` takes. The board
+/// Cheapest path costs from one edge: `dist[c]` is the least total cost
+/// of a 4-connected path from a cell of the `edge` (given as a per-cell membership test) to `c`,
+/// both ends included. Costs are small integers, so the f32 sums are exact.
+fn edge_distances(cost: &[f32], size: usize, on_edge: impl Fn(usize, usize) -> bool) -> Vec<f32> {
+    let cells = size * size;
+    let mut dist = vec![f32::INFINITY; cells];
+    for c in 0..cells {
+        if on_edge(c / size, c % size) {
+            dist[c] = cost[c];
+        }
+    }
+    loop {
+        let mut changed = false;
+        for c in 0..cells {
+            let (r, col) = (c / size, c % size);
+            let mut best = dist[c];
+            let mut relax = |n: usize| best = best.min(dist[n] + cost[c]);
+            if r > 0 {
+                relax(c - size);
+            }
+            if r + 1 < size {
+                relax(c + size);
+            }
+            if col > 0 {
+                relax(c - 1);
+            }
+            if col + 1 < size {
+                relax(c + 1);
+            }
+            if best < dist[c] {
+                dist[c] = best;
+                changed = true;
+            }
+        }
+        if !changed {
+            return dist;
+        }
+    }
+}
+
+/// One side's connectivity planes: per cell the cheapest edge-to-edge path through it and the
+/// cost to the nearer edge, and the overall cheapest path. Black links rows `0` and `size - 1`,
+/// White columns `0` and `size - 1`.
+fn side_connectivity(s: &crate::State, size: usize, side: Player) -> (Vec<f32>, Vec<f32>, f32) {
+    let cost: Vec<f32> = s
+        .board
+        .iter()
+        .map(|sq| match sq.piece {
+            Some(p) if p == side => 0.0,
+            None => 1.0,
+            Some(_) => 2.0,
+        })
+        .collect();
+    let (first, second) = match side {
+        Player::Black => (
+            edge_distances(&cost, size, |r, _| r == 0),
+            edge_distances(&cost, size, |r, _| r == size - 1),
+        ),
+        Player::White => (
+            edge_distances(&cost, size, |_, c| c == 0),
+            edge_distances(&cost, size, |_, c| c == size - 1),
+        ),
+    };
+    let through: Vec<f32> = (0..size * size).map(|c| first[c] + second[c] - cost[c]).collect();
+    let near: Vec<f32> = (0..size * size).map(|c| first[c].min(second[c])).collect();
+    let total = through.iter().copied().fold(f32::INFINITY, f32::min);
+    (through, near, total)
+}
+
+/// The planes as `(row, col, plane)` floats, the layout `grid_cnn::Net::forward` takes: the base
+/// encoding for `in_planes == IN_PLANES`, the connectivity one for `CONNECT_PLANES`. The board
 /// must be square (the net is).
-pub fn planes(state: &HashedState) -> Vec<f32> {
+pub fn planes(state: &HashedState, in_planes: usize) -> Vec<f32> {
+    assert!(supported_planes(in_planes), "no encoding with {in_planes} planes");
     let s = state.state();
     assert_eq!(s.size.w, s.size.h, "the grid net needs a square board");
     let size = usize::from(s.size.w);
@@ -124,9 +223,9 @@ pub fn planes(state: &HashedState) -> Vec<f32> {
         f32::from(s.pending == Pending::Oriented(Orientation::Vertical)),
     ];
 
-    let mut out = vec![0.0f32; cells * IN_PLANES];
+    let mut out = vec![0.0f32; cells * in_planes];
     for (cell, sq) in s.board.iter().enumerate() {
-        let at = cell * IN_PLANES;
+        let at = cell * in_planes;
         out[at] = f32::from(sq.piece == Some(mover));
         out[at + 1] = f32::from(sq.piece.is_some() && sq.piece != Some(mover));
         out[at + 2] = f32::from(sq.height) / HEIGHT_SCALE;
@@ -135,6 +234,24 @@ pub fn planes(state: &HashedState) -> Vec<f32> {
         out[at + 5..at + 9].copy_from_slice(&hands);
         out[at + 9..at + 13].copy_from_slice(&phase);
         out[at + 13] = 1.0;
+    }
+    if in_planes == CONNECT_PLANES {
+        let opponent = match mover {
+            Player::Black => Player::White,
+            Player::White => Player::Black,
+        };
+        let scale = dist_scale(size);
+        let (own_through, own_near, own_total) = side_connectivity(s, size, mover);
+        let (opp_through, opp_near, opp_total) = side_connectivity(s, size, opponent);
+        for cell in 0..cells {
+            let at = cell * in_planes;
+            out[at + 14] = own_through[cell] / scale;
+            out[at + 15] = own_near[cell] / scale;
+            out[at + 16] = opp_through[cell] / scale;
+            out[at + 17] = opp_near[cell] / scale;
+            out[at + 18] = own_total / scale;
+            out[at + 19] = opp_total / scale;
+        }
     }
     out
 }
@@ -163,7 +280,7 @@ mod tests {
     fn opening_planes_show_hands_black_and_the_edge() {
         let size = 5;
         let s = HashedState::new(Size { w: 5, h: 5 });
-        let p = planes(&s);
+        let p = planes(&s, IN_PLANES);
         assert_eq!(p.len(), size * size * IN_PLANES);
         let at = |cell: usize, plane: usize| p[cell * IN_PLANES + plane];
         assert_eq!(
@@ -184,11 +301,11 @@ mod tests {
         let size = 5;
         let s = HashedState::new(Size { w: 5, h: 5 });
         let s = DruidSplit::apply(s, &Move::Piece(PieceKind::Sarsen));
-        let p = planes(&s);
+        let p = planes(&s, IN_PLANES);
         assert!((0..size * size).all(|c| p[c * IN_PLANES + 3] == 1.0));
         assert_eq!(p[9], 1.0);
         let s = DruidSplit::apply(s, &Move::Cell(12));
-        let p = planes(&s);
+        let p = planes(&s, IN_PLANES);
         let at = |cell: usize, plane: usize| p[cell * IN_PLANES + plane];
         assert_eq!(at(12, 0), 0.0);
         assert_eq!((at(12, 1), at(12, 2)), (1.0, 1.0 / HEIGHT_SCALE), "White to move sees Black's sarsen");
@@ -205,7 +322,7 @@ mod tests {
                 while !DruidSplit::is_terminal(&s) {
                     let (moves, ids) = legal_moves(&s);
                     assert_eq!(ids.len(), moves.len());
-                    let p = planes(&s);
+                    let p = planes(&s, IN_PLANES);
                     let cells = size_of(&s).pow(2);
                     let cell_ids = ids.iter().filter(|&&i| usize::from(i) < cells).count();
                     let plane_cells = (0..cells).filter(|&c| p[c * IN_PLANES + 3] == 1.0).count();
@@ -217,4 +334,28 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn connectivity_planes_extend_the_base_and_price_an_empty_board_at_one_per_cell() {
+        let size = 5;
+        let s = HashedState::new(Size { w: 5, h: 5 });
+        let base = planes(&s, IN_PLANES);
+        let ext = planes(&s, CONNECT_PLANES);
+        for cell in 0..size * size {
+            assert_eq!(base[cell * IN_PLANES..][..IN_PLANES], ext[cell * CONNECT_PLANES..][..IN_PLANES]);
+            let row = cell / size;
+            let at = |plane: usize| ext[cell * CONNECT_PLANES + plane];
+            let scale = dist_scale(size);
+            // Black (to move, rows are its edges): a path through row r costs `size` on an empty
+            // board and the nearer edge is `min(r + 1, size - r)` away; White's rows and columns swap.
+            let col = cell % size;
+            assert_eq!(at(14), size as f32 / scale);
+            assert_eq!(at(15), (row + 1).min(size - row) as f32 / scale);
+            assert_eq!(at(16), size as f32 / scale);
+            assert_eq!(at(17), (col + 1).min(size - col) as f32 / scale);
+            assert_eq!(at(18), size as f32 / scale);
+            assert_eq!(at(19), size as f32 / scale);
+        }
+    }
 }
+

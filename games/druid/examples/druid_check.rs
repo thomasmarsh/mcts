@@ -66,7 +66,7 @@ fn forward(a: &Args) {
     let (size, records) = read_shard(Path::new(&a.shard)).unwrap_or_else(|e| panic!("{}: {e}", a.shard));
     assert_eq!(size, w.geometry.size);
     let records = &records[..a.count.min(records.len())];
-    let planes: Vec<f32> = records.iter().flat_map(|r| planes(&r.fields.to_state(size))).collect();
+    let planes: Vec<f32> = records.iter().flat_map(|r| planes(&r.fields.to_state(size), w.geometry.in_planes)).collect();
     let out = Net::new(&w).forward(&planes, records.len());
     println!("{}", serde_json::json!({ "values": out.values, "logits": out.logits }));
 }

@@ -10,11 +10,13 @@ use mcts::game::Game;
 use mcts_batch::{EnvOracle, StepOutput, TransitionOutput};
 use rayon::prelude::*;
 
-use super::encode::{action_id, legal_moves, move_from_id, num_actions, planes, IN_PLANES};
+use super::encode::{action_id, legal_moves, move_from_id, num_actions, planes, supported_planes};
 use crate::{DruidSplit, HashedState, Move};
 
 pub struct DruidOracle<const N: usize> {
     net: Net,
+    /// The net's input width, which picks the encoding (see `encode`).
+    in_planes: usize,
     chunk_size: usize,
 }
 
@@ -31,13 +33,12 @@ pub fn terminal_value(state: &HashedState) -> f32 {
 impl<const N: usize> DruidOracle<N> {
     pub fn new(net: Net, chunk_size: usize) -> Self {
         let g = net.geometry();
-        assert_eq!(
-            (g.size, g.in_planes, g.policy_out),
-            (N, IN_PLANES, num_actions(N)),
+        assert!(
+            (g.size, g.policy_out) == (N, num_actions(N)) && supported_planes(g.in_planes),
             "net geometry is not Druid {N}x{N}"
         );
         assert!(chunk_size > 0);
-        DruidOracle { net, chunk_size }
+        DruidOracle { in_planes: g.in_planes, net, chunk_size }
     }
 
     fn evaluate(&self, states: &[HashedState]) -> StepOutput<HashedState> {
@@ -47,10 +48,11 @@ impl<const N: usize> DruidOracle<N> {
         let mut policy_prior = vec![0.0f32; n * a];
         let mut value_prior = vec![0.0f32; n];
 
+        let in_planes = self.in_planes;
         let analysed: Vec<Option<(Vec<u16>, Vec<f32>)>> = states
             .par_iter()
             .map(|s| {
-                (!DruidSplit::is_terminal(s)).then(|| (legal_moves(s).1, planes(s)))
+                (!DruidSplit::is_terminal(s)).then(|| (legal_moves(s).1, planes(s, in_planes)))
             })
             .collect();
         let terminal: Vec<bool> = analysed.iter().map(Option::is_none).collect();
@@ -92,13 +94,13 @@ impl<const N: usize> DruidOracle<N> {
         if DruidSplit::is_terminal(state) {
             return terminal_value(state);
         }
-        self.net.forward(&planes(state), 1).values[0]
+        self.net.forward(&planes(state, self.in_planes), 1).values[0]
     }
 
     /// Raw per-action logits for `actions`, for `crates/mcts`'s `PolicyLogits` contract (which
     /// wants logits, not probabilities).
     pub(crate) fn single_logits(&self, state: &HashedState, actions: &[Move]) -> Vec<f64> {
-        let out = self.net.forward(&planes(state), 1);
+        let out = self.net.forward(&planes(state, self.in_planes), 1);
         actions
             .iter()
             .map(|m| f64::from(out.logits[action_id(m, N) as usize]))

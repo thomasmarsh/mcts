@@ -212,7 +212,7 @@ pub fn read_shard(path: &Path) -> io::Result<(usize, Vec<Record>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cnn::encode::{action_id, legal_moves, planes};
+    use crate::cnn::encode::{action_id, legal_moves, planes, CONNECT_PLANES, IN_PLANES};
     use crate::Move;
     use crate::DruidSplit;
     use mcts::game::Game;
@@ -272,7 +272,7 @@ mod tests {
                 "the fixture covers several pending phases"
             );
             for (r, s) in back.iter().zip(&states) {
-                assert_eq!(planes(&r.fields.to_state(size)), planes(s));
+                assert_eq!(planes(&r.fields.to_state(size), IN_PLANES), planes(s, IN_PLANES));
             }
         }
     }
@@ -312,7 +312,11 @@ mod tests {
                 }
             })
             .collect();
-        let planes: Vec<u8> = states.iter().flat_map(planes).flat_map(f32::to_le_bytes).collect();
+        let encode = |width: usize| -> Vec<u8> {
+            states.iter().flat_map(|s| planes(s, width)).flat_map(f32::to_le_bytes).collect()
+        };
+        let (planes, connect_planes) = (encode(IN_PLANES), encode(CONNECT_PLANES));
+        let connect_path = dir.join(format!("encode-{size}.planes20.bin"));
         let phases: std::collections::HashSet<u8> =
             records.iter().map(|r| r.fields.pending).collect();
         assert_eq!(phases.len(), 5, "the fixture must cover every pending phase");
@@ -321,12 +325,18 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             write_shard(&shard_path, size, &records).unwrap();
             std::fs::write(&planes_path, &planes).unwrap();
+            std::fs::write(&connect_path, &connect_planes).unwrap();
         }
         let (read_size, stored) =
             read_shard(&shard_path).expect("fixture shard (run with UPDATE_FIXTURE=1)");
         assert_eq!(read_size, size);
         assert_eq!(stored, records, "the stored shard fixture is stale");
         assert_eq!(std::fs::read(&planes_path).unwrap(), planes, "the stored planes fixture is stale");
+        assert_eq!(
+            std::fs::read(&connect_path).unwrap(),
+            connect_planes,
+            "the stored connectivity planes fixture is stale"
+        );
     }
 
     #[test]

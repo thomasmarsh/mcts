@@ -55,6 +55,35 @@ def value_fit(predicted: np.ndarray, target: np.ndarray) -> dict[str, Any]:
     }
 
 
+PROGRESS_BINS = 5
+
+
+def game_progress(game: np.ndarray) -> np.ndarray:
+    """``(N,)`` float in [0, 1): each position's ply index over its game's length, assuming a
+    game's positions are stored in ply order (the shard writer's order)."""
+    order = np.argsort(game, kind="stable")
+    _, inverse, counts = np.unique(game[order], return_inverse=True, return_counts=True)
+    starts = np.cumsum(counts) - counts
+    within = np.arange(len(game)) - starts[inverse]
+    progress = np.empty(len(game))
+    progress[order] = within / counts[inverse]
+    return progress
+
+
+def value_by_progress(
+    predicted: np.ndarray, target: np.ndarray, game: np.ndarray, bins: int = PROGRESS_BINS
+) -> list[dict[str, Any]]:
+    """Value fit per equal slice of game progress. Early positions of a game are near coin flips,
+    so a high early-slice MSE is a noise floor, not a head that has failed to learn; a late slice
+    that stays high is the head genuinely underfitting."""
+    slot = np.minimum((game_progress(game) * bins).astype(int), bins - 1)
+    out = []
+    for b in range(bins):
+        sel = slot == b
+        out.append({"bin": b, "n": int(sel.sum()), **value_fit(predicted[sel], target[sel])})
+    return out
+
+
 def policy_by_phase(
     held: Positions, logits: np.ndarray, size: int
 ) -> dict[str, dict[str, float | int | None]]:
@@ -115,7 +144,12 @@ def diagnostics(
     held_target_entropy = _entropy(held.policy)
     cross_entropy = -(held.policy * np.log(np.maximum(prior, 1e-30))).sum(axis=1)
 
-    value = {"held": value_fit(predicted_value, held.value)}
+    value = {
+        "held": {
+            **value_fit(predicted_value, held.value),
+            "by_progress": value_by_progress(predicted_value, held.value, held.game),
+        }
+    }
     if train_predicted is not None and train_target is not None:
         value["train"] = value_fit(train_predicted, train_target)
         value["mse_gap"] = value["held"]["mse"] - value["train"]["mse"]

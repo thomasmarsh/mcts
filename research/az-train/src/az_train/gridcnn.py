@@ -230,11 +230,29 @@ def read_weights(path: str | Path) -> tuple[Geometry, np.ndarray]:
     return g, flat.astype(np.float32)
 
 
+def widen_stem(model: GridCNN, state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """``state`` with the stem convolution padded to ``model``'s input width by zero weights, so a
+    checkpoint trained on fewer input planes computes exactly the same function until the new
+    planes' weights are trained. A checkpoint that is already as wide is returned unchanged."""
+    key = "stem.conv.weight"
+    have, want = state[key].shape[1], model.stem.conv.weight.shape[1]
+    if have == want:
+        return state
+    if have > want:
+        raise ValueError(f"the checkpoint's stem takes {have} planes, the model's only {want}")
+    padded = torch.zeros(state[key].shape[0], want, *state[key].shape[2:], dtype=state[key].dtype)
+    padded[:, :have] = state[key]
+    return {**state, key: padded}
+
+
 def warm_start(model: GridCNN, state: dict[str, torch.Tensor], mode: str) -> list[str]:
     """Load a net trained at another board size into ``model``; returns the copied parameter and
     buffer names. ``trunk`` copies the stem and residual blocks (convolutional, so any board size)
     and leaves the heads at their fresh initialisation; ``full`` loads every entry and needs the
-    same head kind (an agnostic net, whose every weight is size independent)."""
+    same head kind (an agnostic net, whose every weight is size independent). A checkpoint with
+    fewer input planes is widened with zero stem weights (``widen_stem``)."""
+    if "stem.conv.weight" in state:
+        state = widen_stem(model, state)
     if mode == "full":
         model.load_state_dict(state)
         return list(state)

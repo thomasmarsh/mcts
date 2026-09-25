@@ -104,3 +104,22 @@ def test_adam_is_default_with_l2_and_adamw_has_none_in_the_loss():
     fresh.load_state_dict(saved)
     assert fresh.param_groups[0]["lr"] == 1e-3
     assert fresh.param_groups[0]["weight_decay"] == 0.05
+
+
+def test_warm_start_widens_the_stem_with_zeros_and_keeps_the_function():
+    net = {"size": 5, "channels": 8, "blocks": 1, "policy_planes": 2, "value_planes": 2}
+    base = {"net": {**net, "value_hidden": 8, "head": "agnostic"}}
+    wide = {"net": {**base["net"], "connectivity": True}}
+    assert dc.geometry_of(base).in_planes == 14 and dc.geometry_of(wide).in_planes == 20
+    old = dc.gridcnn.GridCNN(dc.geometry_of(base))
+    new = dc.gridcnn.GridCNN(dc.geometry_of(wide))
+    for m in (old, new):
+        m.eval()
+    copied = dc.gridcnn.warm_start(new, old.state_dict(), "full")
+    assert "stem.conv.weight" in copied
+    assert not new.stem.conv.weight[:, 14:].any()
+    x = torch.rand(3, 20, 5, 5)
+    with torch.no_grad():
+        (v0, l0), (v1, l1) = old(x[:, :14]), new(x)
+    torch.testing.assert_close(v1, v0)
+    torch.testing.assert_close(l1, l0)

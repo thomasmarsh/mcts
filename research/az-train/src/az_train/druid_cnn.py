@@ -46,6 +46,7 @@ import torch.nn.functional as F  # noqa: N812
 from az_train import gridcnn, yardstick
 from az_train.druid_diagnostics import diagnostics
 from az_train.druid_records import (
+    CONNECT_PLANES,
     IN_PLANES,
     SYMMETRIES,
     Positions,
@@ -86,7 +87,7 @@ def geometry_of(cfg: dict[str, Any]) -> gridcnn.Geometry:
     n = cfg["net"]
     return gridcnn.Geometry(
         size=n["size"],
-        in_planes=IN_PLANES,
+        in_planes=CONNECT_PLANES if n.get("connectivity", False) else IN_PLANES,
         channels=n["channels"],
         blocks=n["blocks"],
         policy_planes=n["policy_planes"],
@@ -136,8 +137,10 @@ class RecordWindow:
     10x10, against about 3.4 KB for decoded float16 planes). A batch is decoded on the fly from
     the sampled records, so the window's memory is independent of the plane count."""
 
-    def __init__(self, records: np.ndarray, size: int, device: torch.device) -> None:
-        self.records, self.size, self.device = records, size, device
+    def __init__(
+        self, records: np.ndarray, size: int, device: torch.device, in_planes: int = IN_PLANES
+    ) -> None:
+        self.records, self.size, self.device, self.in_planes = records, size, device, in_planes
 
     def __len__(self) -> int:
         return len(self.records)
@@ -146,7 +149,7 @@ class RecordWindow:
         rec = self.records[idx.cpu().numpy()]
         to = lambda a: torch.from_numpy(np.ascontiguousarray(a)).to(self.device)  # noqa: E731
         return (
-            to(decode_planes(rec, self.size)),
+            to(decode_planes(rec, self.size, self.in_planes)),
             to(rec["policy"]),
             to(decode_legal(rec, self.size).astype(np.uint8)),
             to(phase_kind(rec["pending"]).astype(np.int64)),
@@ -469,7 +472,7 @@ def diagnose(
     """Oracle-free diagnostics of one generation: its self-play shard, the fitted net's predictions
     on the shard's held-out games, and on an evenly spaced sample of the shard's own training
     positions (see ``druid_diagnostics``)."""
-    size, positions = load_positions(shard)
+    size, positions = load_positions(shard, in_planes=model.geometry.in_planes)
     values, logits = predict(model, held, device)
     train, _ = split_validation(positions, validation_games)
     if len(train) > train_sample:
@@ -488,6 +491,7 @@ def load_window(
     shards) and the held-out games of shard ``gen``. ``train.window_storage = "records"`` keeps
     the window as raw shard records decoded per batch; the default decodes every plane up front."""
     tcfg = cfg["train"]
+    in_planes = geometry_of(cfg).in_planes
     records = tcfg.get("window_storage", "planes") == "records"
     parts: list[Any] = []
     val = None
@@ -498,11 +502,15 @@ def load_window(
             held_mask = np.isin(rec["game"], np.unique(rec["game"])[: tcfg["validation_games"]])
             parts.append(rec[~held_mask])
             if g == gen:
-                val = load_positions(run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000)[
-                    1
-                ].take(held_mask)
+                val = load_positions(
+                    run_dir / "shards" / f"gen{g}.bin",
+                    game_offset=g * 1_000_000,
+                    in_planes=in_planes,
+                )[1].take(held_mask)
             continue
-        _, positions = load_positions(run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000)
+        _, positions = load_positions(
+            run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000, in_planes=in_planes
+        )
         train, held = split_validation(positions, tcfg["validation_games"])
         if tcfg.get("window_dtype", "float32") == "float16":
             # Halves the window's memory (the planes dominate it); every plane value is a 0/1
@@ -514,7 +522,7 @@ def load_window(
     assert val is not None
     if records:
         joined_records = np.concatenate(parts)
-        return RecordWindow(joined_records, size, device), val, len(joined_records)
+        return RecordWindow(joined_records, size, device, in_planes), val, len(joined_records)
     joined = concat_positions(parts)
     return Data(joined, device), val, len(joined)
 
@@ -707,6 +715,18 @@ def druid_warnings(rows: list[dict[str, Any]]) -> list[str]:
             f"held-out value Pearson {np.mean(pear):.2f} below 0 over the last {len(recent)}: "
             "the value head is anti-correlated with outcomes on unseen games"
         )
+    entropy = [
+        e
+        for r in rows
+        if (e := r.get("diagnostics", {}).get("policy", {}).get("prior_entropy")) is not None
+    ]
+    if len(entropy) >= 20:
+        early, late = float(np.mean(entropy[:10])), float(np.mean(entropy[-10:]))
+        if late < 0.6 * early:
+            warnings.append(
+                f"prior entropy {late:.2f} is under 60% of its first-10 mean {early:.2f}: "
+                "the policy may be going rigid"
+            )
     over = [r["diagnostics"]["value"]["held"]["mse_vs_constant"] for r in recent]
     over = [m for m in over if m is not None]
     if over and float(np.mean(over)) > 1.0:
@@ -817,7 +837,7 @@ def smoke_checks(config_path: Path, run_dir: Path, overrides: list[str]) -> dict
     )  # fmt: skip
     rust = json.loads(out.stdout)
     with torch.no_grad():
-        value, logits = model(torch.from_numpy(decode_planes(records[:count], g.size)))
+        value, logits = model(torch.from_numpy(decode_planes(records[:count], g.size, g.in_planes)))
     report["rust_vs_torch_max_value_diff"] = float(
         np.abs(np.array(rust["values"]) - value.numpy()).max()
     )
@@ -838,8 +858,10 @@ def smoke_checks(config_path: Path, run_dir: Path, overrides: list[str]) -> dict
     )
 
     smoke = cfg["smoke"]
+    # Rust reads the effective config (with any --set overrides), never the raw toml.
+    effective = run_dir / "config.effective.toml"
     out = subprocess.run(
-        [str(EXAMPLES / "druid_check"), "self-match", "--config", str(config_path)]
+        [str(EXAMPLES / "druid_check"), "self-match", "--config", str(effective)]
         + ["--weights", str(weights), "--openings", str(smoke["openings"])]
         + ["--opening-plies", str(smoke["opening_plies"]), "--seed", str(smoke["seed"])]
         + ["--max-plies", str(smoke["max_plies"])],

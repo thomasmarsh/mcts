@@ -18,6 +18,14 @@ def test_python_planes_match_the_rust_encoder(size):
     )
     got = dr.decode_planes(records, size)  # (N, C, H, W)
     np.testing.assert_array_equal(got.transpose(0, 2, 3, 1), expected)
+    # The connectivity encoding is the base planes plus six, matching the Rust fixture exactly.
+    ext = np.fromfile(FIXTURES / f"encode-{size}.planes20.bin", dtype="<f4").reshape(
+        len(records), size, size, dr.CONNECT_PLANES
+    )
+    got20 = dr.decode_planes(records, size, dr.CONNECT_PLANES)
+    np.testing.assert_array_equal(got20.transpose(0, 2, 3, 1), ext)
+    np.testing.assert_array_equal(ext[..., : dr.IN_PLANES], expected)
+    assert ext[..., 14:].std() > 0.05, "the connectivity planes must vary across the fixture"
     assert expected[..., 3].any(), "the fixture must contain a pending cell decision"
     assert (expected[..., 2] > 1 / 8).any(), "the fixture must contain stacks"
     assert set(np.unique(records["pending"])) == set(range(5))
@@ -56,8 +64,9 @@ def _flipped(records: np.ndarray, size: int, s: int) -> np.ndarray:
     return out
 
 
+@pytest.mark.parametrize("in_planes", [dr.IN_PLANES, dr.CONNECT_PLANES])
 @pytest.mark.parametrize("size", SIZES)
-def test_symmetry_maps_planes_legality_and_policy_consistently(size):
+def test_symmetry_maps_planes_legality_and_policy_consistently(size, in_planes):
     # The mapping of a position's legal set and planes is what training augments with. Derive
     # the legal set of the reflected board from scratch and check it equals the mapped one; the
     # Rust test `the_rules_are_invariant_under_axis_preserving_reflections` is what proves the
@@ -78,11 +87,12 @@ def test_symmetry_maps_planes_legality_and_policy_consistently(size):
             [np.take_along_axis(policy[:, :cells], idx, 1), policy[:, cells:]], 1
         )
         np.testing.assert_allclose(want_policy > 0, want_legal)
-        planes, planes_f = dr.decode_planes(records, size), dr.decode_planes(flipped, size)
-        flat = planes.reshape(len(planes), dr.IN_PLANES, cells)
+        planes = dr.decode_planes(records, size, in_planes)
+        planes_f = dr.decode_planes(flipped, size, in_planes)
+        flat = planes.reshape(len(planes), in_planes, cells)
         got = np.take_along_axis(flat, src[s, 0][None, None, :].repeat(len(flat), 0), 2)
         got[:, 3] = np.take_along_axis(flat[:, 3], idx, 1)
-        np.testing.assert_array_equal(got, planes_f.reshape(len(planes), dr.IN_PLANES, cells))
+        np.testing.assert_array_equal(got, planes_f.reshape(len(planes), in_planes, cells))
 
 
 def test_reflection_is_not_a_no_op_on_lintel_anchors():

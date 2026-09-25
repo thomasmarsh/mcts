@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from az_train.druid_cnn import evaluate_run, load_config, read_jsonl
+from az_train.yardstick import Pair, fit_bradley_terry
 
 ELO_PER_LOGIT = 400 / 2.302585092994046
 
@@ -35,6 +36,36 @@ def implied_elo(scores: dict[int, tuple[int, float]]) -> dict[int, float]:
         s = min(0.98, max(0.02, s))
         elo[g] = elo[opp] + ELO_PER_LOGIT * math.log(s / (1 - s))
     return elo
+
+
+def gate_pairs(rows: list[dict]) -> list[Pair]:
+    """Every gate result as a pair ``gen{g}`` vs ``gen{opponent}`` (lag and champion gates). A
+    pairing appearing as both a lag and a champion gate (the same opponent) is counted once."""
+    pairs = []
+    for r in rows:
+        seen = set()
+        for kind in ("lag", "best"):
+            m = r.get("gate", {}).get(kind)
+            if not m or "wins" not in m:
+                continue
+            key = (m["opponent_gen"], m["wins"], m["losses"], m["draws"])
+            if key in seen:
+                continue
+            seen.add(key)
+            name, opp = f"gen{r['gen']}", f"gen{m['opponent_gen']}"
+            pairs.append(Pair(name, opp, m["wins"], m["losses"], m["draws"]))
+    return pairs
+
+
+def bt_ratings(rows: list[dict]) -> dict[int, tuple[float, float]]:
+    """Joint Bradley-Terry Elo (generation 0 = 0) over all gate results, with standard errors.
+    Unlike chaining lag scores, the champion gates tie the ten lag-gate chains together."""
+    pairs = gate_pairs(rows)
+    if not pairs:
+        return {}
+    fit = fit_bradley_terry(pairs, order=["gen0"])
+    rows_ = zip(fit["players"], fit["elo"], fit["se"], strict=True)
+    return {int(n[3:]): (e, se) for n, e, se in rows_}
 
 
 def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
@@ -96,6 +127,7 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
                 "vh_mse": held.get("mse"),
                 "vh_mse_vs_constant": held.get("mse_vs_constant"),
                 "vh_pearson": held.get("pearson"),
+                "vh_progress": [b.get("mse") for b in held.get("by_progress", [])],
                 "vh_sign": held.get("sign_agreement"),
                 "vt_mse": train.get("mse"),
                 "vt_pearson": train.get("pearson"),
@@ -114,8 +146,10 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
     elo = implied_elo(
         {g["gen"]: (g["lag_opponent"], g["score"]) for g in gens if g["score"] is not None}
     )
+    bt = bt_ratings(rows)
     for g in gens:
         g["implied_elo"] = elo.get(g["gen"])
+        g["bt_elo"], g["bt_se"] = bt.get(g["gen"], (None, None))
     report = run_dir / "ratings" / "report.json"
     verdict = None
     settings = {}

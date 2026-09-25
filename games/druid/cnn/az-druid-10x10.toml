@@ -15,6 +15,10 @@ value_hidden = 64
 # logits and a globally pooled value head, so the trained net loads at any board size
 # (`value_planes` is unused). Rust reads the head kind from the weights file, not from here.
 head = "agnostic"
+# Append six connectivity planes (each side's cheapest edge-to-edge path, see `encode.rs`) to the
+# 14 base input planes. Off keeps every earlier checkpoint loadable; a warm start from a 14-plane
+# net widens its stem with zero weights.
+connectivity = false
 
 # Self-play search (Gumbel root, Sequential Halving over `considered_actions`).
 [selfplay]

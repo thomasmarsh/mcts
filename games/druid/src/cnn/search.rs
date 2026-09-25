@@ -22,7 +22,7 @@ use mcts_tune::net_search::{NetSearchFactory, NetSearchSpec, NetSelection};
 use serde::Deserialize;
 
 use super::agent::{CnnAgent, Kind, RootSummary};
-use super::encode::{num_actions, IN_PLANES};
+use super::encode::{num_actions, supported_planes};
 use super::SUPPORTED_SIZES;
 use crate::{Druid, HashedState, Move};
 
@@ -57,7 +57,8 @@ fn load_model(entry: &ModelEntry) -> Result<Arc<Weights>, String> {
         Weights::load(&path).map_err(|e| format!("cannot load {}: {e}", path.display()))?;
     let g = weights.geometry;
     if !SUPPORTED_SIZES.contains(&g.size)
-        || (g.in_planes, g.policy_out) != (IN_PLANES, num_actions(g.size))
+        || !supported_planes(g.in_planes)
+        || g.policy_out != num_actions(g.size)
     {
         return Err(format!(
             "{} is not a supported Druid net: {g:?}",
@@ -280,6 +281,7 @@ impl<const N: usize> Search for DruidCnnSearch<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cnn::encode::IN_PLANES;
     use crate::Size;
     use grid_cnn::Geometry;
     use mcts::game::Game;

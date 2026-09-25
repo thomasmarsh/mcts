@@ -93,8 +93,11 @@ th:first-child, td:first-child { text-align: left; }
     <div class="chart" id="c-gate"></div>
   </section>
   <section class="grid">
-    <div class="panel"><h3>Implied strength (approximate)</h3>
-      <p>Elo chained from the lag-gate scores: Elo(g) = Elo(opponent) + 400 log10(s / (1 - s)), s clamped to [0.02, 0.98]. Derived from the gates, not the round robin; it drifts and saturates, read it as a shape.</p>
+    <div class="panel"><h3>Strength from all gates (Bradley-Terry)</h3>
+      <p>One Elo per generation (generation 0 = 0), fitted jointly to every gate result, lag and champion. The champion gates link the ten lag-gate chains, so the period-10 offsets of the chained curve cancel. Band is 95% (1.96 standard errors, relative to generation 0), widening for the newest generations, which have fewer games.</p>
+      <div class="chart" id="c-bt"></div></div>
+    <div class="panel"><h3>Chained lag-gate Elo (shape only)</h3>
+      <p>Elo chained from the lag-gate scores: Elo(g) = Elo(opponent) + 400 log10(s / (1 - s)), s clamped to [0.02, 0.98]. It is ten independent chains (generation g mod 10), each keeping its own noisy starting offset, so a period-10 sawtooth is an artifact. Do not read levels from it.</p>
       <div class="chart" id="c-elo"></div></div>
     <div class="panel" id="rr-panel"><h3>Round-robin rating</h3>
       <p id="rr-desc">Bradley-Terry Elo of the checkpoints (generation 0 = 0) with 95% error bars. Appears when the round robin has run, after the last generation.</p>
@@ -117,6 +120,8 @@ th:first-child, td:first-child { text-align: left; }
       <div class="chart" id="c-vpear"></div></div>
     <div class="panel"><h3>Value overfit gap</h3><p>Value MSE on held-out games minus value MSE on a sample of the generation's own training positions. A gap that opens while the training error falls is the head memorising outcomes.</p>
       <div class="chart" id="c-vgap"></div></div>
+    <div class="panel"><h3>Held-out value MSE by game progress</h3><p>Held-out value MSE for the first, middle and last fifth of each game, as a 10-generation moving mean. The constant-zero predictor scores 1.0. Early positions are near coin flips, so a high early line is a noise floor; a late line that stays high is the head underfitting.</p>
+      <div class="chart" id="c-vprog"></div></div>
     <div class="panel"><h3>Held-out policy cross-entropy by phase</h3><p>Nats against the search's policy, split by the phase of the turn (forced single-move positions excluded). The dashed line is what a uniform policy over the legal cells would score; a cell curve on it is the net at chance.</p>
       <div class="chart" id="c-phase-ce"></div></div>
     <div class="panel"><h3>Held-out policy top-1 by phase</h3><p>Share of positions where the net's best move matches the search's, per phase.</p>
@@ -401,6 +406,10 @@ function build() {
         : `${p.y.toFixed(3)} [${fmt(g.lo, 2)}, ${fmt(g.hi, 2)}] vs gen ${g.lag_opponent}`;
     },
   }));
+  chart("c-bt", () => ({ label: "Bradley-Terry Elo", zero: true, yfmt: (t) => t.toFixed(0),
+    series: [{ name: "Elo", color: "--s1", band: true,
+      pts: pts((g) => g.bt_elo, { lo: (g) => (g.bt_elo == null ? null : g.bt_elo - 1.96 * g.bt_se), hi: (g) => (g.bt_elo == null ? null : g.bt_elo + 1.96 * g.bt_se) }) }],
+    tfmt: (p) => `${p.y.toFixed(0)} Elo, 95% [${p.lo.toFixed(0)}, ${p.hi.toFixed(0)}]` }));
   chart("c-elo", () => ({ label: "Implied Elo", zero: true, yfmt: (t) => t.toFixed(0),
     series: [line("implied Elo", "--s1", (g) => g.implied_elo)], tfmt: (p) => p.y.toFixed(0) + " Elo (approx.)" }));
 
@@ -435,6 +444,14 @@ function build() {
   const PH = [["piece", "--s1"], ["orientation", "--s3"], ["cell", "--s2"]];
   chart("c-phase", () => ({ label: "Phase mix", y: [0, 1], yfmt: (t) => (t * 100).toFixed(0) + "%",
     series: PH.map(([k, c]) => line(k, c, (g) => (g.phase_share || {})[k])), tfmt: (p) => P(p.y) }));
+  const ma = (f, w = 10) => (g) => {
+    const v = G.filter((q) => q.gen > g.gen - w && q.gen <= g.gen).map(f).filter((x) => x != null);
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+  };
+  const prog = (i) => (g) => (g.vh_progress || [])[i];
+  chart("c-vprog", () => ({ label: "Value MSE by game progress", refs: [{ y: 1 }], refsInDomain: true,
+    series: [["first fifth", 0, "--s2"], ["middle fifth", 2, "--s1"], ["last fifth", 4, "--s3"]].map(([n, i, c]) => line(n, c, ma(prog(i)))),
+    tfmt: (p) => p.y.toFixed(3) }));
   chart("c-phase-ce", () => ({ label: "Policy cross-entropy by phase", zero: true,
     series: [...PH.map(([k, c]) => line(k, c, (g) => (g.phase_ce || {})[k])), line("cell, uniform policy", "--s2", (g) => (g.phase_uniform || {}).cell, { dash: true })],
     tfmt: (p) => p.y.toFixed(3) + " nats" }));
@@ -477,7 +494,7 @@ function build() {
   chart("c-ms", () => ({ label: "Gate ms per move", zero: true, series: [line("ms per move", "--s1", (g) => g.cnn_ms)], tfmt: (p) => p.y.toFixed(0) + " ms" }));
 
   const cols = [["gen", (g) => g.gen], ["lag opp", (g) => g.lag_opponent], ["lag score", (g) => fmt(g.score)], ["lo", (g) => fmt(g.lo, 2)], ["hi", (g) => fmt(g.hi, 2)],
-    ["champ score", (g) => fmt(g.best_score)], ["champion", (g) => g.champion], ["promoted", (g) => (g.promoted ? "yes" : "")], ["implied Elo", (g) => fmt(g.implied_elo, 0)],
+    ["champ score", (g) => fmt(g.best_score)], ["champion", (g) => g.champion], ["promoted", (g) => (g.promoted ? "yes" : "")], ["BT Elo", (g) => fmt(g.bt_elo, 0)], ["chained Elo", (g) => fmt(g.implied_elo, 0)],
     ["policy loss", (g) => fmt(g.policy_loss)], ["value loss", (g) => fmt(g.value_loss)], ["top-1", (g) => fmt(g.val_policy_top1)], ["policy CE", (g) => fmt(g.val_policy_ce)],
     ["value MSE", (g) => fmt(g.val_value_mse)], ["Pearson", (g) => fmt(g.val_value_pearson)], ["target H", (g) => fmt(g.target_entropy)], ["prior H", (g) => fmt(g.prior_entropy)],
     ["KL", (g) => fmt(g.kl, 4)], ["ECE", (g) => fmt(g.ece)], ["Brier", (g) => fmt(g.brier)], ["plies", (g) => fmt(g.plies, 1)], ["capped", (g) => fmt(g.capped, 3)],
