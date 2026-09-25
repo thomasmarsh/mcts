@@ -435,12 +435,21 @@ impl GameAdapter for DruidAdapter {
         // "strong", just with a longer thinking budget -- a genuine second,
         // harder instance a candidate can still be ranked against once it's
         // saturated 100% win rate against an easier one).
-        let baselines = presets().ai_preset_ids();
-        Some(TunerInfo {
+        // (Network presets are excluded: a tuner plays thousands of games and a network preset
+        // is tied to one board size.)
+        let baselines = presets().baseline_preset_ids();
+        let mut info = TunerInfo {
             game_config: self.default_config(),
             game_config_schema: self.config_schema(),
             ..mcts_tune::strategy_tuner_info_with_mcgs(&baselines, TUNE_EVAL_ROUNDS, true)
-        })
+        };
+        // Offers `algorithm: net_gumbel` and its `net_*` parameters in the free-composition
+        // catalog while a model is loaded.
+        mcts_tune::net_search::add_net_algorithm(
+            &mut info,
+            &mcts_tune::net_search::available_models::<Druid>(),
+        );
+        Some(info)
     }
 
     fn tune_eval(
@@ -603,6 +612,21 @@ mod tests {
             let search = reply.search.expect("the network search reports itself");
             assert_eq!(search.completed_iterations, 100);
         }
+    }
+
+    /// The free-composition catalog offers `net_gumbel` (so its simulation budget can be raised
+    /// per game), and the network presets are not tuner baselines.
+    #[cfg(feature = "cnn")]
+    #[test]
+    fn the_strategy_catalog_offers_net_gumbel_and_keeps_net_presets_out_of_the_baselines() {
+        register_nets();
+        let info = DruidAdapter::default().tuner().unwrap();
+        let algorithm = info.parameters.iter().find(|p| p.name == "algorithm").unwrap();
+        assert!(algorithm.spec["choices"].as_array().unwrap().contains(&serde_json::json!("net_gumbel")));
+        for name in ["net_model", "net_considered_actions", "net_value_scale"] {
+            assert!(info.parameters.iter().any(|p| p.name == name), "{name}");
+        }
+        assert!(!info.baselines.iter().any(|b| b.starts_with("cnn")), "{:?}", info.baselines);
     }
 
     #[test]
@@ -826,12 +850,12 @@ mod tests {
     }
 
     #[test]
-    fn tuner_lists_every_preset_as_a_baseline() {
+    fn tuner_lists_every_non_network_preset_as_a_baseline() {
         let info = DruidAdapter::default()
             .tuner()
             .expect("druid supports tuning");
         let expected: Vec<String> = presets()
-            .ai_preset_ids()
+            .baseline_preset_ids()
             .into_iter()
             .map(|s| s.to_string())
             .collect();
