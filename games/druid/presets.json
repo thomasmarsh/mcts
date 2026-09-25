@@ -70,5 +70,33 @@
         "max_time_ms": 8000,
         "threads": 0,
         "use_transpositions": true
+    },
+    {
+        "id": "cnn-9x9-gen309",
+        "label": "CNN gen309 (9x9 only)",
+        "description": "The 64x4 size-agnostic residual CNN trained at 9x9 (generation 309) with a 100-simulation Gumbel search, about 0.3 s per move. At 9x9 it scored 0.65 against a 1000-iteration MCTS in a 20-game match. Only plays 9x9 boards.",
+        "params": {
+            "algorithm": "net_gumbel",
+            "net_model": "druid-9x9-G-gen309",
+            "net_considered_actions": 16,
+            "net_value_scale": 0.1,
+            "net_max_visit_init": 50,
+            "net_selection": "gumbel"
+        },
+        "max_iterations": 100
+    },
+    {
+        "id": "cnn-7x7-gen60",
+        "label": "CNN gen60 (7x7 only)",
+        "description": "The 64x4 size-agnostic residual CNN trained at 7x7 (generation 60) with a 100-simulation Gumbel search, about 0.2 s per move. Only plays 7x7 boards.",
+        "params": {
+            "algorithm": "net_gumbel",
+            "net_model": "druid-7x7-F-gen60",
+            "net_considered_actions": 16,
+            "net_value_scale": 0.1,
+            "net_max_visit_init": 50,
+            "net_selection": "gumbel"
+        },
+        "max_iterations": 100
     }
 ]

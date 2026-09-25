@@ -1,0 +1,12 @@
+[
+    {
+        "id": "druid-9x9-G-gen309",
+        "label": "64x4 CNN, trained at 9x9, generation 309",
+        "weights": "games/druid/cnn/weights/9x9-G-gen309.bin"
+    },
+    {
+        "id": "druid-7x7-F-gen60",
+        "label": "64x4 CNN, trained at 7x7, generation 60",
+        "weights": "games/druid/cnn/weights/7x7-F-gen60.bin"
+    }
+]

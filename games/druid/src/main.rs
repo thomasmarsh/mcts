@@ -566,13 +566,44 @@ impl GameAdapter for DruidAdapter {
     }
 }
 
+/// Makes `algorithm: net_gumbel` buildable when a CNN model loads; without one nothing changes.
+#[cfg(feature = "cnn")]
+fn register_nets() {
+    use game_druid::cnn::search::DruidNets;
+    use mcts_tune::net_search::{register, NetSearchFactory};
+    let nets = DruidNets::from_env();
+    if !NetSearchFactory::<Druid>::models(&nets).is_empty() {
+        register::<Druid>(std::sync::Arc::new(nets));
+    }
+}
+
 fn main() {
+    #[cfg(feature = "cnn")]
+    register_nets();
     run_cli(DruidAdapter::default());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shipped CNN presets play legal moves through the real host path, on the board size
+    /// their weights were exported for (the host refuses other sizes, see `unsupported_reason`).
+    #[cfg(feature = "cnn")]
+    #[test]
+    fn the_shipped_cnn_presets_play_legal_moves_with_a_search_report() {
+        register_nets();
+        let adapter = DruidAdapter::default();
+        for (preset, size) in [("cnn-9x9-gen309", 9), ("cnn-7x7-gen60", 7)] {
+            let state = adapter
+                .new_state(serde_json::json!({ "size": { "w": size, "h": size } }))
+                .unwrap();
+            let reply = adapter.ai_move(&state, preset, None).unwrap();
+            assert!(adapter.legal_moves(&state).unwrap().contains(&reply.mv), "{preset} {size}");
+            let search = reply.search.expect("the network search reports itself");
+            assert_eq!(search.completed_iterations, 100);
+        }
+    }
 
     #[test]
     fn trace_converter_emits_only_complete_placed_piece_moves() {
