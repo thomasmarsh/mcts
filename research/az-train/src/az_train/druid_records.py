@@ -69,6 +69,16 @@ def read_shard(path: str | Path) -> tuple[int, np.ndarray]:
     return size, np.frombuffer(raw, dtype=dtype, offset=HEADER_BYTES, count=body // per)
 
 
+def write_shard(path: str | Path, size: int, records: np.ndarray) -> None:
+    """Writes ``records`` (``record_dtype(size)``, any subset or reordering of a shard's rows) in
+    the ``DRDSHRD1`` format ``read_shard`` reads."""
+    dtype = record_dtype(size)
+    if records.dtype != dtype:
+        records = records.astype(dtype)
+    header = MAGIC + struct.pack("<3I", size, num_actions(size), dtype.itemsize)
+    Path(path).write_bytes(header + records.tobytes())
+
+
 def _mover(records: np.ndarray) -> np.ndarray:
     """Owner code of the side to move (1 Black, 2 White), ``(N,)``."""
     return (1 + records["player"].astype(np.int64)).astype(np.uint8)

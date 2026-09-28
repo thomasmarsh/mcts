@@ -212,9 +212,14 @@ pub fn read_shard(path: &Path) -> io::Result<(usize, Vec<Record>)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cnn::config::SearchSettings;
     use crate::cnn::encode::{action_id, legal_moves, planes, CONNECT_PLANES, IN_PLANES};
+    use crate::cnn::oracle::DruidOracle;
+    use crate::cnn::selfplay::root_values;
     use crate::Move;
     use crate::DruidSplit;
+    use crate::{apply_placed, Piece, PlacedPiece, Pos};
+    use grid_cnn::{Geometry, Net, Weights};
     use mcts::game::Game;
     use rand::rngs::SmallRng;
     use rand::{Rng, SeedableRng};
@@ -429,5 +434,58 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         assert!(read_shard(&path).is_err());
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// Black's column at column 2 is complete except its middle cell, with Black already
+    /// committed to "sarsen": the one ply left is which cell to place it in, and the gap wins
+    /// outright. Pins `cnn::selfplay::root_values`'s sign convention (the same one
+    /// `druid_value_label` and `Record.value` use) against the mcts-batch backprop sign bug: a
+    /// search from here must find the forced win and report it as positive, from the mover's own
+    /// point of view.
+    fn wins_next_ply() -> HashedState {
+        let size = Size { w: 5, h: 5 };
+        let place = |state: HashedState, pos: Pos| -> HashedState {
+            let mut state = state;
+            state.0.player = Player::Black;
+            apply_placed(state, PlacedPiece(Piece::Sarsen, pos.index(size.w) as u8))
+        };
+        let mut state = HashedState::new(size);
+        for y in [0, 1, 3, 4] {
+            state = place(state, Pos(2, y));
+        }
+        state.0.player = Player::Black;
+        DruidSplit::apply(state, &Move::Piece(PieceKind::Sarsen))
+    }
+
+    #[test]
+    fn root_value_of_a_forced_win_is_positive_and_matches_records_own_sign() {
+        let state = wins_next_ply();
+        assert!(!DruidSplit::is_terminal(&state), "the gap is still open");
+        assert!(Fields::of(&state).is_black_to_move(), "Black is the one about to win");
+
+        // A zero-weight net, so any positive value can only come from the search actually
+        // discovering the terminal win, not from a learned prior.
+        let geometry = Geometry {
+            size: 5,
+            in_planes: IN_PLANES,
+            channels: 4,
+            blocks: 1,
+            policy_planes: 2,
+            policy_out: num_actions(5),
+            value_planes: 1,
+            value_hidden: 4,
+        };
+        let oracle = DruidOracle::<5>::new(Net::new(&Weights::zeros(geometry)), 8);
+        // More than the 21 legal cells left, so every one of them (including the winning gap) is
+        // visited at least once regardless of how the simulation budget narrows afterwards.
+        let search = SearchSettings { simulations: 0, considered_actions: 32, value_scale: 0.1, max_visit_init: 50 };
+
+        let values = root_values(&oracle, std::slice::from_ref(&state), &search, 64, 1, 7);
+        assert!(values[0] > 0.0, "the mover about to win must show a positive root value, got {}", values[0]);
+
+        // `selfplay::play_games`'s own formula for a record at this position (the recorded
+        // mover, Black, matches the eventual winner) would set `Record.value` to `+1.0`; the
+        // search value above must agree in sign.
+        assert_eq!(values[0].signum(), 1.0);
     }
 }

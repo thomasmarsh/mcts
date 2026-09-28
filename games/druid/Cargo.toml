@@ -42,6 +42,10 @@ required-features = ["cnn"]
 name = "druid_gate"
 required-features = ["cnn"]
 
+[[example]]
+name = "druid_value_label"
+required-features = ["cnn"]
+
 [features]
 # CNN value+policy evaluation on the GPU (MLX): batched oracle, self-play, shards, play-time agent.
 # On by default; building without Homebrew's mlx/mlx-c needs `--no-default-features`. The encoder
