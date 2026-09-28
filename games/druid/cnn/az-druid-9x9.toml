@@ -105,6 +105,28 @@ seed = 1
 # Same cap as self-play: the longest zero-net game was 148 plies at 5x5, random play averages 81.
 max_plies = 600
 
+# Milestone gate: every `every` generations the checkpoint plays each fixed reference net and the
+# previous milestone at the play depth (`simulations`), so strength over a long run is read at the
+# depth the net is actually played at, not at the cheap progress gate's. `every = 0` turns it off.
+# Results go to `milestones.jsonl` and the dashboard; `az-train-druid-cnn --milestones` fills in
+# milestones a run passed before the gate was configured.
+[milestone]
+every = 20
+games = 50
+simulations = 100
+opening_plies = 4
+seed = 733
+workers = 8
+max_plies = 600
+# Fixed reference nets, parallel lists. G309 anchors the curve to the run this one branched from;
+# H100 stays near an even score for the generations after it, where G309 is beaten almost every
+# game. A checkpoint identical to a reference skips that pairing.
+reference_labels = ["G309", "H100"]
+reference_weights = [
+    "games/druid/cnn/weights/9x9-G-gen309.bin",
+    "games/druid/cnn/weights/9x9-H-gen100.bin",
+]
+
 # End-of-run rating curve (`az-train-druid-cnn --round-robin`): checkpoints at generation 0, every
 # `every`-th generation and the last one. All pairs is 55 pairings for 11 checkpoints, about 2.3 h
 # at 100 games each (2-2.5 min a pairing, 1.2-1.5 s a game measured); `max_gap = 3` keeps pairs at

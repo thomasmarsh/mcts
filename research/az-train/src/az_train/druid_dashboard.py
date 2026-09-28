@@ -38,6 +38,22 @@ def implied_elo(scores: dict[int, tuple[int, float]]) -> dict[int, float]:
     return elo
 
 
+def milestone_elo(milestones: list[dict]) -> None:
+    """Add ``elo`` (relative to the reference net, 0) to each milestone row. The first milestone is
+    placed by its score against the reference; each later one by its score against the previous
+    milestone added to that milestone's Elo, so the curve does not saturate the way the reference
+    score does once a net wins nearly every game (scores clamped to [0.02, 0.98])."""
+    elo: dict[int, float] = {}
+    for m in milestones:
+        prev = m.get("previous_gen")
+        if prev in elo and m.get("previous"):
+            base, s = elo[prev], m["previous"]["score"]
+        else:
+            base, s = 0.0, next(iter(m["references"].values()))["score"]
+        s = min(0.98, max(0.02, s))
+        elo[m["gen"]] = m["elo"] = base + ELO_PER_LOGIT * math.log(s / (1 - s))
+
+
 def gate_pairs(rows: list[dict]) -> list[Pair]:
     """Every gate result as a pair ``gen{g}`` vs ``gen{opponent}`` (lag and champion gates). A
     pairing appearing as both a lag and a champion gate (the same opponent) is counted once."""
@@ -175,7 +191,10 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
             "early_gen": cfg["rules"]["early_gen"],
             "early_min": cfg["rules"]["early_min_mean_lag_score"],
         }
+    milestones = read_jsonl(run_dir / "milestones.jsonl")
+    milestone_elo(milestones)
     return {
+        "milestones": milestones,
         "total": total,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "settings": settings,

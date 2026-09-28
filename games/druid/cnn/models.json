@@ -1,5 +1,15 @@
 [
     {
+        "id": "druid-9x9-H-gen200",
+        "label": "64x4 CNN, trained at 9x9, run H (200-sim self-play), generation 200",
+        "weights": "games/druid/cnn/weights/9x9-H-gen200.bin"
+    },
+    {
+        "id": "druid-9x9-H-gen100",
+        "label": "64x4 CNN, trained at 9x9, run H (200-sim self-play), generation 100",
+        "weights": "games/druid/cnn/weights/9x9-H-gen100.bin"
+    },
+    {
         "id": "druid-9x9-G-gen309",
         "label": "64x4 CNN, trained at 9x9, generation 309",
         "weights": "games/druid/cnn/weights/9x9-G-gen309.bin"

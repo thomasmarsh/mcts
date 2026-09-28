@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import filecmp
 import functools
 import json
 import subprocess
@@ -460,6 +461,70 @@ def run_progress_gate(
     }
 
 
+def milestone_gens(run_dir: Path, every: int) -> list[int]:
+    """Generations with a checkpoint that are multiples of ``every`` (none when ``every`` is 0)."""
+    if every <= 0:
+        return []
+    found = {int(p.stem[3:]) for p in run_dir.glob("gen*.bin")}
+    return sorted(g for g in found if g > 0 and g % every == 0)
+
+
+def run_milestone_gate(cfg: dict[str, Any], run_dir: Path, gen: int) -> dict[str, Any] | None:
+    """The milestone gate for generation ``gen``: against the configured reference net and the
+    previous milestone, at the play depth, appended to ``milestones.jsonl``. A milestone already
+    in the file is left alone, so calling this again after a resume costs nothing."""
+    m = cfg.get("milestone", {})
+    if gen <= 0 or m.get("every", 0) <= 0 or gen % m["every"] != 0:
+        return None
+    log = run_dir / "milestones.jsonl"
+    done = {r["gen"] for r in read_jsonl(log)}
+    if gen in done:
+        return None
+    previous = max((g for g in done if g < gen), default=None)
+    sims = m["simulations"]
+    net = run_dir / f"gen{gen}.bin"
+    agents = [(f"gen{gen}", net, sims)]
+    pairs: list[tuple[str, str]] = []
+    for label, weights in zip(m["reference_labels"], m["reference_weights"], strict=True):
+        if filecmp.cmp(net, ROOT / weights, shallow=False):
+            continue
+        agents.append((label, ROOT / weights, sims))
+        pairs.append((f"gen{gen}", label))
+    if previous is not None:
+        agents.append((f"gen{previous}", run_dir / f"gen{previous}.bin", sims))
+        pairs.append((f"gen{gen}", f"gen{previous}"))
+    out = run_dir / "milestone" / f"gen{gen}.jsonl"
+    text = match_config_text(
+        cfg,
+        out=out,
+        agents=agents,
+        pairs=pairs,
+        openings=m["games"] // 2,
+        opening_plies=m["opening_plies"],
+        seed=m["seed"],
+        workers=m["workers"],
+        max_plies=m["max_plies"],
+    )
+    rows = {r["b"]: r for r in run_gate_binary(run_dir / "milestone" / f"gen{gen}.toml", text, out)}
+    row: dict[str, Any] = {
+        "gen": gen,
+        "simulations": sims,
+        "references": {
+            label: pairing_summary(rows[label], label)
+            for label in m["reference_labels"]
+            if label in rows
+        },
+        "previous_gen": previous,
+        "previous": pairing_summary(rows[f"gen{previous}"], previous) if previous else None,
+    }
+    append_jsonl(log, row)
+    shown = ", ".join(f"vs {k} {v['score']:.3f}" for k, v in row["references"].items())
+    if previous:
+        shown += f", vs gen{previous} {row['previous']['score']:.3f}"
+    print(f"[gen {gen}] milestone {shown}", flush=True)
+    return row
+
+
 def diagnose(
     model: gridcnn.GridCNN,
     shard: Path,
@@ -595,6 +660,7 @@ def run(
         if gen > 0 and gen not in {r["gen"] for r in read_jsonl(gen_log)}:
             print(f"[gen {gen}] checkpoint without a log line: running its gate", flush=True)
             finish_generation(cfg, run_dir, gen, {"gen": gen, "resumed": True}, time.perf_counter())
+        run_milestone_gate(cfg, run_dir, gen)
         if gen >= total:
             break
 
@@ -894,6 +960,9 @@ def main() -> None:
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
     p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
     p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
+    p.add_argument(
+        "--milestones", action="store_true", help="run the milestone gates a finished run lacks"
+    )
     args = p.parse_args()
     config = Path(args.config)
 
@@ -904,6 +973,11 @@ def main() -> None:
     if args.round_robin:
         report = round_robin(config, run_dir(), args.set)
         print(json.dumps({k: report[k] for k in ("players", "elo", "se", "cycles")}, indent=2))
+        raise SystemExit(0)
+    if args.milestones:
+        cfg = load_config(config, args.set)
+        for g in milestone_gens(run_dir(), cfg.get("milestone", {}).get("every", 0)):
+            run_milestone_gate(cfg, run_dir(), g)
         raise SystemExit(0)
     if args.verdict:
         print(json.dumps(verdict_command(config, run_dir(), args.set, args.generations), indent=2))

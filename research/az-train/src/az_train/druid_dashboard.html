@@ -92,6 +92,13 @@ th:first-child, td:first-child { text-align: left; }
     <p id="gate-desc"></p>
     <div class="chart" id="c-gate"></div>
   </section>
+  <section class="panel">
+    <h3>Milestone gates</h3>
+    <p id="ms-desc"></p>
+    <div class="chart" id="c-ms"></div>
+    <p>Chained Elo: the first milestone from its score against the reference net (0), each later one from its score against the previous milestone. It keeps rising when the reference score has saturated near 1.</p>
+    <div class="chart" id="c-ms-elo"></div>
+  </section>
   <section class="grid">
     <div class="panel"><h3>Strength from all gates (Bradley-Terry)</h3>
       <p>One Elo per generation (generation 0 = 0), fitted jointly to every gate result, lag and champion. The champion gates link the ten lag-gate chains, so the period-10 offsets of the chained curve cancel. Band is 95% (1.96 standard errors, relative to generation 0), widening for the newest generations, which have fewer games.</p>
@@ -406,6 +413,25 @@ function build() {
         : `${p.y.toFixed(3)} [${fmt(g.lo, 2)}, ${fmt(g.hi, 2)}] vs gen ${g.lag_opponent}`;
     },
   }));
+  const MS = DATA.milestones || [];
+  const msRefs = [...new Set(MS.flatMap((m) => Object.keys(m.references)))];
+  $("ms-desc").textContent = MS.length
+    ? `Every checkpoint that is a multiple of the milestone interval plays each fixed reference net (${msRefs.join(", ")}) and the previous milestone at ${MS[0].simulations} simulations, ${Object.values(MS[0].references)[0].games} paired games each. Band: Wilson 95% interval. A score near 1 against a reference has saturated; the score against the previous milestone says whether the last stretch still gained.`
+    : "No milestone gates yet.";
+  const msPts = (f, lo, hi) => MS.filter((m) => f(m) != null).map((m) => ({ x: m.gen, y: f(m), lo: lo(m), hi: hi(m) }));
+  const msColors = ["--s1", "--s3", "--s4", "--s5"];
+  chart("c-ms", () => ({
+    label: "Milestone gate score", height: 260, y: [0, 1], yfmt: (t) => t.toFixed(1), refs: [{ y: 0.5 }],
+    legendExtra: [["dash", "0.5, even"]],
+    series: [...msRefs.map((r, i) => ({ name: `vs ${r}`, color: msColors[i % msColors.length], band: true,
+                pts: msPts((m) => m.references[r] && m.references[r].score, (m) => m.references[r].wilson_lo, (m) => m.references[r].wilson_hi) })),
+             { name: "vs previous milestone", color: "--s2", band: true,
+                pts: msPts((m) => m.previous && m.previous.score, (m) => m.previous.wilson_lo, (m) => m.previous.wilson_hi) }],
+    tfmt: (p) => `${p.y.toFixed(3)} [${p.lo.toFixed(2)}, ${p.hi.toFixed(2)}]`,
+  }));
+  chart("c-ms-elo", () => ({ label: "Milestone chained Elo", zero: true, yfmt: (t) => t.toFixed(0),
+    series: [{ name: "Elo vs reference (0)", color: "--s1", pts: msPts((m) => m.elo, () => null, () => null) }],
+    tfmt: (p) => `${p.y.toFixed(0)} Elo (chained)` }));
   chart("c-bt", () => ({ label: "Bradley-Terry Elo", zero: true, yfmt: (t) => t.toFixed(0),
     series: [{ name: "Elo", color: "--s1", band: true,
       pts: pts((g) => g.bt_elo, { lo: (g) => (g.bt_elo == null ? null : g.bt_elo - 1.96 * g.bt_se), hi: (g) => (g.bt_elo == null ? null : g.bt_elo + 1.96 * g.bt_se) }) }],
