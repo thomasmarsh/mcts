@@ -260,3 +260,37 @@ def test_score_and_compare_read_cached_files_without_invoking_rust(tmp_path):
     dvb.compare(out_dir, "shallow", "deep")
     cmp_report = json.loads((out_dir / "report-shallow-vs-deep.json").read_text())
     assert cmp_report["overall"]["n"] == n
+
+
+def test_score_config_override_is_passed_through_instead_of_the_bench_config(tmp_path, monkeypatch):
+    # A checkpoint whose [net] differs from the bench's own config (e.g. a connectivity fork with
+    # a wider input) needs its own config for the Rust labeller; --config overrides meta["config"]
+    # for that call without touching the bench itself.
+    run_dir = tmp_path / "run"
+    (run_dir / "shards").mkdir(parents=True)
+    _write_config(run_dir / "config.effective.toml", validation_games=3)
+    games = [g for g in range(3) for _ in range(5)]
+    plies = list(range(5)) * 3
+    _write_gen_shard(run_dir / "shards" / "gen0.bin", SIZE, games, plies)
+
+    out_dir = tmp_path / "bench"
+    dvb.build(out_dir, run_dir, range(0, 1), positions=15, seed=1)
+    n = len(np.load(out_dir / "meta.npz")["outcome"])
+    deep = np.random.default_rng(9).normal(size=n).astype("<f4")
+    (out_dir / "labels").mkdir()
+    deep.tofile(out_dir / "labels" / "deep.f32")
+
+    seen_configs = []
+
+    def fake_run_value_label(config, weights, shard, out, sims, workers):
+        seen_configs.append(config)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.zeros(n, dtype="<f4").tofile(out)
+        return {"count": n, "seconds": 1.0}
+
+    monkeypatch.setattr(dvb, "_run_value_label", fake_run_value_label)
+    dvb.score(out_dir, "deep", [("A", Path("weights.bin"))], config="other-config.toml")
+    assert seen_configs == ["other-config.toml"]
+
+    dvb.score(out_dir, "deep", [("B", Path("weights2.bin"))])
+    assert seen_configs[-1] == str(run_dir / "config.effective.toml")

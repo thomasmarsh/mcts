@@ -147,11 +147,18 @@ def _run_value_label(
     return json.loads(Path(f"{out}.json").read_text())
 
 
-def label(bench_dir: Path, weights: Path, sims: int, name: str, workers: int = 8) -> None:
+def label(
+    bench_dir: Path,
+    weights: Path,
+    sims: int,
+    name: str,
+    workers: int = 8,
+    config: str | None = None,
+) -> None:
     meta = json.loads((bench_dir / "meta.json").read_text())
     sidecar = _run_value_label(
-        meta["config"], weights, bench_dir / "positions.bin", bench_dir / "labels" / f"{name}.f32",
-        sims, workers,
+        config or meta["config"], weights, bench_dir / "positions.bin",
+        bench_dir / "labels" / f"{name}.f32", sims, workers,
     )  # fmt: skip
     rate = sidecar["count"] / max(sidecar["seconds"], 1e-9)
     print(f"{name}: {sidecar['count']} positions at {sims} sims, {rate:.1f} positions/s")
@@ -165,12 +172,19 @@ def _load_label(bench_dir: Path, name: str) -> np.ndarray:
 
 
 def _raw_values(
-    bench_dir: Path, meta: dict[str, Any], name: str, weights: Path, workers: int
+    bench_dir: Path,
+    meta: dict[str, Any],
+    name: str,
+    weights: Path,
+    workers: int,
+    config: str | None = None,
 ) -> np.ndarray:
     """The net's raw (``--sims 0``) value on the bench, cached under ``raw/`` keyed by ``name``."""
     out = bench_dir / "raw" / f"{name}.f32"
     if not out.exists():
-        _run_value_label(meta["config"], weights, bench_dir / "positions.bin", out, 0, workers)
+        _run_value_label(
+            config or meta["config"], weights, bench_dir / "positions.bin", out, 0, workers
+        )
     return np.fromfile(out, dtype="<f4")
 
 
@@ -281,7 +295,11 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
 
 
 def score(
-    bench_dir: Path, label_name: str, entries: list[tuple[str, Path]], workers: int = 8
+    bench_dir: Path,
+    label_name: str,
+    entries: list[tuple[str, Path]],
+    workers: int = 8,
+    config: str | None = None,
 ) -> None:
     meta = json.loads((bench_dir / "meta.json").read_text())
     npz = np.load(bench_dir / "meta.npz")
@@ -293,7 +311,7 @@ def score(
     rng = np.random.default_rng(BOOT_SEED)
     rows, reports = [], {}
     for name, weights in entries:
-        predicted = _raw_values(bench_dir, meta, name, weights, workers)
+        predicted = _raw_values(bench_dir, meta, name, weights, workers, config)
         report = _bucketed(predicted, deep_label, outcome, game, progress, max_height, rng)
         reports[name] = report
         rows.append({"name": name, **report["overall"]})
@@ -347,12 +365,14 @@ def main() -> None:
     l.add_argument("--sims", type=int, required=True)
     l.add_argument("--name", required=True)
     l.add_argument("--workers", type=int, default=8)
+    l.add_argument("--config", help="override the bench config (a different [net] geometry)")
 
     s = sub.add_parser("score")
     s.add_argument("bench_dir")
     s.add_argument("--label", required=True)
     s.add_argument("entries", nargs="+", help="NAME=WEIGHTS")
     s.add_argument("--workers", type=int, default=8)
+    s.add_argument("--config", help="override the bench config (a different [net] geometry)")
 
     c = sub.add_parser("compare")
     c.add_argument("bench_dir")
@@ -366,13 +386,16 @@ def main() -> None:
             args.positions, args.seed,
         )  # fmt: skip
     elif args.cmd == "label":
-        label(_resolve(args.bench_dir), _resolve(args.weights), args.sims, args.name, args.workers)
+        label(
+            _resolve(args.bench_dir), _resolve(args.weights), args.sims, args.name, args.workers,
+            args.config,
+        )  # fmt: skip
     elif args.cmd == "score":
         entries = []
         for e in args.entries:
             name, _, weights = e.partition("=")
             entries.append((name, _resolve(weights)))
-        score(_resolve(args.bench_dir), args.label, entries, args.workers)
+        score(_resolve(args.bench_dir), args.label, entries, args.workers, args.config)
     else:
         compare(_resolve(args.bench_dir), args.name_a, args.name_b)
 
