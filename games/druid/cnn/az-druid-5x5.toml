@@ -51,6 +51,10 @@ learning_rate = 1e-3
 optimizer = "adam"
 weight_decay = 0.05
 l2 = 1e-4
+# Blend the recorded root search value q into the value-fit target: (1 - lambda) * outcome +
+# lambda * q. 0 (default) is today's outcome-only target; q is only stored from this run's own
+# self-play onward (an older shard's q reads as its outcome, so lambda > 0 changes nothing there).
+value_target_q_weight = 0.0
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20
 # Games of each generation held out to monitor value/policy fit; never trained on.

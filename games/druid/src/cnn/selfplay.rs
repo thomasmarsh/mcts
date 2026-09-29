@@ -1,8 +1,9 @@
 //! Batched Gumbel self-play from the empty board. Every live game advances one ply (one
 //! sub-decision of a turn) per `gumbel_explore` call, so a generation is a few thousand large GPU
 //! calls rather than one call per leaf. Each position is recorded with the completed-Q improved
-//! policy as its policy target and, once the game ends, the mover's outcome as its value target.
-//! Games that reach `max_plies` are dropped and counted.
+//! policy as its policy target, the same search's root value as `Record.q`, and, once the game
+//! ends, the mover's outcome as its value target. Games that reach `max_plies` are dropped from
+//! the shard (but still get a capped [`Terminal`] entry) and counted.
 
 use std::time::Instant;
 
@@ -14,7 +15,7 @@ use rand::{Rng, SeedableRng};
 use super::config::{SearchSettings, SelfPlayConfig};
 use super::encode::{move_from_id, num_actions};
 use super::oracle::DruidOracle;
-use super::shard::{Fields, Record};
+use super::shard::{Fields, Record, Terminal};
 use crate::{DruidSplit, HashedState, Player, Size};
 
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -33,6 +34,8 @@ struct Row {
     fields: Fields,
     ply: u16,
     policy: Vec<f32>,
+    /// The root search value at this position, from the mover's point of view -- `Record.q`.
+    q: f32,
 }
 
 struct Live {
@@ -56,11 +59,13 @@ fn sample(policy: &[f32], rng: &mut SmallRng) -> u16 {
         .expect("a live position has a legal action") as u16
 }
 
+/// Plays every game to completion (or `max_plies`) and returns the recorded positions, one
+/// [`Terminal`] per game for the shard's terminal sidecar, and the run's [`Stats`].
 pub fn play_games<const N: usize>(
     oracle: &DruidOracle<N>,
     cfg: &SelfPlayConfig,
     seed: u64,
-) -> (Vec<Record>, Stats) {
+) -> (Vec<Record>, Vec<Terminal>, Stats) {
     let started = Instant::now();
     let batch = cfg.search.batch_config();
     let mut gumbel_rng = SmallRng::seed_from_u64(seed);
@@ -75,6 +80,7 @@ pub fn play_games<const N: usize>(
         })
         .collect();
     let mut records = Vec::new();
+    let mut terminals = Vec::new();
     let mut stats = Stats { games_started: cfg.games, ..Stats::default() };
     let mut total_plies = 0usize;
     let mut ply = 0usize;
@@ -82,6 +88,16 @@ pub fn play_games<const N: usize>(
     while !live.is_empty() {
         if ply >= cfg.max_plies {
             stats.games_capped += live.len();
+            for game in &live {
+                let fields = Fields::of(&game.state);
+                terminals.push(Terminal {
+                    game: game.game,
+                    winner: None,
+                    capped: true,
+                    heights: fields.heights,
+                    owners: fields.owners,
+                });
+            }
             break;
         }
         let states: Vec<HashedState> = live.iter().map(|g| g.state.clone()).collect();
@@ -94,6 +110,7 @@ pub fn play_games<const N: usize>(
                 fields: Fields::of(&game.state),
                 ply: ply as u16,
                 policy: policy.clone(),
+                q: tree.value(bid, tree.root()),
             });
             let id = if ply < cfg.temp_moves {
                 sample(&policy, &mut move_rng)
@@ -107,6 +124,14 @@ pub fn play_games<const N: usize>(
                 stats.black_wins += usize::from(winner == Some(Player::Black));
                 stats.draws += usize::from(winner.is_none());
                 total_plies += ply + 1;
+                let final_fields = Fields::of(&game.state);
+                terminals.push(Terminal {
+                    game: game.game,
+                    winner: winner.map(|w| u8::from(w == Player::White)),
+                    capped: false,
+                    heights: final_fields.heights,
+                    owners: final_fields.owners,
+                });
                 for row in game.rows {
                     debug_assert_eq!(row.policy.len(), a);
                     let value = match winner {
@@ -121,6 +146,7 @@ pub fn play_games<const N: usize>(
                         value,
                         game: game.game,
                         ply: row.ply,
+                        q: row.q,
                         policy: row.policy,
                     });
                 }
@@ -135,7 +161,7 @@ pub fn play_games<const N: usize>(
     stats.positions = records.len();
     stats.mean_plies = total_plies as f64 / stats.games_finished.max(1) as f64;
     stats.seconds = started.elapsed().as_secs_f64();
-    (records, stats)
+    (records, terminals, stats)
 }
 
 /// The root value of a batch of independent positions, one per `states` entry, each from that

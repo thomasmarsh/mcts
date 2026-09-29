@@ -16,7 +16,9 @@ reflection along its own axis sends anchor ``x`` to ``n - 3 - x``; see ``symmetr
 
 from __future__ import annotations
 
+import json
 import struct
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +41,8 @@ def num_actions(size: int) -> int:
 
 
 def record_dtype(size: int) -> np.dtype:
+    """The current (v2) record layout, matching ``shard.rs``'s ``Record`` -- ``q`` is the mover's
+    root search value at self-play time, the same sign convention as ``value``."""
     cells = size * size
     return np.dtype(
         [
@@ -50,28 +54,62 @@ def record_dtype(size: int) -> np.dtype:
             ("ply", "<u2"),
             ("value", "<f4"),
             ("game", "<u4"),
+            ("q", "<f4"),
+            ("policy", "<f4", (num_actions(size),)),
+        ]
+    )
+
+
+def record_dtype_v1(size: int) -> np.dtype:
+    """The legacy layout, from before the root search value was recorded: identical to
+    ``record_dtype`` but with no ``q`` field."""
+    cells = size * size
+    return np.dtype(
+        [
+            ("heights", "<u2", (cells,)),
+            ("owners", "u1", (cells,)),
+            ("hands", "u1", (4,)),
+            ("pending", "u1"),
+            ("player", "u1"),
+            ("ply", "<u2"),
+            ("value", "<f4"),
+            ("game", "<u4"),
             ("policy", "<f4", (num_actions(size),)),
         ]
     )
 
 
 def read_shard(path: str | Path) -> tuple[int, np.ndarray]:
+    """Reads a v1 or v2 shard (the header's own ``record_bytes`` selects which); a v1 record has
+    no stored ``q``, so it comes back with ``q`` set equal to ``value``."""
     raw = Path(path).read_bytes()
     if raw[:8] != MAGIC:
         raise ValueError(f"{path}: not a DRDSHRD1 shard")
     size, actions, per = struct.unpack_from("<3I", raw, 8)
-    dtype = record_dtype(size)
-    if actions != num_actions(size) or per != dtype.itemsize:
+    if actions != num_actions(size):
         raise ValueError(f"{path}: header disagrees with the record layout")
+    dtype = record_dtype(size)
+    dtype_v1 = record_dtype_v1(size)
     body = len(raw) - HEADER_BYTES
-    if body % per:
-        raise ValueError(f"{path}: truncated record")
-    return size, np.frombuffer(raw, dtype=dtype, offset=HEADER_BYTES, count=body // per)
+    if per == dtype.itemsize:
+        if body % per:
+            raise ValueError(f"{path}: truncated record")
+        return size, np.frombuffer(raw, dtype=dtype, offset=HEADER_BYTES, count=body // per)
+    if per == dtype_v1.itemsize:
+        if body % per:
+            raise ValueError(f"{path}: truncated record")
+        v1 = np.frombuffer(raw, dtype=dtype_v1, offset=HEADER_BYTES, count=body // per)
+        records = np.zeros(len(v1), dtype=dtype)
+        for name in dtype_v1.names:
+            records[name] = v1[name]
+        records["q"] = records["value"]
+        return size, records
+    raise ValueError(f"{path}: header disagrees with the record layout")
 
 
 def write_shard(path: str | Path, size: int, records: np.ndarray) -> None:
     """Writes ``records`` (``record_dtype(size)``, any subset or reordering of a shard's rows) in
-    the ``DRDSHRD1`` format ``read_shard`` reads."""
+    the current (v2) ``DRDSHRD1`` format ``read_shard`` reads."""
     dtype = record_dtype(size)
     if records.dtype != dtype:
         records = records.astype(dtype)
@@ -261,6 +299,7 @@ class Positions:
     value: np.ndarray  # (N,) float32
     game: np.ndarray  # (N,) int64
     kind: np.ndarray  # (N,) int64, phase_kind of each position's pending phase
+    q: np.ndarray  # (N,) float32, the mover's root search value (v1 shards: equal to value)
 
     def __len__(self) -> int:
         return len(self.value)
@@ -276,6 +315,7 @@ class Positions:
             self.value[index],
             self.game[index],
             self.kind[index],
+            self.q[index],
         )
 
 
@@ -290,4 +330,66 @@ def load_positions(
         value=np.ascontiguousarray(records["value"]),
         game=records["game"].astype(np.int64) + game_offset,
         kind=phase_kind(records["pending"]).astype(np.int64),
+        q=np.ascontiguousarray(records["q"]),
     )
+
+
+def read_terminal_sidecar(path: str | Path) -> list[dict]:
+    """One dict per game played, from ``shard.rs``'s ``write_terminal_sidecar``
+    (``<shard>.terminal.jsonl``): ``game``, ``winner`` (0 Black, 1 White, ``None`` for a draw or a
+    capped game), ``capped``, and the final board's ``heights``/``owners`` (``size * size`` lists,
+    in the same encoding as a record's fields, decoded here to ``int64`` arrays)."""
+    games = []
+    with open(path) as f:
+        for line in f:
+            row = json.loads(line)
+            row["heights"] = np.asarray(row["heights"], dtype=np.int64)
+            row["owners"] = np.asarray(row["owners"], dtype=np.int64)
+            games.append(row)
+    return games
+
+
+# owner code (`Fields.owners`/`Terminal.owners`) for each side, and the `winner` code the plan uses.
+_BFS_SIDES = ((0, 1), (1, 2))  # (winner code, owner code): 0 Black, 1 White
+
+
+def bfs_winner(owners: np.ndarray, size: int) -> tuple[int | None, list[int]]:
+    """The winner of a final board's top-owner grid (``owners``, ``size * size``, in
+    ``Fields.owners`` encoding: 0 empty, 1 Black, 2 White) by 4-connected BFS: Black connects row 0
+    to row ``size - 1``, White column 0 to column ``size - 1`` (``connectivity.rs::Connectivity``).
+    A lintel's placement repaints all three of its touched cells to the mover's color before this
+    ever runs, so a plain per-cell scan of the final owners already sees the win; no lintel special
+    case is needed here. Returns ``(winner, chain)``, the winning side (0 Black, 1 White, or
+    ``None``) and its connecting chain's cell indices (row-major, start edge to far edge), or
+    ``(None, [])`` if neither side has connected."""
+    grid = owners.reshape(size, size)
+    for winner, code in _BFS_SIDES:
+        color = grid == code
+        axis = winner  # Black (0) starts from a row, White (1) from a column.
+        start = (
+            [(0, c) for c in range(size) if color[0, c]]
+            if axis == 0
+            else [(r, 0) for r in range(size) if color[r, 0]]
+        )
+        if not start:
+            continue
+        parent: dict[tuple[int, int], tuple[int, int] | None] = dict.fromkeys(start)
+        queue = deque(start)
+        goal = None
+        while queue:
+            r, c = queue.popleft()
+            if (axis == 0 and r == size - 1) or (axis == 1 and c == size - 1):
+                goal = (r, c)
+                break
+            for nr, nc in ((r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)):
+                if 0 <= nr < size and 0 <= nc < size and color[nr, nc] and (nr, nc) not in parent:
+                    parent[(nr, nc)] = (r, c)
+                    queue.append((nr, nc))
+        if goal is not None:
+            chain = []
+            cur: tuple[int, int] | None = goal
+            while cur is not None:
+                chain.append(cur[0] * size + cur[1])
+                cur = parent[cur]
+            return winner, list(reversed(chain))
+    return None, []

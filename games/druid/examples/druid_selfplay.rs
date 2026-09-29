@@ -7,14 +7,15 @@
 //!
 //! Without `--weights` the generation is played with the all-zero net (a flat prior and value 0).
 //!
-//! Prints one JSON line of statistics and writes it next to the shard as `<out>.stats.json`.
+//! Prints one JSON line of statistics and writes it next to the shard as `<out>.stats.json`, plus
+//! a terminal sidecar (one JSON line per game played) as `<out>.terminal.jsonl`.
 
 use std::path::Path;
 
 use game_druid::cnn::config::load;
 use game_druid::cnn::oracle::DruidOracle;
 use game_druid::cnn::selfplay::play_games;
-use game_druid::cnn::shard::write_shard;
+use game_druid::cnn::shard::{write_shard, write_terminal_sidecar};
 use grid_cnn::{Net, Weights};
 
 fn main() {
@@ -57,8 +58,10 @@ fn main() {
                 Net::new(&w),
                 cfg.selfplay.chunk_size,
             );
-            let (records, stats) = play_games(&oracle, &cfg.selfplay, seed);
+            let (records, terminals, stats) = play_games(&oracle, &cfg.selfplay, seed);
             write_shard(Path::new(&out), N, &records).unwrap_or_else(|e| panic!("{out}: {e}"));
+            write_terminal_sidecar(Path::new(&format!("{out}.terminal.jsonl")), &terminals)
+                .unwrap_or_else(|e| panic!("{out}.terminal.jsonl: {e}"));
             let line = serde_json::to_string(&stats).unwrap();
             std::fs::write(format!("{out}.stats.json"), &line).unwrap();
             println!("{line}");

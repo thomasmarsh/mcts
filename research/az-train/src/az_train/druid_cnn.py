@@ -117,19 +117,22 @@ class Data:
         self.policy = torch.from_numpy(positions.policy).to(device)
         self.legal = torch.from_numpy(positions.legal.astype(np.uint8)).to(device)
         self.value = torch.from_numpy(positions.value).to(device)
+        self.q = torch.from_numpy(positions.q).to(device)
         self.kind = torch.from_numpy(positions.kind).to(device)
 
     def __len__(self) -> int:
         return len(self.value)
 
     def batch(self, idx: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        """``(planes, policy, legal, kind, value)`` of the sampled positions, planes as float32."""
+        """``(planes, policy, legal, kind, value, q)`` of the sampled positions, planes as
+        float32."""
         return (
             self.planes[idx].float(),
             self.policy[idx],
             self.legal[idx],
             self.kind[idx],
             self.value[idx],
+            self.q[idx],
         )
 
 
@@ -155,12 +158,13 @@ class RecordWindow:
             to(decode_legal(rec, self.size).astype(np.uint8)),
             to(phase_kind(rec["pending"]).astype(np.int64)),
             to(rec["value"]),
+            to(rec["q"]),
         )
 
 
 def concat_positions(parts: list[Positions]) -> Positions:
     return Positions(*(np.concatenate([getattr(p, f) for p in parts]) for f in (
-        "planes", "policy", "legal", "value", "game", "kind",
+        "planes", "policy", "legal", "value", "game", "kind", "q",
     )))  # fmt: skip
 
 
@@ -234,6 +238,12 @@ def evaluate(
     }
 
 
+def blended_value_target(outcome: torch.Tensor, q: torch.Tensor, weight: float) -> torch.Tensor:
+    """``train.value_target_q_weight``'s fit target: ``(1 - weight) * outcome + weight * q``.
+    ``weight`` 0 (the default) returns ``outcome`` itself, exactly today's target."""
+    return outcome if not weight else (1.0 - weight) * outcome + weight * q
+
+
 class Stalled(RuntimeError):
     """The value head outputs a constant at the stall check (a dead initialization)."""
 
@@ -294,10 +304,11 @@ def fit(
     for step in range(1, steps + 1):
         t0 = time.perf_counter()
         idx = torch.randint(0, len(window), (batch,), device=device)
-        planes, policy, legal_mask, kind, target = window.batch(idx)
+        planes, policy, legal_mask, kind, target, q = window.batch(idx)
         x, pi, legal = augment(planes, policy, legal_mask, kind, src, size)
         value, logits = model(x)
-        value_loss = F.mse_loss(value, target)
+        value_target = blended_value_target(target, q, tcfg.get("value_target_q_weight", 0.0))
+        value_loss = F.mse_loss(value, value_target)
         pol_loss = policy_loss(logits, pi, legal > 0)
         reg = coupled_l2(weights, tcfg, device)
         loss = value_loss + pol_loss + reg
@@ -604,6 +615,34 @@ def warm_started_model(
     return model
 
 
+def widen_stem_optimizer_state(
+    old_model: gridcnn.GridCNN,
+    new_model: gridcnn.GridCNN,
+    opt_state: dict[str, Any],
+    lr: float,
+    tcfg: dict[str, Any],
+) -> dict[str, Any]:
+    """``opt_state`` (an optimizer state dict saved against ``old_model``) with the stem
+    convolution's ``exp_avg``/``exp_avg_sq`` zero-padded to ``new_model``'s input width, so a fork
+    that widens the stem (``gridcnn.widen_stem``) keeps every other parameter's optimizer state,
+    including its step count, exactly as it was. The state dict keys its entries by position, not
+    by name, so a throwaway optimizer built the same way over ``old_model`` recovers which position
+    is the stem weight."""
+    old_opt = build_optimizer(old_model, lr, tcfg)
+    flat_params = [p for group in old_opt.param_groups for p in group["params"]]
+    stem_idx = next(i for i, p in enumerate(flat_params) if p is old_model.stem.conv.weight)
+    want = new_model.stem.conv.weight.shape[1]
+    entry = dict(opt_state["state"][stem_idx])
+    have = entry["exp_avg"].shape[1]
+    if have != want:
+        for field in ("exp_avg", "exp_avg_sq"):
+            t = entry[field]
+            padded = torch.zeros(t.shape[0], want, *t.shape[2:], dtype=t.dtype, device=t.device)
+            padded[:, :have] = t
+            entry[field] = padded
+    return {**opt_state, "state": {**opt_state["state"], stem_idx: entry}}
+
+
 def run(
     config_path: Path,
     overrides: list[str],
@@ -611,6 +650,7 @@ def run(
     generations: int | None,
     init_from: Path | None = None,
     init_mode: str = "trunk",
+    widen_stem: bool = False,
 ) -> None:
     cfg = load_config(config_path, overrides)
     tcfg = cfg["train"]
@@ -632,11 +672,34 @@ def run(
     opt: torch.optim.Optimizer | None = None
     gen, global_step = 0, 0
     if latest.exists():
-        ckpt = torch.load(latest, map_location=device, weights_only=False)
+        # Loaded on the CPU regardless of the training device: `Optimizer.load_state_dict` casts
+        # every state tensor to its parameter's device on the way in, so this is not a behaviour
+        # change, and it keeps the stem-widening path below (which builds a throwaway CPU model
+        # and optimizer to locate the stem's state entry) free of cross-device copies.
+        ckpt = torch.load(latest, map_location="cpu", weights_only=False)
         model = gridcnn.GridCNN(g).to(device)
-        model.load_state_dict(ckpt["model"])
+        state, opt_state = ckpt["model"], ckpt["opt"]
+        have = state["stem.conv.weight"].shape[1]
+        if have != g.in_planes:
+            if not widen_stem:
+                raise ValueError(
+                    f"{latest} has a {have}-plane stem, this run's geometry needs {g.in_planes}; "
+                    "pass --widen-stem to fork into a wider input (e.g. net.connectivity=true)"
+                )
+            old_model = gridcnn.GridCNN(dataclasses.replace(g, in_planes=have))
+            old_model.load_state_dict(state)
+            opt_state = widen_stem_optimizer_state(
+                old_model, model, opt_state, tcfg["learning_rate"], tcfg
+            )
+            state = gridcnn.widen_stem(model, state)
+            print(f"[fork] widened the stem from {have} to {g.in_planes} planes", flush=True)
+            write_json(
+                run_dir / "fork.json",
+                {"widened_stem_from": have, "widened_stem_to": g.in_planes, "source": str(latest)},
+            )
+        model.load_state_dict(state)
         opt = build_optimizer(model, tcfg["learning_rate"], tcfg)
-        opt.load_state_dict(ckpt["opt"])
+        opt.load_state_dict(opt_state)
         gen, global_step = ckpt["gen"], ckpt["global_step"]
         print(f"resuming at generation {gen} (step {global_step})", flush=True)
     elif init_from is not None:
@@ -957,6 +1020,12 @@ def main() -> None:
     p.add_argument("--generations", type=int)
     p.add_argument("--init-from", help="latest.pt of a run (any board size) to warm-start from")
     p.add_argument("--init-mode", choices=("trunk", "full"), default="trunk")
+    p.add_argument(
+        "--widen-stem",
+        action="store_true",
+        help="resume a checkpoint with fewer input planes by zero-widening its stem "
+        "(e.g. forking into net.connectivity=true)",
+    )
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
     p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
     p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
@@ -988,7 +1057,7 @@ def main() -> None:
         raise SystemExit(0 if report["pass"] else 1)
     init_from = Path(args.init_from) if args.init_from else None
     out_dir = Path(args.out_dir) if args.out_dir else None
-    run(config, args.set, out_dir, args.generations, init_from, args.init_mode)
+    run(config, args.set, out_dir, args.generations, init_from, args.init_mode, args.widen_stem)
 
 
 if __name__ == "__main__":

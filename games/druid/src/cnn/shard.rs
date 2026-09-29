@@ -1,14 +1,22 @@
 //! Self-play shards: a small header, then fixed-size little-endian records, one per position
 //! (one per sub-decision ply, so a turn is up to three records).
 //!
-//! Header: the magic, then `size`, `actions` and `record_bytes` (`u32` each).
+//! Header: the magic, then `size`, `actions` and `record_bytes` (`u32` each). `record_bytes`
+//! selects the record layout: v1 (`record_bytes_v1`) or v2 (`record_bytes`, the current writer),
+//! so a v1 shard from before the root search value was recorded stays readable.
 //!
-//! Record (`3 * cells + 16 + 4 * actions` bytes): stack heights (`u16` per cell), cell owners
-//! (`u8` per cell: 0 empty, 1 Black, 2 White), the hands (`u8` x 4: Black sarsens, Black lintels,
-//! White sarsens, White lintels), the pending phase (`u8`, see [`Fields::pending`]), the side to
-//! move (`u8`: 0 Black, 1 White), ply (`u16`), the mover's outcome (`f32`: `+1` win, `-1` loss,
-//! `0` draw), game index (`u32`), then the dense improved-policy target (`f32` per action).
+//! Record (`3 * cells + 16 + 4 * actions` bytes in v1, plus one trailing `f32` in v2): stack
+//! heights (`u16` per cell), cell owners (`u8` per cell: 0 empty, 1 Black, 2 White), the hands
+//! (`u8` x 4: Black sarsens, Black lintels, White sarsens, White lintels), the pending phase (`u8`,
+//! see [`Fields::pending`]), the side to move (`u8`: 0 Black, 1 White), ply (`u16`), the mover's
+//! outcome (`f32`: `+1` win, `-1` loss, `0` draw), game index (`u32`), then in v2 the mover's root
+//! search value `q` (`f32`, same sign convention as the outcome; a v1 shard has no `q`, so the
+//! reader sets it equal to the outcome), then the dense improved-policy target (`f32` per action).
 //! Cells are row-major, as in the encoder.
+//!
+//! Alongside a shard, [`write_terminal_sidecar`] writes one JSON line per game played (finished or
+//! capped at `max_plies`): the game id, the winner (or `null` for a draw or a capped game), and the
+//! final board's per-cell heights and top owners, in the same encoding as a record's fields.
 
 use std::io;
 use std::path::Path;
@@ -116,11 +124,22 @@ pub struct Record {
     pub value: f32,
     pub game: u32,
     pub ply: u16,
+    /// The root search value of this position at self-play time, from the mover's point of view
+    /// (same sign convention as `value`); see `cnn::selfplay::play_games`. A shard read as v1 sets
+    /// this equal to `value` (no search value was recorded then).
+    pub q: f32,
     pub policy: Vec<f32>,
 }
 
-pub fn record_bytes(size: usize) -> usize {
+/// Version 1's record size (no `q`): the layout every shard used before the root search value was
+/// recorded.
+pub fn record_bytes_v1(size: usize) -> usize {
     3 * size * size + 16 + 4 * num_actions(size)
+}
+
+/// The current (v2) record size: v1 plus one trailing `f32`, the root search value `q`.
+pub fn record_bytes(size: usize) -> usize {
+    record_bytes_v1(size) + 4
 }
 
 impl Record {
@@ -134,15 +153,24 @@ impl Record {
         out.extend_from_slice(&self.ply.to_le_bytes());
         out.extend_from_slice(&self.value.to_le_bytes());
         out.extend_from_slice(&self.game.to_le_bytes());
+        out.extend_from_slice(&self.q.to_le_bytes());
         for p in &self.policy {
             out.extend_from_slice(&p.to_le_bytes());
         }
     }
 
-    fn read_from(b: &[u8], cells: usize) -> Record {
+    /// `has_q` selects the v2 tail layout (`q` before the policy) versus v1 (no `q`, so `q` reads
+    /// as `value`).
+    fn read_from(b: &[u8], cells: usize, has_q: bool) -> Record {
         let heights_end = 2 * cells;
         let owners_end = 3 * cells;
         let t = &b[owners_end..];
+        let value = f32::from_le_bytes(t[8..12].try_into().unwrap());
+        let (q, policy_start) = if has_q {
+            (f32::from_le_bytes(t[16..20].try_into().unwrap()), 20)
+        } else {
+            (value, 16)
+        };
         Record {
             fields: Fields {
                 heights: b[..heights_end]
@@ -155,9 +183,10 @@ impl Record {
                 player: t[5],
             },
             ply: u16::from_le_bytes(t[6..8].try_into().unwrap()),
-            value: f32::from_le_bytes(t[8..12].try_into().unwrap()),
+            value,
             game: u32::from_le_bytes(t[12..16].try_into().unwrap()),
-            policy: t[16..]
+            q,
+            policy: t[policy_start..]
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
                 .collect(),
@@ -166,7 +195,7 @@ impl Record {
 }
 
 /// Write a whole shard atomically (temp file, then rename), so a killed run never leaves a
-/// half-written shard behind under the final name.
+/// half-written shard behind under the final name. Always writes the current (v2) layout.
 pub fn write_shard(path: &Path, size: usize, records: &[Record]) -> io::Result<()> {
     let mut out = Vec::with_capacity(HEADER_BYTES + records.len() * record_bytes(size));
     out.extend_from_slice(MAGIC);
@@ -194,7 +223,8 @@ pub fn read_shard(path: &Path) -> io::Result<(usize, Vec<Record>)> {
     let word =
         |i: usize| u32::from_le_bytes(bytes[8 + 4 * i..12 + 4 * i].try_into().unwrap()) as usize;
     let (size, actions, per) = (word(0), word(1), word(2));
-    if actions != num_actions(size) || per != record_bytes(size) {
+    let has_q = per == record_bytes(size);
+    if actions != num_actions(size) || (!has_q && per != record_bytes_v1(size)) {
         return Err(bad("header disagrees with the record layout"));
     }
     let body = &bytes[HEADER_BYTES..];
@@ -204,9 +234,35 @@ pub fn read_shard(path: &Path) -> io::Result<(usize, Vec<Record>)> {
     Ok((
         size,
         body.chunks_exact(per)
-            .map(|b| Record::read_from(b, size * size))
+            .map(|b| Record::read_from(b, size * size, has_q))
             .collect(),
     ))
+}
+
+/// One game's final position, from a self-play generation: written alongside its shard as a JSON
+/// line by [`write_terminal_sidecar`]. `winner` is `None` for a draw or a game dropped at
+/// `max_plies` (`capped`); `heights`/`owners` are the final board, in [`Fields`]'s own encoding.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Terminal {
+    pub game: u32,
+    /// 0 Black, 1 White.
+    pub winner: Option<u8>,
+    pub capped: bool,
+    pub heights: Vec<u16>,
+    pub owners: Vec<u8>,
+}
+
+/// Write a shard's terminal sidecar (one JSON line per game) atomically, matching
+/// [`write_shard`]'s temp-file-then-rename.
+pub fn write_terminal_sidecar(path: &Path, games: &[Terminal]) -> io::Result<()> {
+    let mut out = String::new();
+    for g in games {
+        out.push_str(&serde_json::to_string(g).expect("Terminal always serializes"));
+        out.push('\n');
+    }
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, out)?;
+    std::fs::rename(tmp, path)
 }
 
 #[cfg(test)]
@@ -249,13 +305,16 @@ mod tests {
             value: [1.0, -1.0, 0.0][i as usize % 3],
             game: i * 3,
             ply: 250 + i as u16,
+            // Deliberately different from `value`, so the round trip below actually exercises `q`
+            // as its own stored field rather than accidentally matching it.
+            q: [0.4, -0.6, 0.05][i as usize % 3],
             policy,
         }
     }
 
     #[test]
     fn shard_round_trips_with_the_documented_record_size_and_rebuilds_the_same_planes() {
-        for (size, bytes) in [(5, 75 + 16 + 116), (7, 147 + 16 + 212)] {
+        for (size, bytes) in [(5, 75 + 16 + 4 + 116), (7, 147 + 16 + 4 + 212)] {
             assert_eq!(record_bytes(size), bytes, "size {size}");
             let states = positions(size, 40, 7);
             let records: Vec<Record> =
@@ -279,6 +338,50 @@ mod tests {
             for (r, s) in back.iter().zip(&states) {
                 assert_eq!(planes(&r.fields.to_state(size), IN_PLANES), planes(s, IN_PLANES));
             }
+        }
+    }
+
+    /// A v1 shard (written before the root search value existed, `record_bytes_v1` per record, no
+    /// trailing `q`) still reads: the header's own `record_bytes` selects the layout, and every
+    /// record's `q` comes back equal to its `value`.
+    #[test]
+    fn a_v1_shard_with_no_q_field_reads_with_q_equal_to_value() {
+        let size = 5;
+        let states = positions(size, 20, 11);
+        let records: Vec<Record> =
+            states.iter().enumerate().map(|(i, s)| record_of(s, i as u32)).collect();
+
+        let mut out = Vec::new();
+        out.extend_from_slice(MAGIC);
+        for v in [size as u32, num_actions(size) as u32, record_bytes_v1(size) as u32] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        for r in &records {
+            for h in &r.fields.heights {
+                out.extend_from_slice(&h.to_le_bytes());
+            }
+            out.extend_from_slice(&r.fields.owners);
+            out.extend_from_slice(&r.fields.hands);
+            out.extend_from_slice(&[r.fields.pending, r.fields.player]);
+            out.extend_from_slice(&r.ply.to_le_bytes());
+            out.extend_from_slice(&r.value.to_le_bytes());
+            out.extend_from_slice(&r.game.to_le_bytes());
+            for p in &r.policy {
+                out.extend_from_slice(&p.to_le_bytes());
+            }
+        }
+        let path =
+            std::env::temp_dir().join(format!("druid-shard-v1-{}.bin", std::process::id()));
+        std::fs::write(&path, &out).unwrap();
+        let (read_size, back) = read_shard(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(read_size, size);
+        assert_eq!(back.len(), records.len());
+        for (got, want) in back.iter().zip(&records) {
+            assert_eq!(got.q, want.value, "a v1 record has no stored q, so it reads as value");
+            assert_eq!(got.value, want.value);
+            assert_eq!(got.fields, want.fields);
+            assert_eq!(got.policy, want.policy);
         }
     }
 
@@ -308,11 +411,16 @@ mod tests {
                 for &id in &ids {
                     policy[usize::from(id)] = 1.0 / ids.len() as f32;
                 }
+                let value = if i % 2 == 0 { 1.0 } else { -1.0 };
                 Record {
                     fields: Fields::of(s),
-                    value: if i % 2 == 0 { 1.0 } else { -1.0 },
+                    value,
                     game: i as u32,
                     ply: (i % 200) as u16,
+                    // The committed fixture shard is still v1 (no recorded search value), whose
+                    // reader sets `q` equal to `value`; keep this in-memory copy the same so the
+                    // round trip below does not need `UPDATE_FIXTURE=1`.
+                    q: value,
                     policy,
                 }
             })
@@ -487,5 +595,16 @@ mod tests {
         // mover, Black, matches the eventual winner) would set `Record.value` to `+1.0`; the
         // search value above must agree in sign.
         assert_eq!(values[0].signum(), 1.0);
+
+        // `play_games` does not call `root_values`: it takes `Record.q` straight off the noise
+        // search tree it already ran to pick the move (`gumbel_explore_with_noise`, then
+        // `tree.value(bid, tree.root())`). Run that same pair of calls directly, so the sign
+        // convention above is pinned on the actual mechanism a self-play record's `q` comes from.
+        let batch = mcts_batch::Config { num_simulations: 64, ..search.batch_config() };
+        let mut rng = SmallRng::seed_from_u64(7);
+        let (tree, _noise) =
+            mcts_batch::gumbel_explore_with_noise(&batch, &oracle, std::slice::from_ref(&state), &mut rng);
+        let q = tree.value(0, tree.root());
+        assert!(q > 0.0, "play_games' own search mechanism must also see the forced win, got {q}");
     }
 }

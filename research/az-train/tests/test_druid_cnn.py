@@ -123,3 +123,72 @@ def test_warm_start_widens_the_stem_with_zeros_and_keeps_the_function():
         (v0, l0), (v1, l1) = old(x[:, :14]), new(x)
     torch.testing.assert_close(v1, v0)
     torch.testing.assert_close(l1, l0)
+
+
+def test_widen_stem_optimizer_state_pads_the_stem_and_keeps_everything_else_exact():
+    net = {"size": 5, "channels": 8, "blocks": 1, "policy_planes": 2, "value_planes": 2}
+    base = {"net": {**net, "value_hidden": 8, "head": "agnostic"}}
+    wide = {"net": {**base["net"], "connectivity": True}}
+    tcfg = {"optimizer": "adamw", "weight_decay": 0.05}
+
+    old_model = dc.gridcnn.GridCNN(dc.geometry_of(base))
+    old_opt = dc.build_optimizer(old_model, 1e-3, tcfg)
+    x = torch.rand(4, 14, 5, 5)
+    for _ in range(3):
+        value, logits = old_model(x)
+        old_opt.zero_grad()
+        (value.sum() + logits.sum()).backward()
+        old_opt.step()
+
+    new_model = dc.gridcnn.GridCNN(dc.geometry_of(wide))
+    new_model.load_state_dict(dc.gridcnn.widen_stem(new_model, old_model.state_dict()))
+    widened_opt_state = dc.widen_stem_optimizer_state(
+        old_model, new_model, old_opt.state_dict(), 1e-3, tcfg
+    )
+
+    # The widened model still computes the old model's function on the old planes.
+    wide_x = torch.rand(3, 20, 5, 5)
+    old_model.eval()
+    new_model.eval()
+    with torch.no_grad():
+        v0, l0 = old_model(wide_x[:, :14])
+        v1, l1 = new_model(wide_x)
+    torch.testing.assert_close(v1, v0)
+    torch.testing.assert_close(l1, l0)
+
+    new_opt = dc.build_optimizer(new_model, 1e-3, tcfg)
+    new_opt.load_state_dict(widened_opt_state)
+
+    stem_state = new_opt.state[new_model.stem.conv.weight]
+    old_stem_state = old_opt.state[old_model.stem.conv.weight]
+    assert stem_state["step"] == old_stem_state["step"]
+    for field in ("exp_avg", "exp_avg_sq"):
+        assert stem_state[field].shape[1] == 20
+        torch.testing.assert_close(stem_state[field][:, :14], old_stem_state[field])
+        assert not stem_state[field][:, 14:].any()
+
+    # Every other parameter's optimizer state, including biases and batch-norm, carries over
+    # bit for bit -- only the stem weight's entry was touched.
+    old_by_name = dict(old_model.named_parameters())
+    new_by_name = dict(new_model.named_parameters())
+    for name, p in old_by_name.items():
+        if name == "stem.conv.weight":
+            continue
+        for field in ("exp_avg", "exp_avg_sq"):
+            torch.testing.assert_close(
+                new_opt.state[new_by_name[name]][field], old_opt.state[p][field], rtol=0, atol=0
+            )
+
+    new_model.train()
+    value, logits = new_model(wide_x)
+    new_opt.zero_grad()
+    (value.sum() + logits.sum()).backward()
+    new_opt.step()  # the widened optimizer runs a step over the widened model without error
+
+
+def test_blended_value_target_is_the_outcome_at_zero_weight_and_hand_computed_at_half():
+    outcome = torch.tensor([1.0, -1.0, 0.0])
+    q = torch.tensor([0.2, 0.4, -0.6])
+    torch.testing.assert_close(dc.blended_value_target(outcome, q, 0.0), outcome)
+    want_half = torch.tensor([0.6, -0.3, -0.3])  # 0.5 * outcome + 0.5 * q, worked by hand
+    torch.testing.assert_close(dc.blended_value_target(outcome, q, 0.5), want_half)
