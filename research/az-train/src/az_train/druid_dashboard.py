@@ -91,7 +91,10 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
         steps[r["gen"]].append(r)
     gens = []
     for r in rows:
-        sp = r["selfplay"]
+        # A generation whose checkpoint survived a crash but whose log line did not is logged on
+        # resume with only its gate, so self-play and validation stats may be missing.
+        sp = r.get("selfplay", {})
+        val_after = r.get("val_after", {})
         finished = max(1, sp.get("games_finished", 1))
         s = steps.get(r["gen"] - 1, [])
         tail = s[-100:]
@@ -122,10 +125,10 @@ def summarize(run_dir: Path, total: int, config: Path | None = None) -> dict:
                 "cnn_ms": lag.get("ms_per_move"),
                 "value_loss": sum(x["value_loss"] for x in tail) / max(1, len(tail)),
                 "policy_loss": sum(x["policy_loss"] for x in tail) / max(1, len(tail)),
-                "val_policy_ce": r["val_after"]["policy_ce"],
-                "val_policy_top1": r["val_after"]["policy_top1"],
-                "val_value_mse": r["val_after"]["value_mse"],
-                "val_value_pearson": r["val_after"].get("value_pearson"),
+                "val_policy_ce": val_after.get("policy_ce"),
+                "val_policy_top1": val_after.get("policy_top1"),
+                "val_value_mse": val_after.get("value_mse"),
+                "val_value_pearson": val_after.get("value_pearson"),
                 "prior_entropy": pol.get("prior_entropy"),
                 "target_entropy": pol.get("target_entropy"),
                 "kl": pol.get("kl_target_to_prior"),

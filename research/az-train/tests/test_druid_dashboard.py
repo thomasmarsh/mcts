@@ -41,6 +41,15 @@ def test_summarize_reads_druid_diagnostics_and_survives_a_missing_gate(tmp_path:
     assert g["phase_ce"] == {"cell": 2.9} and g["phase_uniform"] == {"cell": 2.7}
 
 
+def test_summarize_survives_a_gate_only_row_from_a_resume(tmp_path: Path):
+    gate = {"opponent_gen": 0, "score": 0.5, "wilson_lo": 0.3, "wilson_hi": 0.7, "games": 40}
+    row = {"gen": 1, "resumed": True, "gate": {"lag": gate, "best": gate, "champion": 0}}
+    (tmp_path / "log.jsonl").write_text(json.dumps(row) + "\n")
+    (tmp_path / "steps.jsonl").write_text("")
+    g = summarize(tmp_path, 10)["gens"][0]
+    assert g["score"] == 0.5 and g["val_value_mse"] is None and g["plies"] is None
+
+
 def test_bt_ratings_tie_lag_chains_together_and_dedupe_shared_opponent():
     from az_train.druid_dashboard import bt_ratings, gate_pairs
 

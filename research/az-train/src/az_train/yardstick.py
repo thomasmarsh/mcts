@@ -308,8 +308,11 @@ def evaluate_rules(
         }
 
     recent = rows[-10:]
-    capped = sum(r["selfplay"].get("games_capped", 0) for r in recent)
-    started = sum(r["selfplay"].get("games_started", 0) for r in recent)
+    # Rows without self-play counts (a generation logged on resume with only its gate, or a reused
+    # shard without stats) do not enter the self-play health figures.
+    played = [r for r in recent if "games_started" in r.get("selfplay", {})]
+    capped = sum(r["selfplay"].get("games_capped", 0) for r in played)
+    started = sum(r["selfplay"]["games_started"] for r in played)
     value_std = [r["val_after"]["value_std"] for r in recent if "val_after" in r]
     health_ok = (
         started > 0
@@ -317,7 +320,7 @@ def evaluate_rules(
         and all(v >= stall_min_value_std for v in value_std)
     )
     black = _mean(
-        [r["selfplay"]["black_wins"] / max(1, r["selfplay"]["games_finished"]) for r in recent]
+        [r["selfplay"]["black_wins"] / max(1, r["selfplay"]["games_finished"]) for r in played]
     )
     ece = _mean([r["diagnostics"]["calibration"]["ece"] for r in recent if "diagnostics" in r])
     warnings = []
