@@ -20,11 +20,13 @@ head = "agnostic"
 # net widens its stem with zero weights.
 connectivity = false
 
-# Self-play search (Gumbel root, Sequential Halving over `considered_actions`).
+# Self-play search (Gumbel root, Sequential Halving over `considered_actions`). 200 simulations
+# (run H, from G's 32) gave a +350 Elo step at equal play depth; 128 games keeps a generation
+# near 10-12 minutes at 9x9.
 [selfplay]
-games = 256
-simulations = 32
-considered_actions = 8
+games = 128
+simulations = 200
+considered_actions = 16
 value_scale = 0.1
 max_visit_init = 50
 temp_moves = 16
@@ -56,9 +58,10 @@ optimizer = "adamw"
 weight_decay = 0.05
 l2 = 1e-4
 # Blend the recorded root search value q into the value-fit target: (1 - lambda) * outcome +
-# lambda * q. 0 (default) is today's outcome-only target; q is only stored from this run's own
-# self-play onward (an older shard's q reads as its outcome, so lambda > 0 changes nothing there).
-value_target_q_weight = 0.0
+# lambda * q. 0 is the outcome-only target; q is only stored from a run's own self-play onward (an
+# older shard's q reads as its outcome, so lambda > 0 changes nothing there). 0.5 at 9x9: forked
+# from the same net for 40 generations it beat the outcome-only control 75-25 at play depth.
+value_target_q_weight = 0.5
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20
 # Games of each generation held out to monitor value/policy fit; never trained on.
@@ -123,13 +126,14 @@ seed = 733
 workers = 8
 max_plies = 600
 # Fixed reference nets, parallel lists. G309 anchors the curve to the run this one branched from;
-# H100 and H200 stay near an even score for the generations after them, where G309 is beaten
-# almost every game. A checkpoint identical to a reference skips that pairing.
-reference_labels = ["G309", "H100", "H200"]
+# H100, H200 and A240 stay near an even score for the generations after them, where G309 is
+# beaten almost every game. A checkpoint identical to a reference skips that pairing.
+reference_labels = ["G309", "H100", "H200", "A240"]
 reference_weights = [
     "games/druid/cnn/weights/9x9-G-gen309.bin",
     "games/druid/cnn/weights/9x9-H-gen100.bin",
     "games/druid/cnn/weights/9x9-H-gen200.bin",
+    "games/druid/cnn/weights/9x9-A-gen240.bin",
 ]
 
 # End-of-run rating curve (`az-train-druid-cnn --round-robin`): checkpoints at generation 0, every
