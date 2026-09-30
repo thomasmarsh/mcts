@@ -72,9 +72,23 @@
         "use_transpositions": true
     },
     {
+        "id": "cnn-9x9-A-gen300",
+        "label": "CNN A gen300 (9x9 only)",
+        "description": "The 64x4 size-agnostic residual CNN trained at 9x9 in run A (200-simulation self-play, value target half game outcome and half search value), generation 300, with a 100-simulation Gumbel search. It scored 0.60 against generation 240. The strongest Druid net so far. Only plays 9x9 boards.",
+        "params": {
+            "algorithm": "net_gumbel",
+            "net_model": "druid-9x9-A-gen300",
+            "net_considered_actions": 16,
+            "net_value_scale": 0.1,
+            "net_max_visit_init": 50,
+            "net_selection": "gumbel"
+        },
+        "max_iterations": 1000
+    },
+    {
         "id": "cnn-9x9-A-gen240",
         "label": "CNN A gen240 (9x9 only)",
-        "description": "The 64x4 size-agnostic residual CNN trained at 9x9 in run A (200-simulation self-play, value target half game outcome and half search value, forked from run H generation 200), generation 240, with a 100-simulation Gumbel search. It beat run H's continuation 75-25. The strongest Druid net so far. Only plays 9x9 boards.",
+        "description": "The 64x4 size-agnostic residual CNN trained at 9x9 in run A (200-simulation self-play, value target half game outcome and half search value, forked from run H generation 200), generation 240, with a 100-simulation Gumbel search. It beat run H's continuation 75-25. Only plays 9x9 boards.",
         "params": {
             "algorithm": "net_gumbel",
             "net_model": "druid-9x9-A-gen240",

@@ -30,7 +30,11 @@ considered_actions = 16
 value_scale = 0.1
 max_visit_init = 50
 temp_moves = 16
-max_plies = 600
+# Above the engine's own end: a player's 2N^2 sarsens (2 plies each) and N^2 lintels (3 plies each)
+# run out after 567 plies, 1,134 for both at 9x9, when the mover has no legal move and the engine
+# scores a draw. So every game ends by the rules (a connection or a material draw); a lower cap cut
+# long games off mid-play and dropped them from training.
+max_plies = 1200
 chunk_size = 64
 
 # The play-time agent.
@@ -91,7 +95,7 @@ validate_every = 100
 openings = 10
 opening_plies = 4
 seed = 1
-max_plies = 600
+max_plies = 1200
 
 [gate]
 # Progress gate, net against net (no reference engine): the new net plays the net `lag`
@@ -116,7 +120,7 @@ every = 1
 workers = 4
 seed = 1
 # Same cap as self-play: the longest zero-net game was 148 plies at 5x5, random play averages 81.
-max_plies = 600
+max_plies = 1200
 
 # Milestone gate: every `every` generations the checkpoint plays each fixed reference net and the
 # previous milestone at the play depth (`simulations`), so strength over a long run is read at the
@@ -130,7 +134,7 @@ simulations = 100
 opening_plies = 4
 seed = 733
 workers = 8
-max_plies = 600
+max_plies = 1200
 # Fixed reference nets, parallel lists. G309 anchors the curve to the run this one branched from;
 # H100, H200 and A240 stay near an even score for the generations after them, where G309 is
 # beaten almost every game. A checkpoint identical to a reference skips that pairing.
@@ -156,7 +160,7 @@ simulations = 32
 max_gap = 3
 workers = 4
 seed = 2
-max_plies = 600
+max_plies = 1200
 
 # Pre-registered pass / kill rules, applied by `az-train-druid-cnn --verdict` (and rule 1 by the
 # coordinator itself at `early_gen`). Written before any generation past 2 exists.
