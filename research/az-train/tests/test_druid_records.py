@@ -207,3 +207,41 @@ def test_bfs_winner_is_none_on_an_empty_or_unconnected_board():
     # A single Black cell touching neither edge fully: no connection either color.
     owners = np.array([0, 0, 0, 0, 1, 0, 0, 0, 0])
     assert dr.bfs_winner(owners, size) == (None, [])
+
+
+# ------------------------------------------------------------------------------------ aux targets
+
+
+def test_build_aux_targets_from_a_winning_and_a_capped_game():
+    size = 3
+    games = [
+        {"game": 0, "owners": np.array([1, 0, 0, 1, 0, 2, 1, 2, 0])},  # Black connects col 0
+        {"game": 1, "owners": np.array([2, 2, 0, 0, 0, 0, 0, 0, 0])},  # no connection: capped
+    ]
+    table = dr.build_aux_targets(games, size)
+    won = table[0]
+    np.testing.assert_array_equal(won.owners_black, [1, 0, 0, 1, 0, -1, 1, -1, 0])
+    np.testing.assert_array_equal(won.chain_mask, [1, 0, 0, 1, 0, 0, 1, 0, 0])
+    assert won.has_chain is True
+
+    capped = table[1]
+    np.testing.assert_array_equal(capped.owners_black, [-1, -1, 0, 0, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(capped.chain_mask, np.zeros(9))
+    assert capped.has_chain is False
+
+
+def test_build_aux_targets_from_a_terminal_sidecar_file(tmp_path):
+    line = {
+        "game": 5,
+        "winner": 1,
+        "capped": False,
+        "heights": [1, 1, 1, 0, 0, 0, 0, 0, 0],
+        "owners": [2, 2, 2, 0, 0, 0, 0, 0, 0],  # White connects column 0 to column 2
+    }
+    path = tmp_path / "gen0.bin.terminal.jsonl"
+    path.write_text(json.dumps(line) + "\n")
+    table = dr.build_aux_targets(dr.read_terminal_sidecar(path), size=3)
+    target = table[5]
+    np.testing.assert_array_equal(target.owners_black, [-1, -1, -1, 0, 0, 0, 0, 0, 0])
+    np.testing.assert_array_equal(target.chain_mask, [1, 1, 1, 0, 0, 0, 0, 0, 0])
+    assert target.has_chain is True

@@ -393,3 +393,34 @@ def bfs_winner(owners: np.ndarray, size: int) -> tuple[int | None, list[int]]:
                 cur = parent[cur]
             return winner, list(reversed(chain))
     return None, []
+
+
+@dataclass
+class AuxTargets:
+    """One game's auxiliary training targets (``druid_cnn.fit``'s ownership/winning-chain heads),
+    in the fixed (Black's-view) orientation; a batch multiplies ``owners_black`` by each record's
+    own mover sign to get the mover's-view target ``fit`` trains against."""
+
+    owners_black: np.ndarray  # (cells,) int8: +1 Black owns the cell, -1 White, 0 empty
+    chain_mask: np.ndarray  # (cells,) float32: 1 on the winning chain's cells, else 0
+    has_chain: bool  # a side actually connected (bfs_winner found a winner); else chain_mask is 0
+
+
+def build_aux_targets(games: list[dict], size: int) -> dict[int, AuxTargets]:
+    """``AuxTargets`` per game (keyed by its own ``game`` id, unoffset) from a shard's decoded
+    terminal sidecar (``read_terminal_sidecar``). The winning chain comes from ``bfs_winner``, not
+    the sidecar's own ``winner`` (they agree; this is the one source both ``druid_cnn`` and its
+    tests use). A game with no winner (a draw or a capped game) gets an all-zero, fully-masked
+    chain target."""
+    out: dict[int, AuxTargets] = {}
+    cells = size * size
+    for row in games:
+        winner, chain = bfs_winner(row["owners"], size)
+        owners_black = np.zeros(cells, dtype=np.int8)
+        owners_black[row["owners"] == 1] = 1
+        owners_black[row["owners"] == 2] = -1
+        chain_mask = np.zeros(cells, dtype=np.float32)
+        if winner is not None:
+            chain_mask[chain] = 1.0
+        out[int(row["game"])] = AuxTargets(owners_black, chain_mask, winner is not None)
+    return out

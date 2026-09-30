@@ -62,6 +62,12 @@ l2 = 1e-4
 # older shard's q reads as its outcome, so lambda > 0 changes nothing there). 0.5 at 9x9: forked
 # from the same net for 40 generations it beat the outcome-only control 75-25 at play depth.
 value_target_q_weight = 0.5
+# Auxiliary training-only losses on the final board (ownership: per-cell mover-view owner;
+# winning chain: per-cell membership in the winning connection, masked for a capped or drawn
+# game), from self-play's terminal sidecar. 0 (default) adds no heads and changes nothing;
+# raising either needs a checkpoint forked in with --add-aux-heads.
+aux_ownership_weight = 0.0
+aux_chain_weight = 0.0
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20
 # Games of each generation held out to monitor value/policy fit; never trained on.

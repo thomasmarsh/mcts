@@ -1,6 +1,8 @@
+import dataclasses
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from az_train import druid_cnn as dc
@@ -192,3 +194,113 @@ def test_blended_value_target_is_the_outcome_at_zero_weight_and_hand_computed_at
     torch.testing.assert_close(dc.blended_value_target(outcome, q, 0.0), outcome)
     want_half = torch.tensor([0.6, -0.3, -0.3])  # 0.5 * outcome + 0.5 * q, worked by hand
     torch.testing.assert_close(dc.blended_value_target(outcome, q, 0.5), want_half)
+
+
+# ---------------------------------------------------------------------------- auxiliary heads
+
+
+def _aux_net_cfg(aux: bool) -> dict:
+    net = {"size": 5, "channels": 8, "blocks": 1, "policy_planes": 2, "value_planes": 2}
+    cfg = {"net": {**net, "value_hidden": 8, "head": "agnostic"}}
+    if aux:
+        cfg["train"] = {"aux_ownership_weight": 1.0, "aux_chain_weight": 0.5}
+    return cfg
+
+
+def test_geometry_of_turns_on_aux_heads_only_above_zero_weight():
+    assert dc.geometry_of(_aux_net_cfg(False)).aux_heads is False
+    zero = {**_aux_net_cfg(False), "train": {"aux_chain_weight": 0.0}}
+    assert dc.geometry_of(zero).aux_heads is False
+    assert dc.geometry_of(_aux_net_cfg(True)).aux_heads is True
+
+
+def test_default_aux_weights_add_no_auxiliary_parameters():
+    g = dc.geometry_of(_aux_net_cfg(False))
+    model = dc.gridcnn.GridCNN(g)
+    assert not any(k.startswith("aux_") for k in model.state_dict())
+
+
+def test_aux_heads_output_shapes_and_forward_ignores_them():
+    g = dc.geometry_of(_aux_net_cfg(True))
+    model = dc.gridcnn.GridCNN(g)
+    x = torch.rand(3, 14, 5, 5)
+    value, logits, ownership, chain_logits = model.forward_with_aux(x)
+    assert ownership.shape == (3, 25) and chain_logits.shape == (3, 25)
+    assert torch.all(ownership <= 1) and torch.all(ownership >= -1)
+    v2, l2 = model(x)
+    torch.testing.assert_close(v2, value)
+    torch.testing.assert_close(l2, logits)
+
+    plain = dc.gridcnn.GridCNN(dc.geometry_of(_aux_net_cfg(False)))
+    with pytest.raises(ValueError):
+        plain.forward_with_aux(x)
+
+
+def test_export_flat_is_identical_whether_or_not_aux_heads_are_present():
+    g = dc.geometry_of(_aux_net_cfg(False))
+    model = dc.gridcnn.GridCNN(g)
+    torch.manual_seed(3)
+    for p in model.parameters():
+        p.data.normal_()
+    exported = dc.gridcnn.export_flat(model)
+
+    aux_model = dc.gridcnn.GridCNN(dataclasses.replace(g, aux_heads=True))
+    aux_model.load_state_dict({**aux_model.state_dict(), **model.state_dict()})
+    exported_aux = dc.gridcnn.export_flat(aux_model)
+    np.testing.assert_array_equal(exported, exported_aux)
+
+
+def test_symmetry_gather_of_aux_targets_matches_the_planes_transform():
+    size = 5
+    src = torch.from_numpy(dr.symmetry_sources(size))
+    owners = np.arange(size * size, dtype=np.int64) % 3
+    owners_black = np.where(owners == 1, 1, np.where(owners == 2, -1, 0)).astype(np.int8)
+    t = torch.from_numpy(owners_black).unsqueeze(0)
+    for s in range(dr.SYMMETRIES):
+        board = src[s, 0]
+        got = t.gather(1, board.unsqueeze(0))[0].numpy()
+        grid = owners_black.reshape(size, size)
+        grid = grid[::-1, :] if s & 1 else grid
+        grid = grid[:, ::-1] if s & 2 else grid
+        np.testing.assert_array_equal(got, grid.reshape(-1))
+
+
+def test_add_aux_heads_optimizer_state_keeps_every_existing_parameter_exact():
+    tcfg = {"optimizer": "adamw", "weight_decay": 0.05}
+    old_model = dc.gridcnn.GridCNN(dc.geometry_of(_aux_net_cfg(False)))
+    old_opt = dc.build_optimizer(old_model, 1e-3, tcfg)
+    x = torch.rand(4, 14, 5, 5)
+    for _ in range(3):
+        value, logits = old_model(x)
+        old_opt.zero_grad()
+        (value.sum() + logits.sum()).backward()
+        old_opt.step()
+
+    new_geometry = dc.geometry_of(_aux_net_cfg(True))
+    new_model = dc.gridcnn.GridCNN(new_geometry)
+    new_model.load_state_dict({**new_model.state_dict(), **old_model.state_dict()})
+    widened_opt_state = dc.add_aux_heads_optimizer_state(
+        old_model, new_model, old_opt.state_dict(), 1e-3, tcfg
+    )
+
+    new_opt = dc.build_optimizer(new_model, 1e-3, tcfg)
+    new_opt.load_state_dict(widened_opt_state)
+
+    old_by_name = dict(old_model.named_parameters())
+    new_by_name = dict(new_model.named_parameters())
+    for name, p in old_by_name.items():
+        old_state, new_state = old_opt.state[p], new_opt.state[new_by_name[name]]
+        assert new_state["step"] == old_state["step"]
+        for field in ("exp_avg", "exp_avg_sq"):
+            torch.testing.assert_close(new_state[field], old_state[field], rtol=0, atol=0)
+
+    # The two new heads start with no optimizer state at all (Adam lazily inits it on first step).
+    aux_names = ("aux_ownership.weight", "aux_ownership.bias", "aux_chain.weight", "aux_chain.bias")
+    for name in aux_names:
+        assert new_opt.state[new_by_name[name]] == {}
+
+    new_model.train()
+    value, logits, ownership, chain_logits = new_model.forward_with_aux(x)
+    new_opt.zero_grad()
+    (value.sum() + logits.sum() + ownership.sum() + chain_logits.sum()).backward()
+    new_opt.step()  # runs without error even though the two new params have no prior state

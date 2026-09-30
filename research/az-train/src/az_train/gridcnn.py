@@ -52,6 +52,12 @@ class Geometry:
     # ``size``, so a trained net loads at any board size. Not part of the header's 8 geometry
     # fields; the file version says which.
     head: str = HEAD_DENSE
+    # Two training-only per-cell heads (ownership, winning chain; see ``GridCNN.forward_with_aux``),
+    # off by default. Never exported: ``export_flat``/``n_weights`` know nothing about them, so a
+    # net's exported weights do not depend on this flag. A checkpoint's own state dict says whether
+    # it has them (the ``aux_ownership``/``aux_chain`` parameter names), so this is only ever the
+    # *wanted* state, checked against what a resumed checkpoint actually has.
+    aux_heads: bool = False
 
     @property
     def cells(self) -> int:
@@ -130,13 +136,19 @@ class GridCNN(nn.Module):
             self.value_conv = _ConvBn(g.channels, g.value_planes, 1)
             self.value_dense1 = nn.Linear(g.value_planes * g.cells, g.value_hidden)
         self.value_dense2 = nn.Linear(g.value_hidden, 1)
+        if g.aux_heads:
+            # Size-agnostic like the agnostic policy head: a 1x1 conv straight off the trunk, no
+            # weight tied to ``size``. Training-only (``fit``'s aux losses); never exported.
+            self.aux_ownership = nn.Conv2d(g.channels, 1, 1)
+            self.aux_chain = nn.Conv2d(g.channels, 1, 1)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """``x`` is ``(N, in_planes, size, size)``; returns ``(value (N,), logits (N, A))``."""
+    def _trunk(self, x: torch.Tensor) -> torch.Tensor:
         h = torch.relu(self.stem(x))
         for block in self.blocks:
             h = block(h)
-        n = x.shape[0]
+        return h
+
+    def _heads(self, h: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
         if self.geometry.head == HEAD_AGNOSTIC:
             pooled = h.mean(dim=(2, 3))
             cell_logits = self.policy_cell(torch.relu(self.policy_conv(h))).reshape(n, -1)
@@ -148,6 +160,28 @@ class GridCNN(nn.Module):
         v = torch.relu(self.value_conv(h)).reshape(n, -1)
         value = torch.tanh(self.value_dense2(torch.relu(self.value_dense1(v)))).reshape(n)
         return value, logits
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``x`` is ``(N, in_planes, size, size)``; returns ``(value (N,), logits (N, A))``. Never
+        touches the auxiliary heads, so this is unchanged whether or not the model has them."""
+        return self._heads(self._trunk(x), x.shape[0])
+
+    def forward_with_aux(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """``(value, logits, ownership, chain_logits)``: the same trunk and heads as ``forward``,
+        plus the per-cell auxiliary heads' raw output -- ``ownership`` already through ``tanh``
+        (mover's-view target), ``chain_logits`` pre-sigmoid (for
+        ``binary_cross_entropy_with_logits``). Both are ``(N, cells)``. Only callable on a model
+        built with ``geometry.aux_heads``."""
+        if not self.geometry.aux_heads:
+            raise ValueError("this model has no auxiliary heads (geometry.aux_heads is False)")
+        h = self._trunk(x)
+        n = x.shape[0]
+        value, logits = self._heads(h, n)
+        ownership = torch.tanh(self.aux_ownership(h)).reshape(n, -1)
+        chain_logits = self.aux_chain(h).reshape(n, -1)
+        return value, logits, ownership, chain_logits
 
     def weight_tensors(self) -> list[torch.Tensor]:
         """Convolution and dense weights (not biases or batch-norm), the tensors L2 applies to."""

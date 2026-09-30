@@ -50,13 +50,16 @@ from az_train.druid_records import (
     CONNECT_PLANES,
     IN_PLANES,
     SYMMETRIES,
+    AuxTargets,
     Positions,
+    build_aux_targets,
     decode_legal,
     decode_planes,
     load_positions,
     num_actions,
     phase_kind,
     read_shard,
+    read_terminal_sidecar,
     symmetry_sources,
 )
 from az_train.gonnect_cnn import (
@@ -86,6 +89,8 @@ CELL_PLANE = 3  # the legal-cell plane, read in the pending phase's own anchor c
 
 def geometry_of(cfg: dict[str, Any]) -> gridcnn.Geometry:
     n = cfg["net"]
+    t = cfg.get("train", {})
+    aux_heads = t.get("aux_ownership_weight", 0.0) > 0 or t.get("aux_chain_weight", 0.0) > 0
     return gridcnn.Geometry(
         size=n["size"],
         in_planes=CONNECT_PLANES if n.get("connectivity", False) else IN_PLANES,
@@ -96,6 +101,7 @@ def geometry_of(cfg: dict[str, Any]) -> gridcnn.Geometry:
         value_planes=n["value_planes"],
         value_hidden=n["value_hidden"],
         head=n.get("head", gridcnn.HEAD_DENSE),
+        aux_heads=aux_heads,
     )
 
 
@@ -119,13 +125,15 @@ class Data:
         self.value = torch.from_numpy(positions.value).to(device)
         self.q = torch.from_numpy(positions.q).to(device)
         self.kind = torch.from_numpy(positions.kind).to(device)
+        self.game = torch.from_numpy(positions.game).to(device)
 
     def __len__(self) -> int:
         return len(self.value)
 
     def batch(self, idx: torch.Tensor) -> tuple[torch.Tensor, ...]:
-        """``(planes, policy, legal, kind, value, q)`` of the sampled positions, planes as
-        float32."""
+        """``(planes, policy, legal, kind, value, q, game)`` of the sampled positions, planes as
+        float32. ``game`` is a globally unique id across the window (``load_window``'s generation
+        offset), the key the auxiliary targets are looked up by."""
         return (
             self.planes[idx].float(),
             self.policy[idx],
@@ -133,6 +141,7 @@ class Data:
             self.kind[idx],
             self.value[idx],
             self.q[idx],
+            self.game[idx],
         )
 
 
@@ -159,6 +168,7 @@ class RecordWindow:
             to(phase_kind(rec["pending"]).astype(np.int64)),
             to(rec["value"]),
             to(rec["q"]),
+            to(rec["game"].astype(np.int64)),
         )
 
 
@@ -277,6 +287,47 @@ def coupled_l2(
     return tcfg["l2"] * sum((w**2).sum() for w in weights)
 
 
+def _aux_batch_targets(
+    aux_targets: dict[int, AuxTargets], game: torch.Tensor, cells: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """``(owners_black, chain_mask, has_owner, has_chain)`` for one batch's sampled games, in the
+    fixed (unrotated) board orientation the targets are stored in -- ``fit`` applies the same
+    symmetry gather it applied to the input planes. A game absent from ``aux_targets`` (an older
+    shard with no terminal sidecar) gets an all-zero, fully masked row."""
+    ids = game.cpu().numpy()
+    owners_black = np.zeros((len(ids), cells), dtype=np.int8)
+    chain_mask = np.zeros((len(ids), cells), dtype=np.float32)
+    has_owner = np.zeros(len(ids), dtype=np.float32)
+    has_chain = np.zeros(len(ids), dtype=np.float32)
+    for i, gid in enumerate(ids):
+        t = aux_targets.get(int(gid))
+        if t is None:
+            continue
+        owners_black[i] = t.owners_black
+        chain_mask[i] = t.chain_mask
+        has_owner[i] = 1.0
+        has_chain[i] = float(t.has_chain)
+    return owners_black, chain_mask, has_owner, has_chain
+
+
+def _aux_masked_loss(
+    pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor, bce: bool
+) -> torch.Tensor:
+    """Mean, over the batch's *valid* records only, of the per-cell loss (MSE, or BCE-with-logits
+    when ``bce``), each record's cells averaged first; zero (no gradient) when no record in the
+    batch has a target."""
+    per_cell = (
+        F.binary_cross_entropy_with_logits(pred, target, reduction="none")
+        if bce
+        else (pred - target) ** 2
+    )
+    per_record = per_cell.mean(dim=1)
+    denom = valid.sum()
+    if denom.item() == 0:
+        return per_record.new_zeros(())
+    return (per_record * valid).sum() / denom
+
+
 def fit(
     model: gridcnn.GridCNN,
     opt: torch.optim.Optimizer,
@@ -290,13 +341,22 @@ def fit(
     step_log: Callable[[dict[str, Any]], None],
     val_log: Callable[[dict[str, Any]], None],
     stall_check: bool,
+    aux_targets: dict[int, AuxTargets] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     """``steps_per_generation`` Adam steps at ``batch_size`` on ``window``; returns the new global
-    step and the generation's training summary."""
+    step and the generation's training summary. ``aux_targets`` (``load_window``'s fourth return
+    value) feeds the ownership/winning-chain losses when ``train.aux_ownership_weight`` or
+    ``train.aux_chain_weight`` is above 0; otherwise the model is never asked for its auxiliary
+    heads at all, so this is exactly today's fit when both are left at their default 0."""
     size = model.geometry.size
+    cells = size * size
     src = torch.from_numpy(symmetry_sources(size)).to(device)
     weights = model.weight_tensors()
     batch, steps = tcfg["batch_size"], tcfg["steps_per_generation"]
+    aux_ownership_weight = tcfg.get("aux_ownership_weight", 0.0)
+    aux_chain_weight = tcfg.get("aux_chain_weight", 0.0)
+    use_aux = aux_ownership_weight > 0 or aux_chain_weight > 0
+    aux_targets = aux_targets or {}
     model.train()
     losses: list[float] = []
     val_trace: list[dict[str, Any]] = []
@@ -304,14 +364,35 @@ def fit(
     for step in range(1, steps + 1):
         t0 = time.perf_counter()
         idx = torch.randint(0, len(window), (batch,), device=device)
-        planes, policy, legal_mask, kind, target, q = window.batch(idx)
-        x, pi, legal = augment(planes, policy, legal_mask, kind, src, size)
-        value, logits = model(x)
+        planes, policy, legal_mask, kind, target, q, game = window.batch(idx)
+        sym = torch.randint(0, SYMMETRIES, (batch,), device=device)
+        x, pi, legal = augment(planes, policy, legal_mask, kind, src, size, sym)
+        if use_aux:
+            value, logits, ownership, chain_logits = model.forward_with_aux(x)
+        else:
+            value, logits = model(x)
         value_target = blended_value_target(target, q, tcfg.get("value_target_q_weight", 0.0))
         value_loss = F.mse_loss(value, value_target)
         pol_loss = policy_loss(logits, pi, legal > 0)
         reg = coupled_l2(weights, tcfg, device)
         loss = value_loss + pol_loss + reg
+        log_row: dict[str, Any] = {"gen": gen, "step": step}
+        if use_aux:
+            owners_black, chain_mask, has_owner, has_chain = _aux_batch_targets(
+                aux_targets, game, cells
+            )
+            board = src[sym, 0]
+            mover_sign = (1.0 - 2.0 * x[:, 4, 0, 0]).unsqueeze(1)  # plane 4: mover is Black
+            own_target = torch.from_numpy(owners_black).to(device).gather(1, board).float()
+            own_target = own_target * mover_sign
+            own_valid = torch.from_numpy(has_owner).to(device)
+            own_loss = _aux_masked_loss(ownership, own_target, own_valid, bce=False)
+            chain_target = torch.from_numpy(chain_mask).to(device).gather(1, board)
+            chain_valid = torch.from_numpy(has_chain).to(device)
+            chain_loss = _aux_masked_loss(chain_logits, chain_target, chain_valid, bce=True)
+            loss = loss + aux_ownership_weight * own_loss + aux_chain_weight * chain_loss
+            log_row["aux_ownership_loss"] = own_loss.item()
+            log_row["aux_chain_loss"] = chain_loss.item()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -319,8 +400,7 @@ def fit(
         losses.append(loss.item())
         step_log(
             {
-                "gen": gen,
-                "step": step,
+                **log_row,
                 "global_step": global_step,
                 "loss": losses[-1],
                 "value_loss": value_loss.item(),
@@ -356,6 +436,7 @@ def fit_first_generation(
     device: torch.device,
     gen: int,
     run_dir: Path,
+    aux_targets: dict[int, AuxTargets] | None = None,
 ) -> tuple[gridcnn.GridCNN, torch.optim.Optimizer, int, dict[str, Any], list[dict[str, Any]]]:
     """Generation 1's fit from a fresh init; some inits are dead (constant output), so a fit whose
     value predictions are still constant at ``stall_check_step`` is abandoned and retried at the
@@ -379,6 +460,7 @@ def fit_first_generation(
                 step_log=functools.partial(_log, run_dir / "steps.jsonl", {"init_seed": seed}),
                 val_log=functools.partial(_log, run_dir / "validation.jsonl", {"init_seed": seed}),
                 stall_check=True,
+                aux_targets=aux_targets,
             )
         except Stalled as e:
             attempts.append({"seed": seed, "stalled": str(e)})
@@ -562,31 +644,44 @@ def diagnose(
 
 def load_window(
     run_dir: Path, gen: int, cfg: dict[str, Any], device: torch.device
-) -> tuple[Data | RecordWindow, Positions, int]:
+) -> tuple[Data | RecordWindow, Positions, int, dict[int, AuxTargets]]:
     """Replay window for generation ``gen``'s fit (train parts of the last ``replay_generations``
     shards) and the held-out games of shard ``gen``. ``train.window_storage = "records"`` keeps
-    the window as raw shard records decoded per batch; the default decodes every plane up front."""
+    the window as raw shard records decoded per batch; the default decodes every plane up front.
+    The fourth return value is the ownership/winning-chain targets for every window game that has a
+    terminal sidecar, keyed the same way as the window's own ``game`` field (generation-offset, so
+    unique across the joined shards); empty when ``fit``'s aux losses are both off, and a generation
+    without a sidecar (older shards) is simply missing from it."""
     tcfg = cfg["train"]
     in_planes = geometry_of(cfg).in_planes
     records = tcfg.get("window_storage", "planes") == "records"
+    want_aux = tcfg.get("aux_ownership_weight", 0.0) > 0 or tcfg.get("aux_chain_weight", 0.0) > 0
     parts: list[Any] = []
+    aux_targets: dict[int, AuxTargets] = {}
     val = None
     size = 0
     for g in range(max(0, gen - tcfg["replay_generations"] + 1), gen + 1):
+        shard = run_dir / "shards" / f"gen{g}.bin"
+        if want_aux:
+            sidecar = shard.with_name(shard.name + ".terminal.jsonl")
+            if sidecar.exists():
+                offset = g * 1_000_000
+                for game_id, target in build_aux_targets(
+                    read_terminal_sidecar(sidecar), cfg["net"]["size"]
+                ).items():
+                    aux_targets[game_id + offset] = target
         if records:
-            size, rec = read_shard(run_dir / "shards" / f"gen{g}.bin")
+            size, rec = read_shard(shard)
             held_mask = np.isin(rec["game"], np.unique(rec["game"])[: tcfg["validation_games"]])
-            parts.append(rec[~held_mask])
+            train_rec = rec[~held_mask]
+            train_rec["game"] = train_rec["game"] + np.uint32(g * 1_000_000)
+            parts.append(train_rec)
             if g == gen:
                 val = load_positions(
-                    run_dir / "shards" / f"gen{g}.bin",
-                    game_offset=g * 1_000_000,
-                    in_planes=in_planes,
+                    shard, game_offset=g * 1_000_000, in_planes=in_planes
                 )[1].take(held_mask)
             continue
-        _, positions = load_positions(
-            run_dir / "shards" / f"gen{g}.bin", game_offset=g * 1_000_000, in_planes=in_planes
-        )
+        _, positions = load_positions(shard, game_offset=g * 1_000_000, in_planes=in_planes)
         train, held = split_validation(positions, tcfg["validation_games"])
         if tcfg.get("window_dtype", "float32") == "float16":
             # Halves the window's memory (the planes dominate it); every plane value is a 0/1
@@ -598,9 +693,14 @@ def load_window(
     assert val is not None
     if records:
         joined_records = np.concatenate(parts)
-        return RecordWindow(joined_records, size, device, in_planes), val, len(joined_records)
+        return (
+            RecordWindow(joined_records, size, device, in_planes),
+            val,
+            len(joined_records),
+            aux_targets,
+        )
     joined = concat_positions(parts)
-    return Data(joined, device), val, len(joined)
+    return Data(joined, device), val, len(joined), aux_targets
 
 
 def warm_started_model(
@@ -643,6 +743,52 @@ def widen_stem_optimizer_state(
     return {**opt_state, "state": {**opt_state["state"], stem_idx: entry}}
 
 
+def add_aux_heads_optimizer_state(
+    old_model: gridcnn.GridCNN,
+    new_model: gridcnn.GridCNN,
+    opt_state: dict[str, Any],
+    lr: float,
+    tcfg: dict[str, Any],
+) -> dict[str, Any]:
+    """``opt_state`` (saved against ``old_model``, which has no auxiliary heads) remapped onto
+    ``new_model``'s optimizer positions (``new_model`` is ``old_model`` plus the two new head
+    convolutions). Unlike ``widen_stem_optimizer_state`` no existing entry changes shape; adding
+    parameters just shifts every later position, so entries are matched by parameter name rather
+    than position and copied across unchanged, step count included. The two new parameters get no
+    entry at all -- Adam initializes their state lazily on their own first step."""
+    old_opt = build_optimizer(old_model, lr, tcfg)
+    new_opt = build_optimizer(new_model, lr, tcfg)
+    old_flat = [p for group in old_opt.param_groups for p in group["params"]]
+    new_flat = [p for group in new_opt.param_groups for p in group["params"]]
+    old_pos = {id(p): i for i, p in enumerate(old_flat)}
+    new_pos = {id(p): i for i, p in enumerate(new_flat)}
+    old_index_by_name = {name: old_pos[id(p)] for name, p in old_model.named_parameters()}
+    new_index_by_name = {name: new_pos[id(p)] for name, p in new_model.named_parameters()}
+    new_state = {
+        new_index_by_name[name]: opt_state["state"][old_i]
+        for name, old_i in old_index_by_name.items()
+        if old_i in opt_state["state"]
+    }
+    # ``opt_state``'s own ``param_groups`` describe ``old_model`` (fewer params, e.g. the decayed
+    # weights group is two entries short); ``new_opt``'s freshly built one already has the right
+    # group sizes and hyperparameters for ``new_model``, so only its (empty) "state" is replaced.
+    return {**new_opt.state_dict(), "state": new_state}
+
+
+def append_fork_record(run_dir: Path, record: dict[str, Any]) -> None:
+    """Appends ``record`` to ``run_dir/fork.json`` (a list, one entry per fork step a run went
+    through), creating it on the first fork and converting an older single-record file (written
+    before a run could be forked more than once) into a list."""
+    path = run_dir / "fork.json"
+    if path.exists():
+        existing = json.loads(path.read_text())
+        records = existing if isinstance(existing, list) else [existing]
+    else:
+        records = []
+    records.append(record)
+    write_json(path, records)
+
+
 def run(
     config_path: Path,
     overrides: list[str],
@@ -651,6 +797,7 @@ def run(
     init_from: Path | None = None,
     init_mode: str = "trunk",
     widen_stem: bool = False,
+    add_aux_heads: bool = False,
 ) -> None:
     cfg = load_config(config_path, overrides)
     tcfg = cfg["train"]
@@ -697,6 +844,27 @@ def run(
                 run_dir / "fork.json",
                 {"widened_stem_from": have, "widened_stem_to": g.in_planes, "source": str(latest)},
             )
+        have_aux = any(k.startswith(("aux_ownership.", "aux_chain.")) for k in state)
+        if g.aux_heads and not have_aux:
+            if not add_aux_heads:
+                raise ValueError(
+                    f"{latest} has no auxiliary heads, this run's config turns them on "
+                    "(train.aux_ownership_weight/train.aux_chain_weight); pass --add-aux-heads "
+                    "to fork them in with fresh initialization"
+                )
+            old_model = gridcnn.GridCNN(dataclasses.replace(g, aux_heads=False))
+            old_model.load_state_dict(state)
+            opt_state = add_aux_heads_optimizer_state(
+                old_model, model, opt_state, tcfg["learning_rate"], tcfg
+            )
+            state = {**model.state_dict(), **state}  # old params as saved, aux heads freshly init
+            print(
+                "[fork] added auxiliary ownership/chain heads with fresh initialization",
+                flush=True,
+            )
+            append_fork_record(run_dir, {"added_aux_heads": True, "source": str(latest)})
+        elif have_aux and not g.aux_heads:
+            raise ValueError(f"{latest} has auxiliary heads, this run's config does not")
         model.load_state_dict(state)
         opt = build_optimizer(model, tcfg["learning_rate"], tcfg)
         opt.load_state_dict(opt_state)
@@ -740,11 +908,11 @@ def run(
         row["selfplay_seconds"] = time.perf_counter() - started
 
         print(f"[gen {gen}] fit", flush=True)
-        window, val, n_window = load_window(run_dir, gen, cfg, device)
+        window, val, n_window, aux_targets = load_window(run_dir, gen, cfg, device)
         row["window_positions"] = n_window
         if model is None:
             model, opt, global_step, summary, attempts = fit_first_generation(
-                g, cfg, window, val, device, gen, run_dir
+                g, cfg, window, val, device, gen, run_dir, aux_targets
             )
             row["init_attempts"] = attempts
         else:
@@ -759,6 +927,7 @@ def run(
                 gen=gen,
                 global_step=global_step,
                 device=device,
+                aux_targets=aux_targets,
                 step_log=functools.partial(_log, run_dir / "steps.jsonl", {}),
                 val_log=functools.partial(_log, run_dir / "validation.jsonl", {}),
                 stall_check=False,
@@ -1026,6 +1195,12 @@ def main() -> None:
         help="resume a checkpoint with fewer input planes by zero-widening its stem "
         "(e.g. forking into net.connectivity=true)",
     )
+    p.add_argument(
+        "--add-aux-heads",
+        action="store_true",
+        help="resume a checkpoint with no auxiliary heads by adding them freshly initialized "
+        "(e.g. forking into train.aux_ownership_weight/train.aux_chain_weight > 0)",
+    )
     p.add_argument("--smoke-checks", action="store_true", help="plumbing checks on a finished run")
     p.add_argument("--round-robin", action="store_true", help="checkpoint round robin + ratings")
     p.add_argument("--verdict", action="store_true", help="apply the pre-registered rules")
@@ -1057,7 +1232,16 @@ def main() -> None:
         raise SystemExit(0 if report["pass"] else 1)
     init_from = Path(args.init_from) if args.init_from else None
     out_dir = Path(args.out_dir) if args.out_dir else None
-    run(config, args.set, out_dir, args.generations, init_from, args.init_mode, args.widen_stem)
+    run(
+        config,
+        args.set,
+        out_dir,
+        args.generations,
+        init_from,
+        args.init_mode,
+        args.widen_stem,
+        args.add_aux_heads,
+    )
 
 
 if __name__ == "__main__":

@@ -55,6 +55,12 @@ l2 = 1e-4
 # lambda * q. 0 (default) is today's outcome-only target; q is only stored from this run's own
 # self-play onward (an older shard's q reads as its outcome, so lambda > 0 changes nothing there).
 value_target_q_weight = 0.0
+# Auxiliary training-only losses on the final board (ownership: per-cell mover-view owner;
+# winning chain: per-cell membership in the winning connection, masked for a capped or drawn
+# game), from self-play's terminal sidecar. 0 (default) adds no heads and changes nothing;
+# raising either needs a checkpoint forked in with --add-aux-heads.
+aux_ownership_weight = 0.0
+aux_chain_weight = 0.0
 # Positions from this many most recent generations are sampled from.
 replay_generations = 20
 # Games of each generation held out to monitor value/policy fit; never trained on.
