@@ -73,6 +73,11 @@ pub struct SelfPlayConfig {
     pub max_plies: usize,
     /// States per GPU forward call.
     pub chunk_size: usize,
+    /// Skip the batched Gumbel search on a ply's forced positions (exactly one legal action):
+    /// record a one-hot policy and play the move directly, with `q` back-filled once the game
+    /// ends. Off by default, which searches every position as before.
+    #[serde(default)]
+    pub skip_forced_search: bool,
 }
 
 #[derive(Deserialize, Clone, Debug)]

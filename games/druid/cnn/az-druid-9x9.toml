@@ -36,6 +36,9 @@ temp_moves = 16
 # long games off mid-play and dropped them from training.
 max_plies = 1200
 chunk_size = 64
+# Skip the search on forced positions (exactly one legal action): they are about a third of 9x9
+# plies and self-play cost follows searched positions. Off searches every ply.
+skip_forced_search = true
 
 # The play-time agent.
 [play]

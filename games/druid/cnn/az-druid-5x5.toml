@@ -29,6 +29,9 @@ max_visit_init = 50
 temp_moves = 16
 max_plies = 250
 chunk_size = 64
+# Skip the search on forced positions (exactly one legal action): off keeps every ply
+# searched as today.
+skip_forced_search = false
 
 # The play-time agent.
 [play]
