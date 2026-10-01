@@ -17,6 +17,7 @@ import {
   pullback,
   type JobPollAction,
   type JobPollEnv,
+  type JobPollResult,
   type JobSubmitResult,
 } from "@mcts/core";
 import {
@@ -41,6 +42,13 @@ import type {
  * `fetch`/`ApiClient` directly, only `env.xxx()`. Each method is generic per
  * call (not per `Env` instance) so this single `Env` type serves every game
  * kind/state/move combination without itself naming one.
+ *
+ * `aiMove`/`analyze` are real submit-then-poll jobs (the server can run a
+ * search for however long a preset/custom config actually takes, never
+ * holding the HTTP request open -- see `apps/server/src/jobs.rs`), hence the
+ * `JobSubmitResult`/`JobPollResult` wrapping `pollAiMove`/`pollAnalyze` exist
+ * to unwrap. Every other method here still resolves in one request/response
+ * round trip and returns its value directly.
  */
 export interface Env {
   getGames(): Effect<GameInfo[]>;
@@ -53,13 +61,15 @@ export interface Env {
     kind: string,
     state: S,
     strategy: AiStrategyRef,
-  ): Effect<AiMoveResult<S, M, V>>;
+  ): Effect<JobSubmitResult<AiMoveResult<S, M, V>>>;
+  pollAiMove<S, M, V = unknown>(jobId: string): Effect<JobPollResult<AiMoveResult<S, M, V>>>;
   analyze<S, M>(
     kind: string,
     state: S,
     strategy: AiStrategyRef,
     budgetMs?: number,
-  ): Effect<Analysis<M>>;
+  ): Effect<JobSubmitResult<Analysis<M>>>;
+  pollAnalyze<M>(jobId: string): Effect<JobPollResult<Analysis<M>>>;
 }
 
 /** Runs an `Effect` for its single value, as a `Promise` -- lets a reducer
@@ -133,14 +143,15 @@ export type AppAction<S, M, V = unknown> =
    * synchronous replacement, not a repeatable request. */
   | { tag: "setGames"; games: GameInfo[] };
 
-/** `jobPollReduce` only ever calls `submitJob`/`pollJob` for the `"start"`/
- * `"tick"` tags. Every `submitJob` this reducer builds resolves directly to
- * `{status: "done", ...}` (see the "request" branches below), so `"tick"`
- * -- and therefore `pollJob` -- is never reached; nor is `submitJob` reached
- * from the `"job"` branch, since a `"start"` action only ever originates
- * from a `"request"` action (which builds its own real `jobEnv`). This stub
- * exists purely to satisfy `JobPollEnv`'s shape for those unreachable paths,
- * and throws loudly if that assumption is ever wrong. */
+/** `jobPollReduce` only ever calls `submitJob` for the `"start"` tag, which
+ * only ever arrives from a `"request"` action -- never from the `"job"`
+ * branch below, which just forwards an already-in-flight job's actions
+ * (`submitted`/`tick`/`polled`/`failed`). `aiPresets`/`newGame`/`move`
+ * resolve in one request/response round trip (their `submitJob` always
+ * resolves directly to `{status: "done", ...}`, see those branches), so
+ * `"tick"` -- and therefore `pollJob` -- is never reached for them either.
+ * This stub exists purely to satisfy `JobPollEnv`'s shape for those
+ * unreachable paths, and throws loudly if that assumption is ever wrong. */
 function unreachableJobEnv<T>(reason: string): JobPollEnv<T> {
   return {
     submitJob: () => {
@@ -149,6 +160,22 @@ function unreachableJobEnv<T>(reason: string): JobPollEnv<T> {
     pollJob: () => {
       throw new Error(reason);
     },
+  };
+}
+
+/** `aiMove`/`analyze` are real jobs -- unlike the slices `unreachableJobEnv`
+ * above serves, a `"tick"` genuinely arrives once `submitJob` comes back
+ * `pending`, and `jobPollReduce` calls `pollJob` for it. Used for the
+ * forwarded `"job"` branch, where there's no in-flight `strategy`/state to
+ * rebuild a `submitJob` from (and none is needed -- `jobPollReduce` never
+ * calls it there); the "request" branch below builds a full `JobPollEnv`
+ * instead, with a real `submitJob` alongside the same `pollJob`. */
+function pollingJobEnv<T>(pollJob: (jobId: string) => Effect<JobPollResult<T>>): JobPollEnv<T> {
+  return {
+    submitJob: () => {
+      throw new Error("unreachable: a forwarded job action never resubmits");
+    },
+    pollJob,
   };
 }
 
@@ -433,13 +460,8 @@ export function appReducer<S, M, V = unknown>(
       const { strategy } = ja;
       const startEpoch = draft.epoch;
       const jobEnv: JobPollEnv<AiMoveResult<S, M, V>> = {
-        submitJob: () =>
-          env
-            .aiMove<S, M, V>(gameKind, current.state, strategy)
-            .map((result): JobSubmitResult<AiMoveResult<S, M, V>> => ({ status: "done", result })),
-        pollJob: () => {
-          throw new Error("unreachable: ai_move resolves synchronously (see submitJob above)");
-        },
+        submitJob: () => env.aiMove<S, M, V>(gameKind, current.state, strategy),
+        pollJob: (jobId) => env.pollAiMove<S, M, V>(jobId),
       };
       const eff = jobPollReduce(draft.aiMove, { tag: "start" }, jobEnv);
       return eff
@@ -452,11 +474,16 @@ export function appReducer<S, M, V = unknown>(
     }
     // A response from a game that's since been replaced by "New Game" --
     // drop it rather than grafting a stale move onto the new game's tree.
+    // This also quietly abandons any still-in-flight poll loop for the
+    // superseded job: no further "tick" is ever dispatched for it, so the
+    // server-side job (if it hasn't finished already) is simply left to run
+    // to completion and expire unread -- see `jobs.rs`'s doc comment on why
+    // that's fine.
     if (action.epoch !== undefined && action.epoch !== draft.epoch) return null;
     const eff = jobPollReduce(
       draft.aiMove,
       ja.action,
-      unreachableJobEnv("unreachable: a forwarded aiMove/job action never re-submits or polls"),
+      pollingJobEnv((jobId) => env.pollAiMove<S, M, V>(jobId)),
     );
     if (draft.aiMove.status === "done" && draft.aiMove.result) {
       const { move, state, search } = draft.aiMove.result;
@@ -500,13 +527,8 @@ export function appReducer<S, M, V = unknown>(
       const { strategy, budgetMs } = ja;
       const startEpoch = draft.epoch;
       const jobEnv: JobPollEnv<Analysis<M>> = {
-        submitJob: () =>
-          env
-            .analyze<S, M>(gameKind, current.state, strategy, budgetMs)
-            .map((result): JobSubmitResult<Analysis<M>> => ({ status: "done", result })),
-        pollJob: () => {
-          throw new Error("unreachable: analyze resolves synchronously (see submitJob above)");
-        },
+        submitJob: () => env.analyze<S, M>(gameKind, current.state, strategy, budgetMs),
+        pollJob: (jobId) => env.pollAnalyze<M>(jobId),
       };
       const eff = jobPollReduce(draft.analysis, { tag: "start" }, jobEnv);
       return eff
@@ -517,11 +539,14 @@ export function appReducer<S, M, V = unknown>(
           }))
         : null;
     }
+    // Same reasoning as `aiMove` above: a superseded job's poll loop just
+    // stops, and the server-side job (if still running) is left to finish
+    // and expire unread.
     if (action.epoch !== undefined && action.epoch !== draft.epoch) return null;
     const eff = jobPollReduce(
       draft.analysis,
       ja.action,
-      unreachableJobEnv("unreachable: a forwarded analysis/job action never re-submits or polls"),
+      pollingJobEnv((jobId) => env.pollAnalyze<M>(jobId)),
     );
     return eff
       ? eff.map((a): AppAction<S, M, V> => ({

@@ -9,7 +9,7 @@
 //      (the type reducers actually receive) is defined in reducer.ts, not
 //      here -- see that file's header comment for why.
 
-import { Effect } from "@mcts/core";
+import { Effect, type JobPollResult, type JobSubmitResult } from "@mcts/core";
 import type { Env } from "./reducer.js";
 import type {
   AiMoveResult,
@@ -41,17 +41,28 @@ export interface ApiClient {
   view<S, V = unknown>(kind: string, state: S): Promise<V>;
   apply<S, M, V = unknown>(kind: string, state: S, move: M): Promise<StateAndView<S, V>>;
   aiPresets(kind: string): Promise<AiPresetInfo[]>;
+  /** Submits an `ai_move` job (`POST /api/games/{kind}/ai_move`) --
+   * resolves to `{status: "done", result}` if the search finished within the
+   * server's short grace period, or `{status: "pending", jobId}` otherwise.
+   * A long search (seconds to minutes) never holds this request open; poll
+   * its outcome with `pollAiMove`. */
   aiMove<S, M, V = unknown>(
     kind: string,
     state: S,
     strategy: AiStrategyRef,
-  ): Promise<AiMoveResult<S, M, V>>;
+  ): Promise<JobSubmitResult<AiMoveResult<S, M, V>>>;
+  /** Polls an `ai_move`/`analyze` job (`GET /api/jobs/{id}`) -- both share
+   * the same job store server-side, so the same route serves either; the
+   * generic type parameter is purely a client-side convenience. */
+  pollAiMove<S, M, V = unknown>(jobId: string): Promise<JobPollResult<AiMoveResult<S, M, V>>>;
+  /** Submits an `analyze` job -- same submit/poll contract as `aiMove`. */
   analyze<S, M>(
     kind: string,
     state: S,
     strategy: AiStrategyRef,
     budgetMs?: number,
-  ): Promise<Analysis<M>>;
+  ): Promise<JobSubmitResult<Analysis<M>>>;
+  pollAnalyze<M>(jobId: string): Promise<JobPollResult<Analysis<M>>>;
   fetchStrategySchema(): Promise<AxisSchema>;
   fetchStrategyAlgorithms(kind: string): Promise<TunerInfo | null>;
 }
@@ -141,23 +152,31 @@ export function createApiClient(
       kind: string,
       state: S,
       strategy: AiStrategyRef,
-    ): Promise<AiMoveResult<S, M, V>> {
+    ): Promise<JobSubmitResult<AiMoveResult<S, M, V>>> {
       return postJson(url(`/api/games/${kindPath(kind)}/ai_move`), {
         state,
         ...strategyBody(strategy),
       });
+    },
+    async pollAiMove<S, M, V = unknown>(
+      jobId: string,
+    ): Promise<JobPollResult<AiMoveResult<S, M, V>>> {
+      return fetchJson(url(`/api/jobs/${encodeURIComponent(jobId)}`));
     },
     async analyze<S, M>(
       kind: string,
       state: S,
       strategy: AiStrategyRef,
       budgetMs?: number,
-    ): Promise<Analysis<M>> {
+    ): Promise<JobSubmitResult<Analysis<M>>> {
       return postJson(url(`/api/games/${kindPath(kind)}/analyze`), {
         state,
         ...strategyBody(strategy),
         budget_ms: budgetMs,
       });
+    },
+    async pollAnalyze<M>(jobId: string): Promise<JobPollResult<Analysis<M>>> {
+      return fetchJson(url(`/api/jobs/${encodeURIComponent(jobId)}`));
     },
     async fetchStrategySchema(): Promise<AxisSchema> {
       return fetchJson(url("/api/strategy-schema"));
@@ -181,7 +200,9 @@ export function createEnv(api: ApiClient): Env {
     aiPresets: (kind: string) => lift(() => api.aiPresets(kind)),
     aiMove: <S, M, V = unknown>(kind: string, state: S, strategy: AiStrategyRef) =>
       lift(() => api.aiMove<S, M, V>(kind, state, strategy)),
+    pollAiMove: <S, M, V = unknown>(jobId: string) => lift(() => api.pollAiMove<S, M, V>(jobId)),
     analyze: <S, M>(kind: string, state: S, strategy: AiStrategyRef, budgetMs?: number) =>
       lift(() => api.analyze<S, M>(kind, state, strategy, budgetMs)),
+    pollAnalyze: <M>(jobId: string) => lift(() => api.pollAnalyze<M>(jobId)),
   };
 }

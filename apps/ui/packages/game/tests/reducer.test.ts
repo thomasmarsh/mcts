@@ -1,14 +1,17 @@
 // tests/reducer.test.ts — Tests for appReducer's aiMove/analysis job-poll
-// wiring: ai_move/analyze are wired through
-// `@mcts/core`'s `jobPollReduce` even though the transport is a single
-// blocking request, not a real submit-then-poll pair -- `submitJob()`
-// resolves directly to `{status: "done", result}`. These tests confirm that
-// synchronous-resolve path produces the same status transitions a real poll
-// loop would (mirrors pb/ui/tests/features/diagrams.test.ts's
-// "populates ... via the job-poll cache-hit ('done') path" test).
+// wiring: `ai_move`/`analyze` are real submit-then-poll jobs (the server
+// can run a search for however long a preset/custom config takes, never
+// holding the request open -- see apps/server/src/jobs.rs), so
+// `env.aiMove`/`env.analyze` resolve to a `JobSubmitResult` (`done` or
+// `pending`) and `env.pollAiMove`/`env.pollAnalyze` resolve to a
+// `JobPollResult` (`pending`/`done`/`error`) that `jobPollReduce` drives via
+// `tick`/`polled` actions. Most tests below mock a `done`-on-submit env
+// (mirrors pb/ui/tests/features/diagrams.test.ts's "populates ... via the
+// job-poll cache-hit ('done') path" test); the dedicated "stays pending
+// across several polls" tests exercise the real tick/backoff loop instead.
 
 import { describe, it, expect } from "vitest";
-import { Effect } from "@mcts/core";
+import { Effect, type JobPollResult, type JobSubmitResult } from "@mcts/core";
 import { createTestStore } from "../../../tests/test-store.js";
 import { appReducer, type AppAction, type Env } from "../src/reducer.js";
 import { initialAppState, type AppState } from "../src/state.js";
@@ -60,7 +63,9 @@ const mockEnv: Env = {
   apply: () => Effect.none(),
   aiPresets: () => Effect.none(),
   aiMove: () => Effect.none(),
+  pollAiMove: () => Effect.none(),
   analyze: () => Effect.none(),
+  pollAnalyze: () => Effect.none(),
 };
 
 describe("appReducer / aiMove", () => {
@@ -77,7 +82,9 @@ describe("appReducer / aiMove", () => {
       // (appReducer, below) is itself instantiated at S/M for this test.
       aiMove: <S2, M2, V2 = unknown>(kind: string, state: S2, strategy: AiStrategyRef) => {
         seen.push({ kind, state: state as unknown as S, strategy });
-        return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
+        return Effect.send({ status: "done", result }) as unknown as Effect<
+          JobSubmitResult<AiMoveResult<S2, M2, V2>>
+        >;
       },
     };
     const init = initialAppState<S, M>("druid", 7);
@@ -162,7 +169,9 @@ describe("appReducer / aiMove", () => {
       ...mockEnv,
       aiMove: <S2, M2, V2 = unknown>(_kind: string, _state: S2, strategy: AiStrategyRef) => {
         seen.push(strategy);
-        return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
+        return Effect.send({ status: "done", result }) as unknown as Effect<
+          JobSubmitResult<AiMoveResult<S2, M2, V2>>
+        >;
       },
     };
     const init = initialAppState<S, M>("druid", 7);
@@ -237,6 +246,115 @@ describe("appReducer / aiMove", () => {
       },
     );
   });
+
+  // This is the real submit-then-poll loop, not the synchronous-resolve
+  // shortcut every other test in this file uses: `env.aiMove` comes back
+  // `pending`, and `env.pollAiMove` reports `pending` three times in a row
+  // (each one scheduling the next `tick` after `jobPollReduce`'s own
+  // exponential backoff -- see job-poll.ts's `nextDelayMs`) before finally
+  // reporting `done`. Exercises the exact mechanism a long-running search
+  // (tens of seconds to minutes) drives in production.
+  it("stays pending across several polls, then completes", () => {
+    const report = searchReport("b");
+    const result: AiMoveResult<S, M> = { move: "b", state: 1, view: {}, search: report };
+    const pollResults: JobPollResult<AiMoveResult<S, M>>[] = [
+      { status: "pending" },
+      { status: "pending" },
+      { status: "pending" },
+      { status: "done", result },
+    ];
+    let pollIndex = 0;
+    const env: Env = {
+      ...mockEnv,
+      aiMove: <S2, M2, V2 = unknown>() =>
+        Effect.send({ status: "pending", jobId: "job-1" }) as unknown as Effect<
+          JobSubmitResult<AiMoveResult<S2, M2, V2>>
+        >,
+      pollAiMove: <S2, M2, V2 = unknown>(jobId: string) => {
+        expect(jobId).toBe("job-1");
+        const next = pollResults[pollIndex]!;
+        pollIndex += 1;
+        return Effect.send(next) as unknown as Effect<JobPollResult<AiMoveResult<S2, M2, V2>>>;
+      },
+    };
+    const init = initialAppState<S, M>("druid", 7);
+    const ts = createTestStore(appReducer<S, M>, env, init);
+
+    ts.send(
+      { tag: "aiMove", action: { tag: "request", strategy: { kind: "preset", id: "master" } } },
+      (s) => {
+        s.aiMove.status = "pending";
+      },
+    );
+    ts.receive(
+      {
+        tag: "aiMove",
+        action: {
+          tag: "job",
+          action: { tag: "submitted", result: { status: "pending", jobId: "job-1" } },
+        },
+        epoch: 0,
+      },
+      (s) => {
+        s.aiMove.jobId = "job-1";
+      },
+    );
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      ts.receive(
+        { tag: "aiMove", action: { tag: "job", action: { tag: "tick", jobId: "job-1" } }, epoch: 0 },
+        () => {},
+      );
+      ts.receive(
+        {
+          tag: "aiMove",
+          action: {
+            tag: "job",
+            action: { tag: "polled", jobId: "job-1", result: { status: "pending" } },
+          },
+          epoch: 0,
+        },
+        (s) => {
+          s.aiMove.attempt = attempt;
+        },
+      );
+      ts.advance(Math.min(300 * 2 ** (attempt - 1), 2000));
+    }
+
+    ts.receive(
+      { tag: "aiMove", action: { tag: "job", action: { tag: "tick", jobId: "job-1" } }, epoch: 0 },
+      () => {},
+    );
+    ts.receive(
+      {
+        tag: "aiMove",
+        action: {
+          tag: "job",
+          action: { tag: "polled", jobId: "job-1", result: { status: "done", result } },
+        },
+        epoch: 0,
+      },
+      (s) => {
+        s.aiMove.status = "done";
+        s.aiMove.result = result;
+        const rootId = s.tree.rootId;
+        const nextId = `n${s.tree.nextId}`;
+        s.tree.nodes[rootId]!.childIds.push(nextId);
+        s.tree.nodes[nextId] = {
+          id: nextId,
+          state: result.state,
+          move: result.move,
+          search: report,
+          parentId: rootId,
+          childIds: [],
+        };
+        s.tree.currentId = nextId;
+        s.tree.nextId += 1;
+      },
+    );
+
+    expect(pollIndex).toBe(4);
+  });
 });
 
 describe("appReducer / analysis", () => {
@@ -250,7 +368,8 @@ describe("appReducer / analysis", () => {
     };
     const env: Env = {
       ...mockEnv,
-      analyze: <M2>() => Effect.send(result) as unknown as Effect<Analysis<M2>>,
+      analyze: <M2>() =>
+        Effect.send({ status: "done", result }) as unknown as Effect<JobSubmitResult<Analysis<M2>>>,
     };
     const init = initialAppState<S, M>("test-kind", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
@@ -301,7 +420,9 @@ describe("appReducer / analysis", () => {
       ...mockEnv,
       analyze: <M2>(_kind: string, _state: unknown, strategy: AiStrategyRef, budgetMs?: number) => {
         seen.push({ strategy, budgetMs });
-        return Effect.send(result) as unknown as Effect<Analysis<M2>>;
+        return Effect.send({ status: "done", result }) as unknown as Effect<
+          JobSubmitResult<Analysis<M2>>
+        >;
       },
     };
     const init = initialAppState<S, M>("test-kind", 0);
@@ -341,7 +462,8 @@ describe("appReducer / analysis", () => {
     };
     const env: Env = {
       ...mockEnv,
-      analyze: <M2>() => Effect.send(result) as unknown as Effect<Analysis<M2>>,
+      analyze: <M2>() =>
+        Effect.send({ status: "done", result }) as unknown as Effect<JobSubmitResult<Analysis<M2>>>,
     };
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);
@@ -383,7 +505,10 @@ describe("appReducer / analysis", () => {
     const moveResult: StateAndView<S> = { state: 1, view: {} };
     const env: Env = {
       ...mockEnv,
-      analyze: <M2>() => Effect.send(analysisResult) as unknown as Effect<Analysis<M2>>,
+      analyze: <M2>() =>
+        Effect.send({ status: "done", result: analysisResult }) as unknown as Effect<
+          JobSubmitResult<Analysis<M2>>
+        >,
       apply: <S2, V2 = unknown>() =>
         Effect.send(moveResult) as unknown as Effect<StateAndView<S2, V2>>,
     };
@@ -545,7 +670,9 @@ describe("appReducer / position", () => {
     const env: Env = {
       ...positionEnv,
       aiMove: <S2, M2, V2 = unknown>() =>
-        Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>,
+        Effect.send({ status: "done", result }) as unknown as Effect<
+          JobSubmitResult<AiMoveResult<S2, M2, V2>>
+        >,
     };
     const init = initialAppState<S, M>("druid", 0);
     const ts = createTestStore(appReducer<S, M>, env, init);

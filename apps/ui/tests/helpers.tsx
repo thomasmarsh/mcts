@@ -73,7 +73,9 @@ export const mockEnv: Env = {
   apply: () => Effect.none(),
   aiPresets: () => Effect.none(),
   aiMove: () => Effect.none(),
+  pollAiMove: () => Effect.none(),
   analyze: () => Effect.none(),
+  pollAnalyze: () => Effect.none(),
 };
 
 export interface TestStoreResult {

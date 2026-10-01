@@ -9,7 +9,7 @@ mcts-bench = { path = "../../crates/mcts-bench" }
 mcts-tune = { path = "../../crates/mcts-tune" }
 game-host = { path = "../game-host" }
 axum = "0.8.9"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 tower-http = { version = "0.7.0", features = ["fs", "cors", "timeout"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

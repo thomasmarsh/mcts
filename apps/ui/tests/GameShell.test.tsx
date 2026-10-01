@@ -31,7 +31,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@solidjs/testing-library";
-import { Effect } from "@mcts/core";
+import { Effect, type JobSubmitResult } from "@mcts/core";
 import type {
   AiMoveResult,
   Analysis,
@@ -85,9 +85,10 @@ function makeFakeEnv(): Env {
       if (cur >= TERMINAL_AT)
         throw new Error("aiMove called at/after TERMINAL_AT -- the frontier guard regressed");
       const next = cur + 1;
-      return Effect.send({ move: "inc", state: next, view: viewFor(next) }) as unknown as Effect<
-        AiMoveResult<S2, M2, V2>
-      >;
+      return Effect.send({
+        status: "done",
+        result: { move: "inc", state: next, view: viewFor(next) },
+      }) as unknown as Effect<JobSubmitResult<AiMoveResult<S2, M2, V2>>>;
     },
   };
 }
@@ -139,9 +140,10 @@ function makeInspectorEnv(
     ...makeFakeEnv(),
     aiPresets: () => Effect.send([{ id: "strong", label: "Strong", description: "test" }]),
     analyze: <M2,>() =>
-      Effect.send(options.analysis ?? analysisResult(searchReport(17))) as unknown as Effect<
-        Analysis<M2>
-      >,
+      Effect.send({
+        status: "done",
+        result: options.analysis ?? analysisResult(searchReport(17)),
+      }) as unknown as Effect<JobSubmitResult<Analysis<M2>>>,
     aiMove: <S2, M2, V2 = unknown>(_kind: string, state: S2) => {
       const current = state as unknown as number;
       const result: AiMoveResult<number, string, FakeView> = {
@@ -152,7 +154,9 @@ function makeInspectorEnv(
           ? { search: searchReport(5) }
           : { search: options.aiSearch }),
       };
-      return Effect.send(result) as unknown as Effect<AiMoveResult<S2, M2, V2>>;
+      return Effect.send({ status: "done", result }) as unknown as Effect<
+        JobSubmitResult<AiMoveResult<S2, M2, V2>>
+      >;
     },
   };
 }
@@ -525,16 +529,16 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
   });
 
   it("drops an analysis response that completes after a new game", async () => {
-    let resolveAnalysis: ((result: Analysis<string>) => void) | undefined;
+    let resolveAnalysis: ((result: JobSubmitResult<Analysis<string>>) => void) | undefined;
     const env: Env = {
       ...makeInspectorEnv(),
       analyze: <M2,>() =>
         Effect.fromPromise(
           () =>
-            new Promise<Analysis<string>>((resolve) => {
+            new Promise<JobSubmitResult<Analysis<string>>>((resolve) => {
               resolveAnalysis = resolve;
             }),
-        ) as unknown as Effect<Analysis<M2>>,
+        ) as unknown as Effect<JobSubmitResult<Analysis<M2>>>,
     };
     const { store } = createTestStore("fake", env);
     render(() => (
@@ -551,7 +555,7 @@ describe("GameShell live search inspection (fake game, no real server)", () => {
     fireEvent.click(screen.getByRole("button", { name: "New Game" }));
     fireEvent.click(document.getElementById("new-game-start")!);
     await vi.waitFor(() => expect(store.state.epoch).toBe(2));
-    resolveAnalysis!(analysisResult(searchReport(99)));
+    resolveAnalysis!({ status: "done", result: analysisResult(searchReport(99)) });
     await vi.waitFor(() => expect(store.state.analysis.status).toBe("idle"));
     expect(document.getElementById("analysis-panel")?.textContent).not.toContain("99");
   });

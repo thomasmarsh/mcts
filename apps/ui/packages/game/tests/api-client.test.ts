@@ -2,9 +2,12 @@
 // flattening this phase adds to `aiMove`/`analyze` (a named preset becomes
 // `{preset: id}`, a custom spec becomes `{preset: "custom", custom: spec}`,
 // matching `server::main::AiMoveRequest`/`AnalyzeRequest`'s actual shape --
-// see api-client.ts's `strategyBody` doc comment), plus the new
-// `fetchStrategySchema` route. Against a stubbed `fetch`, same convention as
-// `packages/bench/tests/api-client.test.ts` -- no live server involved.
+// see api-client.ts's `strategyBody` doc comment), the new
+// `fetchStrategySchema` route, and `aiMove`/`analyze`'s submit-then-poll
+// envelope (`{status: "done", result}` / `{status: "pending", jobId}`,
+// polled via `GET /api/jobs/{id}`). Against a stubbed `fetch`, same
+// convention as `packages/bench/tests/api-client.test.ts` -- no live server
+// involved.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApiClient } from "../src/api-client.js";
@@ -34,6 +37,13 @@ function stubFetch(body: unknown): CapturedCall[] {
 
 function bodyOf(call: CapturedCall): unknown {
   return JSON.parse(call.init!.body as string);
+}
+
+/** Wraps a fixture in `aiMove`/`analyze`'s `done` envelope -- what the
+ * server actually sends when a search finishes within its grace period
+ * (see `apps/server/src/jobs.rs`). */
+function done(result: unknown): unknown {
+  return { status: "done", result };
 }
 
 const nullablePartialReport: SearchReport<string> = {
@@ -71,7 +81,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("createApiClient / AiStrategyRef wire shape", () => {
   it("aiMove sends {preset: id} for a named preset, no custom key", async () => {
-    const calls = stubFetch({ move: "x", state: {}, view: {} });
+    const calls = stubFetch(done({ move: "x", state: {}, view: {} }));
     const api = createApiClient();
     const strategy: AiStrategyRef = { kind: "preset", id: "master" };
 
@@ -82,7 +92,7 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
   });
 
   it("aiMove sends {preset: 'custom', custom: spec} for a custom strategy", async () => {
-    const calls = stubFetch({ move: "x", state: {}, view: {} });
+    const calls = stubFetch(done({ move: "x", state: {}, view: {} }));
     const api = createApiClient();
     const strategy: AiStrategyRef = {
       kind: "custom",
@@ -107,12 +117,14 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
   });
 
   it("analyze forwards the strategy the same way plus budget_ms", async () => {
-    const calls = stubFetch({
-      actions: [],
-      principal_variation: [],
-      total_visits: 0,
-      suggested_move: null,
-    });
+    const calls = stubFetch(
+      done({
+        actions: [],
+        principal_variation: [],
+        total_visits: 0,
+        suggested_move: null,
+      }),
+    );
     const api = createApiClient();
 
     await api.analyze("druid", { some: "state" }, { kind: "preset", id: "strong" }, 1500);
@@ -125,24 +137,30 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
   });
 
   it("preserves complete snake_case search reports and legacy search forms", async () => {
-    const aiCalls = stubFetch({ move: "x", state: {}, view: {}, search: nullablePartialReport });
+    const aiCalls = stubFetch(
+      done({ move: "x", state: {}, view: {}, search: nullablePartialReport }),
+    );
     const api = createApiClient();
 
     const aiMove = await api.aiMove("druid", { some: "state" }, { kind: "preset", id: "strong" });
 
     expect(aiCalls[0]!.url).toBe("/api/games/druid/ai_move");
     expect(bodyOf(aiCalls[0]!)).toEqual({ state: { some: "state" }, preset: "strong" });
-    expect(aiMove.search).toEqual(nullablePartialReport);
-    expect(aiMove.search?.elapsed_seconds).toBeNull();
-    expect(aiMove.search?.tt_hit_ratio).toBeNull();
+    expect(aiMove.status).toBe("done");
+    if (aiMove.status !== "done") throw new Error("unreachable");
+    expect(aiMove.result.search).toEqual(nullablePartialReport);
+    expect(aiMove.result.search?.elapsed_seconds).toBeNull();
+    expect(aiMove.result.search?.tt_hit_ratio).toBeNull();
 
-    const analysisCalls = stubFetch({
-      actions: [],
-      principal_variation: [],
-      total_visits: 0,
-      suggested_move: null,
-      search: unavailableReport,
-    });
+    const analysisCalls = stubFetch(
+      done({
+        actions: [],
+        principal_variation: [],
+        total_visits: 0,
+        suggested_move: null,
+        search: unavailableReport,
+      }),
+    );
     const analysis = await api.analyze(
       "druid",
       { some: "state" },
@@ -151,25 +169,65 @@ describe("createApiClient / AiStrategyRef wire shape", () => {
 
     expect(analysisCalls[0]!.url).toBe("/api/games/druid/analyze");
     expect(bodyOf(analysisCalls[0]!)).toEqual({ state: { some: "state" }, preset: "random" });
-    expect(analysis.search).toEqual(unavailableReport);
+    expect(analysis.status).toBe("done");
+    if (analysis.status !== "done") throw new Error("unreachable");
+    expect(analysis.result.search).toEqual(unavailableReport);
 
-    const legacyCalls = stubFetch({
-      actions: [],
-      principal_variation: [],
-      total_visits: 0,
-      suggested_move: null,
-      search: null,
-    });
+    const legacyCalls = stubFetch(
+      done({
+        actions: [],
+        principal_variation: [],
+        total_visits: 0,
+        suggested_move: null,
+        search: null,
+      }),
+    );
     const legacy = await api.analyze("druid", { some: "state" }, { kind: "preset", id: "easy" });
 
     expect(legacyCalls[0]!.url).toBe("/api/games/druid/analyze");
-    expect(legacy.search).toBeNull();
+    if (legacy.status !== "done") throw new Error("unreachable");
+    expect(legacy.result.search).toBeNull();
 
-    const absentCalls = stubFetch({ move: "x", state: {}, view: {} });
+    const absentCalls = stubFetch(done({ move: "x", state: {}, view: {} }));
     const absent = await api.aiMove("druid", { some: "state" }, { kind: "preset", id: "easy" });
 
     expect(absentCalls[0]!.url).toBe("/api/games/druid/ai_move");
-    expect(absent.search).toBeUndefined();
+    if (absent.status !== "done") throw new Error("unreachable");
+    expect(absent.result.search).toBeUndefined();
+  });
+
+  it("aiMove/analyze pass through a pending envelope unchanged", async () => {
+    stubFetch({ status: "pending", jobId: "job-1" });
+    const api = createApiClient();
+
+    const aiMove = await api.aiMove("druid", { some: "state" }, { kind: "preset", id: "master" });
+    expect(aiMove).toEqual({ status: "pending", jobId: "job-1" });
+
+    stubFetch({ status: "pending", jobId: "job-2" });
+    const analysis = await api.analyze("druid", { some: "state" }, { kind: "preset", id: "strong" });
+    expect(analysis).toEqual({ status: "pending", jobId: "job-2" });
+  });
+
+  it("pollAiMove/pollAnalyze both GET /api/jobs/{id}", async () => {
+    const calls = stubFetch({ status: "pending" });
+    const api = createApiClient();
+
+    await api.pollAiMove("job-1");
+    expect(calls[0]!.url).toBe("/api/jobs/job-1");
+
+    await api.pollAnalyze("job-2");
+    expect(calls[1]!.url).toBe("/api/jobs/job-2");
+  });
+
+  it("pollAiMove resolves a done/error poll result the same way submit's inline done does", async () => {
+    stubFetch(done({ move: "x", state: {}, view: {} }));
+    const api = createApiClient();
+    const polled = await api.pollAiMove("job-1");
+    expect(polled).toEqual({ status: "done", result: { move: "x", state: {}, view: {} } });
+
+    stubFetch({ status: "error", error: "subprocess crashed" });
+    const errored = await api.pollAnalyze("job-2");
+    expect(errored).toEqual({ status: "error", error: "subprocess crashed" });
   });
 
   it("fetchStrategySchema GETs /api/strategy-schema", async () => {

@@ -66,9 +66,18 @@ function makeEnv(): Env {
       return Effect.send({ state: { ...state }, view: viewOf(state) });
     },
     aiPresets: () => Effect.send([]),
-    aiMove: () => Effect.send({ move: 0, state: { ...state }, view: viewOf(state) }),
+    aiMove: () =>
+      Effect.send({
+        status: "done",
+        result: { move: 0, state: { ...state }, view: viewOf(state) },
+      }),
+    pollAiMove: () => Effect.none(),
     analyze: () =>
-      Effect.send({ actions: [], principal_variation: [], total_visits: 0, suggested_move: null }),
+      Effect.send({
+        status: "done",
+        result: { actions: [], principal_variation: [], total_visits: 0, suggested_move: null },
+      }),
+    pollAnalyze: () => Effect.none(),
   };
 }
 

@@ -9,6 +9,7 @@
 
 mod adapter;
 mod bench;
+mod jobs;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use axum::{
     extract::DefaultBodyLimit,
     extract::Path,
     extract::State as AxumState,
-    http::{HeaderValue, Method, StatusCode},
+    http::{HeaderValue, Method},
     middleware::Next,
     response::{Json, Response},
     routing::{get, post},
@@ -29,16 +30,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tower_http::{cors::CorsLayer, services::ServeDir, timeout::TimeoutLayer};
+use tower_http::{cors::CorsLayer, services::ServeDir};
 
-use adapter::{AdapterError, AiMoveResult, AiPresetInfo, Analysis, GameAdapter};
+use adapter::{AdapterError, AiMoveResult, AiPresetInfo, GameAdapter};
 use game_host::{SearchReport, TunerInfo};
-
-// A stateless server still shouldn't let a client tie up a `spawn_blocking`
-// thread indefinitely -- this bounds `ai_move`/`analyze` well above the
-// slowest preset's default budget (Druid's Master, 8s) so it only ever
-// fires on a genuinely stuck/abusive request, not normal use.
-const AI_ROUTE_TIMEOUT: Duration = Duration::from_secs(30);
+use jobs::JobStore;
 
 // No request body this API accepts is legitimately large -- every route
 // takes a single game state/move, and Druid's board (this repo's biggest
@@ -48,6 +44,10 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 struct AppState {
     games: Arc<HashMap<&'static str, Arc<dyn GameAdapter>>>,
+    /// Backs `ai_move`/`analyze`'s submit+poll API (see `jobs.rs`) -- the
+    /// only server-side state this otherwise-stateless app carries, and
+    /// deliberately ephemeral: nothing here needs to survive a restart.
+    jobs: JobStore,
 }
 
 fn find_adapter(app: &AppState, kind: &str) -> Result<Arc<dyn GameAdapter>, AdapterError> {
@@ -197,32 +197,42 @@ struct AiMoveResponse {
     search: Option<SearchReport>,
 }
 
-// Runs on a blocking thread -- the search is CPU-bound for its whole
-// thinking budget (up to Master's 8s) and would otherwise stall the async
+// Runs on a blocking thread, via `JobStore::submit` -- the search is
+// CPU-bound for its whole thinking budget (seconds to minutes for a large
+// preset or custom iteration count) and would otherwise stall the async
 // executor. Unlike the old session-`Mutex`-based server, there's no shared
 // game state that could change out from under this call while it runs: the
 // state came in as a request body, not a session read, so there's no "board
 // changed while the AI was thinking" race to handle here anymore.
+//
+// The route itself resolves immediately either way: `submit` only blocks
+// the response for a short grace period (see `jobs::SUBMIT_GRACE`), handing
+// back the finished move if it lands within that window or a job id to poll
+// via `get_job` otherwise. This is what lets a Master-strength search run
+// for however long it actually takes without holding the HTTP request (or
+// the connection behind a reverse proxy/timeout layer) open the whole time.
 async fn post_ai_move(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<AiMoveRequest>,
-) -> Result<Json<AiMoveResponse>, AdapterError> {
+) -> Result<Json<jobs::JobSubmitResponse>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
-    let search_adapter = adapter.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        search_adapter.ai_move(&req.state, &req.preset, req.custom.as_ref())
-    })
-    .await
-    .map_err(|e| AdapterError::internal(e.to_string()))??;
-    let AiMoveResult { mv, state, search } = result;
-    let view = adapter.view(&state)?;
-    Ok(Json(AiMoveResponse {
-        mv,
-        state,
-        view,
-        search,
-    }))
+    let response = app
+        .jobs
+        .submit(jobs::SUBMIT_GRACE, move || {
+            let AiMoveResult { mv, state, search } =
+                adapter.ai_move(&req.state, &req.preset, req.custom.as_ref())?;
+            let view = adapter.view(&state)?;
+            Ok(serde_json::to_value(AiMoveResponse {
+                mv,
+                state,
+                view,
+                search,
+            })
+            .expect("AiMoveResponse always serializes"))
+        })
+        .await?;
+    Ok(Json(response))
 }
 
 #[derive(Deserialize)]
@@ -235,18 +245,37 @@ struct AnalyzeRequest {
     budget_ms: Option<u64>,
 }
 
+// Same submit+poll shape as `post_ai_move` above, for the same reason: a
+// deep `analyze` call is exactly as CPU-bound and exactly as legitimately
+// slow as an `ai_move` one.
 async fn post_analyze(
     AxumState(app): AxumState<Arc<AppState>>,
     Path(kind): Path<String>,
     Json(req): Json<AnalyzeRequest>,
-) -> Result<Json<Analysis>, AdapterError> {
+) -> Result<Json<jobs::JobSubmitResponse>, AdapterError> {
     let adapter = find_adapter(&app, &kind)?;
-    let analysis = tokio::task::spawn_blocking(move || {
-        adapter.analyze(&req.state, &req.preset, req.custom.as_ref(), req.budget_ms)
-    })
-    .await
-    .map_err(|e| AdapterError::internal(e.to_string()))??;
-    Ok(Json(analysis))
+    let response = app
+        .jobs
+        .submit(jobs::SUBMIT_GRACE, move || {
+            let analysis =
+                adapter.analyze(&req.state, &req.preset, req.custom.as_ref(), req.budget_ms)?;
+            Ok(serde_json::to_value(analysis).expect("Analysis always serializes"))
+        })
+        .await?;
+    Ok(Json(response))
+}
+
+/// Polls a job `submit`ted by `post_ai_move`/`post_analyze`. A plain map
+/// lookup -- see `jobs::JobStore::poll` -- so, unlike those two, this route
+/// never has any reason to run slowly.
+async fn get_job(
+    AxumState(app): AxumState<Arc<AppState>>,
+    Path(job_id): Path<String>,
+) -> Result<Json<jobs::JobPollResponse>, AdapterError> {
+    app.jobs
+        .poll(&job_id)
+        .map(Json)
+        .ok_or_else(|| AdapterError::not_found(format!("unknown or already-consumed job {job_id:?}")))
 }
 
 async fn get_strategy_schema() -> Json<Value> {
@@ -257,22 +286,11 @@ async fn get_strategy_schema() -> Json<Value> {
 // (`tower::ServiceExt::oneshot`) without binding a real socket or serving
 // static files.
 fn api_router(app_state: Arc<AppState>) -> Router {
-    // `ai_move`/`analyze` get their own `TimeoutLayer` -- they're the only
-    // routes that run a CPU-bound search on a `spawn_blocking` thread, so
-    // they're the only ones that can legitimately run long enough to need
-    // one. `tower_http`'s `TimeoutLayer` (unlike `tower::timeout`'s) returns
-    // an empty response with the given status directly on elapse rather than
-    // erroring, so it needs no separate error-handling layer to stay
-    // `Infallible` for axum's `Router`.
-    let ai_routes = Router::new()
-        .route("/api/games/{kind}/ai_move", post(post_ai_move))
-        .route("/api/games/{kind}/analyze", post(post_analyze))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::GATEWAY_TIMEOUT,
-            AI_ROUTE_TIMEOUT,
-        ));
-
-    let other_routes = Router::new()
+    // `ai_move`/`analyze` no longer need a route-level timeout layer: both
+    // already resolve quickly on their own (`JobStore::submit`'s grace
+    // period), handing back a job id instead of blocking once a search runs
+    // long. `get_job` is just as fast, since it only ever polls that store.
+    let routes = Router::new()
         .route("/api/games", get(get_games))
         .route("/api/strategy-schema", get(get_strategy_schema))
         .route("/api/games/{kind}/new", post(post_new))
@@ -283,7 +301,10 @@ fn api_router(app_state: Arc<AppState>) -> Router {
         .route(
             "/api/games/{kind}/strategy-algorithms",
             get(get_strategy_algorithms),
-        );
+        )
+        .route("/api/games/{kind}/ai_move", post(post_ai_move))
+        .route("/api/games/{kind}/analyze", post(post_analyze))
+        .route("/api/jobs/{id}", get(get_job));
 
     // Explicitly scoped, not wildcard -- there's no cross-origin need today
     // (the Vite dev proxy and the production `ServeDir` both serve the API
@@ -298,8 +319,7 @@ fn api_router(app_state: Arc<AppState>) -> Router {
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
 
-    other_routes
-        .merge(ai_routes)
+    routes
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(cors)
         .with_state(app_state)
@@ -325,7 +345,23 @@ async fn log_request(req: axum::http::Request<axum::body::Body>, next: Next) -> 
 async fn main() {
     let app_state = Arc::new(AppState {
         games: Arc::new(adapter::registry()),
+        jobs: JobStore::new(),
     });
+
+    // Sweeps `ai_move`/`analyze` jobs nobody ever polled again, bounding the
+    // job store for a client that disconnects mid-search. `JobStore::submit`
+    // also sweeps opportunistically on every call, so this is only a
+    // backstop for a quiet period with no new jobs at all.
+    {
+        let jobs = app_state.jobs.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                jobs.sweep(jobs::JOB_TTL, jobs::MAX_JOBS);
+            }
+        });
+    }
 
     // Open (or create) the benchmark database.  Only the server process ever
     // opens `bench.sqlite` read-write; `bin/bench` and the Python tuner
@@ -456,6 +492,7 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adapter::Analysis;
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode as HttpStatusCode};
     use game_host::{
@@ -473,7 +510,41 @@ mod tests {
             games: TEST_GAMES
                 .get_or_init(|| Arc::new(adapter::registry()))
                 .clone(),
+            jobs: JobStore::new(),
         }))
+    }
+
+    /// Resolves an `ai_move`/`analyze` job-submit response to its result,
+    /// polling `/api/jobs/{id}` if it came back `pending` instead of
+    /// `done` -- the same submit-then-poll loop a real client runs. Most
+    /// presets below are fast enough to finish within the grace period on
+    /// an unloaded machine, but subprocess start-up cost (the first call
+    /// into a given game kind spawns and warms up its subprocess) is itself
+    /// not bounded by that grace period, and varies with however busy the
+    /// machine running these tests happens to be -- asserting `done`
+    /// outright would make these tests flaky under load instead of actually
+    /// exercising the real client contract.
+    async fn resolve_job(app: Router, body: &Value) -> Value {
+        if body["status"] == "done" {
+            return body["result"].clone();
+        }
+        assert_eq!(body["status"], "pending", "unexpected job envelope: {body}");
+        let job_id = body["jobId"].as_str().unwrap().to_string();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let (status, poll_body) = http_get(app.clone(), &format!("/api/jobs/{job_id}")).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            let poll_body = body_json(&poll_body);
+            match poll_body["status"].as_str().unwrap() {
+                "done" => return poll_body["result"].clone(),
+                "error" => panic!("job errored: {poll_body}"),
+                "pending" => {
+                    assert!(Instant::now() < deadline, "job never completed");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => panic!("unexpected job status: {other}"),
+            }
+        }
     }
 
     fn transport_report(status: SearchReportStatus) -> SearchReport {
@@ -568,6 +639,22 @@ mod tests {
             preset: &str,
             _custom: Option<&Value>,
         ) -> Result<AiMoveResult, AdapterError> {
+            // "slow"/"slow_error" stand in for a long-running search in the
+            // job-lifecycle tests below -- a real sleep, past `SUBMIT_GRACE`,
+            // so `post_ai_move` deterministically falls back to a `pending`
+            // response instead of racing the grace-period timer.
+            if preset == "slow" {
+                std::thread::sleep(jobs::SUBMIT_GRACE + Duration::from_millis(150));
+                return Ok(AiMoveResult {
+                    mv: json!("chosen"),
+                    state: json!({ "position": "after" }),
+                    search: None,
+                });
+            }
+            if preset == "slow_error" {
+                std::thread::sleep(jobs::SUBMIT_GRACE + Duration::from_millis(150));
+                return Err(AdapterError::internal("slow search failed"));
+            }
             Ok(AiMoveResult {
                 mv: json!("chosen"),
                 state: json!({ "position": "after" }),
@@ -606,7 +693,10 @@ mod tests {
             "transport",
             Arc::new(TransportAdapter) as Arc<dyn GameAdapter>,
         )]));
-        api_router(Arc::new(AppState { games }))
+        api_router(Arc::new(AppState {
+            games,
+            jobs: JobStore::new(),
+        }))
     }
 
     async fn http_get(app: Router, uri: &str) -> (HttpStatusCode, axum::body::Bytes) {
@@ -663,7 +753,7 @@ mod tests {
             let (status, body) =
                 http_post_json(app.clone(), "/api/games/transport/ai_move", request.clone()).await;
             assert_eq!(status, HttpStatusCode::OK);
-            let ai_move = body_json(&body);
+            let ai_move = resolve_job(app.clone(), &body_json(&body)).await;
             assert_eq!(ai_move["move"], "chosen");
             assert_eq!(ai_move["state"]["position"], "after");
             assert_eq!(ai_move["view"], json!({ "view_of": "after" }));
@@ -671,7 +761,7 @@ mod tests {
             let (status, body) =
                 http_post_json(app.clone(), "/api/games/transport/analyze", request).await;
             assert_eq!(status, HttpStatusCode::OK);
-            let analysis = body_json(&body);
+            let analysis = resolve_job(app.clone(), &body_json(&body)).await;
             assert_eq!(analysis["suggested_move"], "chosen");
             assert_eq!(analysis["actions"][0]["action"], "chosen");
 
@@ -829,13 +919,16 @@ mod tests {
         let state = forced_win_state(app.clone()).await;
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/druid/analyze",
             json!({ "state": state, "preset": "easy", "budget_ms": u64::MAX }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        assert_ne!(body_json(&body)["suggested_move"], serde_json::Value::Null);
+        assert_ne!(
+            resolve_job(app, &body_json(&body)).await["suggested_move"],
+            serde_json::Value::Null
+        );
     }
 
     #[tokio::test]
@@ -925,16 +1018,16 @@ mod tests {
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let after_white = body_json(&body)["state"].clone();
+        let after_white = resolve_job(app.clone(), &body_json(&body)).await["state"].clone();
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/druid/ai_move",
             json!({ "state": after_white, "preset": "easy" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let body = body_json(&body);
+        let body = resolve_job(app, &body_json(&body)).await;
         assert_eq!(body["view"]["winner"], "Black");
     }
 
@@ -944,13 +1037,13 @@ mod tests {
         let state = forced_win_state(app.clone()).await;
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/druid/analyze",
             json!({ "state": state, "preset": "easy" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let analysis = body_json(&body);
+        let analysis = resolve_job(app, &body_json(&body)).await;
 
         let suggested = analysis["suggested_move"].clone();
         assert_ne!(suggested, serde_json::Value::Null);
@@ -1140,13 +1233,13 @@ mod tests {
         let state = forced_block_state(app.clone()).await;
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/ttt/ai_move",
             json!({ "state": state, "preset": "strong" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let body = body_json(&body);
+        let body = resolve_job(app, &body_json(&body)).await;
         assert_eq!(
             body["move"], 7,
             "expected the forced block at cell 7: {body}"
@@ -1159,13 +1252,13 @@ mod tests {
         let state = forced_block_state(app.clone()).await;
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/ttt/analyze",
             json!({ "state": state, "preset": "strong" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let analysis = body_json(&body);
+        let analysis = resolve_job(app, &body_json(&body)).await;
 
         assert_eq!(
             analysis["suggested_move"], 7,
@@ -1324,13 +1417,13 @@ mod tests {
         let state = new_tl_state(app.clone()).await;
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/traffic-lights/ai_move",
             json!({ "state": state, "preset": "easy" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let body = body_json(&body);
+        let body = resolve_job(app, &body_json(&body)).await;
         let mv = body["move"].as_u64().unwrap() as u8;
         let index = (mv >> 2) as usize;
         assert!(
@@ -1387,7 +1480,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        let resp = body_json(&body);
+        let resp = resolve_job(app.clone(), &body_json(&body)).await;
         let ai_move: u8 = serde_json::from_value(resp["move"].clone()).unwrap();
         assert!(
             pre_ai.contains(&ai_move),
@@ -1456,15 +1549,150 @@ mod tests {
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        assert_eq!(body_json(&body)["view"]["winner"], serde_json::Value::Null);
+        assert_eq!(
+            resolve_job(app.clone(), &body_json(&body)).await["view"]["winner"],
+            serde_json::Value::Null
+        );
 
         let (status, body) = http_post_json(
-            app,
+            app.clone(),
             "/api/games/druid/ai_move",
             json!({ "state": state, "preset": "medium" }),
         )
         .await;
         assert_eq!(status, HttpStatusCode::OK);
-        assert_eq!(body_json(&body)["view"]["winner"], serde_json::Value::Null);
+        assert_eq!(
+            resolve_job(app, &body_json(&body)).await["view"]["winner"],
+            serde_json::Value::Null
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Job lifecycle: submit, pending, done, error, and a job id that's been
+    // consumed/expired. `transport`'s "slow"/"slow_error" presets sleep past
+    // `SUBMIT_GRACE` deterministically, so these never race the grace-period
+    // timer the way a real search's duration would.
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ai_move_job_completes_inline_within_the_grace_period() {
+        let app = transport_test_app();
+        let (status, body) = http_post_json(
+            app,
+            "/api/games/transport/ai_move",
+            json!({ "state": { "position": "before" }, "preset": "available" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        assert_eq!(body["status"], "done");
+        assert_eq!(body["result"]["move"], "chosen");
+    }
+
+    #[tokio::test]
+    async fn test_slow_ai_move_goes_pending_then_done_via_get_job() {
+        let app = transport_test_app();
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/transport/ai_move",
+            json!({ "state": { "position": "before" }, "preset": "slow" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let body = body_json(&body);
+        assert_eq!(body["status"], "pending");
+        let job_id = body["jobId"].as_str().unwrap().to_string();
+
+        // Pending until the slow preset's sleep finishes -- poll a few times
+        // immediately, same as a client's first several backoff ticks.
+        for _ in 0..3 {
+            let (status, body) =
+                http_get(app.clone(), &format!("/api/jobs/{job_id}")).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            assert_eq!(body_json(&body)["status"], "pending");
+        }
+
+        // Poll until done, bounded so a regression that never completes
+        // fails the test instead of hanging.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            let (status, body) = http_get(app.clone(), &format!("/api/jobs/{job_id}")).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            let body = body_json(&body);
+            match body["status"].as_str().unwrap() {
+                "done" => break body["result"].clone(),
+                "pending" => {
+                    assert!(Instant::now() < deadline, "job never completed");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => panic!("unexpected job status: {other}"),
+            }
+        };
+        assert_eq!(result["move"], "chosen");
+
+        // A done job is consumed by the poll that first observed it --
+        // polling again reports the job gone, same as an id that was never
+        // issued.
+        let (status, _) = http_get(app, &format!("/api/jobs/{job_id}")).await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_slow_ai_move_error_surfaces_via_get_job_then_is_consumed() {
+        let app = transport_test_app();
+        let (status, body) = http_post_json(
+            app.clone(),
+            "/api/games/transport/ai_move",
+            json!({ "state": { "position": "before" }, "preset": "slow_error" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::OK);
+        let job_id = body_json(&body)["jobId"].as_str().unwrap().to_string();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (status, body) = http_get(app.clone(), &format!("/api/jobs/{job_id}")).await;
+            assert_eq!(status, HttpStatusCode::OK);
+            let body = body_json(&body);
+            match body["status"].as_str().unwrap() {
+                "error" => {
+                    assert_eq!(body["error"], "slow search failed");
+                    break;
+                }
+                "pending" => {
+                    assert!(Instant::now() < deadline, "job never completed");
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => panic!("unexpected job status: {other}"),
+            }
+        }
+
+        let (status, _) = http_get(app, &format!("/api/jobs/{job_id}")).await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_job_for_an_unknown_id_is_404() {
+        let (status, body) = http_get(test_app(), "/api/jobs/no-such-job").await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
+        assert!(body_json(&body)["error"]
+            .as_str()
+            .unwrap()
+            .contains("no-such-job"));
+    }
+
+    #[tokio::test]
+    async fn test_ai_move_rejects_an_unknown_kind_before_ever_touching_the_job_store() {
+        // `find_adapter` fails before `JobStore::submit` is ever called, so
+        // this is a plain `AdapterError` response, not a `done`/`pending`
+        // envelope -- `jobs.rs`'s own tests cover an error the job store
+        // itself discovers, inline and after the grace period.
+        let (status, _) = http_post_json(
+            test_app(),
+            "/api/games/nope/ai_move",
+            json!({ "state": {}, "preset": "easy" }),
+        )
+        .await;
+        assert_eq!(status, HttpStatusCode::NOT_FOUND);
     }
 }
