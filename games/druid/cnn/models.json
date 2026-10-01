@@ -1,5 +1,10 @@
 [
     {
+        "id": "druid-9x9-A-gen400",
+        "label": "64x4 CNN, trained at 9x9, run A (value target blended with search value), generation 400",
+        "weights": "games/druid/cnn/weights/9x9-A-gen400.bin"
+    },
+    {
         "id": "druid-9x9-A-gen300",
         "label": "64x4 CNN, trained at 9x9, run A (value target blended with search value), generation 300",
         "weights": "games/druid/cnn/weights/9x9-A-gen300.bin"
