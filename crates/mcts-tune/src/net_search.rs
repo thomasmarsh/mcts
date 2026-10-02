@@ -65,12 +65,25 @@ pub struct NetSearchSpec {
     /// field here, this is not a `net_*` param -- it's the general per-run `SearchBudget` every
     /// algorithm shares (`crate::search::make_candidate`'s `AlgorithmSpec::Net` arm fills this
     /// in from `budget`, not from `params`), so a `net_gumbel` preset has exactly one place to
-    /// set its move budget, the same as an `mcts` preset's `max_iterations`/`max_time_ms`.
+    /// set its move budget, the same as an `mcts` preset's `max_iterations`/`max_time_ms`. This
+    /// is always a concrete number -- Sequential Halving needs one up front to size its
+    /// elimination schedule -- so when the caller's budget was time-only this already falls back
+    /// to `crate::search::MAX_ITER`, not `usize::MAX`. See [`Self::max_iterations`] for the
+    /// caller's *actual* iteration cap, which a `Search::search_report` must report instead of
+    /// this field.
     pub simulations: usize,
-    /// The same budget's wall-clock half: checked between Sequential-Halving phases (see
-    /// `mcts::algorithms::mcts::gumbel::gumbel_search_with_root_value`), since a phase's visits
-    /// are handed out evenly across the surviving candidates and cutting one short mid-phase
-    /// would bias the elimination.
+    /// The caller's real iteration cap behind [`Self::simulations`], or `None` when the budget
+    /// was time-only and `simulations` is just `MAX_ITER` sizing the schedule. A `Search` built
+    /// from this spec must report this field (not `simulations`) as its `SearchReport`'s
+    /// `iteration_limit` -- reporting `simulations` unconditionally is exactly the "a time limit
+    /// reads back as an iteration count" bug this field exists to prevent. Filled in by
+    /// `crate::search::make_candidate` from `budget.max_iterations` verbatim, same as
+    /// [`Self::max_time`].
+    pub max_iterations: Option<usize>,
+    /// The same budget's wall-clock half: checked before every forced iteration (see
+    /// `mcts::algorithms::mcts::gumbel::gumbel_search_with_root_value`), not just between
+    /// Sequential-Halving phases -- a phase sized for the full (often `MAX_ITER`-sized) budget can
+    /// itself run far longer than a short deadline before reaching a phase boundary.
     pub max_time: Option<std::time::Duration>,
     /// Root actions Sequential Halving starts from (Gumbel selection only).
     pub considered_actions: usize,
@@ -182,6 +195,7 @@ pub(crate) fn spec_from_params(cfg: &Value) -> Result<NetSearchSpec, HostError> 
         // Filled in by `crate::search::make_candidate` from the general `SearchBudget` before
         // the spec is built, not read from `params` -- see the field's doc comment.
         simulations: 0,
+        max_iterations: None,
         max_time: None,
         considered_actions: count("net_considered_actions")?,
         value_scale,
@@ -282,6 +296,7 @@ mod tests {
             NetSearchSpec {
                 model: "fake-model".into(),
                 simulations: 0,
+                max_iterations: None,
                 max_time: None,
                 considered_actions: 4,
                 value_scale: 0.25,

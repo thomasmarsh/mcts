@@ -459,6 +459,79 @@ mod tests {
         assert!(visits < 1000, "ran {visits} simulations against an expired 1ns deadline");
     }
 
+    /// An [`Evaluator`] wrapper that sleeps a fixed duration before delegating, so a test can
+    /// give `gumbel_search_with_root_value`'s warm-up a controllable, deterministic
+    /// per-iteration cost instead of depending on how fast the real evaluator happens to run.
+    #[derive(Clone, Default)]
+    struct SlowEval<E> {
+        inner: E,
+        per_call: std::time::Duration,
+    }
+
+    impl<E: Evaluator<Othello>> Evaluator<Othello> for SlowEval<E> {
+        fn evaluate(&self, state: &State) -> mcts::evaluator::Score {
+            std::thread::sleep(self.per_call);
+            self.inner.evaluate(state)
+        }
+    }
+
+    type SlowGumbelProfile = Mcts<GumbelCompletedQ, EvaluatedCutoff<Othello, SlowEval<NTupleModelEval>>>;
+
+    #[test]
+    fn gumbel_search_with_a_deadline_resizes_the_schedule_and_reaches_a_halving_round() {
+        // The opening position has 4 legal moves, so `m` clamps to 4 regardless of
+        // `max_considered`. `sims: 10_000` is deliberately the same oversized schedule-sizing
+        // fallback a time-only custom strategy resolves to (`mcts_tune::search::MAX_ITER`).
+        // Before the fix, laying out Sequential Halving for that many simulations and consuming
+        // one candidate's whole allotment at a time means the first phase alone
+        // (`10_000 / (log2(4) * 4)` = 1,250 visits per candidate) takes far longer than a short
+        // deadline at any realistic per-iteration cost, so the search never gets past visiting
+        // its first one or two candidates. After the fix, the schedule is resized to this
+        // position's measured rate and consumed round-robin, so the same deadline reaches at
+        // least one full halving round (`considered` shrinking below 4) -- which shows up here
+        // as every candidate getting a visit, and the final tallies spreading out by more than
+        // the round-robin "within one" bound a single still-in-progress phase would leave (the
+        // two eliminated-after-phase-0 candidates stop accumulating visits entirely while the
+        // two survivors keep going).
+        let cfg = GumbelConfig {
+            sims: 10_000,
+            max_considered: 64,
+            c_scale: 1.0,
+            ..GumbelConfig::default()
+        };
+        let slow = SlowEval {
+            inner: zero_net(),
+            per_call: std::time::Duration::from_micros(200),
+        };
+        let mut search: TreeSearch<Othello, SlowGumbelProfile> = TreeSearch::default().config(
+            SearchConfig::default()
+                .expand_threshold(1)
+                .max_playout_depth(0)
+                .q_init(QInit::Loss)
+                .select(GumbelCompletedQ::with_config(cfg))
+                .simulate(EvaluatedCutoff::new().evaluator(slow))
+                .with_policy_logits(zero_policy())
+                .max_time(std::time::Duration::from_millis(50))
+                .seed(1),
+        );
+        let root_id = search.reset(0, 0);
+        let state = State::default();
+        gumbel_search_with_root_value(&mut search, &state, &cfg, 0.0);
+        let children = search.index.get(root_id).children();
+        let visits: Vec<u32> = (0..children.len()).map(|i| children.num_visits(i)).collect();
+        assert_eq!(visits.len(), 4, "expected the opening's 4 legal moves, got {visits:?}");
+        assert!(
+            visits.iter().all(|&v| v > 0),
+            "every candidate should have at least its warm-up visit: {visits:?}"
+        );
+        let max = *visits.iter().max().unwrap();
+        let min = *visits.iter().min().unwrap();
+        assert!(
+            max > min + 1,
+            "expected at least one halving round within the deadline (uneven final visits), got {visits:?}"
+        );
+    }
+
     /// Logits that rank squares by index, so the raw player must pick the
     /// highest-indexed legal square rather than whatever comes first.
     #[derive(Clone)]

@@ -21,6 +21,8 @@
 //! no search state of its own. It re-roots the tree (`TreeSearch::reset`)
 //! once per move.
 
+use std::time::Duration;
+
 use rand::Rng;
 
 use crate::algorithms::mcts::config::{PolicyProfile, SearchConfig};
@@ -260,6 +262,48 @@ pub(crate) fn mctx_sh_schedule(m: usize, n: u32) -> Vec<ShPhase> {
         num_considered = (num_considered / 2).max(2);
     }
     phases
+}
+
+/// Reserved fraction of the time estimated to remain after `gumbel_search_with_root_value`'s
+/// warm-up, before sizing the rest of a deadline-fitted schedule. The warm-up's rate is measured
+/// from a handful of iterations on one position, so this leaves headroom against the real rate
+/// drifting slower than that sample (a harder subtree, a GC pause, thermal throttling) -- the
+/// per-iteration deadline check stays the actual backstop; this margin just keeps that check from
+/// being the usual way the search stops rather than the rare one.
+const TIME_FIT_SAFETY_MARGIN: f64 = 0.8;
+
+/// How many additional iterations fit in `remaining` at a measured `per_iter` cost, after
+/// reserving `safety_margin` (clamped to `[0, 1]`) of `remaining` as headroom. `None` when
+/// `per_iter` is zero -- no usable rate was measured (e.g. the deadline fired before a single
+/// warm-up iteration finished) -- leaving the caller to pick its own fallback instead of dividing
+/// by zero.
+fn iterations_fitting(remaining: Duration, per_iter: Duration, safety_margin: f64) -> Option<u32> {
+    if per_iter.is_zero() {
+        return None;
+    }
+    let usable = remaining.mul_f64(safety_margin.clamp(0.0, 1.0));
+    Some((usable.as_secs_f64() / per_iter.as_secs_f64()).floor() as u32)
+}
+
+/// The round-robin consumption order for one Sequential-Halving phase's per-candidate visit
+/// counts (`ShPhase::visits`, indexed by rank): rank 0, 1, 2, ... for round 0, then again for
+/// round 1, and so on, skipping any rank whose visit count for this phase is already exhausted
+/// for that round. Flattening a phase into this single sequence -- instead of spending one
+/// candidate's whole allotment before moving to the next -- is what keeps a deadline that cuts
+/// the phase short from leaving a few candidates maxed out and the rest untouched: any prefix of
+/// this sequence spreads across every rank that still has visits left, so no two ranks' counts
+/// within that prefix can differ by more than one (see this module's tests).
+fn round_robin_order(visits: &[u32]) -> Vec<usize> {
+    let max_visits = visits.iter().copied().max().unwrap_or(0);
+    let mut order = Vec::with_capacity(visits.iter().sum::<u32>() as usize);
+    for round in 0..max_visits {
+        for (rank, &limit) in visits.iter().enumerate() {
+            if round < limit {
+                order.push(rank);
+            }
+        }
+    }
+    order
 }
 
 /// A standard Gumbel(0, 1) draw, `-ln(-ln u)` for `u` uniform on `(0, 1]`.
@@ -519,18 +563,7 @@ where
     // `SearchConfig::max_iterations`/`max_time` are the same per-move budget
     // knobs every other search strategy in this crate honors -- Sequential
     // Halving needs its total budget up front to lay out the elimination
-    // schedule, so `max_iterations` clamps that total. `max_time` is checked
-    // on every forced iteration, not just between phases: a phase sized for
-    // the full (often large, e.g. `crate mcts-tune`'s `MAX_ITER`-default)
-    // budget can itself run for far longer than a short deadline before ever
-    // reaching a phase boundary, so a between-phases-only check can blow the
-    // deadline by however long one whole phase takes. Cutting a phase short
-    // does mean its surviving candidates split its visits unevenly, but a
-    // time-limited search already has degraded guarantees -- ignoring the
-    // caller's deadline by seconds is a worse failure than that bias.
-    // Finalization below already tolerates stopping after any iteration --
-    // `RootMoveSelection::VisitCount` and `CompletedQ` both rank whatever
-    // `considered` set remains, however many visits each one actually got.
+    // schedule, so `max_iterations` clamps that total.
     let sims = if search.config.max_iterations == usize::MAX {
         cfg.sims
     } else {
@@ -538,15 +571,77 @@ where
     };
     search.timer.start(search.config.max_time);
 
-    let schedule = mctx_sh_schedule(m, sims);
+    // A deadline changes how the schedule itself must be built, not just when the search
+    // stops. `sims` is often a schedule-sizing fallback with no real relationship to how
+    // much work actually fits in the time given (e.g. `mcts_tune`'s `MAX_ITER` default for
+    // a budget that only set `max_time`), so laying out Sequential Halving for the full
+    // `sims` and then cutting it off wherever the per-iteration deadline check happens to
+    // land leaves most of the budget's first (and biggest) phase unfinished -- starving
+    // most of the `m` considered candidates of any visit at all and degrading the move
+    // choice to little more than Gumbel noise plus prior among whichever few candidates
+    // happened to go first. `has_deadline` switches on two changes together: the schedule
+    // is sized to the time actually available (via a short warm-up measuring this
+    // position's real per-iteration rate), and visits within each phase are handed out
+    // round-robin across the considered candidates rather than one candidate's whole
+    // allotment at a time, so a phase the deadline still cuts short leaves every candidate
+    // with a near-equal share of it instead of a few candidates maxed out and the rest at
+    // zero. Both are gated on a real deadline so an iteration-only budget (every self-play
+    // caller) is laid out and consumed exactly as before -- see this module's tests.
+    let has_deadline = search.config.max_time != Duration::default();
+    let (schedule, round_robin) = if has_deadline {
+        // The smallest possible installment of *any* schedule's first phase is one visit
+        // per considered candidate (`mctx_sh_schedule`'s `per_round` is always >= 1), so
+        // spending that now and measuring its cost is never wasted work, whatever size the
+        // real schedule below turns out to need.
+        let mut warmed_up = 0u32;
+        for &a in &considered {
+            if search.timer.done() {
+                break;
+            }
+            run_forced_iteration(search, root_id, state, &actions[a]);
+            warmed_up += 1;
+        }
+        let elapsed = search.timer.elapsed();
+        let remaining = search.config.max_time.saturating_sub(elapsed);
+        let more = (warmed_up > 0)
+            .then(|| elapsed / warmed_up)
+            .and_then(|per_iter| iterations_fitting(remaining, per_iter, TIME_FIT_SAFETY_MARGIN))
+            // No usable rate yet (the deadline fired before even one warm-up iteration
+            // finished) -- fall back to the original budget rather than guessing short.
+            .unwrap_or(sims);
+        let effective_sims = sims.min(warmed_up.saturating_add(more)).max(warmed_up);
+        let mut schedule = mctx_sh_schedule(m, effective_sims);
+        // `considered` hasn't been reordered or truncated yet, so the warm-up's one visit
+        // per candidate is exactly the leading slice of the first phase's per-candidate visits
+        // (`mctx_sh_schedule` fills slots 0, 1, 2, ... in the same order) -- subtract it
+        // back out so those candidates aren't double-visited.
+        if let Some(first_phase) = schedule.first_mut() {
+            for visits in &mut first_phase.visits {
+                *visits = visits.saturating_sub(1);
+            }
+        }
+        (schedule, true)
+    } else {
+        (mctx_sh_schedule(m, sims), false)
+    };
+
     'phases: for (phase_idx, sh_phase) in schedule.iter().enumerate() {
         debug_assert_eq!(considered.len(), sh_phase.num_considered);
-        for (rank, &a) in considered.iter().enumerate() {
-            for _ in 0..sh_phase.visits[rank] {
+        if round_robin {
+            for rank in round_robin_order(&sh_phase.visits) {
                 if search.timer.done() {
                     break 'phases;
                 }
-                run_forced_iteration(search, root_id, state, &actions[a]);
+                run_forced_iteration(search, root_id, state, &actions[considered[rank]]);
+            }
+        } else {
+            for (rank, &a) in considered.iter().enumerate() {
+                for _ in 0..sh_phase.visits[rank] {
+                    if search.timer.done() {
+                        break 'phases;
+                    }
+                    run_forced_iteration(search, root_id, state, &actions[a]);
+                }
             }
         }
         let Some(next_phase) = schedule.get(phase_idx + 1) else {
@@ -615,9 +710,117 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_score, completed_q, improved_policy, mctx_sh_schedule, most_visited_action,
-        sigma_visit_scale, transform_completed_q, GumbelConfig, RootMoveSelection, SigmaMode,
+        candidate_score, completed_q, improved_policy, iterations_fitting, mctx_sh_schedule,
+        most_visited_action, round_robin_order, sigma_visit_scale, transform_completed_q,
+        GumbelConfig, RootMoveSelection, SigmaMode,
     };
+    use std::time::Duration;
+
+    #[test]
+    fn iterations_fitting_divides_the_margined_remaining_time_by_the_measured_rate() {
+        // 800ms usable (80% of 1s) at 10ms/iteration is exactly 80 more iterations.
+        assert_eq!(
+            iterations_fitting(Duration::from_secs(1), Duration::from_millis(10), 0.8),
+            Some(80)
+        );
+        // A safety margin outside [0, 1] clamps rather than inflating or negating the estimate.
+        assert_eq!(
+            iterations_fitting(Duration::from_secs(1), Duration::from_millis(10), 1.5),
+            Some(100)
+        );
+        assert_eq!(
+            iterations_fitting(Duration::from_secs(1), Duration::from_millis(10), -0.5),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn iterations_fitting_floors_a_partial_iteration_and_handles_no_remaining_time() {
+        // 950ms usable at 300ms/iteration is 3.1(6) iterations -- floored to 3, not rounded.
+        assert_eq!(
+            iterations_fitting(Duration::from_millis(1000), Duration::from_millis(300), 0.95),
+            Some(3)
+        );
+        assert_eq!(
+            iterations_fitting(Duration::default(), Duration::from_millis(10), 0.8),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn iterations_fitting_refuses_to_divide_by_an_unmeasured_zero_rate() {
+        assert_eq!(iterations_fitting(Duration::from_secs(1), Duration::default(), 0.8), None);
+    }
+
+    #[test]
+    fn round_robin_order_visits_every_rank_once_per_round_before_repeating_any() {
+        assert_eq!(
+            round_robin_order(&[3, 3, 3]),
+            vec![0, 1, 2, 0, 1, 2, 0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn round_robin_order_skips_ranks_whose_visits_are_already_exhausted() {
+        // Rank 1 has only 1 visit, so round 1 (and 2) skip it while ranks 0 and 2 keep going.
+        assert_eq!(round_robin_order(&[2, 1, 3]), vec![0, 1, 2, 0, 2, 2]);
+        assert_eq!(round_robin_order(&[]), Vec::<usize>::new());
+        assert_eq!(round_robin_order(&[0, 0, 0]), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn round_robin_order_spends_exactly_the_total_visits_requested() {
+        for visits in [vec![5], vec![4, 1], vec![7, 3, 5, 1], vec![10, 0, 3, 6, 2]] {
+            let order = round_robin_order(&visits);
+            assert_eq!(order.len(), visits.iter().sum::<u32>() as usize, "{visits:?}");
+            let mut tally = vec![0u32; visits.len()];
+            for rank in order {
+                tally[rank] += 1;
+            }
+            assert_eq!(tally, visits, "{visits:?}");
+        }
+    }
+
+    /// The property the whole round-robin consumption order exists for: whatever prefix a
+    /// deadline cuts a phase off at, the ranks visited so far never differ by more than one
+    /// visit -- a few candidates maxed out while the rest sit at zero (candidate-by-candidate
+    /// order's failure mode) can never happen under this order. This only needs to hold for
+    /// inputs shaped like a real `ShPhase::visits` -- `mctx_sh_schedule` never produces a phase
+    /// whose own per-candidate counts differ by more than one (its only raggedness is the final
+    /// round not reaching every candidate, per `ShPhase`'s doc comment) -- not for an arbitrary
+    /// vector of unrelated counts.
+    #[test]
+    fn round_robin_order_keeps_any_prefix_within_one_visit_across_ranks_with_visits_remaining() {
+        for visits in [
+            vec![156, 156, 156, 156],
+            vec![12, 12, 12, 12, 12, 12, 12, 12],
+            vec![10, 10, 9, 9],
+            vec![1, 1, 1],
+        ] {
+            let order = round_robin_order(&visits);
+            for prefix_len in 0..=order.len() {
+                let mut tally = vec![0u32; visits.len()];
+                for &rank in &order[..prefix_len] {
+                    tally[rank] += 1;
+                }
+                // Only compare ranks this phase still has visits left for -- a rank with 0 total
+                // visits (already excluded from `considered` going into this phase) legitimately
+                // never appears and shouldn't be compared against ranks that do.
+                let active: Vec<u32> = tally
+                    .iter()
+                    .zip(&visits)
+                    .filter(|&(_, &limit)| limit > 0)
+                    .map(|(&t, _)| t)
+                    .collect();
+                if let (Some(&max), Some(&min)) = (active.iter().max(), active.iter().min()) {
+                    assert!(
+                        max - min <= 1,
+                        "prefix {prefix_len} of {visits:?} unbalanced: {tally:?}"
+                    );
+                }
+            }
+        }
+    }
 
     /// Shannon entropy of a probability vector, in nats.
     fn entropy(p: &[f32]) -> f64 {

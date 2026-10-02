@@ -383,8 +383,12 @@ pub(crate) fn make_candidate<G: Game + 'static>(
             // concrete total to size its elimination schedule, so an explicit `max_iterations`
             // (or this crate's historical `MAX_ITER` default, same as every other algorithm's
             // unset case) sizes the schedule, while `max_time` is layered on top as an early
-            // exit checked between phases (`gumbel_search_with_root_value`).
+            // exit checked on every forced iteration (`gumbel_search_with_root_value`).
+            // `max_iterations` carries the *unresolved* budget alongside `simulations` so a
+            // `Search::search_report` can tell a real operator-set iteration cap from this
+            // schedule-sizing fallback -- see `NetSearchSpec::max_iterations`'s doc comment.
             spec.simulations = budget.max_iterations.unwrap_or(MAX_ITER);
+            spec.max_iterations = budget.max_iterations;
             spec.max_time = budget.max_time;
             crate::net_search::build::<G>(&spec, seed)
         }

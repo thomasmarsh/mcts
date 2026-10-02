@@ -135,9 +135,12 @@ impl NetSearchFactory<Druid> for DruidNets {
             NetSelection::MostVisited => Kind::Deterministic,
         };
         let max_time = spec.max_time.unwrap_or_default();
+        let max_iterations = spec.max_iterations;
         crate::with_board_size!(
             weights.geometry.size,
-            N => Ok(Box::new(DruidCnnSearch::<N>::new(&spec.model, weights, cfg, kind, max_time, seed))),
+            N => Ok(Box::new(
+                DruidCnnSearch::<N>::new(&spec.model, weights, cfg, kind, max_time, max_iterations, seed),
+            )),
             n => Err(HostError::internal(format!("no {n}x{n} network support"))),
         )
     }
@@ -148,6 +151,12 @@ impl NetSearchFactory<Druid> for DruidNets {
 pub struct DruidCnnSearch<const N: usize> {
     agent: CnnAgent<N>,
     simulation_limit: usize,
+    max_time: Duration,
+    /// The caller's real iteration cap, or `None` when the budget was time-only and
+    /// `simulation_limit` is just `mcts_tune::search::MAX_ITER` sizing the Sequential Halving
+    /// schedule -- see `mcts_tune::net_search::NetSearchSpec::max_iterations`'s doc comment.
+    /// `search_report` must report this, not `simulation_limit`, as `iteration_limit`.
+    max_iterations: Option<usize>,
     last: Option<(RootSummary, Duration)>,
 }
 
@@ -158,12 +167,31 @@ impl<const N: usize> DruidCnnSearch<N> {
         cfg: mcts_batch::Config,
         kind: Kind,
         max_time: Duration,
+        max_iterations: Option<usize>,
         seed: u64,
     ) -> Self {
         DruidCnnSearch {
             simulation_limit: cfg.num_simulations,
             agent: CnnAgent::<N>::new(name, weights, cfg, kind, CHUNK_SIZE, max_time, seed),
+            max_time,
+            max_iterations,
             last: None,
+        }
+    }
+
+    fn time_limit_seconds(&self) -> Option<f64> {
+        (self.max_time != Duration::default()).then_some(self.max_time.as_secs_f64())
+    }
+
+    /// The only two ways `gumbel_search_with_root_value`'s Sequential-Halving loop stops: the
+    /// deadline fires mid-schedule (`simulations < simulation_limit`), or the schedule runs to
+    /// completion (`simulations == simulation_limit`, regardless of whether that total came from
+    /// a real `max_iterations` or just `MAX_ITER` sizing a time-only budget's schedule).
+    fn termination(&self, simulations: usize) -> SearchTermination {
+        if simulations < self.simulation_limit {
+            SearchTermination::Time
+        } else {
+            SearchTermination::Iterations
         }
     }
 }
@@ -235,7 +263,8 @@ impl<const N: usize> Search for DruidCnnSearch<N> {
             // A position with a single legal move is answered without a search.
             let mut report = SearchReport::unavailable(SearchReportReason::SearchNotRun);
             report.elapsed_seconds = Some(seconds);
-            report.iteration_limit = Some(self.simulation_limit);
+            report.iteration_limit = self.max_iterations;
+            report.time_limit_seconds = self.time_limit_seconds();
             report.selected_action = Some(*selected);
             report.principal_variation = vec![*selected];
             return report;
@@ -246,10 +275,10 @@ impl<const N: usize> Search for DruidCnnSearch<N> {
             status: SearchReportStatus::Available,
             reason: None,
             elapsed_seconds: Some(seconds),
-            iteration_limit: Some(self.simulation_limit),
-            time_limit_seconds: None,
+            iteration_limit: self.max_iterations,
+            time_limit_seconds: self.time_limit_seconds(),
             completed_iterations: summary.simulations,
-            termination: Some(SearchTermination::Iterations),
+            termination: Some(self.termination(summary.simulations)),
             selected_action: Some(*selected),
             actions: summary
                 .actions
@@ -310,6 +339,7 @@ mod tests {
         NetSearchSpec {
             model: model.into(),
             simulations,
+            max_iterations: Some(simulations),
             max_time: None,
             considered_actions: 4,
             value_scale: 0.1,
@@ -348,6 +378,33 @@ mod tests {
         let root = search.root_report(&s);
         assert_eq!(root.total_visits, 8);
         assert_eq!(root.actions.len(), report.actions.len());
+    }
+
+    #[test]
+    fn a_time_only_budget_reports_the_time_limit_not_the_schedule_sizing_iteration_count() {
+        // Mirrors `crate::search::make_candidate`'s `AlgorithmSpec::Net` arm for a budget with
+        // only `max_time` set: `simulations` is just `MAX_ITER` sizing Sequential Halving's
+        // schedule, and `max_iterations` (the real, caller-set cap) is `None`. Before this fix,
+        // `search_report` reported `simulation_limit` as `iteration_limit` unconditionally and
+        // always claimed `SearchTermination::Iterations`, so a pure time budget read back as an
+        // iteration count that was never actually set.
+        let mut budget_only_spec = spec("zero-5x5", 5_000);
+        budget_only_spec.max_iterations = None;
+        budget_only_spec.max_time = Some(Duration::from_millis(5));
+        let mut search = nets().build(&budget_only_spec, 0).unwrap();
+        let s = cell_decision(5);
+        let mv = search.choose_action(&s);
+
+        let report = search.search_report(&s, &mv);
+        assert_eq!(report.status, SearchReportStatus::Available);
+        assert_eq!(report.iteration_limit, None);
+        assert_eq!(report.time_limit_seconds, Some(0.005));
+        assert_eq!(report.termination, Some(SearchTermination::Time));
+        assert!(
+            report.completed_iterations < 5_000,
+            "a 5ms deadline should cut the 5,000-sim schedule short, got {}",
+            report.completed_iterations
+        );
     }
 
     #[test]
